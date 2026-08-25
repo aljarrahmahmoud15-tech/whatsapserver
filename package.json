@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-own-server",
   "version": "1.0.0",
-  "description": "Self-hosted WhatsApp sender for portfolio contact form using whatsapp-web.js",
+  "description": "Self-hosted WhatsApp sender for portfolio contact",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,7 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "puppeteer": "^23.0.0",
+    "qrcode": "^1.5.3",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.26.0"
   },
