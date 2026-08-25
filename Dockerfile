@@ -1,4 +1,5 @@
 FROM ghcr.io/puppeteer/puppeteer:21.11.0
+USER root
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
