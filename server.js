@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS blocked_phones (
+  phone TEXT PRIMARY KEY,
+  note TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `);
 
 const now = () => new Date().toISOString();
@@ -144,6 +149,15 @@ const randomCode = () => {
   return `FD-5JD-${part}`;
 };
 const displayPhone = (phone) => phone ? `+${phone}` : "غير معروف";
+const BLOCKED_PHONE_INPUTS = ["0792026321", "0792026320"];
+const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
+function isBlockedPhone(value) {
+  return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
+}
+function ensureBlockedPhones() {
+  const insert = db.prepare("INSERT OR IGNORE INTO blocked_phones(phone,note,created_at) VALUES(?,?,?)");
+  for (const value of BLOCKED_PHONE_INPUTS) insert.run(phoneWithCountry(value), "مستبعد نهائيًا من القروب والنظام", now());
+}
 
 function getSetting(key, fallback = null) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -161,10 +175,12 @@ function ensureSystemUsers() {
   if (getSetting("captain_rate_bps") === null) setSetting("captain_rate_bps", CAPTAIN_RATE_BPS);
   if (getSetting("currency") === null) setSetting("currency", "JOD");
 }
+ensureBlockedPhones();
 ensureSystemUsers();
 
 function upsertUser({ phone, name, role }) {
   const normalized = phoneWithCountry(phone) || `unknown-${Date.now()}`;
+  if (isBlockedPhone(normalized)) throw new Error("Blocked phone is not allowed");
   const stamp = now();
   const existing = db.prepare("SELECT * FROM users WHERE phone=?").get(normalized);
   if (existing) {
@@ -327,6 +343,10 @@ async function handleIncomingMessage(msg) {
   if (!isGroup || !isConfiguredGroup(msg.from)) return;
   const contact = await msg.getContact().catch(() => null);
   const senderPhone = phoneWithCountry(contact && contact.number ? contact.number : msg.author || "");
+  if (isBlockedPhone(senderPhone)) {
+    console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
+    return;
+  }
   const senderName = (contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone);
   const body = String(msg.body || "").trim();
   if (!body) return;
@@ -503,6 +523,7 @@ app.post("/api/redeem", (req, res) => {
   const phone = phoneWithCountry(req.body.phone || "");
   const code = String(req.body.code || "").trim().toUpperCase();
   if (!phone || !code) return res.status(400).json({ error: "phone and code are required" });
+  if (isBlockedPhone(phone)) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const result = db.transaction(() => {
     const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? AND status='issued'").get(hashCode(code));
     if (!card) throw new Error("Invalid or already used card");
