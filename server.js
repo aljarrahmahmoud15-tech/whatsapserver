@@ -493,6 +493,20 @@ async function destroyClient() {
   try { await current.destroy(); } catch (error) { console.warn("[WhatsApp] destroy:", error.message); }
 }
 
+async function restartWhatsApp(reason = "manual restart") {
+  connectionGeneration += 1;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  await withTimeout(destroyClient(), 15000, null);
+  qrCodeData = null;
+  lastQrTime = null;
+  initializing = false;
+  console.warn(`[WhatsApp] restarting session: ${reason}`);
+  scheduleReconnect();
+}
+
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(async () => {
@@ -560,8 +574,7 @@ async function initializeWhatsApp() {
     const initialized = await withTimeout(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
     if (initialized === initTimeoutMarker) {
       console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; restarting session`);
-      await withTimeout(destroyClient(), 15000, null);
-      scheduleReconnect();
+      await restartWhatsApp(`initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms`);
     }
   } catch (error) {
     console.error("[WhatsApp] initialize:", error.message);
@@ -774,7 +787,11 @@ app.post("/api/auth/logout", (req, res) => {
 });
 app.get("/api/auth/me", requireAdmin, (req, res) => res.json({ authenticated: true, role: "company" }));
 app.get("/health", (req, res) => res.json({ status: "online", service: "aljarah-logistics", timestamp: now() }));
-app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, uptime: process.uptime() }));
+app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
+  await restartWhatsApp("admin requested recovery");
+  res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
+});
+app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, uptime: process.uptime() }));
 app.get("/qr", requireQrAccess, async (req, res) => {
   if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ البوت متصل</h2><p>${BOT_PHONE}</p></body></html>`);
   if (!qrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
