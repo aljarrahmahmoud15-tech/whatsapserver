@@ -227,7 +227,8 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-const BLOCKED_PHONE_INPUTS = ["0792026321", "0792026320"];
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
+const GROUP_SETUP_OWNER_PHONES = new Set((process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886,+962775969880").split(",").map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
@@ -377,6 +378,13 @@ function upsertUser({ phone, name, role }) {
 }
 function companyUser() { return db.prepare("SELECT * FROM users WHERE role='company' ORDER BY id LIMIT 1").get(); }
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
+function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
+function configureGroupId(groupId, groupName) {
+  const stamp = now();
+  db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
+  setSetting("group_id", groupId);
+  audit("group.configured", "group", groupId, { groupName });
+}
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
   return configured > 0 && Boolean(configuredGroup(groupId));
@@ -537,15 +545,21 @@ async function handleIncomingMessage(msg) {
   if (!msg || msg.fromMe) return;
   const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
   if (!isGroup) return handleCustomerMessage(msg);
-  if (!isConfiguredGroup(msg.from)) return;
   const contact = await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = phoneWithCountry(contact && contact.number ? contact.number : msg.author || "");
+  const body = String(msg.body || "").trim();
+  if (!isConfiguredGroup(msg.from)) {
+    if (isGroupSetupOwner(senderPhone) && /^#(?:اعتماد|ربط|اعتمد)\\s*(?:القروب|المجموعة)?$/i.test(body)) {
+      configureGroupId(msg.from, "الجراح | شبكة التشغيل الرسمية");
+      console.log(`[GroupSetup] configured group from owner command: ${msg.from}`);
+    }
+    return;
+  }
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
   }
   const senderName = (contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone);
-  const body = String(msg.body || "").trim();
   if (!body) return;
   const stamp = now();
   const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(msg.id._serialized, msg.from, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
