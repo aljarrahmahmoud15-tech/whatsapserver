@@ -85,7 +85,7 @@
         <p class="lead">مساحة موحّدة للطلبات، الكباتن، والقبول الفوري. كل رحلة تبدأ برسالة واضحة، وكل عملية تُسجّل داخل نظام شركة الجراح بدقة.</p>
         <div class="actions">
           <button class="primary" id="joinBtn">انضم إلى القروب الرسمي</button>
-          <a class="secondary support-link" id="supportBtn" href="https://wa.me/962779110123?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D8%8C%20%D8%A3%D8%B1%D9%8A%D8%AF%20%D8%A7%D9%84%D8%A7%D8%B3%D8%AA%D9%81%D8%B3%D8%A7%D8%B1%20%D8%B9%D9%86%20%D8%AE%D8%AF%D9%85%D8%A9%20%D8%A7%D9%84%D9%86%D9%82%D9%84" target="_blank" rel="noopener">خدمة العملاء عبر واتساب</a>
+          <a class="secondary support-link" id="supportBtn" href="./support.html">خدمة العملاء داخل النظام</a>
           <a class="secondary" href="./dashboard.html">استعراض لوحة النظام</a>
         </div>
       </div>
@@ -103,7 +103,7 @@
 
     <section class="section rules">
       <div class="rule-panel"><h3>عبارة الترحيب المعتمدة</h3><div class="rule-list"><div class="rule"><span class="check">✦</span><span>أهلًا بك في قروب شركة الجراح للنقل والخدمات اللوجستية.</span></div><div class="rule"><span class="check">✦</span><span>الطلبات الرسمية فقط، والقبول يكون بكتابة «تم» بوضوح.</span></div><div class="rule"><span class="check">✦</span><span>يُرجى احترام أوقات الرحلات وعدم تعديل تفاصيل الطلب بعد تثبيته.</span></div></div></div>
-      <div class="rule-panel notice"><div class="icon">!</div><div><strong>تنبيه تشغيلي</strong><p>سيتم تفعيل رابط الانضمام النهائي بعد إنشاء القروب الجديد واعتماد المشرفين. لا تستخدم أي رابط قديم أو غير معتمد.<br><br><a href="https://wa.me/962779110123?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D8%8C%20%D8%A3%D8%B1%D9%8A%D8%AF%20%D8%A7%D9%84%D8%A7%D8%B3%D8%AA%D9%81%D8%B3%D8%A7%D8%B1%20%D8%B9%D9%86%20%D8%AE%D8%AF%D9%85%D8%A9%20%D8%A7%D9%84%D9%86%D9%82%D9%84" target="_blank" rel="noopener" style="color:var(--cyan);font-weight:800">لخدمة العملاء اضغط هنا ←</a></p></div></div>
+      <div class="rule-panel notice"><div class="icon">!</div><div><strong>تنبيه تشغيلي</strong><p>سيتم تفعيل رابط الانضمام النهائي بعد إنشاء القروب الجديد واعتماد المشرفين. لا تستخدم أي رابط قديم أو غير معتمد.<br><br><a href="./support.html" style="color:var(--cyan);font-weight:800">لخدمة العملاء داخل النظام اضغط هنا ←</a></p></div></div>
     </section>
 
     <footer class="footer"><span>© شركة الجراح — نظام تشغيل موحّد</span><span>نقل أسرع. تنظيم أدق.</span></footer>
@@ -111,9 +111,7 @@
   <div class="toast" id="toast">سيتم تفعيل رابط الانضمام بعد اعتماد القروب الجديد.</div>
   <script>
     const GROUP_INVITE_URL = '';
-    const CUSTOMER_WHATSAPP_URL = 'https://wa.me/962779110123?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D8%8C%20%D8%A3%D8%B1%D9%8A%D8%AF%20%D8%A7%D9%84%D8%A7%D8%B3%D8%AA%D9%81%D8%B3%D8%A7%D8%B1%20%D8%B9%D9%86%20%D8%AE%D8%AF%D9%85%D8%A9%20%D8%A7%D9%84%D9%86%D9%82%D9%84';
     const btn = document.getElementById('joinBtn');
-    document.getElementById('supportBtn').href = CUSTOMER_WHATSAPP_URL;
     const toast = document.getElementById('toast');
     btn.addEventListener('click', () => {
       if (GROUP_INVITE_URL) window.location.href = GROUP_INVITE_URL;

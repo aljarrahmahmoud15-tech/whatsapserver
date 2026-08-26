@@ -164,6 +164,19 @@ CREATE TABLE IF NOT EXISTS customer_leads (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_code TEXT NOT NULL UNIQUE,
+  requester_name TEXT NOT NULL,
+  account_ref TEXT,
+  category TEXT NOT NULL CHECK(category IN ('general','topup_card','booking')),
+  message TEXT NOT NULL,
+  requested_value_cents INTEGER,
+  status TEXT NOT NULL CHECK(status IN ('new','in_progress','resolved','closed')) DEFAULT 'new',
+  admin_reply TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
@@ -208,6 +221,12 @@ function constantTimeEquals(actual, expected) {
 function isBlockedOrInvalidCustomerPhone(phone) {
   return !isValidJordanPhone(phone) || isBlockedPhone(phone);
 }
+function createTicketCode() {
+  let code;
+  do { code = `CS-${crypto.randomBytes(3).toString("hex").toUpperCase()}`; } while (db.prepare("SELECT id FROM support_tickets WHERE ticket_code=?").get(code));
+  return code;
+}
+const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 const BLOCKED_PHONE_INPUTS = ["0792026321", "0792026320"];
 const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
 function isBlockedPhone(value) {
@@ -746,6 +765,37 @@ app.post("/api/redeem", (req, res) => {
     return { userId: user.id, balanceCents: newBalance, valueCents: card.value_cents };
   })();
   try { res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" }); } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/support/tickets", (req, res) => {
+  if (!consumeRateLimit(redeemRate, clientAddress(req), 8)) return res.status(429).json({ error: "Too many support requests; try again later" });
+  const requesterName = String(req.body.requesterName || "").trim().slice(0, 120);
+  const accountRef = String(req.body.accountRef || "").trim().slice(0, 120);
+  const category = String(req.body.category || "general").trim();
+  const message = String(req.body.message || "").trim().slice(0, 2000);
+  const requestedValue = req.body.requestedValue === undefined || req.body.requestedValue === "" ? null : Number(req.body.requestedValue);
+  if (!requesterName || !message || !SUPPORT_CATEGORIES.has(category)) return res.status(400).json({ error: "requesterName, category and message are required" });
+  if (category === "topup_card" && (!Number.isFinite(requestedValue) || requestedValue <= 0 || requestedValue > 1000)) return res.status(400).json({ error: "A valid top-up value is required" });
+  if (accountRef && isBlockedPhone(accountRef)) return res.status(403).json({ error: "This account is blocked by company policy" });
+  const ticketCode = createTicketCode();
+  const stamp = now();
+  const result = db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'new',?,?)").run(ticketCode, requesterName, accountRef || null, category, message, requestedValue === null ? null : cents(requestedValue), stamp, stamp);
+  audit("support.ticket.created", "support_ticket", result.lastInsertRowid, { ticketCode, category });
+  res.status(201).json({ success: true, ticketCode, status: "new", message: "تم تسجيل طلبك داخل خدمة العملاء" });
+});
+app.get("/api/admin/support-tickets", requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT * FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
+  res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
+});
+app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
+  const ticketId = Number(req.params.id);
+  const status = String(req.body.status || "").trim();
+  const allowed = new Set(["new", "in_progress", "resolved", "closed"]);
+  if (!Number.isInteger(ticketId) || !allowed.has(status)) return res.status(400).json({ error: "Invalid ticket or status" });
+  const adminReply = String(req.body.adminReply || "").trim().slice(0, 2000) || null;
+  const result = db.prepare("UPDATE support_tickets SET status=?,admin_reply=?,updated_at=? WHERE id=?").run(status, adminReply, now(), ticketId);
+  if (!result.changes) return res.status(404).json({ error: "Ticket not found" });
+  audit("support.ticket.updated", "support_ticket", ticketId, { status });
+  res.json({ success: true, status });
 });
 app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const orders = db.prepare("SELECT COUNT(*) AS count FROM orders").get().count;

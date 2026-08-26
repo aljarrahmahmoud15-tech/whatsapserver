@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>خدمة العملاء | شركة الجراح</title>
+  <meta name="description" content="خدمة العملاء الداخلية لشركة الجراح للنقل والخدمات اللوجستية" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root{--navy:#07111f;--panel:#102a44;--panel2:#0d2137;--ink:#f7fbff;--muted:#a8bbce;--gold:#e9b95c;--cyan:#39d6ff;--line:rgba(226,237,249,.15);--green:#62df99;--red:#ff7b83}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:radial-gradient(circle at 10% 0,rgba(57,214,255,.13),transparent 30%),radial-gradient(circle at 90% 15%,rgba(233,185,92,.13),transparent 28%),var(--navy);color:var(--ink);font-family:Cairo,system-ui,sans-serif}
+    a{color:inherit;text-decoration:none}.shell{width:min(760px,100%);margin:auto;padding:18px 14px 44px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:10px;font-weight:800}.brand img{width:44px;height:44px;object-fit:cover;border-radius:14px;border:1px solid rgba(233,185,92,.45)}.brand small{display:block;font-size:10px;color:var(--muted);font-weight:500}.back{font-size:12px;color:var(--cyan);border:1px solid rgba(57,214,255,.22);padding:9px 12px;border-radius:999px}
+    .hero,.form-card,.success{background:linear-gradient(145deg,rgba(16,42,68,.94),rgba(13,33,55,.9));border:1px solid var(--line);border-radius:24px;box-shadow:0 24px 80px rgba(0,0,0,.28)}.hero{padding:28px 24px;margin-bottom:14px}.eyebrow{color:var(--gold);font-size:11px;font-weight:800;letter-spacing:.05em}.hero h1{font-size:clamp(28px,7vw,44px);line-height:1.25;margin:10px 0 9px}.hero p{margin:0;color:var(--muted);font-size:13px;line-height:1.9}.form-card{padding:24px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.field{display:grid;gap:7px}.field.full{grid-column:1/-1}.field label{font-size:11px;color:var(--muted)}input,select,textarea{width:100%;background:#091a2c;border:1px solid #284563;border-radius:12px;color:var(--ink);font:inherit;font-size:13px;padding:12px;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(57,214,255,.09)}textarea{min-height:125px;resize:vertical}.hint{font-size:10px;color:var(--muted);line-height:1.7}.topup-value{display:none}.topup-value.show{display:grid}.actions{display:flex;gap:9px;margin-top:18px;align-items:center}.primary{border:0;border-radius:13px;padding:13px 18px;background:linear-gradient(135deg,var(--gold),#f6d383);color:#172130;font:inherit;font-weight:800;cursor:pointer}.primary:disabled{opacity:.55;cursor:wait}.secondary{border:1px solid var(--line);border-radius:13px;padding:12px 15px;color:var(--muted);font-size:12px}.error{color:var(--red);font-size:11px;min-height:18px;margin-top:12px}.success{display:none;padding:24px;margin-top:14px;border-color:rgba(98,223,153,.3);background:linear-gradient(145deg,rgba(98,223,153,.12),rgba(16,42,68,.92))}.success.show{display:block}.success strong{color:var(--green);display:block;font-size:18px;margin-bottom:8px}.success p{margin:0;color:#d5e8dd;font-size:13px;line-height:1.9}.ticket{display:inline-block;margin-top:14px;color:var(--gold);font-size:18px;font-weight:800;letter-spacing:.08em}.footer{margin-top:18px;color:var(--muted);font-size:10px;text-align:center}@media(max-width:560px){.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.hero{padding:24px 20px}.form-card{padding:20px}.actions{flex-direction:column;align-items:stretch}.actions>*{width:100%;text-align:center}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><a class="brand" href="./join.html"><img src="./aljarah-group-avatar.png" alt="شعار شركة الجراح"><span>شركة الجراح<small>خدمة العملاء الداخلية</small></span></a><a class="back" href="./join.html">العودة لواجهة القروب</a></header>
+    <section class="hero"><div class="eyebrow">AL-JARAH CUSTOMER DESK</div><h1>كيف نساعدك؟</h1><p>اكتب رسالتك داخل النظام، وسيتم تسجيلها كتذكرة ومتابعتها من خدمة عملاء شركة الجراح. هذه القناة للرسائل فقط، وطلبات بطاقات الشحن تمر عبر المراجعة قبل الإصدار.</p></section>
+    <form class="form-card" id="supportForm">
+      <div class="form-grid">
+        <div class="field"><label for="requesterName">الاسم</label><input id="requesterName" name="requesterName" required maxlength="120" placeholder="اكتب اسمك"></div>
+        <div class="field"><label for="accountRef">مرجع الحساب (اختياري)</label><input id="accountRef" name="accountRef" maxlength="120" placeholder="اسم المستخدم أو مرجعك داخل النظام"></div>
+        <div class="field"><label for="category">نوع الطلب</label><select id="category" name="category"><option value="general">استفسار عام</option><option value="booking">طلب نقل أو حجز</option><option value="topup_card">طلب بطاقة شحن</option></select></div>
+        <div class="field topup-value" id="topupValueField"><label for="requestedValue">قيمة بطاقة الشحن بالدينار</label><input id="requestedValue" name="requestedValue" type="number" min="1" max="1000" step="0.01" placeholder="5"></div>
+        <div class="field full"><label for="message">الرسالة</label><textarea id="message" name="message" required maxlength="2000" placeholder="اكتب طلبك أو استفسارك بالتفصيل..."></textarea><span class="hint">لا ترسل كلمات مرور أو رموز سرية. ستظهر الرسالة لموظفي الشركة المصرّح لهم فقط.</span></div>
+      </div>
+      <div class="error" id="error"></div><div class="actions"><button class="primary" type="submit">إرسال إلى خدمة العملاء</button><a class="secondary" href="./dashboard.html">لوحة الجراح</a></div>
+    </form>
+    <section class="success" id="success"><strong>تم تسجيل طلبك داخل النظام</strong><p>احتفظ برقم التذكرة لمتابعة طلبك من خدمة العملاء. إصدار بطاقة الشحن لا يتم تلقائيًا؛ تتم مراجعته من الشركة أولًا.</p><span class="ticket" id="ticketCode"></span></section>
+    <div class="footer">شركة الجراح للنقل والخدمات اللوجستية — رسائل داخلية منظمة وآمنة</div>
+  </main>
+  <script>
+    const form=document.getElementById('supportForm'), category=document.getElementById('category'), valueField=document.getElementById('topupValueField'), error=document.getElementById('error'), success=document.getElementById('success'), ticketCode=document.getElementById('ticketCode');
+    category.addEventListener('change',()=>valueField.classList.toggle('show',category.value==='topup_card'));
+    form.addEventListener('submit',async(e)=>{e.preventDefault();error.textContent='';const submit=form.querySelector('button[type=submit]');submit.disabled=true;const payload={requesterName:form.requesterName.value.trim(),accountRef:form.accountRef.value.trim(),category:category.value,message:form.message.value.trim()};if(category.value==='topup_card')payload.requestedValue=form.requestedValue.value;try{const res=await fetch('/api/support/tickets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});const data=await res.json();if(!res.ok)throw new Error(data.error||'تعذر تسجيل الطلب');ticketCode.textContent=data.ticketCode;success.classList.add('show');form.reset();valueField.classList.remove('show');success.scrollIntoView({behavior:'smooth',block:'center'})}catch(err){error.textContent=err.message}finally{submit.disabled=false}});
+  </script>
+</body>
+</html>
