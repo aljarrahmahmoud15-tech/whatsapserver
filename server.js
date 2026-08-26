@@ -29,6 +29,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 app.use(cors({ origin: true, credentials: false }));
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false }));
+app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
 const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
 db.pragma("journal_mode = WAL");
