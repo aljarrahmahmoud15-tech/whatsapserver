@@ -677,6 +677,22 @@ function extractInviteCode(value = "") {
   return match ? match[1] : raw.replace(/[^A-Za-z0-9_-]/g, "");
 }
 
+app.post("/api/admin/group/check-phones", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
+  const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
+  if (phones.length < 1 || phones.length > 4) return res.status(400).json({ error: "Provide between 1 and 4 participant phone numbers" });
+  if (phones.some((phone) => !isValidJordanPhone(phone))) return res.status(400).json({ error: "Participant phones must be valid Jordan mobile numbers" });
+  if (phones.some(isBlockedPhone)) return res.status(403).json({ error: "One or more phones are blocked by company policy" });
+  if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone must not be listed as a participant" });
+  const results = [];
+  for (const phone of phones) {
+    const id = await withTimeout(client.getNumberId(phone), 20000, null);
+    results.push({ phone: displayPhone(phone), registered: Boolean(id), id: id ? id._serialized : null });
+  }
+  res.json({ success: true, phones: results });
+});
+
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress" });
@@ -690,13 +706,16 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (phones.some(isBlockedPhone)) return res.status(403).json({ error: "One or more phones are blocked by company policy" });
   if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone is the group creator and must not be listed as a participant" });
   groupCreateInFlight = true;
+  console.log(`[GroupCreate] validating ${phones.length} participant(s)`);
   try {
     const participantIds = [];
     for (const phone of phones) {
+      console.log(`[GroupCreate] looking up ${displayPhone(phone)}`);
       const id = await withTimeout(client.getNumberId(phone), 20000, null);
       if (!id) return res.status(400).json({ error: "Phone is not registered on WhatsApp or lookup timed out", phone: displayPhone(phone) });
       participantIds.push(id._serialized || `${phone}@c.us`);
     }
+    console.log("[GroupCreate] creating WhatsApp group");
     const created = await withTimeout(client.createGroup(groupName, participantIds), 60000, null);
     if (!created) return res.status(504).json({ error: "WhatsApp group creation timed out; no group was configured" });
     if (typeof created === "string") return res.status(502).json({ error: "WhatsApp could not create the group", details: created });
