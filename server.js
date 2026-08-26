@@ -340,7 +340,7 @@ async function handleCustomerMessage(msg) {
 }
 function ensureBlockedPhones() {
   const insert = db.prepare("INSERT OR IGNORE INTO blocked_phones(phone,note,created_at) VALUES(?,?,?)");
-  for (const value of BLOCKED_PHONE_INPUTS) insert.run(phoneWithCountry(value), "مستبعد نهائيًا من القروب والنظام", now());
+  for (const value of BLOCKED_PHONES) insert.run(phoneWithCountry(value), "مستبعد نهائيًا من القروب والنظام", now());
 }
 
 function getSetting(key, fallback = null) {
