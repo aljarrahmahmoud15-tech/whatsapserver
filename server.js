@@ -462,7 +462,7 @@ let lastQrTime = null;
 let reconnectTimer = null;
 let initializing = false;
 let groupCreateInFlight = false;
-let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null };
+let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
@@ -830,23 +830,47 @@ app.post("/api/admin/group/check-phones", requireAdmin, async (req, res) => {
   res.json({ success: true, phones: results });
 });
 
+function extractCreatedGroupId(created) {
+  const groupId = created && created.gid ? (created.gid._serialized || String(created.gid)) : (created && created.id ? (created.id._serialized || String(created.id)) : null);
+  return groupId && String(groupId).endsWith("@g.us") ? String(groupId) : null;
+}
+
 async function createGroupInBackground({ operationId, groupName, phones }) {
+  let createdGroupId = null;
+  const participantResults = phones.map((phone) => ({ phone, status: "pending" }));
   try {
-    const participantIds = phones.map((phone) => `${phone}@c.us`);
-    console.log(`[GroupCreate] creating WhatsApp group operation=${operationId} participants=${phones.length}`);
-    const created = await withTimeout(client.createGroup(groupName, participantIds), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
+    // WhatsApp Web currently has a known failure mode when createGroup receives
+    // participants in the same request. Create the group from the bot account
+    // first, then add each participant separately.
+    console.log(`[GroupCreate] creating empty group operation=${operationId}`);
+    const created = await withTimeout(client.createGroup(groupName), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
     if (!created) throw new Error("WhatsApp group creation timed out; no group was configured");
     if (typeof created === "string") throw new Error(`WhatsApp could not create the group: ${created}`);
-    const groupId = created && created.gid ? (created.gid._serialized || String(created.gid)) : (created && created.id ? (created.id._serialized || String(created.id)) : null);
-    if (!groupId || !groupId.endsWith("@g.us")) throw new Error("WhatsApp returned an invalid group identifier");
+    createdGroupId = extractCreatedGroupId(created);
+    if (!createdGroupId) throw new Error("WhatsApp returned an invalid group identifier");
+    groupCreateState = { ...groupCreateState, status: "adding_participants", groupId: createdGroupId, participants: participantResults };
+    const groupChat = await withTimeout(client.getChatById(createdGroupId), 30000, null);
+    if (!groupChat || typeof groupChat.addParticipants !== "function") throw new Error("Group was created but could not be opened for participant addition");
+    for (const result of participantResults) {
+      const participantId = `${result.phone}@c.us`;
+      console.log(`[GroupCreate] adding participant ${displayPhone(result.phone)} to ${createdGroupId}`);
+      const added = await withTimeout(groupChat.addParticipants([participantId]), 60000, null);
+      if (!added || typeof added === "string") {
+        result.status = "failed";
+        result.error = typeof added === "string" ? added : "participant addition timed out";
+        throw new Error(`Could not add ${displayPhone(result.phone)} to the new group`);
+      }
+      result.status = "added";
+      result.response = added && typeof added === "object" ? added : null;
+    }
     const stamp = now();
-    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
-    setSetting("group_id", groupId);
-    audit("group.created_and_configured", "group", groupId, { groupName, participants: phones });
-    groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId };
-    console.log(`[GroupCreate] succeeded operation=${operationId} group=${groupId}`);
+    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(createdGroupId, groupName, stamp, stamp);
+    setSetting("group_id", createdGroupId);
+    audit("group.created_and_configured", "group", createdGroupId, { groupName, participants: phones });
+    groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId: createdGroupId, participants: participantResults };
+    console.log(`[GroupCreate] succeeded operation=${operationId} group=${createdGroupId}`);
   } catch (error) {
-    groupCreateState = { status: "failed", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: error.message, groupId: null };
+    groupCreateState = { status: "failed", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: error.message, groupId: createdGroupId, participants: participantResults };
     console.error(`[GroupCreate] failed operation=${operationId}:`, error.message);
   } finally {
     groupCreateInFlight = false;
@@ -857,6 +881,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
+  if (groupCreateState.status === "failed" && groupCreateState.groupId) return res.status(409).json({ error: "A group was created but participant addition did not finish; verify the group before retrying", groupId: groupCreateState.groupId, operationId: groupCreateState.operationId });
   const groupName = String(req.body.groupName || "الجراح للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
@@ -867,7 +892,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone is the group creator and must not be listed as a participant" });
   const operationId = `GROUP-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
   groupCreateInFlight = true;
-  groupCreateState = { status: "running", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null };
+  groupCreateState = { status: "running", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: phones.map((phone) => ({ phone, status: "pending" })) };
   void createGroupInBackground({ operationId, groupName, phones });
   res.status(202).json({ success: true, accepted: true, operationId, groupName, participants: phones.map(displayPhone), messageSent: false });
 });
