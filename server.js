@@ -181,6 +181,10 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
 if (!existingOrderColumns.includes("order_kind")) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'normal'");
+if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_captain_user_id INTEGER");
+if (!existingOrderColumns.includes("pending_message_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_message_id TEXT");
+if (!existingOrderColumns.includes("pending_at")) db.exec("ALTER TABLE orders ADD COLUMN pending_at TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
 
 const now = () => new Date().toISOString();
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -413,11 +417,11 @@ function isCaptainAcceptance(text) {
   return /(^|\s)تم(?:\s|$)|تم\s+اول\s+راكب|تم\s+أول\s+راكب/i.test(String(text || "").trim());
 }
 function latestOpenOrder(groupId) {
-  return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' ORDER BY id DESC LIMIT 1").get(groupId);
+  return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
 }
 function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
-  return db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(quotedId);
+  return db.prepare("SELECT * FROM orders WHERE source_message_id=? AND status='open' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
 }
 function brandedMessage(title, lines = []) {
   return [
@@ -429,14 +433,23 @@ function brandedMessage(title, lines = []) {
   ].join("\n");
 }
 function formatAcceptance(order, captain, producer) {
-  return brandedMessage("تم قبول الطلب", [
+  return brandedMessage("تم توثيق الرحلة", [
     `🆔 رقم الطلب: #${order.order_no}`,
-    `👤 المنتج: ${producer ? producer.name : "غير محدد"}`,
-    `🚕 الكابتن: ${captain.name}`,
+    `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
+    `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد" : "طلب عادي"}`,
+    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
+    "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية.",
+  ]);
+}
+function formatPendingConfirmation(order, captain) {
+  return brandedMessage("بانتظار اعتماد المنتج", [
+    `🆔 رقم الطلب: #${order.order_no}`,
+    `🚕 وصل رد «تم» من الكابتن: ${captain.name}`,
+    "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.",
+    "⏳ لا توجد تسوية مالية قبل اعتماد المنتج.",
   ]);
 }
 
@@ -518,9 +531,17 @@ function createClient() {
     console.warn("[WhatsApp] disconnected:", reason);
     scheduleReconnect();
   });
+  instance.on("message_create", async (msg) => {
+    if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
+  });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration) return;
     try { await handleIncomingMessage(msg); } catch (error) { console.error("[WhatsApp] message handler:", error); }
+  });
+  instance.on("message_reaction", async (reaction) => {
+    if (generation !== connectionGeneration) return;
+    try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
   });
   return instance;
 }
@@ -541,35 +562,40 @@ async function initializeWhatsApp() {
   }
 }
 
-async function handleIncomingMessage(msg) {
-  if (!msg || msg.fromMe) return;
+async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
+  if (!msg || (msg.fromMe && !allowSelf)) return;
   const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
-  if (!isGroup) return handleCustomerMessage(msg);
-  const contact = await withTimeout(msg.getContact(), 8000, null);
-  const senderPhone = phoneWithCountry(contact && contact.number ? contact.number : msg.author || "");
+  if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
   const body = String(msg.body || "").trim();
+  const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
+  const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
+  const senderPhone = phoneWithCountry(msg.fromMe ? BOT_PHONE_INTL : (contact && contact.number ? contact.number : msg.author || ""));
   if (!isConfiguredGroup(msg.from)) {
-    if (isGroupSetupOwner(senderPhone) && /^#(?:اعتماد|ربط|اعتمد)\\s*(?:القروب|المجموعة)?$/i.test(body)) {
+    const selfSetup = msg.fromMe && senderPhone === phoneWithCountry(BOT_PHONE);
+    if (setupCommand && (selfSetup || isGroupSetupOwner(senderPhone))) {
       configureGroupId(msg.from, "الجراح | شبكة التشغيل الرسمية");
-      console.log(`[GroupSetup] configured group from owner command: ${msg.from}`);
+      console.log(`[GroupSetup] configured group from ${msg.fromMe ? "primary bot command" : "owner command"}: ${msg.from}`);
     }
     return;
   }
+  if (msg.fromMe && !parseOrder(body).isOrder) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
   }
-  const senderName = (contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone);
+  const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   if (!body) return;
   const stamp = now();
-  const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(msg.id._serialized, msg.from, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
+  const messageId = msg.id && msg.id._serialized;
+  if (!messageId) return;
+  const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, msg.from, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
   if (!inserted.changes) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
     const producer = upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-    const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, msg.id._serialized, msg.from, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
-    audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId: msg.from });
+    const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, msg.from, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
+    audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId: msg.from, producerPhone: senderPhone });
     console.log(`[Order] #${orderNo} created from ${msg.from}`);
     return;
   }
@@ -588,34 +614,92 @@ async function handleIncomingMessage(msg) {
     audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
     return;
   }
-  const companyCents = settlement.companyCents;
-  const producerCents = settlement.producerFeeCents;
-  const captainCents = settlement.captainGrossCents;
-  const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
-  const accept = db.transaction(() => {
+  const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
-    if (!current || current.status !== "open") return false;
+    if (!current || current.status !== "open" || current.pending_message_id) return false;
     const stampNow = now();
-    db.prepare("UPDATE orders SET status='accepted', captain_user_id=?, accepted_message_id=?, accepted_at=?, company_cents=?, producer_cents=?, captain_cents=?, updated_at=? WHERE id=? AND status='open'").run(captain.id, msg.id._serialized, stampNow, companyCents, producerCents, captainCents, stampNow, order.id);
-    const company = companyUser();
-    const companyBalance = Number(company.wallet_cents || 0) + companyCents;
-    db.prepare("UPDATE users SET wallet_cents=?, updated_at=? WHERE id=?").run(companyBalance, stampNow, company.id);
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(company.id, order.id, "commission_company", companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stampNow);
-    if (producer) {
-      const producerBalance = Number(producer.wallet_cents || 0) + settlement.producerNetCents;
-      db.prepare("UPDATE users SET wallet_cents=?, updated_at=? WHERE id=?").run(producerBalance, stampNow, producer.id);
-      db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(producer.id, order.id, "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج بعد حصة الشركة", stampNow);
-    }
-    const captainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
-    db.prepare("UPDATE users SET wallet_cents=?, updated_at=? WHERE id=?").run(captainBalance, stampNow, captain.id);
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(captain.id, order.id, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, order.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ");
-    audit("order.accepted", "order", order.id, { captainId: captain.id, orderKind: order.order_kind, companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents });
-    return true;
+    const result = db.prepare("UPDATE orders SET pending_captain_user_id=?, pending_message_id=?, pending_at=?, updated_at=? WHERE id=? AND status='open' AND pending_message_id IS NULL").run(captain.id, messageId, stampNow, stampNow, order.id);
+    return result.changes === 1;
   })();
-  if (!accept) return;
-  const accepted = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
-  await msg.react("👍").catch(() => {});
-  await client.sendMessage(msg.from, formatAcceptance(accepted, captain, producer)).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+  if (!pending) return;
+  audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
+  await client.sendMessage(msg.from, formatPendingConfirmation(order, captain)).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
+}
+
+function reactionId(value) {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  return value._serialized || value.id || null;
+}
+
+async function resolveReactionSenderPhone(reaction) {
+  const rawId = reaction && reaction.senderId;
+  const serialized = reactionId(rawId) || String(rawId || "");
+  const direct = phoneWithCountry(serialized.replace(/@.*$/, ""));
+  if (isValidJordanPhone(direct)) return direct;
+  if (!client || !isReady || !serialized) return "";
+  const contact = await withTimeout(client.getContactById(serialized), 8000, null);
+  return phoneWithCountry(contact && contact.number ? contact.number : "");
+}
+
+function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
+  return db.transaction(() => {
+    const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+    if (!current || current.status !== "open" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
+    const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
+    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    const captain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
+    if (!captain) return { state: "stale" };
+    const settlement = calculateSettlement({
+      priceCents: current.price_cents,
+      orderKind: current.order_kind,
+      regularProducerRateBps: Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS)),
+      specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
+      companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
+    });
+    if (captain.wallet_cents < settlement.captainFeeCents || captain.wallet_cents <= CAPTAIN_MIN_BALANCE_CENTS) {
+      const stamp = now();
+      db.prepare("UPDATE orders SET pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open'").run(stamp, orderId);
+      audit("order.rejected.insufficient_wallet_after_confirmation", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
+      return { state: "insufficient", order: current, captain, producer, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents };
+    }
+    const company = companyUser();
+    const stamp = now();
+    const companyBalance = Number(company.wallet_cents || 0) + settlement.companyCents;
+    const producerBalance = Number(producer.wallet_cents || 0) + settlement.producerNetCents;
+    const captainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
+    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,accepted_message_id=?,accepted_at=?,company_cents=?,producer_cents=?,captain_cents=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, expectedMessageId, stamp, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(companyBalance, stamp, company.id);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp);
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج بعد حصة الشركة", stamp);
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(captainBalance, stamp, captain.id);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp);
+    audit("order.accepted", "order", orderId, { captainId: captain.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: producer.phone });
+    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id) };
+  })();
+}
+
+async function handleMessageReaction(reaction) {
+  if (!reaction || reaction.reaction !== "👍") return;
+  const messageId = reactionId(reaction.msgId);
+  if (!messageId || !client || !isReady) return;
+  const target = await withTimeout(client.getMessageById(messageId), 10000, null);
+  if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
+  if (!isConfiguredGroup(target.from)) return;
+  const producerPhone = await resolveReactionSenderPhone(reaction);
+  if (!producerPhone || isBlockedPhone(producerPhone)) return;
+  const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+  if (!pending) return;
+  const result = settlePendingOrder(pending.id, messageId, producerPhone);
+  if (result.state === "unauthorized" || result.state === "stale") return;
+  if (result.state === "insufficient") {
+    await client.sendMessage(target.from, brandedMessage("تعذر توثيق الرحلة", [`⚠️ رصيد الكابتن ${result.captain.name} أصبح غير كافٍ لتغطية ${money(result.requiredCents)} JOD.`, "لم تُسجّل أي تسوية مالية."])).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
+    return;
+  }
+  if (result.state === "accepted") {
+    await client.sendMessage(target.from, formatAcceptance(result.order, result.captain, result.producer)).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+  }
 }
 
 function parseCookies(header = "") {
@@ -857,6 +941,7 @@ app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
 app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const orders = db.prepare("SELECT COUNT(*) AS count FROM orders").get().count;
   const accepted = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='accepted'").get().count;
+  const pendingConfirmation = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='open' AND pending_message_id IS NOT NULL").get().count;
   const company = companyUser();
   const wallets = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role!='company'").get().count;
   const ledgerMoves = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger").get().count;
@@ -864,7 +949,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const redeemedCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='redeemed'").get().count;
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
-  res.json({ orders, accepted, customerLeads, companyBalance: money(company.wallet_cents), wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { company: "15%", producer: "15%", captain: "70%" } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { regular: { captainWalletDeduction: "15%", producerGross: "15%", companyFromProducer: "15%", producerNet: "12.75% من قيمة الطلب" }, order: { captainWalletDeduction: "20%", producerGross: "20%", companyFromProducer: "15%", producerNet: "17% من قيمة الطلب" }, fare: "لا تُضاف قيمة الرحلة الكاملة إلى محفظة المنفّذ" }, confirmation: { method: "لايك المنتج على رسالة تم", settlementAfterConfirmation: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
