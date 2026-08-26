@@ -16,6 +16,7 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL || "962779110123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const QR_PUBLIC = process.env.QR_PUBLIC === "true";
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "company";
@@ -24,9 +25,22 @@ const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS |
 const COMPANY_RATE_BPS = Number(process.env.COMPANY_RATE_BPS || 1500);
 const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
 const CAPTAIN_RATE_BPS = Number(process.env.CAPTAIN_RATE_BPS || 7000);
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const loginRate = new Map();
+const redeemRate = new Map();
+const adminActionRate = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-app.use(cors({ origin: true, credentials: false }));
+app.disable("x-powered-by");
+app.use(cors(CORS_ORIGIN ? { origin: CORS_ORIGIN, credentials: false } : { origin: false }));
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  next();
+});
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
@@ -149,6 +163,30 @@ const randomCode = () => {
   return `FD-5JD-${part}`;
 };
 const displayPhone = (phone) => phone ? `+${phone}` : "غير معروف";
+const isValidJordanPhone = (phone) => /^9627\d{8}$/.test(String(phone));
+function consumeRateLimit(store, key, maxAttempts) {
+  const current = Date.now();
+  const entry = store.get(key);
+  if (!entry || current - entry.startedAt >= RATE_LIMIT_WINDOW_MS) {
+    store.set(key, { startedAt: current, count: 1 });
+    return true;
+  }
+  if (entry.count >= maxAttempts) return false;
+  entry.count += 1;
+  return true;
+}
+function clientAddress(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").split(",")[0].trim();
+}
+function constantTimeEquals(actual, expected) {
+  if (!actual || !expected) return false;
+  const a = Buffer.from(String(actual));
+  const b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function isBlockedOrInvalidCustomerPhone(phone) {
+  return !isValidJordanPhone(phone) || isBlockedPhone(phone);
+}
 const BLOCKED_PHONE_INPUTS = ["0792026321", "0792026320"];
 const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
 function isBlockedPhone(value) {
@@ -418,7 +456,7 @@ function parseCookies(header = "") {
 }
 function isAdmin(req) {
   const header = String(req.headers.authorization || "");
-  if (ADMIN_TOKEN && (header === `Bearer ${ADMIN_TOKEN}` || req.query.token === ADMIN_TOKEN)) return true;
+  if (ADMIN_TOKEN && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), ADMIN_TOKEN)) return true;
   if (!JWT_SECRET) return false;
   const session = parseCookies(req.headers.cookie || "").aljarah_session;
   if (!session) return false;
@@ -442,6 +480,7 @@ function requireQrAccess(req, res, next) {
 
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.post("/api/auth/login", async (req, res) => {
+  if (!consumeRateLimit(loginRate, clientAddress(req), 10)) return res.status(429).json({ error: "Too many login attempts; try again later" });
   if (!JWT_SECRET || !ADMIN_PASSWORD_HASH) return res.status(503).json({ error: "Admin login is not configured" });
   const username = String(req.body.username || "").trim();
   const password = String(req.body.password || "");
@@ -456,7 +495,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 app.get("/api/auth/me", requireAdmin, (req, res) => res.json({ authenticated: true, role: "company" }));
 app.get("/health", (req, res) => res.json({ status: "online", service: "aljarah-logistics", timestamp: now() }));
-app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupId: getSetting("group_id", null), uptime: process.uptime() }));
+app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), uptime: process.uptime() }));
 app.get("/qr", requireQrAccess, async (req, res) => {
   if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ البوت متصل</h2><p>${BOT_PHONE}</p></body></html>`);
   if (!qrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
@@ -488,6 +527,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
   if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
   if (phones.length < 1 || phones.length > 4) return res.status(400).json({ error: "Provide between 1 and 4 participant phone numbers" });
+  if (phones.some((phone) => !isValidJordanPhone(phone))) return res.status(400).json({ error: "Participant phones must be valid Jordan mobile numbers" });
   if (phones.some(isBlockedPhone)) return res.status(403).json({ error: "One or more phones are blocked by company policy" });
   if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone is the group creator and must not be listed as a participant" });
   groupCreateInFlight = true;
@@ -556,6 +596,7 @@ app.post("/api/admin/cards", requireAdmin, (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid, code, value: value.toFixed(2), status: "issued" });
 });
 app.post("/api/redeem", (req, res) => {
+  if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
   const phone = phoneWithCountry(req.body.phone || "");
   const code = String(req.body.code || "").trim().toUpperCase();
   if (!phone || !code) return res.status(400).json({ error: "phone and code are required" });
@@ -603,11 +644,13 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const to = String(req.body.to || "").trim();
   const message = String(req.body.message || "").trim();
   if (!to || !message) return res.status(400).json({ error: "to and message are required" });
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
+  if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const sent = await client.sendMessage(chatId, message);
   audit("message.sent", "chat", chatId, { messageId: sent.id._serialized });
   res.json({ success: true, messageId: sent.id._serialized });
