@@ -543,7 +543,11 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const accepted = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='accepted'").get().count;
   const company = companyUser();
   const wallets = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role!='company'").get().count;
-  res.json({ orders, accepted, companyBalance: money(company.wallet_cents), wallets, groupId: getSetting("group_id", null), rules: { company: "15%", producer: "15%", captain: "70%" } });
+  const ledgerMoves = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger").get().count;
+  const issuedCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards").get().count;
+  const redeemedCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='redeemed'").get().count;
+  const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
+  res.json({ orders, accepted, companyBalance: money(company.wallet_cents), wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { company: "15%", producer: "15%", captain: "70%" } });
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.name AS producer_name, c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
