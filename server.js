@@ -537,7 +537,7 @@ function createClient() {
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration) return;
-    try { await handleIncomingMessage(msg); } catch (error) { console.error("[WhatsApp] message handler:", error); }
+    try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
