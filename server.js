@@ -146,6 +146,21 @@ CREATE TABLE IF NOT EXISTS blocked_phones (
   note TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS customer_leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL UNIQUE,
+  chat_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  direction TEXT,
+  travel_mode TEXT,
+  travel_date TEXT,
+  travelers_count INTEGER,
+  state TEXT NOT NULL DEFAULT 'awaiting_direction',
+  last_message_id TEXT,
+  last_text TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 const now = () => new Date().toISOString();
@@ -191,6 +206,111 @@ const BLOCKED_PHONE_INPUTS = ["0792026321", "0792026320"];
 const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
+}
+function withTimeout(promise, timeoutMs, fallback = null) {
+  return Promise.race([
+    Promise.resolve(promise).catch(() => fallback),
+    new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
+  ]);
+}
+function normalizeCustomerText(value) {
+  return String(value || "").trim().toLowerCase().replace(/[إأآ]/g, "ا").replace(/ى/g, "ي").replace(/\s+/g, " ");
+}
+function ensureCustomerLead(phone, chatId, name, messageId, body) {
+  const stamp = now();
+  db.prepare(`INSERT INTO customer_leads(phone,chat_id,name,state,last_message_id,last_text,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?)
+    ON CONFLICT(phone) DO UPDATE SET chat_id=excluded.chat_id,name=excluded.name,last_message_id=excluded.last_message_id,last_text=excluded.last_text,updated_at=excluded.updated_at`).run(phone, chatId, name || displayPhone(phone), "awaiting_direction", messageId, body, stamp, stamp);
+  return db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
+}
+async function sendBotText(to, text) {
+  if (!client || !isReady) return false;
+  try {
+    await withTimeout(client.sendMessage(to, text), 20000, null);
+    return true;
+  } catch (error) {
+    console.error("[WhatsApp] customer reply:", error.message);
+    return false;
+  }
+}
+function updateCustomerLead(lead, patch) {
+  const next = { ...lead, ...patch, updated_at: now() };
+  db.prepare(`UPDATE customer_leads SET direction=?,travel_mode=?,travel_date=?,travelers_count=?,state=?,last_message_id=?,last_text=?,updated_at=? WHERE id=?`).run(next.direction || null, next.travel_mode || null, next.travel_date || null, next.travelers_count || null, next.state, next.last_message_id || null, next.last_text || null, next.updated_at, lead.id);
+  return db.prepare("SELECT * FROM customer_leads WHERE id=?").get(lead.id);
+}
+function customerDirection(text) {
+  if (/^(1|الاردن الى سوريا|من الاردن الى سوريا|اردن سوريا|الاردن لسوريا)$/.test(text) || /الاردن.*سوريا/.test(text)) return "jo_to_syria";
+  if (/^(2|سوريا الى الاردن|من سوريا الى الاردن|سوريا الاردن)$/.test(text) || /سوريا.*الاردن/.test(text)) return "syria_to_jo";
+  if (/^(3|داخل الاردن|نقل داخل الاردن|الاردن)$/.test(text)) return "inside_jo";
+  return null;
+}
+function customerMode(text) {
+  if (/^(1|بري|بريا|طريق بري|باص|سيارة)$/.test(text) || /بري/.test(text)) return "road";
+  if (/^(2|مطار|جوي|طيران|المطار)$/.test(text) || /مطار|جوي|طيران/.test(text)) return "airport";
+  return null;
+}
+async function handleCustomerMessage(msg) {
+  const chatId = String(msg.from || "");
+  if (!chatId.endsWith("@c.us")) return;
+  const phone = phoneWithCountry(chatId.slice(0, -5));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return;
+  const contact = await withTimeout(msg.getContact(), 8000, null);
+  const name = (contact && (contact.pushname || contact.name)) || displayPhone(phone);
+  const body = String(msg.body || "").trim();
+  if (!body) return;
+  let lead = db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
+  if (!lead) {
+    lead = ensureCustomerLead(phone, chatId, name, msg.id && msg.id._serialized, body);
+    audit("customer.lead.started", "customer_lead", lead.id, { phone, name });
+    await sendBotText(chatId, "أهلًا بك في شركة الجراح للنقل والخدمات اللوجستية.\n\nلخدمتك بسرعة، اختر نوع الرحلة:\n1️⃣ من الأردن إلى سوريا\n2️⃣ من سوريا إلى الأردن\n3️⃣ نقل داخل الأردن");
+    return;
+  }
+  const text = normalizeCustomerText(body);
+  if (/^(الغاء|إلغاء|cancel)$/.test(text)) {
+    lead = updateCustomerLead(lead, { state: "cancelled", last_message_id: msg.id && msg.id._serialized, last_text: body });
+    await sendBotText(chatId, "تم إلغاء الطلب. عند الحاجة اكتب مرحبًا للبدء من جديد.");
+    return;
+  }
+  if (lead.state === "cancelled" || lead.state === "completed") {
+    lead = updateCustomerLead(lead, { state: "awaiting_direction", direction: null, travel_mode: null, travel_date: null, travelers_count: null, last_message_id: msg.id && msg.id._serialized, last_text: body });
+  }
+  if (lead.state === "awaiting_direction") {
+    const direction = customerDirection(text);
+    if (!direction) {
+      await sendBotText(chatId, "اكتب رقم الخيار فقط: 1 الأردن إلى سوريا، 2 سوريا إلى الأردن، أو 3 نقل داخل الأردن.");
+      return;
+    }
+    lead = updateCustomerLead(lead, { direction, state: "awaiting_mode", last_message_id: msg.id && msg.id._serialized, last_text: body });
+    await sendBotText(chatId, "ممتاز. اختر طريقة السفر:\n1️⃣ سفر بري\n2️⃣ عبر المطار");
+    return;
+  }
+  if (lead.state === "awaiting_mode") {
+    const mode = customerMode(text);
+    if (!mode) {
+      await sendBotText(chatId, "اكتب 1 للسفر البري أو 2 للسفر عبر المطار.");
+      return;
+    }
+    lead = updateCustomerLead(lead, { travel_mode: mode, state: "awaiting_date", last_message_id: msg.id && msg.id._serialized, last_text: body });
+    await sendBotText(chatId, "اكتب تاريخ السفر والوقت المطلوب، مثال: 15/09 الساعة 8 صباحًا.");
+    return;
+  }
+  if (lead.state === "awaiting_date") {
+    lead = updateCustomerLead(lead, { travel_date: body, state: "awaiting_passengers", last_message_id: msg.id && msg.id._serialized, last_text: body });
+    await sendBotText(chatId, "كم عدد المسافرين؟ اكتب العدد فقط.");
+    return;
+  }
+  if (lead.state === "awaiting_passengers") {
+    const count = Number((body.match(/\d+/) || [""])[0]);
+    if (!Number.isInteger(count) || count < 1 || count > 50) {
+      await sendBotText(chatId, "اكتب عدد المسافرين من 1 إلى 50.");
+      return;
+    }
+    lead = updateCustomerLead(lead, { travelers_count: count, state: "completed", last_message_id: msg.id && msg.id._serialized, last_text: body });
+    audit("customer.lead.completed", "customer_lead", lead.id, { phone, direction: lead.direction, travelMode: lead.travel_mode, travelersCount: count });
+    const directionLabel = { jo_to_syria: "الأردن ← سوريا", syria_to_jo: "سوريا ← الأردن", inside_jo: "داخل الأردن" }[lead.direction] || "غير محدد";
+    const modeLabel = lead.travel_mode === "road" ? "سفر بري" : "عبر المطار";
+    await sendBotText(chatId, `تم استلام طلبك بنجاح.\n\nالمسار: ${directionLabel}\nالطريقة: ${modeLabel}\nالتاريخ والوقت: ${lead.travel_date}\nعدد المسافرين: ${count}\n\nسيتم التواصل معك من خدمة عملاء شركة الجراح لتأكيد التفاصيل والسعر.`);
+  }
 }
 function ensureBlockedPhones() {
   const insert = db.prepare("INSERT OR IGNORE INTO blocked_phones(phone,note,created_at) VALUES(?,?,?)");
@@ -379,8 +499,9 @@ async function initializeWhatsApp() {
 async function handleIncomingMessage(msg) {
   if (!msg || msg.fromMe) return;
   const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
-  if (!isGroup || !isConfiguredGroup(msg.from)) return;
-  const contact = await msg.getContact().catch(() => null);
+  if (!isGroup) return handleCustomerMessage(msg);
+  if (!isConfiguredGroup(msg.from)) return;
+  const contact = await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = phoneWithCountry(contact && contact.number ? contact.number : msg.author || "");
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
@@ -402,7 +523,7 @@ async function handleIncomingMessage(msg) {
     return;
   }
   if (!isCaptainAcceptance(body)) return;
-  const quoted = msg.hasQuotedMsg ? await msg.getQuotedMessage().catch(() => null) : null;
+  const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   const order = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null) || latestOpenOrder(msg.from);
   if (!order) return;
   const captain = upsertUser({ phone: senderPhone, name: senderName, role: "captain" });
@@ -624,7 +745,12 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const issuedCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards").get().count;
   const redeemedCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='redeemed'").get().count;
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
-  res.json({ orders, accepted, companyBalance: money(company.wallet_cents), wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { company: "15%", producer: "15%", captain: "70%" } });
+  const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
+  res.json({ orders, accepted, customerLeads, companyBalance: money(company.wallet_cents), wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { company: "15%", producer: "15%", captain: "70%" } });
+});
+app.get("/api/admin/leads", requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
+  res.json({ leads: rows });
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.name AS producer_name, c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
