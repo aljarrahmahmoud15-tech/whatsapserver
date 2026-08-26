@@ -12,8 +12,10 @@ const { calculateSettlement } = require("./finance");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const BOT_PHONE = process.env.BOT_PHONE || "0779110123";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL || "962779110123";
+const LEGACY_BOT_PHONE = "0779110123";
+const LEGACY_BOT_PHONE_INTL = "962779110123";
+const BOT_PHONE = process.env.BOT_PHONE && process.env.BOT_PHONE !== LEGACY_BOT_PHONE ? process.env.BOT_PHONE : "0775696880";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL && process.env.BOT_PHONE_INTL !== LEGACY_BOT_PHONE_INTL ? process.env.BOT_PHONE_INTL : "962775696880";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const QR_PUBLIC = process.env.QR_PUBLIC === "true";
