@@ -249,6 +249,7 @@ let connectionGeneration = 0;
 
 const puppeteerConfig = {
   headless: true,
+  protocolTimeout: 120000,
   defaultViewport: null,
   args: [
     "--no-sandbox",
