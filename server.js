@@ -820,13 +820,16 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   console.log(`[GroupCreate] validating ${phones.length} participant(s)`);
   try {
     const participantIds = [];
+    const lookupResults = [];
     for (const phone of phones) {
       console.log(`[GroupCreate] looking up ${displayPhone(phone)}`);
       const id = await withTimeout(client.getNumberId(phone), 20000, null);
-      if (!id) return res.status(400).json({ error: "Phone is not registered on WhatsApp or lookup timed out", phone: displayPhone(phone) });
-      participantIds.push(id._serialized || `${phone}@c.us`);
+      lookupResults.push({ phone, found: Boolean(id) });
+      // WhatsApp may hide a valid account from getNumberId until contact sync; the
+      // direct @c.us ID is still the canonical participant ID for createGroup.
+      participantIds.push(id && id._serialized ? id._serialized : `${phone}@c.us`);
     }
-    console.log("[GroupCreate] creating WhatsApp group");
+    console.log(`[GroupCreate] creating WhatsApp group (lookups=${lookupResults.map((entry) => entry.found ? "found" : "direct").join(",")})`);
     const created = await withTimeout(client.createGroup(groupName, participantIds), 60000, null);
     if (!created) return res.status(504).json({ error: "WhatsApp group creation timed out; no group was configured" });
     if (typeof created === "string") return res.status(502).json({ error: "WhatsApp could not create the group", details: created });
@@ -836,7 +839,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
     setSetting("group_id", groupId);
     audit("group.created_and_configured", "group", groupId, { groupName, participants: phones });
-    res.status(201).json({ success: true, groupId, groupName, participants: phones.map(displayPhone), messageSent: false });
+    res.status(201).json({ success: true, groupId, groupName, participants: phones.map(displayPhone), messageSent: false, lookup: lookupResults });
   } catch (error) {
     res.status(502).json({ error: "Unable to create WhatsApp group", details: error.message });
   } finally {
