@@ -287,7 +287,7 @@ async function handleCustomerMessage(msg) {
   if (!lead) {
     lead = ensureCustomerLead(phone, chatId, name, msg.id && msg.id._serialized, body);
     audit("customer.lead.started", "customer_lead", lead.id, { phone, name });
-    await sendBotText(chatId, "أهلًا بك في شركة الجراح للنقل والخدمات اللوجستية.\n\nلخدمتك بسرعة، اختر نوع الرحلة:\n1️⃣ من الأردن إلى سوريا\n2️⃣ من سوريا إلى الأردن\n3️⃣ نقل داخل الأردن");
+    await sendBotText(chatId, brandedMessage("أهلًا بك", ["اختر نوع الرحلة:", "1️⃣ من الأردن إلى سوريا", "2️⃣ من سوريا إلى الأردن", "3️⃣ نقل داخل الأردن"]));
     return;
   }
   const text = normalizeCustomerText(body);
@@ -411,9 +411,17 @@ function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
   return db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(quotedId);
 }
-function formatAcceptance(order, captain, producer) {
+function brandedMessage(title, lines = []) {
   return [
-    "✅ تم قبول الطلب",
+    "╭━━━ ✦ شركة الجراح ✦ ━━━╮",
+    `┃ ${title}`,
+    "┣━━━━━━━━━━━━━━━━━━━━━━┫",
+    ...lines.map((line) => `┃ ${line}`),
+    "╰━━━ نقل أسرع • تنظيم أدق ━━━╯",
+  ].join("\n");
+}
+function formatAcceptance(order, captain, producer) {
+  return brandedMessage("تم قبول الطلب", [
     `🆔 رقم الطلب: #${order.order_no}`,
     `👤 المنتج: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن: ${captain.name}`,
@@ -421,7 +429,7 @@ function formatAcceptance(order, captain, producer) {
     `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد" : "طلب عادي"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
-  ].join("\n");
+  ]);
 }
 
 let client = null;
@@ -561,7 +569,7 @@ async function handleIncomingMessage(msg) {
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
   if (captain.wallet_cents < settlement.captainFeeCents || captain.wallet_cents <= CAPTAIN_MIN_BALANCE_CENTS) {
     await msg.react("⚠️").catch(() => {});
-    await client.sendMessage(msg.from, `⚠️ لا يمكن تثبيت الطلب #${order.order_no} للكابتن ${captain.name} لأن رصيده لا يغطي خصم ${money(settlement.captainFeeCents)} JOD. اطلب بطاقة شحن من خدمة العملاء.`).catch(() => {});
+    await client.sendMessage(msg.from, brandedMessage("تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."])).catch(() => {});
     audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
     return;
   }
