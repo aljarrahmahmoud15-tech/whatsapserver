@@ -451,6 +451,12 @@ app.get("/code", requireQrAccess, async (req, res) => {
     return res.status(503).json({ error: "Pairing code unavailable; use QR", details: error.message });
   }
 });
+function extractInviteCode(value = "") {
+  const raw = String(value).trim();
+  const match = raw.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i);
+  return match ? match[1] : raw.replace(/[^A-Za-z0-9_-]/g, "");
+}
+
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "قروب الجراح").trim();
@@ -460,6 +466,23 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   setSetting("group_id", groupId);
   audit("group.configured", "group", groupId, { groupName });
   res.json({ success: true, groupId, groupName });
+});
+
+app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
+  const groupName = String(req.body.groupName || "قروب الجراح").trim();
+  if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
+  try {
+    const groupId = await client.acceptInvite(inviteCode);
+    const stamp = now();
+    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
+    setSetting("group_id", groupId);
+    audit("group.joined_and_configured", "group", groupId, { groupName });
+    res.json({ success: true, groupId, groupName });
+  } catch (error) {
+    res.status(502).json({ error: "Unable to join group", details: error.message });
+  }
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
