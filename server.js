@@ -459,6 +459,7 @@ let client = null;
 let isReady = false;
 let qrCodeData = null;
 let lastQrTime = null;
+let temporaryQrGrant = null;
 let reconnectTimer = null;
 let initializing = false;
 let groupCreateInFlight = false;
@@ -766,8 +767,23 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", `aljarah_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
 }
 function requireQrAccess(req, res, next) {
-  if (QR_PUBLIC || isAdmin(req)) return next();
+  if (QR_PUBLIC || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
   return res.status(401).send("QR access is protected. Set QR_PUBLIC=true temporarily or use the admin token.");
+}
+function hasTemporaryQrGrant(req) {
+  if (!temporaryQrGrant) return false;
+  if (Date.now() >= temporaryQrGrant.expiresAt) {
+    temporaryQrGrant = null;
+    return false;
+  }
+  const provided = String(req.query.access || "");
+  return constantTimeEquals(provided, temporaryQrGrant.token);
+}
+function issueTemporaryQrGrant(req) {
+  const durationSeconds = Math.max(60, Math.min(180, Number(req.body?.durationSeconds || 120)));
+  const token = crypto.randomBytes(32).toString("base64url");
+  temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
+  return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
 
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
@@ -792,11 +808,22 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
 });
 app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, uptime: process.uptime() }));
+app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
+  if (isReady) return res.status(409).json({ error: "Bot is already connected" });
+  const grant = issueTemporaryQrGrant(req);
+  const origin = `${req.protocol}://${req.get("host")}`;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, url: `${origin}/qr?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
+});
 app.get("/qr", requireQrAccess, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Referrer-Policy", "no-referrer");
   if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ البوت متصل</h2><p>${BOT_PHONE}</p></body></html>`);
   if (!qrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
   const image = await qrcode.toDataURL(qrCodeData);
-  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>📱 امسح رمز الربط</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.reload(),30000)</script></body></html>`);
+  const refreshTarget = req.query.access ? `/qr?access=${encodeURIComponent(String(req.query.access))}` : "/qr";
+  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>📱 امسح رمز الربط</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
 });
 app.get("/code", requireQrAccess, async (req, res) => {
   if (!client || isReady) return res.status(409).json({ error: "Bot is already connected or initializing" });
