@@ -812,7 +812,7 @@ app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (isReady) return res.status(409).json({ error: "Bot is already connected" });
   const grant = issueTemporaryQrGrant(req);
-  const origin = `${req.protocol}://${req.get("host")}`;
+  const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
