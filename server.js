@@ -195,7 +195,7 @@ function companyUser() { return db.prepare("SELECT * FROM users WHERE role='comp
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
-  return configured === 0 || Boolean(configuredGroup(groupId));
+  return configured > 0 && Boolean(configuredGroup(groupId));
 }
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
@@ -244,6 +244,7 @@ let qrCodeData = null;
 let lastQrTime = null;
 let reconnectTimer = null;
 let initializing = false;
+let groupCreateInFlight = false;
 let connectionGeneration = 0;
 
 const puppeteerConfig = {
@@ -338,8 +339,7 @@ async function initializeWhatsApp() {
 
 async function handleIncomingMessage(msg) {
   if (!msg || msg.fromMe) return;
-  const chat = await msg.getChat();
-  const isGroup = Boolean(chat && chat.isGroup && msg.from.endsWith("@g.us"));
+  const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
   if (!isGroup || !isConfiguredGroup(msg.from)) return;
   const contact = await msg.getContact().catch(() => null);
   const senderPhone = phoneWithCountry(contact && contact.number ? contact.number : msg.author || "");
@@ -480,6 +480,7 @@ function extractInviteCode(value = "") {
 
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress" });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
   const groupName = String(req.body.groupName || "الجراح للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
@@ -488,6 +489,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (phones.length < 1 || phones.length > 4) return res.status(400).json({ error: "Provide between 1 and 4 participant phone numbers" });
   if (phones.some(isBlockedPhone)) return res.status(403).json({ error: "One or more phones are blocked by company policy" });
   if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone is the group creator and must not be listed as a participant" });
+  groupCreateInFlight = true;
   try {
     const participantIds = [];
     for (const phone of phones) {
@@ -506,6 +508,8 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
     res.status(201).json({ success: true, groupId, groupName, participants: phones.map(displayPhone), messageSent: false });
   } catch (error) {
     res.status(502).json({ error: "Unable to create WhatsApp group", details: error.message });
+  } finally {
+    groupCreateInFlight = false;
   }
 });
 
