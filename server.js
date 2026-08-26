@@ -693,11 +693,12 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   try {
     const participantIds = [];
     for (const phone of phones) {
-      const id = await client.getNumberId(phone);
-      if (!id) return res.status(400).json({ error: "Phone is not registered on WhatsApp", phone: displayPhone(phone) });
+      const id = await withTimeout(client.getNumberId(phone), 20000, null);
+      if (!id) return res.status(400).json({ error: "Phone is not registered on WhatsApp or lookup timed out", phone: displayPhone(phone) });
       participantIds.push(id._serialized || `${phone}@c.us`);
     }
-    const created = await client.createGroup(groupName, participantIds);
+    const created = await withTimeout(client.createGroup(groupName, participantIds), 60000, null);
+    if (!created) return res.status(504).json({ error: "WhatsApp group creation timed out; no group was configured" });
     if (typeof created === "string") return res.status(502).json({ error: "WhatsApp could not create the group", details: created });
     const groupId = created && created.gid ? (created.gid._serialized || String(created.gid)) : (created && created.id ? (created.id._serialized || String(created.id)) : null);
     if (!groupId || !groupId.endsWith("@g.us")) return res.status(502).json({ error: "WhatsApp returned an invalid group identifier" });
