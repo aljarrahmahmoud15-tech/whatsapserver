@@ -462,6 +462,7 @@ let initializing = false;
 let groupCreateInFlight = false;
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
+let lastGroupSetupProbe = null;
 
 const puppeteerConfig = {
   headless: true,
@@ -562,6 +563,11 @@ async function initializeWhatsApp() {
   }
 }
 
+function connectedBotPhone() {
+  const connected = client && client.info && client.info.wid ? client.info.wid.user : BOT_PHONE_INTL;
+  return phoneWithCountry(connected || BOT_PHONE_INTL);
+}
+
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
@@ -569,12 +575,18 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const body = String(msg.body || "").trim();
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
-  const senderPhone = phoneWithCountry(msg.fromMe ? BOT_PHONE_INTL : (contact && contact.number ? contact.number : msg.author || ""));
+  const candidates = [msg.fromMe ? connectedBotPhone() : "", contact && contact.number, msg.author, msg._data && msg._data.author];
+  const senderPhone = candidates.map(phoneWithCountry).find(isValidJordanPhone) || "";
+  const primarySender = Boolean(msg.fromMe) && senderPhone === connectedBotPhone();
   if (!isConfiguredGroup(msg.from)) {
-    const selfSetup = msg.fromMe && senderPhone === phoneWithCountry(BOT_PHONE);
+    if (setupCommand) {
+      lastGroupSetupProbe = { at: now(), fromMe: Boolean(msg.fromMe), senderResolved: Boolean(senderPhone), primarySender, ownerSender: isGroupSetupOwner(senderPhone) };
+      console.log(`[GroupSetup] setup command observed: fromMe=${Boolean(msg.fromMe)} senderResolved=${Boolean(senderPhone)} primary=${primarySender} owner=${isGroupSetupOwner(senderPhone)}`);
+    }
+    const selfSetup = primarySender || senderPhone === phoneWithCountry(BOT_PHONE);
     if (setupCommand && (selfSetup || isGroupSetupOwner(senderPhone))) {
       configureGroupId(msg.from, "الجراح | شبكة التشغيل الرسمية");
-      console.log(`[GroupSetup] configured group from ${msg.fromMe ? "primary bot command" : "owner command"}: ${msg.from}`);
+      console.log(`[GroupSetup] configured group from ${selfSetup ? "primary bot command" : "owner command"}: ${msg.from}`);
     }
     return;
   }
@@ -753,7 +765,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 app.get("/api/auth/me", requireAdmin, (req, res) => res.json({ authenticated: true, role: "company" }));
 app.get("/health", (req, res) => res.json({ status: "online", service: "aljarah-logistics", timestamp: now() }));
-app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), uptime: process.uptime() }));
+app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, uptime: process.uptime() }));
 app.get("/qr", requireQrAccess, async (req, res) => {
   if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ البوت متصل</h2><p>${BOT_PHONE}</p></body></html>`);
   if (!qrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
