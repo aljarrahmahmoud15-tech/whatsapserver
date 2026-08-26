@@ -28,6 +28,7 @@ const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
 const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 2000);
 const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 1500);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 120000);
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
@@ -553,7 +554,13 @@ async function initializeWhatsApp() {
   try {
     await destroyClient();
     client = createClient();
-    await client.initialize();
+    const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
+    const initialized = await withTimeout(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
+    if (initialized === initTimeoutMarker) {
+      console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; restarting session`);
+      await withTimeout(destroyClient(), 15000, null);
+      scheduleReconnect();
+    }
   } catch (error) {
     console.error("[WhatsApp] initialize:", error.message);
     isReady = false;
