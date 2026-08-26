@@ -463,6 +463,8 @@ let reconnectTimer = null;
 let initializing = false;
 let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
+let groupScanInFlight = false;
+let groupScanState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, matches: [], groups: [] };
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
@@ -942,9 +944,70 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     groupJoinInFlight = false;
   }
 });
+async function scanGroupsInBackground({ operationId, nameContains }) {
+  const scanPromise = client.getChats();
+  scanPromise.then((chats) => {
+    if (groupScanState.operationId !== operationId || groupScanState.status !== "timed_out") return;
+    finalizeGroupScan(operationId, chats, nameContains, true);
+  }).catch((error) => {
+    if (groupScanState.operationId === operationId && groupScanState.status === "timed_out") {
+      groupScanState = { ...groupScanState, status: "failed", finishedAt: now(), error: error.message };
+    }
+  });
+  try {
+    const chats = await withTimeout(scanPromise, 120000, null);
+    if (!chats) {
+      groupScanState = { ...groupScanState, status: "timed_out", finishedAt: now(), error: "WhatsApp chat list lookup timed out" };
+      groupScanInFlight = false;
+      return;
+    }
+    finalizeGroupScan(operationId, chats, nameContains, false);
+  } catch (error) {
+    groupScanState = { ...groupScanState, status: "failed", finishedAt: now(), error: error.message };
+    groupScanInFlight = false;
+  }
+}
+
+function finalizeGroupScan(operationId, chats, nameContains, lateResult) {
+  if (groupScanState.operationId !== operationId) return;
+  const groups = chats.filter((chat) => chat && chat.isGroup && chat.id && chat.id._serialized).map((chat) => ({ id: chat.id._serialized, name: chat.name || "", participants: Array.isArray(chat.participants) ? chat.participants.length : 0 }));
+  const needle = String(nameContains || "").trim();
+  const matches = needle ? groups.filter((group) => group.name.includes(needle)) : groups;
+  const next = { ...groupScanState, finishedAt: now(), groups, matches, error: null };
+  if (matches.length !== 1) {
+    groupScanState = { ...next, status: matches.length === 0 ? "no_match" : "ambiguous", error: matches.length === 0 ? "No matching group was found" : "More than one matching group was found; no group was configured" };
+    groupScanInFlight = false;
+    return;
+  }
+  const match = matches[0];
+  const stamp = now();
+  db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(match.id, match.name || "الجراح | شبكة التشغيل الرسمية", stamp, stamp);
+  setSetting("group_id", match.id);
+  audit("group.discovered_and_configured", "group", match.id, { groupName: match.name, source: lateResult ? "late_chat_scan" : "chat_scan" });
+  groupScanState = { ...next, status: "succeeded", configuredGroupId: match.id, lateResult };
+  groupScanInFlight = false;
+}
+
+app.post("/api/admin/group/scan", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupScanInFlight) return res.status(409).json({ error: "A group scan is already in progress", operationId: groupScanState.operationId });
+  if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
+  const nameContains = String(req.body.nameContains || "الجراح").trim().slice(0, 120);
+  const operationId = `GROUP-SCAN-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
+  groupScanInFlight = true;
+  groupScanState = { status: "running", operationId, startedAt: now(), finishedAt: null, error: null, matches: [], groups: [], nameContains };
+  void scanGroupsInBackground({ operationId, nameContains });
+  res.status(202).json({ success: true, accepted: true, operationId, nameContains });
+});
+
+app.get("/api/admin/group/scan-status", requireAdmin, (req, res) => {
+  res.json({ ...groupScanState, inFlight: groupScanInFlight, configuredGroupId: getSetting("group_id", null) });
+});
+
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const chats = await client.getChats();
+  const chats = await withTimeout(client.getChats(), 120000, null);
+  if (!chats) return res.status(504).json({ error: "WhatsApp chat list lookup timed out; use the background group scan" });
   res.json({ groups: chats.filter((chat) => chat.isGroup).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
 });
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
