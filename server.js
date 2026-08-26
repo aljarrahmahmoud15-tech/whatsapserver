@@ -478,6 +478,37 @@ function extractInviteCode(value = "") {
   return match ? match[1] : raw.replace(/[^A-Za-z0-9_-]/g, "");
 }
 
+app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
+  const groupName = String(req.body.groupName || "الجراح للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
+  const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
+  const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
+  if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
+  if (phones.length < 1 || phones.length > 4) return res.status(400).json({ error: "Provide between 1 and 4 participant phone numbers" });
+  if (phones.some(isBlockedPhone)) return res.status(403).json({ error: "One or more phones are blocked by company policy" });
+  if (phones.includes(phoneWithCountry(BOT_PHONE)) || phones.includes(phoneWithCountry(BOT_PHONE_INTL))) return res.status(400).json({ error: "The bot phone is the group creator and must not be listed as a participant" });
+  try {
+    const participantIds = [];
+    for (const phone of phones) {
+      const id = await client.getNumberId(phone);
+      if (!id) return res.status(400).json({ error: "Phone is not registered on WhatsApp", phone: displayPhone(phone) });
+      participantIds.push(id._serialized || `${phone}@c.us`);
+    }
+    const created = await client.createGroup(groupName, participantIds);
+    if (typeof created === "string") return res.status(502).json({ error: "WhatsApp could not create the group", details: created });
+    const groupId = created && created.gid ? (created.gid._serialized || String(created.gid)) : (created && created.id ? (created.id._serialized || String(created.id)) : null);
+    if (!groupId || !groupId.endsWith("@g.us")) return res.status(502).json({ error: "WhatsApp returned an invalid group identifier" });
+    const stamp = now();
+    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
+    setSetting("group_id", groupId);
+    audit("group.created_and_configured", "group", groupId, { groupName, participants: phones });
+    res.status(201).json({ success: true, groupId, groupName, participants: phones.map(displayPhone), messageSent: false });
+  } catch (error) {
+    res.status(502).json({ error: "Unable to create WhatsApp group", details: error.message });
+  }
+});
+
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "قروب الجراح").trim();
