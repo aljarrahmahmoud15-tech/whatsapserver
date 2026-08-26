@@ -229,7 +229,7 @@ function createTicketCode() {
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
 const GROUP_SETUP_OWNER_PHONES = new Set((process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886,+962775969880").split(",").map(phoneWithCountry).filter(Boolean));
-const BLOCKED_PHONE_SET = new Set(BLOCKED_PHONE_INPUTS.map(phoneWithCountry));
+const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
 }
