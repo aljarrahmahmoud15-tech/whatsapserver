@@ -8,8 +8,9 @@ const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pino = require("pino");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { calculateSettlement } = require("./finance");
+const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -26,7 +27,8 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "company";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
-const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || 0);
+const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
+const BOT_FINANCIAL_MODE = process.env.BOT_FINANCIAL_MODE || "company";
 const COMPANY_RATE_BPS = Number(process.env.COMPANY_RATE_BPS || 1500);
 const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
 const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 2000);
@@ -34,6 +36,10 @@ const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 120000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
+const GROUP_BRAND_NAME = "شركة الجراح | شبكة التشغيل اللوجستي";
+const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لشركة الجراح للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق نظام الشركة.";
+const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
+const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لشركة الجراح.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
@@ -65,6 +71,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK(role IN ('company','producer','captain')),
   wallet_cents INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
+  is_bot INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -121,6 +128,7 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   reference TEXT NOT NULL,
   note TEXT,
   created_at TEXT NOT NULL,
+  details_json TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id),
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
@@ -185,6 +193,10 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 );
 `);
 
+const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all().map((column) => column.name);
+if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
+const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
+if (!existingUserColumns.includes("is_bot")) db.exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0");
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
 if (!existingOrderColumns.includes("order_kind")) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'normal'");
 if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_captain_user_id INTEGER");
@@ -373,12 +385,25 @@ function ensureSystemUsers() {
 ensureBlockedPhones();
 ensureSystemUsers();
 
-function upsertUser({ phone, name, role }) {
+function isBotPhone(phone) {
+  const normalized = phoneWithCountry(phone);
+  return normalized === phoneWithCountry(BOT_PHONE) || normalized === phoneWithCountry(BOT_PHONE_INTL);
+}
+function botEmployeeUser() {
+  const existing = db.prepare("SELECT * FROM users WHERE is_bot=1 LIMIT 1").get();
+  if (existing) return existing;
+  const stamp = now();
+  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?,?,0,1,1,?,?)").run(phoneWithCountry(BOT_PHONE), "منتج موظف — بوت شركة الجراح", "producer", stamp, stamp);
+  return db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
+}
+function upsertUser({ phone, name, role, allowSuspended = false }) {
   const normalized = phoneWithCountry(phone) || `unknown-${Date.now()}`;
+  if (isBotFinancialRole(normalized, BOT_PHONE, role)) throw new Error("Bot account cannot have a financial user role");
   if (isBlockedPhone(normalized)) throw new Error("Blocked phone is not allowed");
   const stamp = now();
   const existing = db.prepare("SELECT * FROM users WHERE phone=?").get(normalized);
   if (existing) {
+    if (existing.active === 0 && existing.role !== "company" && !allowSuspended) throw new Error("Subscriber account is suspended");
     if (name && name !== existing.name) db.prepare("UPDATE users SET name=?, updated_at=? WHERE id=?").run(name, stamp, existing.id);
     return db.prepare("SELECT * FROM users WHERE id=?").get(existing.id);
   }
@@ -387,6 +412,16 @@ function upsertUser({ phone, name, role }) {
   return db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
 }
 function companyUser() { return db.prepare("SELECT * FROM users WHERE role='company' ORDER BY id LIMIT 1").get(); }
+async function suspendMemberForDebt(groupId, phone, balanceCents) {
+  const normalized = phoneWithCountry(phone);
+  if (!isValidJordanPhone(normalized) || balanceCents >= CAPTAIN_MIN_BALANCE_CENTS) return;
+  const stamp = now();
+  db.prepare("UPDATE users SET active=0,updated_at=? WHERE phone=?").run(stamp, normalized);
+  audit("member.suspended_for_debt", "user", normalized, { groupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+  if (!client || !isReady) return;
+  const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+  if (chat && typeof chat.removeParticipants === "function") await chat.removeParticipants([`${normalized}@c.us`]).catch((error) => console.error("[WhatsApp] debt suspension:", error.message));
+}
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
@@ -761,7 +796,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (msg.fromMe && !parseOrder(body).isOrder) return;
+  const botGenerated = isBotGeneratedMessage(msg);
+  // رسائل البوت العادية ليست رسائل تشغيلية؛ طلب البوت المنسّق فقط يُسجّل باسم الشركة.
+  if (botGenerated && !parseOrder(body).isOrder) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
@@ -775,7 +812,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!inserted.changes) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
-    const producer = upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
+    const producer = botGenerated && BOT_FINANCIAL_MODE === "wallet"
+      ? botEmployeeUser()
+      : botGenerated
+        ? companyUser()
+        : upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
+    if (!producer || producer.active === 0) return;
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
     const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
     audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: senderPhone });
@@ -791,10 +833,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
-  if (captain.wallet_cents < settlement.captainFeeCents || captain.wallet_cents <= CAPTAIN_MIN_BALANCE_CENTS) {
+  if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
     await msg.react("⚠️").catch(() => {});
     await client.sendMessage(groupId, brandedMessage("تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."])).catch(() => {});
     audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
+    void suspendMemberForDebt(groupId, senderPhone, captain.wallet_cents - settlement.captainFeeCents);
     return;
   }
   const pending = db.transaction(() => {
@@ -830,7 +873,12 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current || current.status !== "open" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    const producerAuthorized = producer && (
+      phoneWithCountry(producer.phone) === phoneWithCountry(producerPhone) ||
+      (producer.role === "company" && isGroupSetupOwner(producerPhone)) ||
+      (producer.is_bot === 1 && isGroupSetupOwner(producerPhone))
+    );
+    if (!producerAuthorized) return { state: "unauthorized" };
     const captain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (!captain) return { state: "stale" };
     const settlement = calculateSettlement({
@@ -840,24 +888,33 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
       specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
       companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
     });
-    if (captain.wallet_cents < settlement.captainFeeCents || captain.wallet_cents <= CAPTAIN_MIN_BALANCE_CENTS) {
+    if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
       const stamp = now();
       db.prepare("UPDATE orders SET pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open'").run(stamp, orderId);
       audit("order.rejected.insufficient_wallet_after_confirmation", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
+      void suspendMemberForDebt(current.group_id, captain.phone, captain.wallet_cents - settlement.captainFeeCents);
       return { state: "insufficient", order: current, captain, producer, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents };
     }
     const company = companyUser();
     const stamp = now();
+    const botEmployeeProducer = producer.is_bot === 1;
     const companyBalance = Number(company.wallet_cents || 0) + settlement.companyCents;
     const producerBalance = Number(producer.wallet_cents || 0) + settlement.producerNetCents;
+    const ledgerDetails = JSON.stringify({ orderNo: current.order_no, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
+    const companyFinalBalance = companyBalance;
     const captainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
     db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,accepted_message_id=?,accepted_at=?,company_cents=?,producer_cents=?,captain_cents=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, expectedMessageId, stamp, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(companyBalance, stamp, company.id);
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp);
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج بعد حصة الشركة", stamp);
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(companyFinalBalance, stamp, company.id);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp, ledgerDetails);
+    if (botEmployeeProducer) {
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
+      db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_bot_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة منتج البوت الموظف", stamp, ledgerDetails);
+    } else {
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
+      db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج بعد حصة الشركة", stamp, ledgerDetails);
+    }
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(captainBalance, stamp, captain.id);
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp, ledgerDetails);
     audit("order.accepted", "order", orderId, { captainId: captain.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: producer.phone });
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id) };
   })();
@@ -871,7 +928,7 @@ async function handleMessageReaction(reaction) {
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
   const producerPhone = await resolveReactionSenderPhone(reaction);
-  if (!producerPhone || isBlockedPhone(producerPhone)) return;
+  if (!producerPhone || isBlockedPhone(producerPhone) || isBotReactionSender(producerPhone, connectedBotPhone())) return;
   const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
   const result = settlePendingOrder(pending.id, messageId, producerPhone);
@@ -908,6 +965,10 @@ function isAdmin(req) {
 }
 function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
+  next();
+}
+function requireBotWalletOwner(req, res, next) {
+  if (!isAdmin(req)) return res.status(403).json({ error: "Bot wallet is owner-only" });
   next();
 }
 function setSessionCookie(res, token) {
@@ -1077,6 +1138,14 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
   res.json({ ...groupCreateState, inFlight: groupCreateInFlight, configuredGroupId: getSetting("group_id", null) });
 });
 
+app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
+  const phone = phoneWithCountry(req.params.phone || "");
+  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (!user) return res.status(404).json({ error: "Subscriber wallet not found" });
+  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC").all(user.id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  res.json({ user, wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents, entries } });
+});
+
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "قروب الجراح").trim();
@@ -1159,7 +1228,7 @@ app.post("/api/redeem", (req, res) => {
   const result = db.transaction(() => {
     const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? AND status='issued'").get(hashCode(code));
     if (!card) throw new Error("Invalid or already used card");
-    const user = upsertUser({ phone, name: phone, role: "captain" });
+    const user = upsertUser({ phone, name: phone, role: "captain", allowSuspended: true });
     const newBalance = Number(user.wallet_cents) + Number(card.value_cents);
     const stamp = now();
     db.prepare("UPDATE topup_cards SET status='redeemed',redeemed_by=?,redeemed_at=? WHERE id=? AND status='issued'").run(user.id, stamp, card.id);
@@ -1234,6 +1303,26 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
     scheduleReconnect();
     res.json({ success: true, message: "Session cleared; a new QR will be generated" });
   } catch (error) { res.status(500).json({ error: error.message }); }
+});
+app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
+  if (req.body.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured group" });
+  try {
+    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+    const media = await withTimeout(MessageMedia.fromUrl(GROUP_BRAND_IMAGE_URL, { unsafeMime: true }), 30000, null);
+    if (!media) return res.status(502).json({ error: "Unable to load group identity image" });
+    const updated = { picture: await chat.setPicture(media), subject: await chat.setSubject(GROUP_BRAND_NAME), description: await chat.setDescription(GROUP_BRAND_DESCRIPTION) };
+    const sent = await chat.sendMessage(GROUP_BRAND_WELCOME);
+    audit("group.identity_applied", "group", groupId, { messageId: sent.id._serialized });
+    res.json({ success: true, updated: { ...updated, welcomeMessageId: sent.id._serialized } });
+  } catch (error) {
+    audit("group.identity_failed", "group", groupId, { error: error.message });
+    res.status(502).json({ error: "Unable to apply group identity", details: error.message });
+  }
 });
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });

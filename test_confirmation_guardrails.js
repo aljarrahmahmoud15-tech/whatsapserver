@@ -8,7 +8,11 @@ assert.match(server, /function formatPendingConfirmation\(order, captain\)/);
 assert.match(server, /لا توجد تسوية مالية قبل اعتماد المنتج/);
 assert.match(server, /if \(!reaction \|\| reaction\.reaction !== "👍"\) return;/);
 assert.match(server, /if \(!isConfiguredGroup\(target\.from\)\) return;/);
-assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(producerPhone\)/);
+assert.match(server, /رسائل البوت العادية ليست رسائل تشغيلية/);
+assert.match(server, /isBotGeneratedMessage\(msg\)/);
+assert.match(server, /isBotReactionSender\(producerPhone, connectedBotPhone\(\)\)/);
+assert.match(server, /phoneWithCountry\(producer\.phone\) === phoneWithCountry\(producerPhone\)/);
+assert.match(server, /producer\.role === "company" && isGroupSetupOwner\(producerPhone\)/);
 assert.match(server, /pending_message_id/);
 assert.match(server, /order\.accepted/);
 

@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { calculateSettlement } = require("./finance");
+const { isBotReactionSender } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 function between(start, end) {
@@ -77,6 +78,8 @@ const context = {
   isConfiguredGroup: (groupId) => groupId === "test-group@g.us",
   isBlockedPhone: () => false,
   phoneWithCountry: (value) => String(value),
+  isBotReactionSender,
+  connectedBotPhone: () => "0775696880",
   getSetting: (_key, fallback) => fallback,
   PRODUCER_RATE_BPS: 1500,
   SPECIAL_ORDER_RATE_BPS: 2000,
@@ -98,6 +101,10 @@ assert.strictEqual(order.status, "open");
 assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لايك");
 
 (async () => {
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
+  assert.strictEqual(order.status, "open", "لايك البوت نفسه لا يوثق الطلب");
+  assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك الصادر من البوت");
+
   await context.handleMessageReaction({ reaction: "👍", msgId: "other-message", senderPhone: users[2].phone });
   assert.strictEqual(order.status, "open", "لايك على رسالة مختلفة لا يوثق الطلب");
   assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك على رسالة مختلفة");
