@@ -8,6 +8,7 @@ WORKDIR /app
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      ca-certificates \
+     git \
      fonts-liberation \
      fonts-noto-color-emoji \
      libasound2 \
