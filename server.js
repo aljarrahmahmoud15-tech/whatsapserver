@@ -7,6 +7,7 @@ const fs = require("fs");
 const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const pino = require("pino");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const { calculateSettlement } = require("./finance");
 
@@ -18,6 +19,7 @@ const BOT_PHONE = process.env.BOT_PHONE && process.env.BOT_PHONE !== LEGACY_BOT_
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL && process.env.BOT_PHONE_INTL !== LEGACY_BOT_PHONE_INTL ? process.env.BOT_PHONE_INTL : "962775696880";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
+const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
 const QR_PUBLIC = process.env.QR_PUBLIC === "true";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
@@ -482,6 +484,13 @@ let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
 let lastGroupMessageTelemetry = null;
+let baileysSocket = null;
+let baileysReady = false;
+let baileysQrCodeData = null;
+let baileysInitializing = false;
+let baileysReconnectTimer = null;
+let baileysConnectionGeneration = 0;
+let baileysModulePromise = null;
 
 const puppeteerConfig = {
   headless: true,
@@ -521,6 +530,61 @@ async function restartWhatsApp(reason = "manual restart") {
   initializing = false;
   console.warn(`[WhatsApp] restarting session: ${reason}`);
   scheduleReconnect();
+}
+
+async function loadBaileys() {
+  if (!baileysModulePromise) baileysModulePromise = import("@whiskeysockets/baileys");
+  return baileysModulePromise;
+}
+function scheduleBaileysReconnect() {
+  if (baileysReconnectTimer) return;
+  baileysReconnectTimer = setTimeout(() => {
+    baileysReconnectTimer = null;
+    void initializeBaileys();
+  }, 5000);
+}
+async function initializeBaileys() {
+  if (baileysInitializing || baileysReady) return;
+  baileysInitializing = true;
+  const generation = ++baileysConnectionGeneration;
+  try {
+    const { default: makeWASocket, useMultiFileAuthState } = await loadBaileys();
+    const { state, saveCreds } = await useMultiFileAuthState(BAILEYS_AUTH_PATH);
+    const socket = makeWASocket({ auth: state, logger: pino({ level: "silent" }), markOnlineOnConnect: false, syncFullHistory: false, shouldSyncHistoryMessage: () => false });
+    baileysSocket = socket;
+    socket.ev.on("creds.update", saveCreds);
+    socket.ev.on("connection.update", (update) => {
+      if (generation !== baileysConnectionGeneration) return;
+      if (update.qr) {
+        baileysQrCodeData = update.qr;
+        baileysReady = false;
+        console.log("[Baileys] new QR generated");
+      }
+      if (update.connection === "open") {
+        baileysReady = true;
+        baileysQrCodeData = null;
+        console.log("[Baileys] group event receiver ready");
+      }
+      if (update.connection === "close") {
+        baileysReady = false;
+        baileysQrCodeData = null;
+        if (baileysSocket === socket) baileysSocket = null;
+        const statusCode = update.lastDisconnect && update.lastDisconnect.error && update.lastDisconnect.error.output && update.lastDisconnect.error.output.statusCode;
+        if (statusCode !== 401) scheduleBaileysReconnect();
+      }
+    });
+    socket.ev.on("messages.upsert", async (event) => {
+      if (generation !== baileysConnectionGeneration || !event || event.type !== "notify") return;
+      for (const message of event.messages || []) {
+        try { await handleBaileysUpsert(message); } catch (error) { console.error("[Baileys] message handler:", error.message); }
+      }
+    });
+  } catch (error) {
+    console.error("[Baileys] initialize:", error.message);
+    scheduleBaileysReconnect();
+  } finally {
+    baileysInitializing = false;
+  }
 }
 
 function scheduleReconnect() {
@@ -624,6 +688,34 @@ function recordGroupMessageTelemetry(event, msg) {
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
   };
   console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${lastGroupMessageTelemetry.configured} quoted=${lastGroupMessageTelemetry.hasQuotedMessage}`);
+}
+
+function baileysJidPhone(jid) {
+  return phoneWithCountry(String(jid || "").split("@")[0].split(":")[0]);
+}
+function baileysMessageText(message) {
+  const content = message && message.message ? message.message : {};
+  return String(content.conversation || (content.extendedTextMessage && content.extendedTextMessage.text) || "").trim();
+}
+async function handleBaileysUpsert(message) {
+  const key = message && message.key ? message.key : {};
+  const groupId = String(key.remoteJid || "");
+  if (!groupId.endsWith("@g.us") || key.fromMe) return;
+  const body = baileysMessageText(message);
+  if (!body) return;
+  recordGroupMessageTelemetry("baileys.messages.upsert", { from: groupId, fromMe: false, hasQuotedMsg: Boolean(message.message && message.message.extendedTextMessage && message.message.extendedTextMessage.contextInfo) });
+  const senderPhone = baileysJidPhone(key.participant || key.remoteJid);
+  const bridgedMessage = {
+    from: groupId,
+    fromMe: false,
+    author: senderPhone,
+    body,
+    type: "text",
+    timestamp: Number(message.messageTimestamp || Date.now() / 1000),
+    id: { _serialized: String(key.id || ""), remote: groupId },
+    getContact: async () => ({ number: senderPhone, pushname: String(message.pushName || "").trim() || displayPhone(senderPhone) }),
+  };
+  await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
@@ -861,10 +953,10 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   await restartWhatsApp("admin requested recovery");
   res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
 });
-app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, lastGroupMessage: lastGroupMessageTelemetry, uptime: process.uptime() }));
+app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData || baileysQrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), receiverReady: baileysReady, receiverHasQr: Boolean(baileysQrCodeData), receiverInitializing: baileysInitializing, initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, lastGroupMessage: lastGroupMessageTelemetry, uptime: process.uptime() }));
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
-  if (isReady) return res.status(409).json({ error: "Bot is already connected" });
+  if (baileysReady) return res.status(409).json({ error: "Group event receiver is already connected" });
   const grant = issueTemporaryQrGrant(req);
   const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
   res.setHeader("Cache-Control", "no-store");
@@ -873,9 +965,9 @@ app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
 app.get("/qr", requireQrAccess, async (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.setHeader("Referrer-Policy", "no-referrer");
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ البوت متصل</h2><p>${BOT_PHONE}</p></body></html>`);
-  if (!qrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
-  const image = await qrcode.toDataURL(qrCodeData);
+  if (baileysReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>✅ مستقبل رسائل القروب متصل</h2><p>${BOT_PHONE}</p></body></html>`);
+  if (!baileysQrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR لمستقبل القروب...</h2>');
+  const image = await qrcode.toDataURL(baileysQrCodeData);
   const refreshTarget = req.query.access ? `/qr?access=${encodeURIComponent(String(req.query.access))}` : "/qr";
   res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>📱 امسح رمز الربط</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
 });
@@ -1157,6 +1249,7 @@ app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   initializeWhatsApp();
+  initializeBaileys();
 });
 
 process.on("SIGTERM", async () => { await destroyClient(); db.close(); process.exit(0); });

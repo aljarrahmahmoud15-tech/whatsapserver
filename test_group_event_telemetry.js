@@ -4,7 +4,7 @@ const path = require("path");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const start = source.indexOf("function recordGroupMessageTelemetry(");
-const end = source.indexOf("async function handleIncomingMessage(", start);
+const end = source.indexOf("function baileysJidPhone(", start);
 assert(start >= 0 && end > start, "مسجل أحداث القروب موجود داخل الخادم");
 const telemetry = source.slice(start, end);
 
