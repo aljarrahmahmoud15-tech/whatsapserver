@@ -481,6 +481,7 @@ let groupCreateState = { status: "idle", operationId: null, startedAt: null, fin
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
+let lastGroupMessageTelemetry = null;
 
 const puppeteerConfig = {
   headless: true,
@@ -566,10 +567,12 @@ function createClient() {
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    recordGroupMessageTelemetry("message_create", msg);
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration) return;
+    recordGroupMessageTelemetry("message", msg);
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
   instance.on("message_reaction", async (reaction) => {
@@ -608,6 +611,19 @@ function connectedBotPhone() {
 function resolveGroupChatId(message) {
   const candidates = [message && message.from, message && message.to, message && message.id && message.id.remote];
   return candidates.map((value) => String(value || "")).find((value) => value.endsWith("@g.us")) || "";
+}
+
+function recordGroupMessageTelemetry(event, msg) {
+  const groupId = resolveGroupChatId(msg);
+  if (!groupId) return;
+  lastGroupMessageTelemetry = {
+    at: now(),
+    event,
+    fromMe: Boolean(msg.fromMe),
+    configured: isConfiguredGroup(groupId),
+    hasQuotedMessage: Boolean(msg.hasQuotedMsg),
+  };
+  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${lastGroupMessageTelemetry.configured} quoted=${lastGroupMessageTelemetry.hasQuotedMessage}`);
 }
 
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
@@ -845,7 +861,7 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   await restartWhatsApp("admin requested recovery");
   res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
 });
-app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, uptime: process.uptime() }));
+app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, lastGroupMessage: lastGroupMessageTelemetry, uptime: process.uptime() }));
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (isReady) return res.status(409).json({ error: "Bot is already connected" });
