@@ -4,6 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
+assert(source.includes('"+962779110123"'), "مالك القروب 0779110123 مخوّل كمسار اعتماد بديل");
 const start = source.indexOf("function resolveGroupChatId(");
 const end = source.indexOf("async function handleIncomingMessage(", start);
 assert(start >= 0 && end > start, "معالج تحديد القروب موجود داخل الخادم");
