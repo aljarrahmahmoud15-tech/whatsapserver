@@ -422,6 +422,13 @@ function latestEligibleGroupOrderMessage(messages, groupId) {
     .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
     .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))[0] || null;
 }
+function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
+  const isCommand = /^#(?:تسجيل|استرداد)\s*(?:الطلب)?$/i.test(String(body || "").trim());
+  return Boolean(
+    fromMe && isCommand && quoted && !quoted.fromMe && resolveGroupChatId(quoted) === groupId &&
+    quoted.id && quoted.id._serialized && parseOrder(quoted.body).isOrder
+  );
+}
 function isCaptainAcceptance(text) {
   return /(^|\s)تم(?:\s|$)|تم\s+اول\s+راكب|تم\s+أول\s+راكب/i.test(String(text || "").trim());
 }
@@ -623,6 +630,24 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     if (setupCommand && (selfSetup || isGroupSetupOwner(senderPhone))) {
       configureGroupId(groupId, "الجراح | شبكة التشغيل الرسمية");
       console.log(`[GroupSetup] configured group from ${selfSetup ? "primary bot command" : "owner command"}: ${groupId}`);
+    }
+    return;
+  }
+  const quotedForRecovery = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
+    const sourceMessageId = quotedForRecovery.id._serialized;
+    const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
+    if (existing) {
+      await msg.react("ℹ️").catch(() => {});
+      return;
+    }
+    await handleIncomingMessage(quotedForRecovery, { allowSelf: true });
+    const recovered = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
+    if (recovered) {
+      audit("order.recovered_from_quoted_message", "order", recovered.id, { groupId, sourceMessageId });
+      await msg.react("✅").catch(() => {});
+    } else {
+      await msg.react("⚠️").catch(() => {});
     }
     return;
   }
