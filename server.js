@@ -417,6 +417,11 @@ function parseOrder(text) {
     orderKind: /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
   };
 }
+function latestEligibleGroupOrderMessage(messages, groupId) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
+    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))[0] || null;
+}
 function isCaptainAcceptance(text) {
   return /(^|\s)تم(?:\s|$)|تم\s+اول\s+راكب|تم\s+أول\s+راكب/i.test(String(text || "").trim());
 }
@@ -981,6 +986,24 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const chats = await client.getChats();
   res.json({ groups: chats.filter((chat) => chat.isGroup).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
+});
+app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
+  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || typeof chat.fetchMessages !== "function") return res.status(504).json({ error: "Unable to read configured group" });
+  const messages = await withTimeout(chat.fetchMessages({ limit: 100 }), 25000, []);
+  const candidate = latestEligibleGroupOrderMessage(messages, groupId);
+  if (!candidate || !candidate.id || !candidate.id._serialized) return res.status(404).json({ error: "No eligible order message found in recent group messages" });
+  const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
+  if (existing) return res.json({ success: true, recovered: false, alreadyRegistered: true, orderNo: existing.order_no, status: existing.status });
+  await handleIncomingMessage(candidate, { allowSelf: true });
+  const order = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
+  if (!order) return res.status(502).json({ error: "Eligible message was not recorded as an order" });
+  audit("order.recovered_from_group_history", "order", order.id, { groupId, sourceMessageId: candidate.id._serialized });
+  res.status(201).json({ success: true, recovered: true, orderNo: order.order_no, status: order.status });
 });
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
   const value = Number(req.body.value || 5);
