@@ -484,6 +484,7 @@ let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
 let lastGroupMessageTelemetry = null;
+let lastGroupEventGroupId = null;
 let baileysSocket = null;
 let baileysReady = false;
 let baileysQrCodeData = null;
@@ -680,6 +681,7 @@ function resolveGroupChatId(message) {
 function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
+  lastGroupEventGroupId = groupId;
   lastGroupMessageTelemetry = {
     at: now(),
     event,
@@ -954,6 +956,7 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
 });
 app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData || baileysQrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), receiverReady: baileysReady, receiverHasQr: Boolean(baileysQrCodeData), receiverInitializing: baileysInitializing, initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, lastGroupMessage: lastGroupMessageTelemetry, uptime: process.uptime() }));
+app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (baileysReady) return res.status(409).json({ error: "Group event receiver is already connected" });
