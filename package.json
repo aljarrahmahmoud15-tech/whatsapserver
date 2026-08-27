@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
-    "test": "for test in test_*.js; do node \"$test\"; done"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

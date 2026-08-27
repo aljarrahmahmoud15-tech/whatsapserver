@@ -9,7 +9,6 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const { calculateSettlement } = require("./finance");
-const { resolveGroupChatId } = require("./group-routing");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -596,8 +595,7 @@ function connectedBotPhone() {
 
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
-  const groupId = resolveGroupChatId(msg);
-  const isGroup = Boolean(groupId);
+  const isGroup = Boolean(msg.from && String(msg.from).endsWith("@g.us"));
   if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
   const body = String(msg.body || "").trim();
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
@@ -605,15 +603,15 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const candidates = [msg.fromMe ? connectedBotPhone() : "", contact && contact.number, msg.author, msg._data && msg._data.author];
   const senderPhone = candidates.map(phoneWithCountry).find(isValidJordanPhone) || "";
   const primarySender = Boolean(msg.fromMe) && senderPhone === connectedBotPhone();
-  if (!isConfiguredGroup(groupId)) {
+  if (!isConfiguredGroup(msg.from)) {
     if (setupCommand) {
       lastGroupSetupProbe = { at: now(), fromMe: Boolean(msg.fromMe), senderResolved: Boolean(senderPhone), primarySender, ownerSender: isGroupSetupOwner(senderPhone) };
       console.log(`[GroupSetup] setup command observed: fromMe=${Boolean(msg.fromMe)} senderResolved=${Boolean(senderPhone)} primary=${primarySender} owner=${isGroupSetupOwner(senderPhone)}`);
     }
     const selfSetup = primarySender || senderPhone === phoneWithCountry(BOT_PHONE);
     if (setupCommand && (selfSetup || isGroupSetupOwner(senderPhone))) {
-      configureGroupId(groupId, "الجراح | شبكة التشغيل الرسمية");
-      console.log(`[GroupSetup] configured group from ${selfSetup ? "primary bot command" : "owner command"}: ${groupId}`);
+      configureGroupId(msg.from, "الجراح | شبكة التشغيل الرسمية");
+      console.log(`[GroupSetup] configured group from ${selfSetup ? "primary bot command" : "owner command"}: ${msg.from}`);
     }
     return;
   }
@@ -627,20 +625,20 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const stamp = now();
   const messageId = msg.id && msg.id._serialized;
   if (!messageId) return;
-  const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
+  const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, msg.from, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
   if (!inserted.changes) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
     const producer = upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-    const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
-    audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: senderPhone });
-    console.log(`[Order] #${orderNo} created from ${groupId}`);
+    const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, msg.from, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
+    audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId: msg.from, producerPhone: senderPhone });
+    console.log(`[Order] #${orderNo} created from ${msg.from}`);
     return;
   }
   if (!isCaptainAcceptance(body)) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  const order = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null) || latestOpenOrder(groupId);
+  const order = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null) || latestOpenOrder(msg.from);
   if (!order) return;
   const captain = upsertUser({ phone: senderPhone, name: senderName, role: "captain" });
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
@@ -649,7 +647,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
   if (captain.wallet_cents < settlement.captainFeeCents || captain.wallet_cents <= CAPTAIN_MIN_BALANCE_CENTS) {
     await msg.react("⚠️").catch(() => {});
-    await client.sendMessage(groupId, brandedMessage("تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."])).catch(() => {});
+    await client.sendMessage(msg.from, brandedMessage("تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."])).catch(() => {});
     audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
     return;
   }
@@ -662,7 +660,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   })();
   if (!pending) return;
   audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
-  await client.sendMessage(groupId, formatPendingConfirmation(order, captain)).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
+  await client.sendMessage(msg.from, formatPendingConfirmation(order, captain)).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
 }
 
 function reactionId(value) {
