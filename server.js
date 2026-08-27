@@ -409,7 +409,7 @@ function parseOrder(text) {
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i);
   const timeMatch = normalized.match(/(\d{1,2}(?::\d{2})?\s*(?:صباحا|مساء|ص|م)?)/i);
   return {
-    isOrder: price !== null && (/وصلني\s*(?:الآن|الان)?/i.test(normalized) || Boolean(route)),
+    isOrder: price !== null && (/وصلني\s*(?:الآن|الان)?/i.test(normalized) || (Boolean(route) && /(?:راكب|حمولة|سيارة|سياره|اوردر|order)/i.test(normalized))),
     price,
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
