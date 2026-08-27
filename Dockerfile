@@ -1,19 +1,10 @@
-FROM ghcr.io/puppeteer/puppeteer:23.11.1
-
+FROM ghcr.io/puppeteer/puppeteer:21.11.0
 USER root
-
 WORKDIR /app
-
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-
 COPY package*.json ./
-RUN npm install
-
+RUN npm install --omit=dev
 COPY . .
-
-RUN mkdir -p /app/session
-
+RUN mkdir -p /app/session && chown -R pptruser:pptruser /app
+USER pptruser
 EXPOSE 3000
-
-# Stay as root at container start, fix permissions, then drop to pptruser to actually run the app
-CMD ["sh", "-c", "chown -R pptruser:pptruser /app/session && su -s /bin/sh pptruser -c 'node server.js'"]
+CMD ["node", "server.js"]
