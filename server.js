@@ -22,6 +22,8 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
 const QR_PUBLIC = process.env.QR_PUBLIC === "true";
+const QR_START_TIME = Date.now();
+const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || "";
@@ -976,8 +978,11 @@ function setSessionCookie(res, token) {
   res.setHeader("Set-Cookie", `aljarah_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
 }
 function requireQrAccess(req, res, next) {
-  if (QR_PUBLIC || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
-  return res.status(401).send("QR access is protected. Set QR_PUBLIC=true temporarily or use the admin token.");
+  const queryToken = String(req.query.token || "");
+  const isQueryAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(queryToken, ADMIN_TOKEN);
+  const isPublicWindow = QR_PUBLIC && Date.now() - QR_START_TIME < QR_PUBLIC_DURATION_MS;
+  if (isPublicWindow || isQueryAdmin || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
+  return res.status(401).send("QR access is protected. Use an admin token or a temporary QR grant.");
 }
 function hasTemporaryQrGrant(req) {
   if (!temporaryQrGrant) return false;
