@@ -561,6 +561,8 @@ async function destroyClient() {
   isReady = false;
   if (!current) return;
   try { await current.destroy(); } catch (error) { console.warn("[WhatsApp] destroy:", error.message); }
+  // Allow Chromium to release the persistent LocalAuth profile before a retry.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
 }
 
 async function restartWhatsApp(reason = "manual restart") {
@@ -700,8 +702,10 @@ async function initializeWhatsApp() {
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
     const initialized = await withTimeoutStrict(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
     if (initialized === initTimeoutMarker) {
-      console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; restarting session`);
-      await restartWhatsApp(`initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms`);
+      console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; scheduling controlled retry`);
+      isReady = false;
+      qrCodeData = null;
+      scheduleReconnect();
     }
   } catch (error) {
     console.error("[WhatsApp] initialize:", error.message);
