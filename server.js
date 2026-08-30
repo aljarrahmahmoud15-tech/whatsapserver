@@ -560,8 +560,11 @@ function clearChromiumProfileLocks() {
   for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
     const lockPath = path.join(profileDir, name);
     try {
-      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+      // Chromium uses a symlink here; existsSync() is false when its target host is gone.
+      fs.lstatSync(lockPath);
+      fs.unlinkSync(lockPath);
     } catch (error) {
+      if (error.code === "ENOENT") continue;
       console.warn(`[WhatsApp] profile lock cleanup ${name}:`, error.message);
     }
   }
