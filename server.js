@@ -263,6 +263,12 @@ function withTimeout(promise, timeoutMs, fallback = null) {
     new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
   ]);
 }
+function withTimeoutStrict(promise, timeoutMs, fallback = null) {
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
+  ]);
+}
 function normalizeCustomerText(value) {
   return String(value || "").trim().toLowerCase().replace(/[إأآ]/g, "ا").replace(/ى/g, "ي").replace(/\s+/g, " ");
 }
@@ -692,7 +698,7 @@ async function initializeWhatsApp() {
     await destroyClient();
     client = createClient();
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
-    const initialized = await withTimeout(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
+    const initialized = await withTimeoutStrict(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
     if (initialized === initTimeoutMarker) {
       console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; restarting session`);
       await restartWhatsApp(`initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms`);
