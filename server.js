@@ -532,6 +532,7 @@ let baileysModulePromise = null;
 
 const puppeteerConfig = {
   headless: true,
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   protocolTimeout: 120000,
   defaultViewport: null,
   args: [
@@ -1039,14 +1040,6 @@ app.get("/qr", requireQrAccess, async (req, res) => {
   const image = await qrcode.toDataURL(baileysQrCodeData);
   const refreshTarget = req.query.access ? `/qr?access=${encodeURIComponent(String(req.query.access))}` : "/qr";
   res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>📱 امسح رمز الربط</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
-});
-app.get("/bot-qr", requireQrAccess, async (req, res) => {
-  res.setHeader("Cache-Control", "no-store, max-age=0");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  if (isReady) return res.send("<h2 style="font-family:system-ui;text-align:center">✅ بوت اللوجستيات متصل</h2>");
-  if (!qrCodeData) return res.send("<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR للبوت الرئيسي...</h2>");
-  const image = await qrcode.toDataURL(qrCodeData);
-  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>📱 امسح QR البوت الرئيسي</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.reload(),30000)</script></body></html>`);
 });
 app.get("/code", requireQrAccess, async (req, res) => {
   if (!client || isReady) return res.status(409).json({ error: "Bot is already connected or initializing" });
