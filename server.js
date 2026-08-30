@@ -218,8 +218,12 @@ if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards A
 if (!existingCardColumns.includes("delivery_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN delivery_idempotency_key TEXT");
 if (!existingCardColumns.includes("issue_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN issue_idempotency_key TEXT");
 if (!existingCardColumns.includes("code_ciphertext")) db.exec("ALTER TABLE topup_cards ADD COLUMN code_ciphertext TEXT");
+if (!existingCardColumns.includes("void_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN void_idempotency_key TEXT");
+if (!existingCardColumns.includes("redemption_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN redemption_idempotency_key TEXT");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON topup_cards(issue_idempotency_key) WHERE issue_idempotency_key IS NOT NULL AND issue_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_void_idempotency ON topup_cards(void_idempotency_key) WHERE void_idempotency_key IS NOT NULL AND void_idempotency_key <> ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_redemption_idempotency ON topup_cards(redemption_idempotency_key) WHERE redemption_idempotency_key IS NOT NULL AND redemption_idempotency_key <> ''");
 
 const now = () => new Date().toISOString();
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -1159,6 +1163,94 @@ app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) 
     cardDeliveryInFlight.delete(cardId);
   }
 });
+app.post("/api/dashboard/cards/:id/void", requireDashboardApi, (req, res) => {
+  const cardId = Number(req.params.id);
+  const reason = String(req.body?.reason || "").trim();
+  const voidIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isInteger(cardId) || cardId < 1 || reason.length < 3 || reason.length > 240 || voidIdempotencyKey.length < 16 || voidIdempotencyKey.length > 100) return res.status(400).json({ error: "Valid card id, reason, and idempotencyKey are required" });
+  const card = db.prepare("SELECT id,status,void_idempotency_key FROM topup_cards WHERE id=? LIMIT 1").get(cardId);
+  if (!card) return res.status(404).json({ error: "Card not found" });
+  if (card.void_idempotency_key && card.void_idempotency_key !== voidIdempotencyKey) return res.status(409).json({ error: "Card cancellation is already recorded with another idempotency key" });
+  if (card.status === "void") return res.json({ success: true, cardId, status: "void", alreadyVoided: true });
+  if (card.status !== "issued") return res.status(409).json({ error: `Card cannot be cancelled while status is ${card.status}` });
+  const stamp = now();
+  const update = db.prepare("UPDATE topup_cards SET status='void',void_idempotency_key=? WHERE id=? AND status='issued'").run(voidIdempotencyKey, cardId);
+  if (!update.changes) return res.json({ success: true, cardId, status: "void", alreadyVoided: true });
+  audit("topup_card.voided", "topup_card", cardId, { reason, voidIdempotencyKey });
+  res.json({ success: true, cardId, status: "void", cancelledAt: stamp });
+});
+
+app.get("/api/dashboard/captains/portal/:phone", requireDashboardApi, (req, res) => {
+  const phone = phoneWithCountry(req.params.phone || "");
+  const user = db.prepare("SELECT id,phone,name,role,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  if (!user) return res.status(404).json({ error: "Captain account not found" });
+  const wallet = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(user.id);
+  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const trips = db.prepare("SELECT id,order_no,status,price_cents,origin,destination,trip_time,created_at,updated_at FROM orders WHERE captain_user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((trip) => ({ ...trip, price: money(trip.price_cents) }));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ user, wallet: { currency: "JOD", balance: money(wallet?.wallet_cents || 0), balanceCents: wallet?.wallet_cents || 0, entries }, trips });
+});
+
+app.post("/api/dashboard/captains/redeem", requireDashboardApi, (req, res) => {
+  if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
+  const phone = phoneWithCountry(req.body?.phone || "");
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  const redemptionIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!phone || !code || redemptionIdempotencyKey.length < 16 || redemptionIdempotencyKey.length > 100) return res.status(400).json({ error: "phone, code, and idempotencyKey are required" });
+  if (isBlockedPhone(phone)) return res.status(403).json({ error: "This phone is blocked by company policy" });
+  try {
+    const result = db.transaction(() => {
+      const existing = db.prepare("SELECT id,value_cents,redeemed_by,redeemed_at FROM topup_cards WHERE redemption_idempotency_key=? LIMIT 1").get(redemptionIdempotencyKey);
+      if (existing) {
+        const existingUser = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(existing.redeemed_by);
+        return { alreadyRedeemed: true, balanceCents: existingUser?.wallet_cents || 0, valueCents: existing.value_cents };
+      }
+      const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? LIMIT 1").get(hashCode(code));
+      if (!card || card.status !== "issued") throw new Error("Invalid or already used card");
+      const assignedUser = card.assigned_captain_id ? db.prepare("SELECT * FROM users WHERE id=? AND role='captain' LIMIT 1").get(card.assigned_captain_id) : null;
+      if (!assignedUser || phoneWithCountry(assignedUser.phone) !== phone) throw new Error("This card is assigned to another captain");
+      if (!assignedUser.active) throw new Error("Captain account is inactive");
+      const newBalance = Number(assignedUser.wallet_cents) + Number(card.value_cents);
+      const stamp = now();
+      const update = db.prepare("UPDATE topup_cards SET status='redeemed',redeemed_by=?,redeemed_at=?,redemption_idempotency_key=? WHERE id=? AND status='issued'").run(assignedUser.id, stamp, redemptionIdempotencyKey, card.id);
+      if (!update.changes) throw new Error("Card was already redeemed");
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(newBalance, stamp, assignedUser.id);
+      db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)").run(assignedUser.id, "topup", card.value_cents, newBalance, `CARD-${card.id}`, "شحن بطاقة", stamp, JSON.stringify({ redemptionIdempotencyKey, source: "dashboard_captain_portal" }));
+      audit("topup_card.redeemed", "topup_card", card.id, { userId: assignedUser.id, valueCents: card.value_cents, redemptionIdempotencyKey }, assignedUser.id);
+      return { alreadyRedeemed: false, balanceCents: newBalance, valueCents: card.value_cents };
+    })();
+    res.json({ success: true, alreadyRedeemed: result.alreadyRedeemed, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Unable to redeem card" });
+  }
+});
+
+app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (req, res) => {
+  const id = Number(req.params.id);
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const direction = String(req.body?.direction || "").toLowerCase();
+  const amount = Number(req.body?.amount);
+  const reason = String(req.body?.reason || "").trim();
+  const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
+  const amountCents = Math.round(amount * 100);
+  const signedAmount = direction === "credit" ? amountCents : -amountCents;
+  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE user_id=? AND type IN ('admin_credit','admin_debit') AND details_json LIKE ? LIMIT 1").get(id, `%\\"idempotencyKey\\":\\"${idempotencyKey.replace(/[\\%_]/g, "\\$&")}\\"%`);
+  if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
+  const nextBalance = captain.wallet_cents + signedAmount;
+  if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `Debit exceeds the captain debt limit (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
+  const reference = `DASH-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const stamp = now();
+  const ledgerId = db.transaction(() => {
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "dashboard" }));
+    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
+    return result.lastInsertRowid;
+  })();
+  res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
+});
+
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
