@@ -555,14 +555,29 @@ const puppeteerConfig = {
   ],
 };
 
+function clearChromiumProfileLocks() {
+  const profileDir = path.join(AUTH_PATH, "session");
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+    const lockPath = path.join(profileDir, name);
+    try {
+      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    } catch (error) {
+      console.warn(`[WhatsApp] profile lock cleanup ${name}:`, error.message);
+    }
+  }
+}
 async function destroyClient() {
   const current = client;
   client = null;
   isReady = false;
-  if (!current) return;
+  if (!current) {
+    clearChromiumProfileLocks();
+    return;
+  }
   try { await current.destroy(); } catch (error) { console.warn("[WhatsApp] destroy:", error.message); }
   // Allow Chromium to release the persistent LocalAuth profile before a retry.
   await new Promise((resolve) => setTimeout(resolve, 3000));
+  clearChromiumProfileLocks();
 }
 
 async function restartWhatsApp(reason = "manual restart") {
