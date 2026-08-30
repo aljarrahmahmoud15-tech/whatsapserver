@@ -1032,7 +1032,6 @@ app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCod
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
-  if (baileysReady) return res.status(409).json({ error: "Group event receiver is already connected" });
   const grant = issueTemporaryQrGrant(req);
   const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
   res.setHeader("Cache-Control", "no-store");
