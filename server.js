@@ -1207,6 +1207,36 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
   res.json({ success: true, id, active, name });
 });
+app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const direction = String(req.body.direction || "").toLowerCase();
+  const amount = Number(req.body.amount);
+  const reason = String(req.body.reason || "").trim();
+  const idempotencyKey = String(req.body.idempotencyKey || "").trim();
+  if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
+    return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
+  }
+  const amountCents = Math.round(amount * 100);
+  if (amountCents < 1) return res.status(400).json({ error: "Amount is too small" });
+  const signedAmount = direction === "credit" ? amountCents : -amountCents;
+  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE user_id=? AND type IN ('admin_credit','admin_debit') AND details_json LIKE ? LIMIT 1").get(id, `%\\"idempotencyKey\\":\\"${idempotencyKey.replace(/[\\%_]/g, "\\$&")}\\"%`);
+  if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
+  const nextBalance = captain.wallet_cents + signedAmount;
+  if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `Debit exceeds the captain debt limit (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
+  const reference = `ADMIN-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const details = { idempotencyKey, direction, amount, amountCents, reason, actor: "admin" };
+  const stamp = now();
+  const apply = db.transaction(() => {
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details));
+    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance });
+    return result.lastInsertRowid;
+  });
+  const ledgerId = apply();
+  res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
+});
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);
