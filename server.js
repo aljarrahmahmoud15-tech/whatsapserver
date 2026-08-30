@@ -1176,6 +1176,37 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
   res.json({ ...groupCreateState, inFlight: groupCreateInFlight, configuredGroupId: getSetting("group_id", null) });
 });
 
+app.get("/api/admin/captains", requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE role='captain' ORDER BY active DESC, id DESC").all();
+  res.json({ captains: rows.map((row) => ({ ...row, balance: money(row.wallet_cents) })) });
+});
+app.post("/api/admin/captains", requireAdmin, (req, res) => {
+  const phone = String(req.body.phone || "").replace(/[^0-9]/g, "");
+  const name = String(req.body.name || "").trim();
+  if (!/^\d{8,15}$/.test(phone) || !name || name.length > 100) return res.status(400).json({ error: "Captain name and a valid phone are required" });
+  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (existing && existing.role !== "captain") return res.status(409).json({ error: "Phone is already assigned to another role" });
+  const stamp = now();
+  if (existing) {
+    db.prepare("UPDATE users SET name=?,active=1,updated_at=? WHERE id=?").run(name, stamp, existing.id);
+    audit("captain.reactivated", "user", existing.id, { phone, name });
+    return res.json({ success: true, id: existing.id, reactivated: true });
+  }
+  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?)").run(phone, name, stamp, stamp);
+  audit("captain.created", "user", result.lastInsertRowid, { phone, name });
+  res.status(201).json({ success: true, id: result.lastInsertRowid });
+});
+app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const captain = db.prepare("SELECT id,phone,name,active FROM users WHERE id=? AND role='captain'").get(id);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const name = req.body.name === undefined ? captain.name : String(req.body.name).trim();
+  const active = req.body.active === undefined ? captain.active : (req.body.active ? 1 : 0);
+  if (!name || name.length > 100) return res.status(400).json({ error: "Captain name is invalid" });
+  db.prepare("UPDATE users SET name=?,active=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, now(), id);
+  audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
+  res.json({ success: true, id, active, name });
+});
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);
