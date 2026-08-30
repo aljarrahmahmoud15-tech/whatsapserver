@@ -1063,7 +1063,7 @@ app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCod
 app.get("/api/dashboard/snapshot", requireDashboardApi, (req, res) => {
   const company = db.prepare("SELECT id,name,phone,wallet_cents,active FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   const captains = db.prepare("SELECT u.id,u.name,u.phone,u.wallet_cents,u.active,COUNT(o.id) AS trip_count FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id WHERE u.role='captain' GROUP BY u.id ORDER BY u.id DESC LIMIT 200").all();
-  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,c.assigned_captain_id,c.sent_at,c.redeemed_at,u.name AS captain_name FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id ORDER BY c.id DESC LIMIT 200").all();
+  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,NULL AS assigned_captain_id,NULL AS sent_at,c.redeemed_at,u.name AS captain_name FROM topup_cards c LEFT JOIN users u ON u.id=c.redeemed_by ORDER BY c.id DESC LIMIT 200").all();
   const orders = db.prepare("SELECT o.id,o.order_no,o.status,o.price_cents,o.captain_user_id,o.created_at,o.updated_at,u.name AS captain_name FROM orders o LEFT JOIN users u ON u.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200").all();
   const ledger = db.prepare("SELECT l.id,l.user_id,l.type,l.amount_cents,l.balance_after_cents,l.reference,l.note,l.created_at,u.name AS user_name FROM wallet_ledger l LEFT JOIN users u ON u.id=l.user_id ORDER BY l.id DESC LIMIT 200").all();
   res.setHeader("Cache-Control", "no-store");
