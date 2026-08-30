@@ -1034,6 +1034,10 @@ function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
   next();
 }
+function requireAdminOrDashboardApi(req, res, next) {
+  if (!isAdmin(req) && !isDashboardApi(req)) return res.status(401).json({ error: "Unauthorized" });
+  next();
+}
 function isDashboardApi(req) {
   const header = String(req.headers.authorization || "");
   return Boolean(DASHBOARD_API_TOKEN) && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), DASHBOARD_API_TOKEN);
@@ -1379,7 +1383,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE role='captain' ORDER BY active DESC, id DESC").all();
   res.json({ captains: rows.map((row) => ({ ...row, balance: money(row.wallet_cents) })) });
 });
-app.post("/api/admin/captains", requireAdmin, (req, res) => {
+app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   const phone = String(req.body.phone || "").replace(/[^0-9]/g, "");
   const name = String(req.body.name || "").trim();
   if (!/^\d{8,15}$/.test(phone) || !name || name.length > 100) return res.status(400).json({ error: "Captain name and a valid phone are required" });
