@@ -26,6 +26,7 @@ const QR_START_TIME = Date.now();
 const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "company";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
@@ -998,6 +999,14 @@ function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
   next();
 }
+function isDashboardApi(req) {
+  const header = String(req.headers.authorization || "");
+  return Boolean(DASHBOARD_API_TOKEN) && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), DASHBOARD_API_TOKEN);
+}
+function requireDashboardApi(req, res, next) {
+  if (!isDashboardApi(req)) return res.status(401).json({ error: "Dashboard API unauthorized" });
+  next();
+}
 function requireBotWalletOwner(req, res, next) {
   if (!isAdmin(req)) return res.status(403).json({ error: "Bot wallet is owner-only" });
   next();
@@ -1051,6 +1060,15 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   res.json({ success: true, message: "WhatsApp session restart scheduled; saved session was preserved" });
 });
 app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCodeData || baileysQrCodeData), lastQrTime, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)), receiverReady: baileysReady, receiverHasQr: Boolean(baileysQrCodeData), receiverInitializing: baileysInitializing, initializing, connectionGeneration, groupCreate: { status: groupCreateState.status, operationId: groupCreateState.operationId, startedAt: groupCreateState.startedAt, finishedAt: groupCreateState.finishedAt, error: groupCreateState.error }, setupProbe: lastGroupSetupProbe ? { at: lastGroupSetupProbe.at, fromMe: lastGroupSetupProbe.fromMe, senderResolved: lastGroupSetupProbe.senderResolved, primarySender: lastGroupSetupProbe.primarySender, ownerSender: lastGroupSetupProbe.ownerSender } : null, lastGroupMessage: lastGroupMessageTelemetry, uptime: process.uptime() }));
+app.get("/api/dashboard/snapshot", requireDashboardApi, (req, res) => {
+  const company = db.prepare("SELECT id,name,phone,wallet_cents,active FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
+  const captains = db.prepare("SELECT u.id,u.name,u.phone,u.wallet_cents,u.active,COUNT(o.id) AS trip_count FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id WHERE u.role='captain' GROUP BY u.id ORDER BY u.id DESC LIMIT 200").all();
+  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,c.assigned_captain_id,c.sent_at,c.redeemed_at,u.name AS captain_name FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id ORDER BY c.id DESC LIMIT 200").all();
+  const orders = db.prepare("SELECT o.id,o.order_no,o.status,o.price_cents,o.captain_user_id,o.created_at,o.updated_at,u.name AS captain_name FROM orders o LEFT JOIN users u ON u.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200").all();
+  const ledger = db.prepare("SELECT l.id,l.user_id,l.type,l.amount_cents,l.balance_after_cents,l.reference,l.note,l.created_at,u.name AS user_name FROM wallet_ledger l LEFT JOIN users u ON u.id=l.user_id ORDER BY l.id DESC LIMIT 200").all();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ generatedAt: now(), bot: { ready: isReady, receiverReady: baileysReady, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)) }, company: company ? { ...company, wallet: money(company.wallet_cents) } : null, captains: captains.map((row) => ({ ...row, balance: money(row.wallet_cents) })), cards: cards.map((row) => ({ ...row, value: money(row.value_cents) })), orders, ledger });
+});
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
