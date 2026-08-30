@@ -46,6 +46,7 @@ const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل ال
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
+const cardDeliveryInFlight = new Set();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 app.disable("x-powered-by");
@@ -143,6 +144,11 @@ CREATE TABLE IF NOT EXISTS topup_cards (
   status TEXT NOT NULL CHECK(status IN ('issued','redeemed','void')) DEFAULT 'issued',
   redeemed_by INTEGER,
   redeemed_at TEXT,
+  assigned_captain_id INTEGER,
+  sent_at TEXT,
+  delivery_idempotency_key TEXT,
+  issue_idempotency_key TEXT,
+  code_ciphertext TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY(redeemed_by) REFERENCES users(id)
 );
@@ -206,6 +212,14 @@ if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TA
 if (!existingOrderColumns.includes("pending_message_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_message_id TEXT");
 if (!existingOrderColumns.includes("pending_at")) db.exec("ALTER TABLE orders ADD COLUMN pending_at TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
+const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
+if (!existingCardColumns.includes("assigned_captain_id")) db.exec("ALTER TABLE topup_cards ADD COLUMN assigned_captain_id INTEGER");
+if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN sent_at TEXT");
+if (!existingCardColumns.includes("delivery_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN delivery_idempotency_key TEXT");
+if (!existingCardColumns.includes("issue_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN issue_idempotency_key TEXT");
+if (!existingCardColumns.includes("code_ciphertext")) db.exec("ALTER TABLE topup_cards ADD COLUMN code_ciphertext TEXT");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON topup_cards(issue_idempotency_key) WHERE issue_idempotency_key IS NOT NULL AND issue_idempotency_key <> ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
 
 const now = () => new Date().toISOString();
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -217,6 +231,23 @@ const phoneWithCountry = (value = "") => {
 const cents = (value) => Math.round(Number(value || 0) * 100);
 const money = (value) => (Number(value || 0) / 100).toFixed(2);
 const hashCode = (code) => crypto.createHash("sha256").update(String(code).trim().toUpperCase()).digest("hex");
+const cardEncryptionSecret = String(DASHBOARD_API_TOKEN || JWT_SECRET || "").trim();
+const cardEncryptionKey = cardEncryptionSecret ? crypto.createHash("sha256").update(cardEncryptionSecret).digest() : null;
+function encryptCardCode(code) {
+  if (!cardEncryptionKey) throw new Error("Card encryption is not configured");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", cardEncryptionKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(code), "utf8"), cipher.final()]);
+  return [iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), ciphertext.toString("base64url")].join(".");
+}
+function decryptCardCode(payload) {
+  if (!cardEncryptionKey || !payload) throw new Error("Card delivery encryption is not configured");
+  const [ivValue, tagValue, ciphertextValue] = String(payload).split(".");
+  if (!ivValue || !tagValue || !ciphertextValue) throw new Error("Card code payload is invalid");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", cardEncryptionKey, Buffer.from(ivValue, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(ciphertextValue, "base64url")), decipher.final()]).toString("utf8");
+}
 const randomCode = () => {
   const part = crypto.randomBytes(3).toString("hex").toUpperCase();
   return `FD-5JD-${part}`;
@@ -1063,13 +1094,71 @@ app.get("/status", (req, res) => res.json({ ready: isReady, hasQr: Boolean(qrCod
 app.get("/api/dashboard/snapshot", requireDashboardApi, (req, res) => {
   const company = db.prepare("SELECT id,name,phone,wallet_cents,active FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   const captains = db.prepare("SELECT u.id,u.name,u.phone,u.wallet_cents,u.active,COUNT(o.id) AS trip_count FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id WHERE u.role='captain' GROUP BY u.id ORDER BY u.id DESC LIMIT 200").all();
-  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,NULL AS assigned_captain_id,NULL AS sent_at,c.redeemed_at,u.name AS captain_name FROM topup_cards c LEFT JOIN users u ON u.id=c.redeemed_by ORDER BY c.id DESC LIMIT 200").all();
+  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,c.assigned_captain_id,c.sent_at,c.redeemed_at,COALESCE(assigned.name,redeemed.name) AS captain_name FROM topup_cards c LEFT JOIN users assigned ON assigned.id=c.assigned_captain_id LEFT JOIN users redeemed ON redeemed.id=c.redeemed_by ORDER BY c.id DESC LIMIT 200").all();
   const orders = db.prepare("SELECT o.id,o.order_no,o.status,o.price_cents,o.captain_user_id,o.created_at,o.updated_at,u.name AS captain_name FROM orders o LEFT JOIN users u ON u.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200").all();
   const ledger = db.prepare("SELECT l.id,l.user_id,l.type,l.amount_cents,l.balance_after_cents,l.reference,l.note,l.created_at,u.name AS user_name FROM wallet_ledger l LEFT JOIN users u ON u.id=l.user_id ORDER BY l.id DESC LIMIT 200").all();
   res.setHeader("Cache-Control", "no-store");
   res.json({ generatedAt: now(), bot: { ready: isReady, receiverReady: baileysReady, phone: BOT_PHONE, groupConfigured: Boolean(getSetting("group_id", null)) }, company: company ? { ...company, wallet: money(company.wallet_cents) } : null, captains: captains.map((row) => ({ ...row, balance: money(row.wallet_cents) })), cards: cards.map((row) => ({ ...row, value: money(row.value_cents) })), orders, ledger });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
+
+app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
+  if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many card issuance attempts; try again later" });
+  const value = Number(req.body?.value);
+  const captainId = Number(req.body?.captainId);
+  const issueIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isFinite(value) || value <= 0 || value > 1000 || !Number.isInteger(captainId) || captainId < 1 || issueIdempotencyKey.length < 16 || issueIdempotencyKey.length > 100) {
+    return res.status(400).json({ error: "Valid value, captainId, and idempotencyKey are required" });
+  }
+  const captain = db.prepare("SELECT id,phone,name,active,role FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  if (!captain.active) return res.status(409).json({ error: "Captain is inactive" });
+  const existing = db.prepare("SELECT id,value_cents,status,assigned_captain_id,code_ciphertext FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+  if (existing) {
+    if (Number(existing.assigned_captain_id) !== captainId) return res.status(409).json({ error: "Idempotency key is already assigned to another captain" });
+    if (existing.status !== "issued") return res.status(409).json({ error: `Card already has status ${existing.status}` });
+    return res.json({ id: existing.id, code: decryptCardCode(existing.code_ciphertext), value: money(existing.value_cents), status: existing.status, captainId });
+  }
+  const code = randomCode();
+  const encryptedCode = encryptCardCode(code);
+  const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), cents(value), captainId, issueIdempotencyKey, encryptedCode, now());
+  audit("topup_card.issued_and_assigned", "topup_card", result.lastInsertRowid, { valueCents: cents(value), captainId, issueIdempotencyKey });
+  res.status(201).json({ id: result.lastInsertRowid, code, value: Number(value).toFixed(2), status: "issued", captainId });
+});
+
+app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) => {
+  if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
+  const cardId = Number(req.params.id);
+  const deliveryIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isInteger(cardId) || cardId < 1 || deliveryIdempotencyKey.length < 16 || deliveryIdempotencyKey.length > 100) return res.status(400).json({ error: "Valid card id and idempotencyKey are required" });
+  const card = db.prepare("SELECT c.id,c.value_cents,c.status,c.assigned_captain_id,c.sent_at,c.delivery_idempotency_key,c.code_ciphertext,u.phone AS captain_phone,u.name AS captain_name,u.active AS captain_active FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id WHERE c.id=? LIMIT 1").get(cardId);
+  if (!card) return res.status(404).json({ error: "Card not found" });
+  if (card.delivery_idempotency_key && card.delivery_idempotency_key !== deliveryIdempotencyKey) return res.status(409).json({ error: "Card delivery is already recorded with another idempotency key" });
+  if (card.sent_at) return res.json({ success: true, cardId, status: "sent", alreadySent: true });
+  if (card.status !== "issued") return res.status(409).json({ error: `Card cannot be sent while status is ${card.status}` });
+  if (!card.assigned_captain_id || !card.captain_phone || !card.captain_active) return res.status(409).json({ error: "Card must be assigned to an active captain before sending" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp bot is not ready; card was not sent" });
+  if (cardDeliveryInFlight.has(cardId)) return res.status(409).json({ error: "Card delivery is already in progress" });
+  cardDeliveryInFlight.add(cardId);
+  try {
+    const code = decryptCardCode(card.code_ciphertext);
+    const chatId = `${phoneWithCountry(card.captain_phone)}@c.us`;
+    const message = brandedMessage("بطاقة شحن مخصصة", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "هذه البطاقة مخصصة لهذا الرقم فقط وتُستخدم مرة واحدة.", "للاسترداد أرسل الرمز عبر قناة البوت المعتمدة."]);
+    const sent = await withTimeout(client.sendMessage(chatId, message), 20000, null);
+    if (!sent) return res.status(504).json({ error: "WhatsApp delivery timed out; card remains unsent" });
+    const stamp = now();
+    const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(stamp, deliveryIdempotencyKey, cardId);
+    if (!update.changes) return res.json({ success: true, cardId, status: "sent", alreadySent: true });
+    audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey });
+    res.json({ success: true, cardId, status: "sent" });
+  } catch (error) {
+    audit("topup_card.delivery_failed", "topup_card", cardId, { captainId: card.assigned_captain_id, deliveryIdempotencyKey, error: String(error?.message || error) });
+    res.status(502).json({ error: "Unable to deliver card through WhatsApp" });
+  } finally {
+    cardDeliveryInFlight.delete(cardId);
+  }
+});
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
@@ -1345,7 +1434,9 @@ app.post("/api/redeem", (req, res) => {
   const result = db.transaction(() => {
     const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? AND status='issued'").get(hashCode(code));
     if (!card) throw new Error("Invalid or already used card");
-    const user = upsertUser({ phone, name: phone, role: "captain", allowSuspended: true });
+    const assignedUser = card.assigned_captain_id ? db.prepare("SELECT * FROM users WHERE id=? AND role='captain' LIMIT 1").get(card.assigned_captain_id) : null;
+    if (card.assigned_captain_id && (!assignedUser || phoneWithCountry(assignedUser.phone) !== phone)) throw new Error("This card is assigned to another captain");
+    const user = assignedUser || upsertUser({ phone, name: phone, role: "captain", allowSuspended: true });
     const newBalance = Number(user.wallet_cents) + Number(card.value_cents);
     const stamp = now();
     db.prepare("UPDATE topup_cards SET status='redeemed',redeemed_by=?,redeemed_at=? WHERE id=? AND status='issued'").run(user.id, stamp, card.id);
