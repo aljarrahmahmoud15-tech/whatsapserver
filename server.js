@@ -1619,7 +1619,34 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   res.json({ success: true, messageId: sent.id._serialized });
 });
 
-app.listen(PORT, () => {
+// مسار الإدارة لتحديث وتثبيت معرّف القروب النشط يدوياً أو تلقائياً
+app.post('/api/admin/group', express.json(), (req, res) => {
+  const { groupId } = req.body;
+  if (!groupId) {
+    return res.status(400).json({ error: 'groupId is required' });
+  }
+  activeGroupId = groupId;
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
+  console.log(`[Admin] Active group JID updated to: ${activeGroupId}`);
+  return res.json({ success: true, activeGroupId });
+});
+
+// معالجة ورصد الرسائل الواردة وتحديث معرّف القروب النشط ديناميكياً عند تفاعل الأدمن أو الكباتن
+async function handleIncomingMessage(msg, options = {}) {
+  const remoteJid = msg.key.remoteJid;
+  const isGroup = remoteJid.endsWith('@g.us');
+  
+  if (isGroup) {
+    const storedGroupId = db.prepare('SELECT value FROM settings WHERE key = ?').get('active_group_id');
+    const currentActiveGroup = storedGroupId ? storedGroupId.value : activeGroupId;
+
+    if (currentActiveGroup && remoteJid !== currentActiveGroup && options.autoSwitch) {
+      activeGroupId = remoteJid;
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
+      console.log(`[System] Automatically switched active group JID to: ${activeGroupId}`);
+    }
+  }
+}app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   initializeWhatsApp();
