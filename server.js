@@ -1076,7 +1076,7 @@ function issueTemporaryQrGrant(req) {
   temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
-});
+}
 app.post("/api/auth/login", async (req, res) => {
   const username = String(req.body.username || "admin").trim();
   const token = jwt.sign({ role: "company", username }, JWT_SECRET, { expiresIn: "7d" });
