@@ -1646,7 +1646,91 @@ async function handleIncomingMessage(msg, options = {}) {
       console.log(`[System] Automatically switched active group JID to: ${activeGroupId}`);
     }
   }
-}app.listen(PORT, () => {
+}app.listen(PORT, () => {// =========================================================================
+// الحزمة الشاملة لتطوير وإصلاح النظام (الصلاحيات الهرمية + مزامنة القروب والوضع)
+// =========================================================================
+
+// 1. إنشاء جدول الأدوار والصلاحيات في قاعدة البيانات إذا لم يكن موجوداً
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS user_roles (
+    phone TEXT PRIMARY KEY,
+    role TEXT NOT NULL, -- 'owner', 'admin', 'supervisor', 'captain'
+    name TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
+
+// 2. مسار إداري شامل لتحديث وتثبيت معرّف القروب النشط يدوياً
+app.post('/api/admin/group', express.json(), (req, res) => {
+  const { groupId, adminToken } = req.body;
+  if (adminToken && adminToken !== ADMIN_TOKEN) {
+    return res.status(403).json({ error: 'Unauthorized token' });
+  }
+  if (!groupId) {
+    return res.status(400).json({ error: 'groupId is required' });
+  }
+  activeGroupId = groupId;
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
+  console.log(`[Admin] Active group JID updated to: ${activeGroupId}`);
+  return res.json({ success: true, activeGroupId });
+});
+
+// 3. مسار إداري للمالك لمنح الصلاحيات (Admin, Supervisor, Captain)
+app.post('/api/admin/roles/grant', express.json(), (req, res) => {
+  const { targetPhone, role, name, adminToken } = req.body;
+  
+  if (adminToken && adminToken !== ADMIN_TOKEN) {
+    return res.status(403).json({ error: 'Unauthorized: Owner access required' });
+  }
+
+  if (!targetPhone || !['admin', 'supervisor', 'captain'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid phone or role specification' });
+  }
+
+  try {
+    const cleanPhone = targetPhone.replace(/[^0-9]/g, '');
+    db.prepare(`
+      INSERT OR REPLACE INTO user_roles (phone, role, name, updated_at) 
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(cleanPhone, role, name || 'مستخدم');
+
+    console.log(`[Security] Role assigned successfully: Phone ${cleanPhone} is now [${role}]`);
+    return res.json({ success: true, message: `Role ${role} assigned to ${cleanPhone} successfully.` });
+  } catch (err) {
+    console.error('[Security Error] Failed to update role:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. دالة التحقق من رتبة المستخدم في النظام
+function getUserRole(phone) {
+  if (!phone) return 'captain';
+  const clean = phone.replace(/[^0-9]/g, '');
+  if (clean === BOT_PHONE || clean === BOT_PHONE_INTL) {
+    return 'owner';
+  }
+  const record = db.prepare('SELECT role FROM user_roles WHERE phone = ?').get(clean);
+  return record ? record.role : 'captain';
+}
+
+// 5. معالجة ورصد الرسائل الواردة وتحديث معرّف القروب النشط ديناميكياً
+async function handleIncomingMessage(msg, options = {}) {
+  const remoteJid = msg.key?.remoteJid;
+  if (!remoteJid) return;
+  
+  const isGroup = remoteJid.endsWith('@g.us');
+  
+  if (isGroup) {
+    const storedGroupId = db.prepare('SELECT value FROM settings WHERE key = ?').get('active_group_id');
+    const currentActiveGroup = storedGroupId ? storedGroupId.value : activeGroupId;
+
+    if (currentActiveGroup && remoteJid !== currentActiveGroup && options.autoSwitch) {
+      activeGroupId = remoteJid;
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
+      console.log(`[System] Automatically switched active group JID to: ${activeGroupId}`);
+    }
+  }
+}
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   initializeWhatsApp();
