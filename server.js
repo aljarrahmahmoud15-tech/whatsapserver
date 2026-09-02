@@ -1252,6 +1252,16 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
 
+app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many restart attempts; try again later" });
+  try {
+    await restartWhatsApp("admin requested reconnect");
+    res.json({ success: true, message: "Reconnect scheduled while preserving the WhatsApp session and application data" });
+  } catch (error) {
+    console.error("[WhatsApp] admin restart:", error.message);
+    res.status(500).json({ error: "Unable to schedule WhatsApp reconnect" });
+  }
+});
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
