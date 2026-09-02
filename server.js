@@ -1579,7 +1579,7 @@ app.post("/api/support/tickets", (req, res) => {
   if (accountRef && isBlockedPhone(accountRef)) return res.status(403).json({ error: "This account is blocked by company policy" });
   const ticketCode = createTicketCode();
   const stamp = now();
-  const result = db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'new',?,?)").run(ticketCode, requesterName, accountRef || null, category, message, requestedValue === null ? null : cents(requestedValue), stamp, stamp);
+  const result = db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'new',?,?)").run(ticketCode, requesterName, accountRef || null, category, message, requestedValue === null ? null : cents(requestedValue), stamp, stamp);
   audit("support.ticket.created", "support_ticket", result.lastInsertRowid, { ticketCode, category });
   res.status(201).json({ success: true, ticketCode, status: "new", message: "تم تسجيل طلبك داخل خدمة العملاء" });
 });
