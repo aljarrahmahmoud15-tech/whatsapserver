@@ -1501,6 +1501,23 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   const chats = await client.getChats();
   res.json({ groups: chats.filter((chat) => chat.isGroup).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
 });
+app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !groupId.endsWith("@g.us")) return res.status(409).json({ error: "No configured group" });
+  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+  const members = [];
+  for (const participant of (chat.participants || [])) {
+    const serialized = participant && participant.id && (participant.id._serialized || String(participant.id));
+    const phone = participant && participant.id && participant.id.user ? String(participant.id.user) : "";
+    if (!phone || phone === BOT_PHONE_INTL) continue;
+    let contact = null;
+    try { contact = await withTimeout(client.getContactById(serialized), 10000, null); } catch (_) {}
+    members.push({ phone, name: String((contact && (contact.name || contact.pushname)) || phone).trim(), id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
+  }
+  res.json({ success: true, groupId, groupName: chat.name || null, members });
+});
 app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
