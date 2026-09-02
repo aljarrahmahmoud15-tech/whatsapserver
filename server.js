@@ -1086,6 +1086,25 @@ app.post("/api/auth/login", async (req, res) => {
   setSessionCookie(res, token);
   res.json({ success: true, role: "company", username });
 });
+app.post("/api/auth/logout", (req, res) => {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+  res.json({ success: true });
+});
+app.get("/status", (req, res) => {
+  const groupId = getSetting("group_id", null);
+  const activeGroupId = getSetting("active_group_id", null);
+  const configuredGroupId = groupId || activeGroupId;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ready: Boolean(isReady),
+    phone: connectedBotPhone(),
+    groupConfigured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
+    groupId: configuredGroupId || null,
+    groupReceiverReady: Boolean(baileysReady),
+    qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+  });
+});
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
 
 app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
