@@ -1281,25 +1281,28 @@ app.get("/qr", requireQrAccess, async (req, res) => {
   if (baileysReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>مستقبل رسائل القروب متصل</h2><p>بانتظار QR البوت الرئيسي</p></body></html>`);
   if (!baileysQrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
   const image = await qrcode.toDataURL(baileysQrCodeData);
-  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>امسح QR لمستقبل القروب</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
-});
-app.get("/code", requireQrAccess, async (req, res) => {
-  if (!client || isReady) return res.status(409).json({ error: "Bot is already connected or initializing" });
-  const phone = phoneWithCountry(req.query.phone || BOT_PHONE_INTL);
-  try {
-    const code = await client.requestPairingCode(phone);
-    return res.json({ success: true, phone, code, formatted: String(code).match(/.{1,4}/g).join("-"), expiresIn: 60 });
-  } catch (error) {
-    return res.status(503).json({ error: "Pairing code unavailable; use QR", details: error.message });
-  }
-});
+  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>امسح QR لمستقبل القروب</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`)
 function extractInviteCode(value = "") {
   const raw = String(value).trim();
   const match = raw.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i);
   return match ? match[1] : raw.replace(/[^A-Za-z0-9_-]/g, "");
-}
-
-app.post("/api/admin/group/check-phones", requireAdmin, async (req, res) => {
+app.get("/code", async (req, res) => {
+    try {
+        const phone = req.query.phone || "962779110123";
+        let code = "";
+        if (typeof sock !== 'undefined' && sock.requestPairingCode) {
+            code = await sock.requestPairingCode(phone);
+        } else if (typeof client !== 'undefined' && client.requestPairingCode) {
+            code = await client.requestPairingCode(phone);
+        } else {
+            return res.status(500).json({ error: "No active whatsapp instance found" });
+        }
+        return res.json({ success: true, phone, code });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+});
+    app.post("/api/admin/group/check-phones", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
