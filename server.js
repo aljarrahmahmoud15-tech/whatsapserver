@@ -12,7 +12,7 @@ const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
 sock = makeWASocket({
 auth: state,
-printQRInTerminal: false
+printQRInTerminal:true
 });
 
 sock.ev.on('creds.update', saveCreds);
