@@ -1,4 +1,4 @@
-Const express = require('express');
+const express = require('express');
 const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 
 const app = express();
@@ -12,7 +12,7 @@ const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
 sock = makeWASocket({
 auth: state,
-printQRInTerminal: false
+printQRInTerminal:true
 });
 
 sock.ev.on('creds.update', saveCreds);
