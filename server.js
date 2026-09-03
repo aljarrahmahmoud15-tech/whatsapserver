@@ -4,7 +4,7 @@ const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysocket
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-let sock; // Make socket globally accessible to the routing context
+let sock; // Make socket globally accessible to the routing context 
 let isConnected = false;
 
 async function startWhatsApp() {
