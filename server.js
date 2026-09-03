@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,7 +11,8 @@ async function startWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false
+        printQRInTerminal: false,
+        browser: Browsers.macOS('Desktop')
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -29,7 +30,6 @@ async function startWhatsApp() {
 
 startWhatsApp();
 
-// Pairing code endpoint
 app.get('/code', async (req, res) => {
     if (!sock) {
         return res.status(503).json({ success: false, error: "WhatsApp client is initializing. Please try again in a few seconds." });
@@ -45,8 +45,8 @@ app.get('/code', async (req, res) => {
         const code = await sock.requestPairingCode(phone);
         return res.json({ success: true, phone, code });
     } catch (err) {
-        console.error(err);
-        return res.status(500).json({ success: false, error: "Failed to generate pairing code." });
+        console.error("Pairing code error:", err);
+        return res.status(500).json({ success: false, error: "Failed to generate pairing code. Please refresh in a few seconds." });
     }
 });
 
