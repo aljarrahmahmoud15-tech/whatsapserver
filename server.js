@@ -11,7 +11,7 @@ async function startWhatsApp() {
 
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal:true ,
+        printQRInTerminal:false ,
         browser: Browsers.macOS('Desktop')
     });
 
