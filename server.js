@@ -1,16 +1,48 @@
 const express = require('express');
 const path = require('path');
+const crypto = require('crypto');
 const { default: makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '9871040319';
+const sessions = new Map();
 let sock;
 let latestQr = null;
 let connectionState = 'starting';
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/captain', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'captain.html'));
+app.get('/captain', (req, res) => res.sendFile(path.join(__dirname, 'public', 'captain.html')));
+
+function getSession(req) {
+  const token = String(req.headers.cookie || '').match(/(?:^|;\s*)admin_session=([^;]+)/)?.[1];
+  return token && sessions.has(token) ? sessions.get(token) : null;
+}
+function requireAdmin(req, res, next) {
+  if (!getSession(req)) return res.status(401).json({ error: 'Admin authentication required.' });
+  next();
+}
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ success: false, error: 'Invalid credentials.' });
+  }
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, { username, createdAt: Date.now() });
+  res.setHeader('Set-Cookie', `admin_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`);
+  res.json({ success: true, username });
+});
+app.post('/api/auth/logout', (req, res) => {
+  const token = String(req.headers.cookie || '').match(/(?:^|;\s*)admin_session=([^;]+)/)?.[1];
+  if (token) sessions.delete(token);
+  res.setHeader('Set-Cookie', 'admin_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+  res.json({ success: true });
+});
+app.get('/api/admin/overview', requireAdmin, (req, res) => {
+  res.json({ orders: 0, accepted: 0, pendingConfirmation: 0, wallets: 0, ledgerMoves: 0, companyBalance: '0.00', cards: { issued: 0, redeemed: 0, void: 0 }, groupId: null });
 });
 
 async function startWhatsApp() {
