@@ -1,10 +1,17 @@
 const express = require('express');
+const path = require('path');
 const { default: makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const app = express();
 const PORT = process.env.PORT || 3000;
 let sock;
 let latestQr = null;
 let connectionState = 'starting';
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/captain', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'captain.html'));
+});
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
