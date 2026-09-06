@@ -19,17 +19,38 @@
       <div class="status"><span class="dot"></span><span>بيانات مباشرة من النظام</span></div>
     </header>
 
+    <section id="registration" class="login hidden">
+      <form id="registration-form" class="login-card">
+        <div class="eyebrow">CAPTAIN INVITATION</div>
+        <h1>بطاقة دعوة الكابتن</h1>
+        <p class="muted">أدخل اسمك ورقم هاتفك واختر رقمًا سريًا من 4 أرقام. سيرسل الطلب إلى الشركة للموافقة أو الرفض.</p>
+        <label class="label">اسم الكابتن<input class="input" id="reg-name" autocomplete="name" required></label>
+        <label class="label">رقم الهاتف<input class="input" id="reg-phone" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required></label>
+        <label class="label">رقم سري من 4 أرقام<input class="input" id="reg-pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
+        <label class="label">تأكيد الرقم السري<input class="input" id="reg-pin-confirm" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
+        <button class="primary" id="register-btn" type="submit">إرسال الطلب للشركة</button>
+        <div id="register-error" class="error" role="alert"></div>
+        <div class="hint">لا توجد كلمة سر جاهزة داخل البطاقة؛ أنت تختار الرقم السري بنفسك.</div>
+      </form>
+    </section>
+    <section id="pending" class="login hidden">
+      <div class="login-card">
+        <div class="eyebrow">REQUEST STATUS</div>
+        <h1 id="pending-title">الطلب قيد المراجعة</h1>
+        <p id="pending-message" class="muted">تم إرسال بياناتك إلى الشركة. ستظهر هنا نتيجة الموافقة أو الرفض.</p>
+        <button class="primary hidden" id="approved-login" type="button">دخول البوابة بعد الموافقة</button>
+      </div>
+    </section>
     <section id="login" class="login">
       <form id="login-form" class="login-card">
         <div class="eyebrow">CAPTAIN ACCESS</div>
         <h1>دخول الكابتن</h1>
-        <p class="muted">بعد تسجيل الدخول ستظهر بيانات الحساب الفعلية فقط: الرصيد الحالي، الأرباح، تفاصيل الأرباح، وسجل العمليات. لا تُعرض أي بيانات تجريبية.</p>
-        <label class="label">اسم المستخدم<input class="input" id="username" autocomplete="username" required></label>
-        <label class="label">كلمة المرور<input class="input" id="password" type="password" autocomplete="current-password" required></label>
+        <p class="muted">بعد موافقة الشركة، استخدم رقم هاتفك والرقم السري الذي اخترته لعرض الرصيد والأرباح الفعلية.</p>
         <label class="label">رقم هاتف الكابتن<input class="input" id="phone" inputmode="tel" autocomplete="tel" required></label>
+        <label class="label">الرقم السري من 4 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
-        <div class="hint">يجب أن يكون الرقم مسجلًا في حساب كابتن نشط.</div>
+        <div class="hint" id="invite-hint">للتسجيل لأول مرة، افتح بطاقة الدعوة التي أرسلتها الشركة.</div>
       </form>
     </section>
 
@@ -61,6 +82,10 @@
 
   <script>
     const $ = (selector) => document.querySelector(selector);
+    const inviteToken = new URLSearchParams(location.search).get('invite');
+    let inviteState = null;
+    let submittedCaptain = null;
+    let invitePoll = null;
     async function api(url, options = {}) {
       const headers = {...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})};
       const response = await fetch(url, {...options, headers, credentials:'same-origin'});
@@ -71,6 +96,7 @@
     function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value ?? '0.00'; }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
     function statusLabel(value) { return ({open:'مفتوح',accepted:'مثبت',completed:'مكتمل',cancelled:'ملغى'})[value] || value || 'غير محدد'; }
+    function showSection(id) { ['registration','pending','login','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
     function render(data) {
       setText('captain-name', data.user?.name || 'كابتن');
       setText('balance', data.wallet?.balance || '0.00');
@@ -78,21 +104,36 @@
       setText('fees', data.earnings?.fees || '0.00');
       const trips = Array.isArray(data.trips) ? data.trips : [];
       const entries = Array.isArray(data.entries) ? data.entries : [];
-      setText('trip-count', `${trips.length} رحلة`);
-      setText('ledger-count', `${entries.length} حركة`);
+      setText('trip-count', `${trips.length} رحلة`); setText('ledger-count', `${entries.length} حركة`);
       $('#trips').innerHTML = trips.length ? trips.map((trip) => `<article class="row"><div class="row-top"><span class="row-title">طلب #${escapeHtml(trip.order_no)}</span><span class="row-date">${escapeHtml(trip.trip_time || trip.updated_at || trip.created_at || '')}</span></div><div class="row-main"><div>${escapeHtml(trip.origin || 'المسار غير مسجل')}</div><span class="arrow">←</span><div>${escapeHtml(trip.destination || 'الوجهة غير مسجلة')}</div></div><div class="row-meta"><span class="tag">الحالة: ${escapeHtml(statusLabel(trip.status))}</span><span class="tag">قيمة الطلب: ${escapeHtml(trip.price)} JOD</span><span class="tag green">إجمالي الكابتن: ${escapeHtml(trip.grossEarnings)} JOD</span><span class="tag green">الصافي: ${escapeHtml(trip.netEarnings)} JOD</span><span class="tag orange">الخصم: ${escapeHtml(trip.walletFee)} JOD</span></div></article>`).join('') : '<div class="empty"><strong>لا توجد رحلات مسجلة</strong>ستظهر تفاصيل الأرباح هنا بعد تثبيت أول طلب لهذا الحساب.</div>';
       $('#ledger').innerHTML = entries.length ? entries.map((entry) => { const positive = Number(entry.amount_cents) >= 0; return `<article class="row"><div><span class="ledger-title">${escapeHtml(entry.note || entry.type || 'حركة رصيد')}</span><span class="ledger-note">المرجع: ${escapeHtml(entry.reference || '—')}</span></div><div class="ledger-amount ${positive ? 'credit' : 'debit'}">${positive ? '+' : ''}${escapeHtml(entry.amount)} JOD</div><div class="ledger-date">الرصيد بعد الحركة: ${escapeHtml(entry.balanceAfter)} JOD · ${escapeHtml(entry.created_at || '')}</div></article>`; }).join('') : '<div class="empty"><strong>لا توجد حركات رصيد</strong>سيظهر سجل الرصيد هنا عند تسجيل أول حركة فعلية.</div>';
     }
     async function loadOverview() { const data = await api('/api/captain/overview'); render(data); }
-    $('#login-form').addEventListener('submit', async (event) => {
-      event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = '';
-      try {
-        await api('/api/captain/login', {method:'POST', body:JSON.stringify({username:$('#username').value.trim(), password:$('#password').value, phone:$('#phone').value.trim()})});
-        await loadOverview(); $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); $('#password').value = '';
-      } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; }
+    function updateInviteStatus(invite) {
+      inviteState = invite;
+      if (invite.status === 'pending') { showSection('pending'); setText('pending-title','الطلب قيد المراجعة'); setText('pending-message','تم إرسال طلبك إلى الشركة. ستظهر هنا نتيجة الموافقة أو الرفض.'); $('#approved-login').classList.add('hidden'); return; }
+      if (invite.status === 'approved') { showSection('pending'); setText('pending-title','تمت الموافقة'); setText('pending-message','وافقت الشركة على طلبك. استخدم رقم هاتفك والرقم السري الذي اخترته للدخول.'); $('#approved-login').classList.remove('hidden'); return; }
+      if (invite.status === 'rejected') { showSection('pending'); setText('pending-title','تم رفض الطلب'); setText('pending-message', invite.decision_note || 'تم رفض طلب الانضمام من الشركة.'); $('#approved-login').classList.add('hidden'); return; }
+      showSection('registration');
+    }
+    async function pollInvite() {
+      if (!inviteToken) return;
+      try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'approved' || data.invite.status === 'rejected') { clearInterval(invitePoll); if (data.invite.status === 'approved' && submittedCaptain) await loginCaptain(submittedCaptain.phone, submittedCaptain.pin); } } catch (error) { clearInterval(invitePoll); $('#register-error').textContent = error.message; }
+    }
+    async function loginCaptain(phone, pin) {
+      await api('/api/captain/login', {method:'POST', body:JSON.stringify({phone, pin})});
+      await loadOverview(); showSection('app');
+    }
+    $('#registration-form').addEventListener('submit', async (event) => {
+      event.preventDefault(); const button = $('#register-btn'); button.disabled = true; $('#register-error').textContent = '';
+      const name = $('#reg-name').value.trim(), phone = $('#reg-phone').value.trim(), pin = $('#reg-pin').value.trim(), confirmPin = $('#reg-pin-confirm').value.trim();
+      if (pin !== confirmPin) { $('#register-error').textContent = 'الرقمان السريان غير متطابقين'; button.disabled = false; return; }
+      try { await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,pin})}); submittedCaptain = {phone,pin}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
     });
-    $('#logout').addEventListener('click', async () => { await api('/api/captain/logout', {method:'POST'}).catch(() => {}); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); });
-    (async () => { try { await loadOverview(); $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); } catch (error) { if (error.status !== 401) $('#login-error').textContent = error.message; } })();
+    $('#approved-login').addEventListener('click', () => { showSection('login'); if (inviteState?.phone) $('#phone').value = inviteState.phone; });
+    $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { await loginCaptain($('#phone').value.trim(), $('#pin').value); $('#pin').value = ''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
+    $('#logout').addEventListener('click', async () => { await api('/api/captain/logout', {method:'POST'}).catch(() => {}); showSection('login'); });
+    (async () => { try { await loadOverview(); showSection('app'); } catch (error) { if (inviteToken) { try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'pending') invitePoll = setInterval(pollInvite, 10000); } catch (inviteError) { showSection('registration'); $('#register-error').textContent = inviteError.message; } } else { showSection('login'); if (error.status !== 401) $('#login-error').textContent = error.message; } } })();
   </script>
 </body>
 </html>

@@ -220,12 +220,32 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS captain_invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_last8 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('issued','pending','approved','rejected','expired')) DEFAULT 'issued',
+  name TEXT,
+  phone TEXT,
+  pin_hash TEXT,
+  pin_ciphertext TEXT,
+  approved_user_id INTEGER,
+  decision_note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  submitted_at TEXT,
+  decided_at TEXT,
+  FOREIGN KEY(approved_user_id) REFERENCES users(id)
+);
 `);
 
 const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all().map((column) => column.name);
 if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 if (!existingUserColumns.includes("is_bot")) db.exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0");
+if (!existingUserColumns.includes("captain_pin_hash")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_hash TEXT");
+if (!existingUserColumns.includes("captain_pin_ciphertext")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_ciphertext TEXT");
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
 if (!existingOrderColumns.includes("order_kind")) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'normal'");
 if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_captain_user_id INTEGER");
@@ -1112,6 +1132,18 @@ function validCaptainPassword(value) {
   }
   return false;
 }
+function validCaptainPin(value) {
+  return /^\d{4}$/.test(String(value || ""));
+}
+function inviteTokenHash(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+function expireCaptainInvites() {
+  db.prepare("UPDATE captain_invites SET status='expired',updated_at=? WHERE status IN ('issued','pending') AND expires_at<=?").run(now(), now());
+}
+function captainInviteBaseUrl(req) {
+  return String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+}
 function requireQrAccess(req, res, next) {
   const queryToken = String(req.query.token || "");
   const isQueryAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(queryToken, ADMIN_TOKEN);
@@ -1134,20 +1166,104 @@ function issueTemporaryQrGrant(req) {
   temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
+app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
+  const token = crypto.randomBytes(24).toString("base64url");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare("INSERT INTO captain_invites(token_hash,token_last8,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?)")
+    .run(inviteTokenHash(token), token.slice(-8), "issued", stamp, stamp, expiresAt);
+  audit("captain.invite.issued", "captain_invite", token.slice(-8), { expiresAt }, null);
+  res.status(201).json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
+});
+app.get("/api/captain/invites/:token", (req, res) => {
+  expireCaptainInvites();
+  const invite = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
+  if (!invite) return res.status(404).json({ error: "بطاقة الدعوة غير موجودة" });
+  if (invite.status === "expired") return res.status(410).json({ error: "انتهت صلاحية بطاقة الدعوة" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ invite: { ...invite, canSubmit: invite.status === "issued" || invite.status === "pending" } });
+});
+app.post("/api/captain/invites/:token/apply", (req, res) => {
+  expireCaptainInvites();
+  const invite = db.prepare("SELECT * FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
+  if (!invite) return res.status(404).json({ error: "بطاقة الدعوة غير موجودة" });
+  if (invite.status === "expired") return res.status(410).json({ error: "انتهت صلاحية بطاقة الدعوة" });
+  if (!["issued", "pending"].includes(invite.status)) return res.status(409).json({ error: invite.status === "approved" ? "تمت الموافقة على هذه الدعوة مسبقًا" : "لا يمكن استخدام هذه الدعوة" });
+  const name = String(req.body?.name || "").trim();
+  const rawPhone = String(req.body?.phone || "").trim();
+  const phone = phoneWithCountry(rawPhone);
+  const pin = String(req.body?.pin || "").trim();
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (!validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 4 أرقام" });
+  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
+  if (existing && existing.role === "captain" && existing.id !== invite.approved_user_id) return res.status(409).json({ error: "يوجد حساب كابتن بهذا الرقم مسبقًا" });
+  const stamp = now();
+  const pinHash = bcrypt.hashSync(pin, 10);
+  const pinCiphertext = cardEncryptionKey ? encryptCardCode(pin) : null;
+  db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=?,submitted_at=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
+    .run(name, phone, pinHash, pinCiphertext, stamp, stamp, invite.id);
+  audit("captain.join.requested", "captain_invite", invite.id, { name, phone }, null);
+  res.status(202).json({ success: true, status: "pending", message: "تم إرسال طلبك إلى الشركة للموافقة" });
+});
+app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
+  expireCaptainInvites();
+  const invites = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all();
+  res.json({ invites });
+});
+app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const decision = String(req.body?.decision || "").trim().toLowerCase();
+  const note = String(req.body?.note || "").trim().slice(0, 240);
+  if (!Number.isInteger(id) || !["approve", "reject"].includes(decision)) return res.status(400).json({ error: "قرار الموافقة أو الرفض مطلوب" });
+  expireCaptainInvites();
+  const invite = db.prepare("SELECT * FROM captain_invites WHERE id=? LIMIT 1").get(id);
+  if (!invite) return res.status(404).json({ error: "طلب الدعوة غير موجود" });
+  if (invite.status !== "pending") return res.status(409).json({ error: "هذا الطلب ليس قيد الانتظار" });
+  const stamp = now();
+  if (decision === "reject") {
+    db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
+    audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى شركة الجراح.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    return res.json({ success: true, status: "rejected", notified });
+  }
+  if (!invite.pin_hash || !invite.phone || !invite.name) return res.status(409).json({ error: "بيانات طلب الكابتن غير مكتملة" });
+  const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(invite.phone);
+  if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
+  let captainId;
+  if (existing) {
+    db.prepare("UPDATE users SET name=?,active=1,captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(invite.name, invite.pin_hash, invite.pin_ciphertext, stamp, existing.id);
+    captainId = existing.id;
+  } else {
+    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,created_at,updated_at) VALUES(?,?,\'captain\',0,1,0,?,?,?,?)").run(invite.phone, invite.name, invite.pin_hash, invite.pin_ciphertext, stamp, stamp).lastInsertRowid;
+  }
+  db.prepare("UPDATE captain_invites SET status='approved',approved_user_id=?,decision_note=?,decided_at=?,updated_at=? WHERE id=? AND status='pending'").run(captainId, note || "تمت الموافقة", stamp, stamp, id);
+  audit("captain.join.approved", "captain_invite", id, { captainId, phone: invite.phone });
+  let notified = false;
+  if (invite.phone) {
+    let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
+    if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
+    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\\nرقم الهاتف: ${invite.phone}\\n${pinText}\\nيمكنك الآن الدخول من بطاقة الكابتن.`);
+  }
+  res.json({ success: true, status: "approved", captainId, notified });
+});
 app.post("/api/captain/login", (req, res) => {
   const username = String(req.body?.username || "").trim();
   const password = String(req.body?.password || "");
+  const pin = String(req.body?.pin || "").trim();
   const rawPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "");
   const phone = phoneWithCountry(rawPhone) || rawPhone;
-  if (username !== CAPTAIN_USERNAME || !validCaptainPassword(password)) return res.status(401).json({ error: "بيانات دخول الكابتن غير صحيحة" });
   if (!phone) return res.status(400).json({ error: "رقم هاتف الكابتن مطلوب" });
-  const user = db.prepare("SELECT id,phone,name,role,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone)
-    || db.prepare("SELECT id,phone,name,role,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(rawPhone);
+  const user = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone)
+    || db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(rawPhone);
   if (!user) return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم" });
+  const pinValid = user.captain_pin_hash ? (validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash)) : (username === CAPTAIN_USERNAME && validCaptainPassword(password));
+  if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
   if (!user.active) return res.status(403).json({ error: "حساب الكابتن موقوف" });
   const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
   setCaptainSessionCookie(res, token);
-  res.json({ success: true, user });
+  res.json({ success: true, user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
 });
 app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
