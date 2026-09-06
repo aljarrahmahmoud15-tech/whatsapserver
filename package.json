@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
-    "test": "node --test"
+    "test": "node --test test_*.js"
   },
   "engines": {
     "node": "22.13.0"
