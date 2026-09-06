@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS captain_invites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,
   token_last8 TEXT NOT NULL,
+  token_ciphertext TEXT,
   status TEXT NOT NULL CHECK(status IN ('issued','pending','approved','rejected','expired')) DEFAULT 'issued',
   name TEXT,
   phone TEXT,
@@ -240,6 +241,8 @@ CREATE TABLE IF NOT EXISTS captain_invites (
 );
 `);
 
+const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
+if (!existingInviteColumns.includes("token_ciphertext")) db.exec("ALTER TABLE captain_invites ADD COLUMN token_ciphertext TEXT");
 const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all().map((column) => column.name);
 if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
@@ -1172,8 +1175,9 @@ app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   const token = crypto.randomBytes(24).toString("base64url");
   const stamp = now();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  db.prepare("INSERT INTO captain_invites(token_hash,token_last8,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?)")
-    .run(inviteTokenHash(token), token.slice(-8), "issued", stamp, stamp, expiresAt);
+  const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
+  db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)")
+    .run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   audit("captain.invite.issued", "captain_invite", token.slice(-8), { expiresAt }, null);
   res.status(201).json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
 });
@@ -1211,7 +1215,12 @@ app.post("/api/captain/invites/:token/apply", (req, res) => {
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();
-  const invites = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all();
+  const invites = db.prepare("SELECT id,status,name,phone,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
+    let inviteUrl = null;
+    if (invite.token_ciphertext) { try { inviteUrl = `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(decryptCardCode(invite.token_ciphertext))}`; } catch {} }
+    const { token_ciphertext: _tokenCiphertext, ...safeInvite } = invite;
+    return { ...safeInvite, inviteUrl };
+  });
   res.json({ invites });
 });
 app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, res) => {
