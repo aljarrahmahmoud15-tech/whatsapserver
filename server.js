@@ -35,6 +35,8 @@ const JWT_SECRET = process.env.JWT_SECRET || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "company";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
+const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
@@ -70,6 +72,15 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false }));
+app.get("/owner-direct", (req, res) => {
+  const provided = String(req.query.token || "");
+  const validToken = OWNER_DIRECT_TOKEN && constantTimeEquals(provided, OWNER_DIRECT_TOKEN);
+  const validTime = OWNER_DIRECT_EXPIRES_AT > Date.now();
+  if (!validToken || !validTime || !JWT_SECRET) return res.status(401).send("رابط الدخول المباشر غير صالح أو انتهت صلاحيته");
+  setSessionCookie(res, jwt.sign({ role: "company", username: ADMIN_USERNAME, direct: true }, JWT_SECRET, { expiresIn: "30m" }));
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.redirect(302, "/");
+});
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
 const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
