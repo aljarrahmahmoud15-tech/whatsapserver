@@ -34,6 +34,7 @@ const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "company";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
@@ -1084,6 +1085,14 @@ function requireCaptain(req, res, next) {
   req.captainSession = session;
   next();
 }
+function validAdminPassword(value) {
+  const password = String(value || "");
+  if (ADMIN_PASSWORD && constantTimeEquals(password, ADMIN_PASSWORD)) return true;
+  if (ADMIN_PASSWORD_HASH) {
+    try { return bcrypt.compareSync(password, ADMIN_PASSWORD_HASH); } catch { return false; }
+  }
+  return false;
+}
 function validCaptainPassword(value) {
   const password = String(value || "");
   if (constantTimeEquals(password, CAPTAIN_PASSWORD)) return true;
@@ -1158,7 +1167,10 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
   });
 });
 app.post("/api/auth/login", async (req, res) => {
-  const username = String(req.body.username || "admin").trim();
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+  if (!JWT_SECRET) return res.status(503).json({ error: "مصادقة الإدارة غير مهيأة" });
+  if (username !== ADMIN_USERNAME || !validAdminPassword(password)) return res.status(401).json({ error: "بيانات دخول المالك غير صحيحة" });
   const token = jwt.sign({ role: "company", username }, JWT_SECRET, { expiresIn: "7d" });
   setSessionCookie(res, token);
   res.json({ success: true, role: "company", username });
