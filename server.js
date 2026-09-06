@@ -1142,7 +1142,9 @@ function expireCaptainInvites() {
   db.prepare("UPDATE captain_invites SET status='expired',updated_at=? WHERE status IN ('issued','pending') AND expires_at<=?").run(now(), now());
 }
 function captainInviteBaseUrl(req) {
-  return String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+  const protocol = forwardedProto === "https" ? "https" : "http";
+  return String(process.env.PUBLIC_BASE_URL || `${protocol}://${req.get("host")}`).replace(/\/$/, "");
 }
 function requireQrAccess(req, res, next) {
   const queryToken = String(req.query.token || "");
