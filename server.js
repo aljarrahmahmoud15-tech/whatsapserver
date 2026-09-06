@@ -4,8 +4,9 @@ const crypto = require('crypto');
 const { default: makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '9871040319';
+// بيانات دخول الإدارة المعتمدة لنسخة المالك والكابتن
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = '9871040319';
 const sessions = new Map();
 let sock;
 let latestQr = null;
