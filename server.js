@@ -615,9 +615,33 @@ let baileysReconnectTimer = null;
 let baileysConnectionGeneration = 0;
 let baileysModulePromise = null;
 
+function findChromeExecutable(root) {
+  if (!root || !fs.existsSync(root)) return null;
+  const queue = [root];
+  while (queue.length) {
+    const current = queue.shift();
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isFile() && (entry.name === "chrome" || entry.name === "chrome-headless-shell")) return candidate;
+      if (entry.isDirectory() && queue.length < 500) queue.push(candidate);
+    }
+  }
+  return null;
+}
+
+const puppeteerCacheDir = process.env.PUPPETEER_CACHE_DIR || `${process.env.HOME || "/tmp"}/.cache/puppeteer`;
+const detectedChromePath = process.env.PUPPETEER_EXECUTABLE_PATH ||
+  (typeof fs !== "undefined" ? findChromeExecutable(puppeteerCacheDir) : null) ||
+  (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/.cache/puppeteer") : null) ||
+  (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/project/src/node_modules/puppeteer/.local-chromium") : null);
+if (detectedChromePath) console.log(`[WhatsApp] using Chrome executable: ${detectedChromePath}`);
+else console.warn(`[WhatsApp] Chrome executable not found at startup; searched ${puppeteerCacheDir}`);
+
 const puppeteerConfig = {
   headless: true,
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+  executablePath: detectedChromePath || undefined,
   protocolTimeout: 120000,
   defaultViewport: null,
   args: [
@@ -1136,7 +1160,7 @@ function validCaptainPassword(value) {
   return false;
 }
 function validCaptainPin(value) {
-  return /^\d{4}$/.test(String(value || ""));
+  return /^\d{5}$/.test(String(value || ""));
 }
 function inviteTokenHash(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
@@ -1181,6 +1205,36 @@ app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   audit("captain.invite.issued", "captain_invite", token.slice(-8), { expiresAt }, null);
   res.status(201).json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
 });
+app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
+  const candidates = Array.isArray(req.body?.captains) ? req.body.captains : [];
+  const excluded = new Set((Array.isArray(req.body?.excludePhones) ? req.body.excludePhones : []).map(phoneWithCountry).filter(Boolean));
+  if (!candidates.length || candidates.length > 500) return res.status(400).json({ error: "captains must contain between 1 and 500 entries" });
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const created = [], skipped = [], rejected = [];
+  const insertInvite = db.transaction((items) => {
+    for (const candidate of items) {
+      const name = String(candidate?.name || "").trim();
+      const phone = phoneWithCountry(String(candidate?.phone || ""));
+      if (!name || name.length > 100 || !isValidJordanPhone(phone) || isBlockedPhone(phone) || phone === phoneWithCountry(BOT_PHONE) || excluded.has(phone)) {
+        rejected.push({ name, phone, reason: excluded.has(phone) ? "excluded" : "invalid_or_blocked" });
+        continue;
+      }
+      const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
+      if (existing) { skipped.push({ name, phone, reason: existing.role === "captain" ? "already_captain" : "assigned_to_other_role" }); continue; }
+      const openInvite = db.prepare("SELECT id FROM captain_invites WHERE phone=? AND status IN ('issued','pending') LIMIT 1").get(phone);
+      if (openInvite) { skipped.push({ name, phone, reason: "invite_already_open" }); continue; }
+      const token = crypto.randomBytes(24).toString("base64url");
+      const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
+      db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,name,phone,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)")
+        .run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", name, phone, stamp, stamp, expiresAt);
+      audit("captain.invite.imported", "captain_invite", token.slice(-8), { name, phone, expiresAt }, null);
+      created.push({ name, phone, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
+    }
+  });
+  insertInvite(candidates);
+  res.status(201).json({ success: true, created, skipped, rejected, message: "تم تجهيز الدعوات؛ لا يُنشأ الحساب ولا يُفعّل إلا بعد موافقة المالك" });
+});
 app.get("/api/captain/invites/:token", (req, res) => {
   expireCaptainInvites();
   const invite = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
@@ -1201,7 +1255,7 @@ app.post("/api/captain/invites/:token/apply", (req, res) => {
   const pin = String(req.body?.pin || "").trim();
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
-  if (!validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 4 أرقام" });
+  if (!validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
   const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
   if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
   if (existing && existing.role === "captain" && existing.id !== invite.approved_user_id) return res.status(409).json({ error: "يوجد حساب كابتن بهذا الرقم مسبقًا" });

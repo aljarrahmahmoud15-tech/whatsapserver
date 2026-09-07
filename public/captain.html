@@ -24,11 +24,11 @@
       <form id="registration-form" class="login-card">
         <div class="eyebrow">CAPTAIN INVITATION</div>
         <h1>بطاقة دعوة الكابتن</h1>
-        <p class="muted">أدخل اسمك ورقم هاتفك واختر رقمًا سريًا من 4 أرقام. سيرسل الطلب إلى الشركة للموافقة أو الرفض.</p>
+        <p class="muted">أدخل اسمك ورقم هاتفك واختر رقمًا سريًا من 5 أرقام. سيرسل الطلب إلى الشركة للموافقة أو الرفض.</p>
         <label class="label">اسم الكابتن<input class="input" id="reg-name" autocomplete="name" required></label>
         <label class="label">رقم الهاتف<input class="input" id="reg-phone" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required></label>
-        <label class="label">رقم سري من 4 أرقام<input class="input" id="reg-pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
-        <label class="label">تأكيد الرقم السري<input class="input" id="reg-pin-confirm" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="new-password" required></label>
+        <label class="label">رقم سري من 5 أرقام<input class="input" id="reg-pin" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required></label>
+        <label class="label">تأكيد الرقم السري<input class="input" id="reg-pin-confirm" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required></label>
         <button class="primary" id="register-btn" type="submit">إرسال الطلب للشركة</button>
         <div id="register-error" class="error" role="alert"></div>
         <div class="hint">لا توجد كلمة سر جاهزة داخل البطاقة؛ أنت تختار الرقم السري بنفسك.</div>
@@ -48,7 +48,7 @@
         <h1>دخول الكابتن</h1>
         <p class="muted">بعد موافقة الشركة، استخدم رقم هاتفك والرقم السري الذي اخترته لعرض الرصيد والأرباح الفعلية.</p>
         <label class="label">رقم هاتف الكابتن<input class="input" id="phone" inputmode="tel" autocomplete="tel" required></label>
-        <label class="label">الرقم السري من 4 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="current-password" required></label>
+        <label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
         <div class="hint" id="invite-hint">للتسجيل لأول مرة، افتح بطاقة الدعوة التي أرسلتها الشركة.</div>
