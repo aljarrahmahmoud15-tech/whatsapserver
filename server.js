@@ -1911,6 +1911,20 @@ app.post("/api/redeem", (req, res) => {
   })();
   try { res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" }); } catch (error) { res.status(400).json({ error: error.message }); }
 });
+app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
+  const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+  if (!captain || !captain.active) return res.status(403).json({ error: "Captain account is inactive" });
+  const requestedValue = Number(req.body?.requestedValue);
+  const message = String(req.body?.message || "أطلب شحن رصيد للمحفظة").trim().slice(0, 500);
+  if (!Number.isFinite(requestedValue) || requestedValue <= 0 || requestedValue > 1000) return res.status(400).json({ error: "أدخل قيمة شحن صحيحة بين 1 و1000" });
+  const open = db.prepare("SELECT ticket_code FROM support_tickets WHERE account_ref=? AND category='topup_card' AND status IN ('new','in_progress') ORDER BY id DESC LIMIT 1").get(phoneWithCountry(captain.phone));
+  if (open) return res.status(409).json({ error: `لديك طلب شحن مفتوح بالفعل: ${open.ticket_code}` });
+  const ticketCode = createTicketCode();
+  const stamp = now();
+  db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'new',?,?)").run(ticketCode, captain.name, phoneWithCountry(captain.phone), "topup_card", message, cents(requestedValue), stamp, stamp);
+  audit("captain.topup_request.created", "support_ticket", ticketCode, { captainId: captain.id, requestedValueCents: cents(requestedValue) }, captain.id);
+  res.status(201).json({ success: true, ticketCode, status: "new", message: "تم إرسال طلب شحن الرصيد إلى الشركة" });
+});
 app.post("/api/support/tickets", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 8)) return res.status(429).json({ error: "Too many support requests; try again later" });
   const requesterName = String(req.body.requesterName || "").trim().slice(0, 120);
