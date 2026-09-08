@@ -1196,7 +1196,7 @@ function issueTemporaryQrGrant(req) {
   temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
-app.get("/api/admin/captain-invite-link", (req, res) => {
+app.get("/api/admin/captain-invite-link", requireAdmin, (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).json({ error: "رابط الدعوة العام غير جاهز" });
   res.json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}` });
