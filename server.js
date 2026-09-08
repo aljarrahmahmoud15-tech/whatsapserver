@@ -468,7 +468,6 @@ function ensureSystemUsers() {
   if (getSetting("special_order_rate_bps") === null) setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
   if (getSetting("company_from_producer_rate_bps") === null) setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
   if (getSetting("currency") === null) setSetting("currency", "JOD");
-  if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
 }
 ensureBlockedPhones();
 ensureSystemUsers();
@@ -1196,11 +1195,6 @@ function issueTemporaryQrGrant(req) {
   temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
-app.get("/api/admin/captain-invite-link", requireAdmin, (req, res) => {
-  const token = getSetting("captain_public_invite_token", null);
-  if (!token) return res.status(503).json({ error: "رابط الدعوة العام غير جاهز" });
-  res.json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}` });
-});
 app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   const token = crypto.randomBytes(24).toString("base64url");
   const stamp = now();
@@ -1256,9 +1250,7 @@ app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
 });
 app.get("/api/captain/invites/:token", (req, res) => {
   expireCaptainInvites();
-  const publicToken = getSetting("captain_public_invite_token", null);
-  let invite = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
-  if (!invite && publicToken && constantTimeEquals(req.params.token, publicToken)) invite = { id: 0, status: "issued", name: null, phone: null, token_last8: publicToken.slice(-8), created_at: now(), updated_at: now(), expires_at: null, submitted_at: null, decided_at: null, decision_note: null };
+  const invite = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
   if (!invite) return res.status(404).json({ error: "بطاقة الدعوة غير موجودة" });
   if (invite.status === "expired") return res.status(410).json({ error: "انتهت صلاحية بطاقة الدعوة" });
   res.setHeader("Cache-Control", "no-store");
@@ -1266,16 +1258,7 @@ app.get("/api/captain/invites/:token", (req, res) => {
 });
 app.post("/api/captain/invites/:token/apply", (req, res) => {
   expireCaptainInvites();
-  const publicToken = getSetting("captain_public_invite_token", null);
-  let invite = db.prepare("SELECT * FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
-  if (!invite && publicToken && constantTimeEquals(req.params.token, publicToken)) {
-    const token = crypto.randomBytes(24).toString("base64url");
-    const stamp = now();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
-    const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
-    invite = db.prepare("SELECT * FROM captain_invites WHERE id=?").get(result.lastInsertRowid);
-  }
+  const invite = db.prepare("SELECT * FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
   if (!invite) return res.status(404).json({ error: "بطاقة الدعوة غير موجودة" });
   if (invite.status === "expired") return res.status(410).json({ error: "انتهت صلاحية بطاقة الدعوة" });
   if (!["issued", "pending"].includes(invite.status)) return res.status(409).json({ error: invite.status === "approved" ? "تمت الموافقة على هذه الدعوة مسبقًا" : "لا يمكن استخدام هذه الدعوة" });
