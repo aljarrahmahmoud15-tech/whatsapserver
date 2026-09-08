@@ -1341,7 +1341,8 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (invite.phone) {
     let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
     if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
-    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\\nرقم الهاتف: ${invite.phone}\\n${pinText}\\nيمكنك الآن الدخول من بطاقة الكابتن.`);
+    const captainAppUrl = `${captainInviteBaseUrl(req)}/captain`;
+    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\\nرقم الهاتف: ${invite.phone}\\n${pinText}\\nرابط تطبيق الكابتن المباشر: ${captainAppUrl}\\nهذا الرابط يفتح تطبيق الكابتن مباشرة، ولا يفتح القروب أو الموقع العام.`);
   }
   res.json({ success: true, status: "approved", captainId, notified });
 });
