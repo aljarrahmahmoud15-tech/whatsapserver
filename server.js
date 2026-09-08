@@ -651,6 +651,7 @@ function findChromeWithSystemFind(root) {
 }
 
 const puppeteerCacheDir = process.env.PUPPETEER_CACHE_DIR || `${process.env.HOME || "/tmp"}/.cache/puppeteer`;
+const projectPuppeteerCacheDir = typeof path !== "undefined" ? path.join(__dirname, ".cache", "puppeteer") : ".cache/puppeteer";
 let puppeteerDetectedPath = null;
 try {
   const candidate = require("puppeteer").executablePath();
@@ -663,6 +664,7 @@ const detectedChromePath = [
   ].find((candidate) => typeof fs !== "undefined" && fs.existsSync(candidate)) ||
   puppeteerDetectedPath ||
   (configuredChromePath && fs.existsSync(configuredChromePath) ? configuredChromePath : null) ||
+  findChromeWithSystemFind(projectPuppeteerCacheDir) ||
   findChromeWithSystemFind(puppeteerCacheDir) ||
   findChromeWithSystemFind("/opt/render/.cache/puppeteer") ||
   (typeof fs !== "undefined" ? findChromeExecutable(puppeteerCacheDir) : null) ||
