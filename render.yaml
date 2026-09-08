@@ -3,7 +3,7 @@ services:
     name: whatsapserver-1
     runtime: node
     plan: free
-    buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer npx puppeteer browsers install chrome@146.0.7680.31 && CHROME=$(find /opt/render/.cache/puppeteer -type f -name chrome | head -1) && test -n "$CHROME" && cp "$CHROME" ./render-chrome && chmod +x ./render-chrome
+    buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer npx puppeteer browsers install chrome@146.0.7680.31
     startCommand: node server.js
     healthCheckPath: /status
     autoDeploy: true
