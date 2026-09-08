@@ -842,6 +842,7 @@ function createClient() {
     whatsappLastError = String(message || "authentication failure");
     if (generation !== connectionGeneration) return;
     isReady = false;
+    if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
     scheduleReconnect();
   });
@@ -852,6 +853,7 @@ function createClient() {
     if (generation !== connectionGeneration) return;
     isReady = false;
     qrCodeData = null;
+    if (client === instance) client = null;
     console.warn("[WhatsApp] disconnected:", reason);
     scheduleReconnect();
   });
