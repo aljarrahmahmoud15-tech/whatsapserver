@@ -1630,6 +1630,24 @@ app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
+app.post("/api/admin/qr-main-link", requireAdmin, (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
+  const grant = issueTemporaryQrGrant(req);
+  const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, url: `${origin}/qr-main?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
+});
+app.get("/qr-main", requireQrAccess, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  const refreshTarget = req.query.access ? `/qr-main?access=${encodeURIComponent(String(req.query.access))}` : "/qr-main";
+  if (qrCodeData) {
+    const image = await qrcode.toDataURL(qrCodeData);
+    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط رقم البوت ${BOT_PHONE}</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
+  }
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE}</p></body></html>`);
+  res.send(`<html dir="rtl"><meta charset="utf-8"><meta http-equiv="refresh" content="3;url=${refreshTarget}"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>جاري تجهيز QR البوت الرئيسي...</h2><p>لا تعرض هذه الصفحة QR مستقبل المجموعة.</p></body></html>`);
+});
 app.get("/qr", requireQrAccess, async (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.setHeader("Referrer-Policy", "no-referrer");
