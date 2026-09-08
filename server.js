@@ -698,18 +698,36 @@ const puppeteerConfig = {
 };
 
 function clearChromiumProfileLocks() {
-  const profileDir = path.join(AUTH_PATH, "session");
-  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
-    const lockPath = path.join(profileDir, name);
-    try {
-      // Chromium uses a symlink here; existsSync() is false when its target host is gone.
-      fs.lstatSync(lockPath);
-      fs.unlinkSync(lockPath);
-    } catch (error) {
-      if (error.code === "ENOENT") continue;
-      console.warn(`[WhatsApp] profile lock cleanup ${name}:`, error.message);
+  // LocalAuth stores the profile under session-<clientId>, not session.
+  // Keep the legacy path too, so an older deployment cannot block startup.
+  const profileDirs = [
+    path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`),
+    path.join(AUTH_PATH, "session"),
+  ];
+  for (const profileDir of profileDirs) {
+    for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      const lockPath = path.join(profileDir, name);
+      try {
+        // Chromium uses a symlink here; existsSync() is false when its target host is gone.
+        fs.lstatSync(lockPath);
+        fs.unlinkSync(lockPath);
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        console.warn(`[WhatsApp] profile lock cleanup ${lockPath}:`, error.message);
+      }
     }
   }
+}
+async function disposeClientInstance(instance, label = "client") {
+  if (!instance) return;
+  try {
+    await instance.destroy();
+  } catch (error) {
+    // whatsapp-web.js may already have closed Chromium after LOGOUT.
+    console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  clearChromiumProfileLocks();
 }
 async function destroyClient() {
   const current = client;
@@ -719,10 +737,7 @@ async function destroyClient() {
     clearChromiumProfileLocks();
     return;
   }
-  try { await current.destroy(); } catch (error) { console.warn("[WhatsApp] destroy:", error.message); }
-  // Allow Chromium to release the persistent LocalAuth profile before a retry.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  clearChromiumProfileLocks();
+  await disposeClientInstance(current, "destroy");
 }
 
 async function restartWhatsApp(reason = "manual restart") {
@@ -844,6 +859,7 @@ function createClient() {
     isReady = false;
     if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
+    void disposeClientInstance(instance, "auth_failure");
     scheduleReconnect();
   });
   instance.on("disconnected", (reason) => {
@@ -855,7 +871,15 @@ function createClient() {
     qrCodeData = null;
     if (client === instance) client = null;
     console.warn("[WhatsApp] disconnected:", reason);
+    // Do not leave the old Chromium process alive while the retry starts.
+    void disposeClientInstance(instance, "disconnected");
     scheduleReconnect();
+  });
+  instance.on("loading_screen", (percent, message) => {
+    console.log(`[WhatsApp] loading ${percent}%${message ? `: ${message}` : ""}`);
+  });
+  instance.on("change_state", (state) => {
+    console.log(`[WhatsApp] state changed: ${state}`);
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
