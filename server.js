@@ -648,6 +648,7 @@ try {
 } catch (error) { console.warn(`[WhatsApp] Puppeteer executable lookup failed: ${error.message}`); }
 const configuredChromePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 const detectedChromePath = [
+    "/opt/render/project/src/render-chrome",
     "/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome",
     "/opt/render/.cache/puppeteer/chrome/linux-148.0.7778.97/chrome-linux64/chrome",
   ].find((candidate) => typeof fs !== "undefined" && fs.existsSync(candidate)) ||
