@@ -1267,9 +1267,11 @@ app.get("/api/captain/invites/:token", (req, res) => {
 app.post("/api/captain/invites/:token/apply", (req, res) => {
   expireCaptainInvites();
   const publicToken = getSetting("captain_public_invite_token", null);
+  let createdInviteToken = null;
   let invite = db.prepare("SELECT * FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
   if (!invite && publicToken && constantTimeEquals(req.params.token, publicToken)) {
     const token = crypto.randomBytes(24).toString("base64url");
+    createdInviteToken = token;
     const stamp = now();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
@@ -1295,7 +1297,7 @@ app.post("/api/captain/invites/:token/apply", (req, res) => {
   db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=?,submitted_at=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
     .run(name, phone, pinHash, pinCiphertext, stamp, stamp, invite.id);
   audit("captain.join.requested", "captain_invite", invite.id, { name, phone }, null);
-  res.status(202).json({ success: true, status: "pending", message: "تم إرسال طلبك إلى الشركة للموافقة" });
+  res.status(202).json({ success: true, status: "pending", token: createdInviteToken || req.params.token, message: "تم إرسال طلبك إلى الشركة للموافقة" });
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();

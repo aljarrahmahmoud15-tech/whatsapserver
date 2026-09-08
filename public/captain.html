@@ -84,7 +84,7 @@
 
   <script>
     const $ = (selector) => document.querySelector(selector);
-    const inviteToken = new URLSearchParams(location.search).get('invite');
+    let inviteToken = new URLSearchParams(location.search).get('invite');
     let inviteState = null;
     let submittedCaptain = null;
     let invitePoll = null;
@@ -130,7 +130,7 @@
       event.preventDefault(); const button = $('#register-btn'); button.disabled = true; $('#register-error').textContent = '';
       const name = $('#reg-name').value.trim(), phone = $('#reg-phone').value.trim(), pin = $('#reg-pin').value.trim(), confirmPin = $('#reg-pin-confirm').value.trim();
       if (pin !== confirmPin) { $('#register-error').textContent = 'الرقمان السريان غير متطابقين'; button.disabled = false; return; }
-      try { await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,pin})}); submittedCaptain = {phone,pin}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
+      try { const applied = await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,pin})}); if (applied.token) { inviteToken = applied.token; history.replaceState({}, '', '/captain?invite=' + encodeURIComponent(inviteToken)); } submittedCaptain = {phone,pin}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
     });
     $('#approved-login').addEventListener('click', () => { showSection('login'); if (inviteState?.phone) $('#phone').value = inviteState.phone; });
     $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { await loginCaptain($('#phone').value.trim(), $('#pin').value); $('#pin').value = ''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
