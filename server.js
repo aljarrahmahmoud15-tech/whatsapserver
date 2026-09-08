@@ -1945,6 +1945,39 @@ app.get("/api/admin/support-tickets", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT * FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
 });
+app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (req, res) => {
+  const ticketId = Number(req.params.id);
+  const ticket = db.prepare("SELECT * FROM support_tickets WHERE id=? LIMIT 1").get(ticketId);
+  if (!ticket) return res.status(404).json({ error: "طلب الشحن غير موجود" });
+  if (ticket.category !== "topup_card") return res.status(409).json({ error: "هذا الطلب ليس طلب شحن رصيد" });
+  if (["resolved", "closed"].includes(ticket.status)) return res.status(409).json({ error: "تم تنفيذ هذا الطلب مسبقًا" });
+  const phone = phoneWithCountry(ticket.account_ref || "");
+  const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  if (!captain || !captain.active) return res.status(409).json({ error: "الكابتن غير موجود أو غير نشط" });
+  const valueCents = Number(ticket.requested_value_cents || 0);
+  if (valueCents <= 0) return res.status(400).json({ error: "قيمة الشحن غير صالحة" });
+  if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
+  let code = randomCode();
+  while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+  const encryptedCode = encryptCardCode(code);
+  const card = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?)").run(hashCode(code), code.slice(-4), valueCents, captain.id, encryptedCode, now());
+  if (!client || !isReady) {
+    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.lastInsertRowid}، وتنتظر اتصال WhatsApp للإرسال.`, now(), ticketId);
+    return res.status(503).json({ error: "تم إصدار البطاقة لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.lastInsertRowid });
+  }
+  try {
+    const message = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رمز البطاقة: ${code}`, "أدخل الرمز في بوابة الكابتن لإضافة الرصيد تلقائيًا.", "البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط."]);
+    const sent = await withTimeout(client.sendMessage(`${phone}@c.us`, message), 20000, null);
+    if (!sent) throw new Error("send timeout");
+    db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=?").run(now(), card.lastInsertRowid);
+    db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.lastInsertRowid} إلى WhatsApp.`, now(), ticketId);
+    audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.lastInsertRowid, captainId: captain.id });
+    res.json({ success: true, status: "resolved", cardId: card.lastInsertRowid });
+  } catch (error) {
+    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.lastInsertRowid} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);
+    res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.lastInsertRowid });
+  }
+});
 app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
   const ticketId = Number(req.params.id);
   const status = String(req.body.status || "").trim();
