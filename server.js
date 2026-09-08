@@ -8,6 +8,7 @@ const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pino = require("pino");
+const { execFileSync } = require("child_process");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
@@ -639,6 +640,15 @@ function findChromeExecutable(root) {
   }
   return null;
 }
+function findChromeWithSystemFind(root) {
+  try {
+    if (!root || !fs.existsSync(root)) return null;
+    const result = execFileSync("find", [root, "-type", "f", "-name", "chrome", "-print", "-quit"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return result && fs.existsSync(result) ? result : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 const puppeteerCacheDir = process.env.PUPPETEER_CACHE_DIR || `${process.env.HOME || "/tmp"}/.cache/puppeteer`;
 let puppeteerDetectedPath = null;
@@ -653,6 +663,8 @@ const detectedChromePath = [
   ].find((candidate) => typeof fs !== "undefined" && fs.existsSync(candidate)) ||
   puppeteerDetectedPath ||
   (configuredChromePath && fs.existsSync(configuredChromePath) ? configuredChromePath : null) ||
+  findChromeWithSystemFind(puppeteerCacheDir) ||
+  findChromeWithSystemFind("/opt/render/.cache/puppeteer") ||
   (typeof fs !== "undefined" ? findChromeExecutable(puppeteerCacheDir) : null) ||
   (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/.cache/puppeteer") : null) ||
   (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/project/src/node_modules/puppeteer/.local-chromium") : null) ||
