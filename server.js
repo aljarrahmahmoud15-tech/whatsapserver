@@ -601,6 +601,9 @@ function formatPendingConfirmation(order, captain) {
 
 let client = null;
 let isReady = false;
+let whatsappState = "starting";
+let whatsappLastEvent = null;
+let whatsappLastError = null;
 let qrCodeData = null;
 let lastQrTime = null;
 let temporaryQrGrant = null;
@@ -776,14 +779,19 @@ function createClient() {
     puppeteer: puppeteerConfig,
   });
   instance.on("qr", (qr) => {
+    whatsappState = "qr";
+    whatsappLastEvent = "qr";
     if (generation !== connectionGeneration) return;
     qrCodeData = qr;
     lastQrTime = new Date();
     isReady = false;
     console.log("[WhatsApp] New QR generated");
   });
-  instance.on("authenticated", () => console.log("[WhatsApp] authenticated"));
+  instance.on("authenticated", () => { whatsappState = "authenticated"; whatsappLastEvent = "authenticated"; console.log("[WhatsApp] authenticated"); });
   instance.on("ready", () => {
+    whatsappState = "ready";
+    whatsappLastEvent = "ready";
+    whatsappLastError = null;
     if (generation !== connectionGeneration) return;
     isReady = true;
     qrCodeData = null;
@@ -791,12 +799,18 @@ function createClient() {
     console.log(`[WhatsApp] ready: ${connectedPhone}`);
   });
   instance.on("auth_failure", (message) => {
+    whatsappState = "auth_failure";
+    whatsappLastEvent = "auth_failure";
+    whatsappLastError = String(message || "authentication failure");
     if (generation !== connectionGeneration) return;
     isReady = false;
     console.error("[WhatsApp] auth_failure:", message);
     scheduleReconnect();
   });
   instance.on("disconnected", (reason) => {
+    whatsappState = "disconnected";
+    whatsappLastEvent = "disconnected";
+    whatsappLastError = String(reason || "disconnected");
     if (generation !== connectionGeneration) return;
     isReady = false;
     qrCodeData = null;
@@ -835,6 +849,9 @@ async function initializeWhatsApp() {
       scheduleReconnect();
     }
   } catch (error) {
+    whatsappState = "initialize_error";
+    whatsappLastEvent = "initialize_error";
+    whatsappLastError = String(error?.message || error);
     console.error("[WhatsApp] initialize:", error.message);
     isReady = false;
     scheduleReconnect();
@@ -1417,6 +1434,10 @@ app.get("/status", (req, res) => {
     groupId: configuredGroupId || null,
     groupReceiverReady: Boolean(baileysReady),
     qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+    whatsappState,
+    whatsappLastEvent,
+    whatsappLastError,
+    whatsappInitializing: Boolean(initializing),
   });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
