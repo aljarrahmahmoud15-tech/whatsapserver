@@ -93,7 +93,7 @@
 <script>
 (()=>{
  const drawer=document.getElementById('ops-drawer'), content=document.getElementById('ops-content'), title=document.getElementById('ops-title'), subtitle=document.getElementById('ops-subtitle');
- const MAIN_WHATSAPP_GROUP_URL='https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR?s=hd&p=i&mlu=4&ilr=4';
+ const MAIN_WHATSAPP_GROUP_URL='https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR';
  const esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const money=(v)=>v==null?'—':esc(v)+' JOD';
  const set=(t,s)=>{title.textContent=t;subtitle.textContent=s||'بيانات حقيقية من النظام';content.innerHTML=s||'';drawer.classList.add('open');drawer.scrollIntoView({behavior:'smooth',block:'start'})};
