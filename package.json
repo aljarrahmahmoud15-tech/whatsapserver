@@ -4,10 +4,9 @@
   "description": "Al-Jarah Logistics WhatsApp operations and wallet system",
   "main": "server.js",
   "scripts": {
-    "start": "PUPPETEER_SKIP_DOWNLOAD=false PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false puppeteer browsers install chrome && node server.js",
+    "start": "node server.js",
     "check": "node --check server.js",
-    "test": "node --test test_*.js",
-    "postinstall": "PUPPETEER_SKIP_DOWNLOAD=false PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false puppeteer browsers install chrome"
+    "test": "node --test test_*.js"
   },
   "engines": {
     "node": "22.13.0"

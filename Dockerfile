@@ -1,14 +1,24 @@
-FROM node:20-slim
-RUN apt-get update && apt-get install -y \
-    chromium \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
-    libxss1 --no-install-recommends \
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       chromium \
+       ca-certificates \
+       fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
+       libxss1 \
     && rm -rf /var/lib/apt/lists/*
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+ENV NODE_ENV=production \
+    PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    DATA_DIR=/app/data
+
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci --omit=dev
 COPY . .
-EXPOSE 10000
+RUN mkdir -p /app/data
+
+EXPOSE 3000
 CMD ["node", "server.js"]

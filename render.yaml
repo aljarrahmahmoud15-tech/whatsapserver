@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: whatsapserver-1
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer npx puppeteer browsers install chrome
+    startCommand: node server.js
+    healthCheckPath: /status
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.13.0
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/.cache/puppeteer
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "false"
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "false"
