@@ -44,12 +44,13 @@ const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWOR
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
 const BOT_FINANCIAL_MODE = process.env.BOT_FINANCIAL_MODE || "company";
+const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
 const COMPANY_RATE_BPS = Number(process.env.COMPANY_RATE_BPS || 1500);
 const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
 const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 2000);
 const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 1500);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
-const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 120000);
+const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const GROUP_BRAND_NAME = "شركة الجراح | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لشركة الجراح للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق نظام الشركة.";
@@ -801,7 +802,7 @@ function scheduleReconnect() {
 function createClient() {
   const generation = ++connectionGeneration;
   const instance = new Client({
-    authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
+    authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
     puppeteer: puppeteerConfig,
   });
   instance.on("qr", (qr) => {
@@ -813,7 +814,13 @@ function createClient() {
     isReady = false;
     console.log("[WhatsApp] New QR generated");
   });
-  instance.on("authenticated", () => { whatsappState = "authenticated"; whatsappLastEvent = "authenticated"; console.log("[WhatsApp] authenticated"); });
+  instance.on("authenticated", () => {
+    whatsappState = "authenticated";
+    whatsappLastEvent = "authenticated";
+    whatsappLastError = null;
+    qrCodeData = null;
+    console.log(`[WhatsApp] authenticated (clientId=${WHATSAPP_CLIENT_ID})`);
+  });
   instance.on("ready", () => {
     whatsappState = "ready";
     whatsappLastEvent = "ready";
