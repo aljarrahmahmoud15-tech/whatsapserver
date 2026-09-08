@@ -647,7 +647,11 @@ try {
   if (candidate && fs.existsSync(candidate)) puppeteerDetectedPath = candidate;
 } catch (error) { console.warn(`[WhatsApp] Puppeteer executable lookup failed: ${error.message}`); }
 const configuredChromePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-const detectedChromePath = puppeteerDetectedPath ||
+const detectedChromePath = [
+    "/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome",
+    "/opt/render/.cache/puppeteer/chrome/linux-148.0.7778.97/chrome-linux64/chrome",
+  ].find((candidate) => typeof fs !== "undefined" && fs.existsSync(candidate)) ||
+  puppeteerDetectedPath ||
   (configuredChromePath && fs.existsSync(configuredChromePath) ? configuredChromePath : null) ||
   (typeof fs !== "undefined" ? findChromeExecutable(puppeteerCacheDir) : null) ||
   (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/.cache/puppeteer") : null) ||
