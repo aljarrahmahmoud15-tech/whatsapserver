@@ -1857,12 +1857,36 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
 });
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
   const value = Number(req.body.value || 5);
+  const phone = phoneWithCountry(String(req.body.phone || "").replace(/[^0-9]/g, ""));
   if (!Number.isFinite(value) || value <= 0 || value > 1000) return res.status(400).json({ error: "Invalid card value" });
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم المستفيد الأردني مطلوب" });
+  const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  if (!captain) return res.status(404).json({ error: "يجب اعتماد الكابتن أولًا قبل إصدار بطاقة الرصيد" });
+  if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
   let code = randomCode();
   while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
-  const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,created_at) VALUES(?,?,?,'issued',?)").run(hashCode(code), code.slice(-4), cents(value), now());
-  audit("topup_card.issued", "topup_card", result.lastInsertRowid, { valueCents: cents(value) });
-  res.status(201).json({ id: result.lastInsertRowid, code, value: value.toFixed(2), status: "issued" });
+  const encryptedCode = cardEncryptionKey ? encryptCardCode(code) : null;
+  const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?)").run(hashCode(code), code.slice(-4), cents(value), captain.id, encryptedCode, now());
+  audit("topup_card.issued", "topup_card", result.lastInsertRowid, { valueCents: cents(value), captainId: captain.id });
+  res.status(201).json({ id: result.lastInsertRowid, code, value: value.toFixed(2), phone, captainName: captain.name, status: "issued" });
+});
+app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
+  const cardId = Number(req.params.id);
+  const card = db.prepare("SELECT c.*,u.phone AS captain_phone,u.name AS captain_name,u.active AS captain_active FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id WHERE c.id=? LIMIT 1").get(cardId);
+  if (!card) return res.status(404).json({ error: "البطاقة غير موجودة" });
+  if (card.sent_at) return res.json({ success: true, alreadySent: true, status: "sent" });
+  if (!card.captain_phone || !card.captain_active) return res.status(409).json({ error: "المستفيد غير نشط أو غير معتمد" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا؛ البطاقة محفوظة ولم تُرسل" });
+  if (!cardEncryptionKey || !card.code_ciphertext) return res.status(503).json({ error: "تشفير البطاقة غير مهيأ" });
+  try {
+    const code = decryptCardCode(card.code_ciphertext);
+    const message = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "أدخل الرمز في بوابة الكابتن لإضافة الرصيد تلقائيًا.", "البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط."]);
+    const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(card.captain_phone)}@c.us`, message), 20000, null);
+    if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
+    db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=? AND sent_at IS NULL").run(now(), cardId);
+    audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null });
+    res.json({ success: true, status: "sent" });
+  } catch (error) { audit("topup_card.delivery_failed", "topup_card", cardId, { error: String(error?.message || error) }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
