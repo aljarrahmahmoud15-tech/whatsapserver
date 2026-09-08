@@ -1205,6 +1205,19 @@ app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   audit("captain.invite.issued", "captain_invite", token.slice(-8), { expiresAt }, null);
   res.status(201).json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
 });
+app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم WhatsApp أردني صحيح مطلوب" });
+  const token = crypto.randomBytes(24).toString("base64url");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
+  const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
+  const inviteUrl = `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`;
+  audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في شركة الجراح\n\nافتح الرابط لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
+});
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
   const candidates = Array.isArray(req.body?.captains) ? req.body.captains : [];
   const excluded = new Set((Array.isArray(req.body?.excludePhones) ? req.body.excludePhones : []).map(phoneWithCountry).filter(Boolean));
