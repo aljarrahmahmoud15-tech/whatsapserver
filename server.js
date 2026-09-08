@@ -641,10 +641,17 @@ function findChromeExecutable(root) {
 }
 
 const puppeteerCacheDir = process.env.PUPPETEER_CACHE_DIR || `${process.env.HOME || "/tmp"}/.cache/puppeteer`;
+let puppeteerDetectedPath = null;
+try {
+  const candidate = require("puppeteer").executablePath();
+  if (candidate && fs.existsSync(candidate)) puppeteerDetectedPath = candidate;
+} catch (error) { console.warn(`[WhatsApp] Puppeteer executable lookup failed: ${error.message}`); }
 const detectedChromePath = process.env.PUPPETEER_EXECUTABLE_PATH ||
+  puppeteerDetectedPath ||
   (typeof fs !== "undefined" ? findChromeExecutable(puppeteerCacheDir) : null) ||
   (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/.cache/puppeteer") : null) ||
-  (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/project/src/node_modules/puppeteer/.local-chromium") : null);
+  (typeof fs !== "undefined" ? findChromeExecutable("/opt/render/project/src/node_modules/puppeteer/.local-chromium") : null) ||
+  (typeof fs !== "undefined" ? ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((candidate) => fs.existsSync(candidate)) : null);
 if (detectedChromePath) console.log(`[WhatsApp] using Chrome executable: ${detectedChromePath}`);
 else console.warn(`[WhatsApp] Chrome executable not found at startup; searched ${puppeteerCacheDir}`);
 
