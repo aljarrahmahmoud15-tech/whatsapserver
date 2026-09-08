@@ -26,6 +26,9 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
+// Baileys is an optional second WhatsApp connection. Keep it off by default on Render
+// so the primary whatsapp-web.js session has the available memory and one QR/session.
+const BAILEYS_ENABLED = process.env.BAILEYS_ENABLED === "true";
 const QR_PUBLIC = process.env.QR_PUBLIC === "true";
 const QR_START_TIME = Date.now();
 const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
@@ -741,6 +744,7 @@ async function loadBaileys() {
   return baileysModulePromise;
 }
 function scheduleBaileysReconnect() {
+  if (!BAILEYS_ENABLED) return;
   if (baileysReconnectTimer) return;
   baileysReconnectTimer = setTimeout(() => {
     baileysReconnectTimer = null;
@@ -748,6 +752,7 @@ function scheduleBaileysReconnect() {
   }, 5000);
 }
 async function initializeBaileys() {
+  if (!BAILEYS_ENABLED) return;
   if (baileysInitializing || baileysReady) return;
   baileysInitializing = true;
   const generation = ++baileysConnectionGeneration;
@@ -2246,7 +2251,7 @@ app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   initializeWhatsApp();
-  initializeBaileys();
+  if (BAILEYS_ENABLED) initializeBaileys();
 });
 
 process.on("SIGTERM", async () => { await destroyClient(); db.close(); process.exit(0); });

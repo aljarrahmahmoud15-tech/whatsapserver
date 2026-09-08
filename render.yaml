@@ -22,5 +22,7 @@ services:
         value: /app/data/.wwebjs_auth
       - key: BAILEYS_AUTH_PATH
         value: /app/data/.baileys_auth
+      - key: BAILEYS_ENABLED
+        value: "false"
       - key: WHATSAPP_CLIENT_ID
         value: aljarah-main-v2
