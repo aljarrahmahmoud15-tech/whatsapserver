@@ -2530,7 +2530,7 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
   void finalizeExistingGroupInBackground({ operationId, sourceGroupId, groupId, groupName });
-  res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId, groupId, messageSent: false });
+  res.redirect(303, "/?finalizeStarted=1");
 });
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
