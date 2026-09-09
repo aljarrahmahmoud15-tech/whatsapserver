@@ -1052,6 +1052,8 @@ let lastInitializationFinishedAt = null;
 let initializing = false;
 let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
+let groupInviteInFlight = false;
+let groupInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, inviteUrl: null, participants: [] };
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
@@ -2549,6 +2551,88 @@ async function finalizeExistingGroupInBackground({ operationId, sourceGroupId, g
     console.error("[GroupCreate] existing-group recovery failed:", error.message);
   }
 }
+
+async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, groupId, groupName }) {
+  try {
+    const sourceGroup = await readGroupSnapshot(sourceGroupId);
+    if (!sourceGroup || !Array.isArray(sourceGroup.participants) || sourceGroup.participants.length < 1) throw new Error("Could not read members from the source group");
+    const groupChat = await openCreatedGroupForAdmin(groupId);
+    if (!groupChat || typeof groupChat.getInviteCode !== "function") throw new Error("The destination group is unavailable for invite-link generation");
+    const inviteCode = await withTimeout(groupChat.getInviteCode(), 30000, null);
+    if (!inviteCode) throw new Error("WhatsApp did not return a group invite link");
+    const inviteUrl = `https://chat.whatsapp.com/${inviteCode}`;
+    const destinationGroup = await readGroupSnapshot(groupId);
+    const existingPhones = new Set((destinationGroup?.participants || []).map(groupParticipantPhone).filter(Boolean));
+    const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
+    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const rawPhones = [...new Set(sourceGroup.participants.map(groupParticipantPhone).filter(Boolean))];
+    const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
+    const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending" }));
+    groupInviteState = { status: "sending", operationId, startedAt: groupInviteState.startedAt, finishedAt: null, error: null, sourceGroupId, groupId, inviteUrl, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, participants: participantResults };
+    configureGroupId(groupId, groupName);
+    const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
+    for (const result of participantResults) {
+      if (result.status === "already_present") continue;
+      const previous = db.prepare("SELECT id FROM notifications WHERE recipient_phone=? AND event='group.member.invite' AND delivery_status='sent' ORDER BY id DESC LIMIT 1").get(result.phone);
+      if (previous) {
+        result.status = "already_invited";
+        continue;
+      }
+      const title = "تم تسجيلك في شبكة التشغيل";
+      const lines = [
+        "تم تسجيل رقمك ضمن أعضاء شبكة الجراح التشغيلية.",
+        "هذا ليس تسجيل كابتن جديدًا.",
+        "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
+        `البوابة الرسمية: ${gateway}`,
+        "بعد الدخول استخدم الرقم السري المرسل لك، ثم افتح رابط القروب للانضمام:",
+        `رابط القروب: ${inviteUrl}`,
+      ];
+      const notification = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,? ,?,?, 'pending',?)").run(result.phone, "captain", "group.member.invite", title, lines.join("\n"), now());
+      try {
+        const sent = await sendCaptainOperationsCard(`${result.phone}@c.us`, title, lines);
+        result.status = sent ? "invite_card_sent" : "failed";
+        result.error = sent ? null : "official invite card was not sent";
+        db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(sent ? "sent" : "failed", notification.lastInsertRowid);
+      } catch (error) {
+        result.status = "failed";
+        result.error = error.message;
+        db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notification.lastInsertRowid);
+      }
+      if (!isReady) {
+        result.error = result.error || "WhatsApp session disconnected";
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+    }
+    const failedCount = participantResults.filter((participant) => participant.status === "failed").length;
+    groupInviteState = { ...groupInviteState, status: failedCount ? "partial" : "succeeded", finishedAt: now(), error: failedCount ? `${failedCount} invite card(s) require retry` : null, participants: participantResults };
+    audit("group.member_invites.sent", "group", groupId, { sourceGroupId, eligibleMemberCount: phones.length, inviteUrl });
+  } catch (error) {
+    groupInviteState = { ...groupInviteState, status: "failed", finishedAt: now(), error: error.message, sourceGroupId, groupId };
+    console.error("[GroupInvite] failed:", error.message);
+  } finally {
+    groupInviteInFlight = false;
+  }
+}
+
+app.get("/api/admin/group/invite-status", requireAdmin, (req, res) => {
+  res.json({ success: true, ...groupInviteState, inviteUrl: groupInviteState.inviteUrl || null });
+});
+
+app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupInviteInFlight) return res.status(409).json({ error: "Group invite delivery is already in progress", operationId: groupInviteState.operationId });
+  const sourceGroupId = String(req.query.sourceGroupId || "120363426604560611@g.us").trim();
+  const groupId = String(req.query.groupId || getSetting("group_id", "120363413760988742@g.us")).trim();
+  if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
+  if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
+  const groupName = String(req.query.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const operationId = "INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupInviteInFlight = true;
+  groupInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, inviteUrl: null, participants: [] };
+  void sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, groupId, groupName });
+  res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId, groupId, messageSent: false });
+});
 
 app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });

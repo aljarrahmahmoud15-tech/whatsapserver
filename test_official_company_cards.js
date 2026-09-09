@@ -42,6 +42,11 @@ assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), '
 assert(server.includes('async function readGroupSnapshot(groupId)'), 'group membership can be read from the WhatsApp page model');
 assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 'group snapshot refreshes WhatsApp group metadata');
 assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
+assert(server.includes('async function sendGroupMemberInvitesInBackground'), 'group member invitations have a separate safe background flow');
+assert(server.includes('app.get("/api/admin/group/send-member-invites", requireAdmin'), 'member invite delivery is admin protected');
+assert(server.includes('group.member.invite'), 'member invite delivery is persisted as a notification event');
+assert(server.includes('هذا ليس تسجيل كابتن جديدًا'), 'member invite card explains captain login instead of new registration');
+assert(server.includes('groupInviteInFlight'), 'member invite delivery is protected from duplicate execution');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
