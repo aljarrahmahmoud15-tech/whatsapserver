@@ -17,4 +17,5 @@ assert(server.includes('client.sendMessage(`${phone}@c.us`, media, { caption })'
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
 assert(index.includes('id="topup-requests-open"'), 'top-up requests remain accessible from the compact console');
 assert(index.includes('data-topup-fulfill'), 'top-up approval remains a single fulfill-and-send action');
+assert(index.includes('data-captain-access-card'), 'captain rows include an official access-card resend action');
 console.log('official company card and compact top-up flow guardrails verified');
