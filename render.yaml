@@ -6,6 +6,10 @@ services:
     buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=$PWD/.cache/puppeteer npx puppeteer browsers install chrome
     startCommand: node server.js
     healthCheckPath: /status
+    disk:
+      name: whatsapserver-data
+      mountPath: /app/data
+      sizeGB: 10
     autoDeploy: true
     envVars:
       - key: NODE_VERSION

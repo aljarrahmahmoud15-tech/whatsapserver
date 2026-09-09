@@ -26,6 +26,10 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
+const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
+if (runningOnRender && path.resolve(DATA_DIR) !== "/app/data") {
+  throw new Error(`Persistent DATA_DIR is required on Render; received ${DATA_DIR}`);
+}
 // Baileys is an optional second WhatsApp connection. Keep it off by default on Render
 // so the primary whatsapp-web.js session has the available memory and one QR/session.
 const BAILEYS_ENABLED = process.env.BAILEYS_ENABLED === "true";
@@ -532,6 +536,103 @@ function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
   return configured > 0 && Boolean(configuredGroup(groupId));
 }
+function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const normalized = String(baseUrl || "").replace(/\/$/, "");
+  return `${normalized || `http://localhost:${PORT}`}/captain`;
+}
+async function addCaptainToConfiguredGroup(captain) {
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null };
+  if (!client || !isReady) return { status: "bot_not_ready", groupId };
+  const phone = phoneWithCountry(captain && captain.phone);
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { status: "invalid_or_blocked_phone", phone };
+  const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+  if (!chat || typeof chat.addParticipants !== "function") return { status: "group_unavailable", groupId };
+  const result = await withTimeout(chat.addParticipants([`${phone}@c.us`]), 60000, null);
+  if (!result || typeof result === "string") return { status: "failed", phone, error: typeof result === "string" ? result : "participant addition timed out" };
+  return { status: "added_or_already_member", groupId, phone };
+}
+function ensureCaptainAccessCredentials(captain) {
+  const phone = phoneWithCountry(captain && captain.phone);
+  const current = captain && captain.id
+    ? captain
+    : db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  if (current && captain && captain.temporaryPin) return { ...current, temporaryPin: captain.temporaryPin };
+  if (!current || current.captain_pin_hash) return { ...(current || captain), temporaryPin: null };
+  const temporaryPin = createCaptainPin();
+  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, now(), current.id);
+  return { ...current, temporaryPin };
+}
+async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const prepared = ensureCaptainAccessCredentials(captain);
+  const phone = phoneWithCountry(prepared && prepared.phone);
+  if (!isValidJordanPhone(phone)) return false;
+  const pinLine = prepared.temporaryPin ? `\nالرقم السري المؤقت: ${prepared.temporaryPin}` : "";
+  return sendBotText(`${phone}@c.us`, `رابط حسابك في شركة الجراح يا ${prepared.name}:\n${captainAppUrl(baseUrl)}\n\nالدخول يكون برقم هاتفك والرقم السري.${pinLine}\nاحتفظ بالرقم السري ولا تشاركه مع أي شخص.`).catch(() => false);
+}
+function groupParticipantPhone(participant) {
+  const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
+  return phoneWithCountry(String(raw || "").replace(/@c\.us$/, "").split(":")[0]);
+}
+function createCaptainPin() {
+  return String(crypto.randomInt(10000, 100000));
+}
+async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = true, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+  if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null, results: [] };
+  if (!client || !isReady) return { status: "bot_not_ready", groupId, results: [] };
+  const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+  if (!chat || !Array.isArray(chat.participants)) return { status: "group_unavailable", groupId, results: [] };
+  const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
+  const participants = [...new Map(chat.participants.map((participant) => [groupParticipantPhone(participant), participant])).values()];
+  const results = [];
+  for (const participant of participants) {
+    const phone = groupParticipantPhone(participant);
+    if (!phone || botPhones.has(phone)) continue;
+    if (!isValidJordanPhone(phone)) {
+      results.push({ phone, status: "skipped_invalid_phone" });
+      continue;
+    }
+    if (isBlockedPhone(phone)) {
+      results.push({ phone, status: "skipped_blocked" });
+      continue;
+    }
+    const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 8000, null);
+    const name = String(contact && (contact.pushname || contact.name || contact.shortName) || displayPhone(phone)).trim().slice(0, 100);
+    const existing = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? LIMIT 1").get(phone);
+    if (existing && existing.role !== "captain") {
+      results.push({ phone, name, status: "skipped_existing_role", role: existing.role });
+      continue;
+    }
+    let captain = existing;
+    let temporaryPin = null;
+    if (!captain) {
+      temporaryPin = createCaptainPin();
+      const stamp = now();
+      const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?,?,?)").run(phone, name, bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, stamp, stamp);
+      captain = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE id=?").get(result.lastInsertRowid);
+      audit("captain.registered_from_group", "user", captain.id, { phone, groupId });
+    } else if (!captain.captain_pin_hash && captain.active) {
+      temporaryPin = createCaptainPin();
+      db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, now(), captain.id);
+    }
+    const notified = sendLinks ? await sendCaptainAppLink({ ...captain, temporaryPin }, baseUrl) : false;
+    results.push({ captainId: captain.id, phone, name, status: existing ? "existing_captain" : "registered", notified, temporaryPinSent: Boolean(temporaryPin) });
+  }
+  return { status: "completed", groupId, totalMembers: participants.length, results };
+}
+async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+  const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND active=1 ORDER BY id").all();
+  const results = [];
+  for (const captain of captains) {
+    const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", phone: captain.phone, error: error.message }));
+    let notified = false;
+    if (sendLinks && isValidJordanPhone(phoneWithCountry(captain.phone))) {
+      notified = await sendCaptainAppLink(captain, baseUrl);
+    }
+    results.push({ captainId: captain.id, phone: captain.phone, membership, notified });
+  }
+  return results;
+}
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
 }
@@ -602,6 +703,15 @@ function formatPendingConfirmation(order, captain) {
     "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.",
     "⏳ لا توجد تسوية مالية قبل اعتماد المنتج.",
   ]);
+}
+function formatOrderCreated(order) {
+  return brandedMessage("تم تسجيل الطلب", [
+    `🆔 رقم الطلب: #${order.order_no}`,
+    `🛣️ المسار: ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
+    `💰 القيمة: ${money(order.price_cents)} JOD`,
+    order.trip_time ? `🕒 الموعد: ${order.trip_time}` : "",
+    "⏳ بانتظار استلام الكابتن وتأكيد الرحلة.",
+  ].filter(Boolean));
 }
 
 let client = null;
@@ -999,6 +1109,18 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
+  const botGenerated = isBotGeneratedMessage(msg);
+  // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
+  if (botGenerated && !parseOrder(body).isOrder) return;
+  const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
+  let insertedMessage = { changes: 0 };
+  if (body) {
+    const stamp = now();
+    const messageId = msg.id && msg.id._serialized;
+    if (messageId) {
+      insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
+    }
+  }
   const quotedForRecovery = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
     const sourceMessageId = quotedForRecovery.id._serialized;
@@ -1017,20 +1139,15 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  const botGenerated = isBotGeneratedMessage(msg);
-  // رسائل البوت العادية ليست رسائل تشغيلية؛ طلب البوت المنسّق فقط يُسجّل باسم الشركة.
-  if (botGenerated && !parseOrder(body).isOrder) return;
+  if (!insertedMessage.changes) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
   }
-  const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   if (!body) return;
   const stamp = now();
   const messageId = msg.id && msg.id._serialized;
   if (!messageId) return;
-  const inserted = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
-  if (!inserted.changes) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
     const producer = botGenerated && BOT_FINANCIAL_MODE === "wallet"
@@ -1043,6 +1160,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
     audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: senderPhone });
     console.log(`[Order] #${orderNo} created from ${groupId}`);
+    if (typeof client !== "undefined" && client && isReady) {
+      await client.sendMessage(groupId, formatOrderCreated({ order_no: orderNo, price_cents: cents(parsed.price), origin: parsed.origin, destination: parsed.destination, trip_time: parsed.tripTime })).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
+    }
     return;
   }
   if (!isCaptainAcceptance(body)) return;
@@ -1422,10 +1542,13 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (invite.phone) {
     let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
     if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
-    const captainAppUrl = `${captainInviteBaseUrl(req)}/captain`;
-    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\\nرقم الهاتف: ${invite.phone}\\n${pinText}\\nرابط تطبيق الكابتن المباشر: ${captainAppUrl}\\nهذا الرابط يفتح تطبيق الكابتن مباشرة، ولا يفتح القروب أو الموقع العام.`);
+    const captainAppLink = captainAppUrl(captainInviteBaseUrl(req));
+    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\nرقم الهاتف: ${invite.phone}\n${pinText}\nرابط تطبيق الكابتن المباشر: ${captainAppLink}\nهذا الرابط يفتح تطبيق الكابتن مباشرة، ولا يفتح القروب أو الموقع العام.`);
   }
-  res.json({ success: true, status: "approved", captainId, notified });
+  const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
+  audit("captain.group_membership.sync", "user", captainId, { membership });
+  res.json({ success: true, status: "approved", captainId, notified, membership });
 });
 app.post("/api/captain/login", (req, res) => {
   const username = String(req.body?.username || "").trim();
@@ -1505,6 +1628,18 @@ app.get("/status", (req, res) => {
   });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
+app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const requestedLimit = Number(req.query.limit || 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  const beforeId = Number(req.query.beforeId || 0);
+  const rows = beforeId > 0
+    ? db.prepare("SELECT id,message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at FROM messages WHERE group_id=? AND id<? ORDER BY id DESC LIMIT ?").all(groupId, beforeId, limit)
+    : db.prepare("SELECT id,message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at FROM messages WHERE group_id=? ORDER BY id DESC LIMIT ?").all(groupId, limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ groupId, count: rows.length, messages: rows });
+});
 
 app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
@@ -1774,8 +1909,9 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
     const stamp = now();
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(createdGroupId, groupName, stamp, stamp);
     setSetting("group_id", createdGroupId);
+    const captainSync = await syncActiveCaptainsToConfiguredGroup({ sendLinks: true });
     audit("group.created_and_configured", "group", createdGroupId, { groupName, participants: phones });
-    groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId: createdGroupId, participants: participantResults };
+    groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId: createdGroupId, participants: participantResults, captainSync };
     console.log(`[GroupCreate] succeeded operation=${operationId} group=${createdGroupId}`);
   } catch (error) {
     groupCreateState = { status: "failed", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: error.message, groupId: createdGroupId, participants: participantResults };
@@ -1813,6 +1949,24 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE role='captain' ORDER BY active DESC, id DESC").all();
   res.json({ captains: rows.map((row) => ({ ...row, balance: money(row.wallet_cents) })) });
 });
+app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const sendLinks = req.body?.sendLinks !== false;
+  const results = await syncActiveCaptainsToConfiguredGroup({ sendLinks, baseUrl: captainInviteBaseUrl(req) });
+  audit("captains.group_membership.bulk_sync", "group", groupId, { count: results.length, sendLinks });
+  res.json({ success: true, groupId, sendLinks, results });
+});
+app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const sendLinks = req.body?.sendLinks !== false;
+  const result = await registerGroupMembersAsCaptains({ groupId, sendLinks, baseUrl: captainInviteBaseUrl(req) });
+  audit("group.members.registered_as_captains", "group", groupId, { totalMembers: result.totalMembers || 0, registered: (result.results || []).filter((item) => item.status === "registered").length, sendLinks });
+  res.json({ success: true, ...result, sendLinks });
+});
 app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();
@@ -1823,11 +1977,15 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   if (existing) {
     db.prepare("UPDATE users SET name=?,active=1,updated_at=? WHERE id=?").run(name, stamp, existing.id);
     audit("captain.reactivated", "user", existing.id, { phone, name });
-    return res.json({ success: true, id: existing.id, reactivated: true });
+    void addCaptainToConfiguredGroup({ phone, name });
+    void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
+    return res.json({ success: true, id: existing.id, reactivated: true, accountLinkSent: true });
   }
   const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?)").run(phone, name, stamp, stamp);
   audit("captain.created", "user", result.lastInsertRowid, { phone, name });
-  res.status(201).json({ success: true, id: result.lastInsertRowid });
+  void addCaptainToConfiguredGroup({ phone, name });
+  void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
+  res.status(201).json({ success: true, id: result.lastInsertRowid, accountLinkSent: true });
 });
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
