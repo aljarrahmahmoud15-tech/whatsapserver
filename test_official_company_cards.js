@@ -37,5 +37,7 @@ assert(index.includes("/api/admin/group/send-guide-videos"), 'guide videos can b
 assert(server.includes('app.post("/api/admin/group/send-guide-videos", requireAdmin'), 'guide video group API is admin protected');
 assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), 'group diagnostic API is admin protected');
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
+assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
+assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), 'group registration retries group hydration');
 assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
 console.log('official company card and compact top-up flow guardrails verified');

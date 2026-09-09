@@ -751,13 +751,23 @@ function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
   return phoneWithCountry(String(raw || "").replace(/@c\.us$/, "").split(":")[0]);
 }
+async function resolveGroupChat(groupId, inviteCode = "") {
+  if (!groupId || !client || !isReady) return null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const chat = await withTimeout(client.getChatById(groupId), 15000, null);
+    if (chat && chat.isGroup && Array.isArray(chat.participants)) return chat;
+    if (inviteCode && attempt === 0) await withTimeout(client.acceptInvite(inviteCode), 60000, null);
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return null;
+}
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
-async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = true, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = true, baseUrl = process.env.PUBLIC_BASE_URL || "", inviteCode = "" } = {}) {
   if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null, results: [] };
   if (!client || !isReady) return { status: "bot_not_ready", groupId, results: [] };
-  const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+  const chat = await resolveGroupChat(groupId, inviteCode);
   if (!chat || !Array.isArray(chat.participants)) return { status: "group_unavailable", groupId, results: [] };
   const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
   const participants = [...new Map(chat.participants.map((participant) => [groupParticipantPhone(participant), participant])).values()];
@@ -2473,12 +2483,14 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     const existingChat = groupId && groupId.endsWith("@g.us") ? await withTimeout(client.getChatById(groupId), 20000, null) : null;
     if (!existingChat || !existingChat.isGroup) groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
+    const groupChat = await resolveGroupChat(groupId);
+    if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
     const stamp = now();
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
     setSetting("group_id", groupId);
     audit("group.joined_and_configured", "group", groupId, { groupName });
     void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
-    res.json({ success: true, groupId, groupName });
+    res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length });
   } catch (error) {
     res.status(502).json({ error: "Unable to join group", details: error.message });
   } finally {
