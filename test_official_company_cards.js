@@ -18,4 +18,5 @@ assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is
 assert(index.includes('id="topup-requests-open"'), 'top-up requests remain accessible from the compact console');
 assert(index.includes('data-topup-fulfill'), 'top-up approval remains a single fulfill-and-send action');
 assert(index.includes('data-captain-access-card'), 'captain rows include an official access-card resend action');
+assert(index.includes("sessionStorage.getItem(onceKey)"), 'URL-triggered resend is guarded against duplicate execution in the same browser session');
 console.log('official company card and compact top-up flow guardrails verified');

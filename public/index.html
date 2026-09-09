@@ -137,6 +137,7 @@
  document.getElementById('add').addEventListener('click',()=>whatsapp());
  document.querySelector('.panel .ghost')?.addEventListener('click',()=>reports());
  if(new URLSearchParams(location.search).get('storage')==='audit'){settings().then(()=>document.getElementById('storage-inventory-refresh')?.click())}
+ const resendCaptainPhone=new URLSearchParams(location.search).get('resendCaptain');if(resendCaptainPhone){const onceKey='captain-access-card:'+resendCaptainPhone;if(!sessionStorage.getItem(onceKey)){sessionStorage.setItem(onceKey,'pending');api('/api/admin/captains/resend-access-card',{method:'POST',body:JSON.stringify({phone:resendCaptainPhone,deletePreviousPlain:true})}).then(result=>{sessionStorage.setItem(onceKey,'sent');showToast('أُرسلت بطاقة الدخول الرسمية إلى '+(result.captain?.name||'الكابتن'))}).catch(error=>{sessionStorage.removeItem(onceKey);showToast(error.message)})}}
 })();
 </script>
 
