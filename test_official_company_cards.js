@@ -44,5 +44,6 @@ assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 
 assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
+assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
 assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
 console.log('official company card and compact top-up flow guardrails verified');

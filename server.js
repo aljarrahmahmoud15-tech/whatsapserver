@@ -636,9 +636,7 @@ function runtimeHealth() {
 }
 function ensureSystemUsers() {
   const stamp = now();
-  const botPhone = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
-  db.prepare("UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE phone=?").run("شركة الجراح — مالك القروب والبوت", stamp, botPhone);
-  db.prepare("UPDATE users SET is_bot=0 WHERE phone<>? AND is_bot=1").run(botPhone);
+  normalizeBotIdentity(stamp);
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
   if (getSetting("company_rate_bps") === null) setSetting("company_rate_bps", COMPANY_RATE_BPS);
@@ -647,6 +645,15 @@ function ensureSystemUsers() {
   if (getSetting("company_from_producer_rate_bps") === null) setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
   if (getSetting("currency") === null) setSetting("currency", "JOD");
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
+}
+function normalizeBotIdentity(stamp = now()) {
+  const primary = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
+  const candidates = [...new Set([BOT_PHONE, BOT_PHONE_INTL, primary].map((value) => String(value || "").trim()).filter(Boolean))];
+  if (!candidates.length) return 0;
+  const placeholders = candidates.map(() => "?").join(",");
+  const updated = db.prepare(`UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE phone IN (${placeholders})`).run("شركة الجراح — مالك القروب والبوت", stamp, ...candidates);
+  db.prepare(`UPDATE users SET is_bot=0 WHERE phone NOT IN (${placeholders}) AND is_bot=1`).run(...candidates);
+  return updated.changes;
 }
 ensureBlockedPhones();
 ensureSystemUsers();
@@ -2360,6 +2367,7 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
 });
 
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
+  normalizeBotIdentity();
   const rows = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE role='captain' ORDER BY active DESC, id DESC").all();
   res.json({ captains: rows.map((row) => ({ ...row, balance: money(row.wallet_cents) })) });
 });
