@@ -4,6 +4,7 @@ const qrcode = require("qrcode");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const v8 = require("v8");
 const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -59,6 +60,9 @@ const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
+const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
+const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
+const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
 const GROUP_BRAND_NAME = "شركة الجراح | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لشركة الجراح للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق نظام الشركة.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -473,6 +477,67 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
 }
+function boundedIntegerSetting(key, fallback, minimum, maximum) {
+  const value = Number(getSetting(key, fallback));
+  return Number.isInteger(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback;
+}
+function operationalSettings() {
+  return {
+    reconnectBaseDelayMs: boundedIntegerSetting("whatsapp_reconnect_base_delay_ms", WHATSAPP_RECONNECT_BASE_DELAY_MS, 1000, 60000),
+    reconnectMaxDelayMs: boundedIntegerSetting("whatsapp_reconnect_max_delay_ms", WHATSAPP_RECONNECT_MAX_DELAY_MS, 10000, 900000),
+    reconnectMaxAttempts: boundedIntegerSetting("whatsapp_reconnect_max_attempts", WHATSAPP_RECONNECT_MAX_ATTEMPTS, 1, 100),
+    initTimeoutMs: boundedIntegerSetting("whatsapp_init_timeout_ms", WHATSAPP_INIT_TIMEOUT_MS, 60000, 900000),
+  };
+}
+function safePathHealth(targetPath) {
+  try {
+    const stat = fs.statSync(targetPath);
+    fs.accessSync(targetPath, fs.constants.R_OK | fs.constants.W_OK);
+    return { exists: true, directory: stat.isDirectory(), writable: true };
+  } catch (error) {
+    return { exists: false, directory: false, writable: false, error: error.code || "unavailable" };
+  }
+}
+function runtimeHealth() {
+  const memory = process.memoryUsage();
+  const heap = v8.getHeapStatistics();
+  const settings = operationalSettings();
+  return {
+    node: process.version,
+    pid: process.pid,
+    uptimeSeconds: Math.round(process.uptime()),
+    memory: {
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+      externalBytes: memory.external,
+      heapLimitBytes: heap.heap_size_limit,
+    },
+    storage: {
+      dataDir: DATA_DIR,
+      dataDirHealth: safePathHealth(DATA_DIR),
+      authPathHealth: safePathHealth(AUTH_PATH),
+      databaseFileHealth: safePathHealth(path.join(DATA_DIR, "aljarah.sqlite")),
+    },
+    whatsapp: {
+      state: whatsappState,
+      ready: Boolean(isReady),
+      initializing: Boolean(initializing),
+      qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+      lastEvent: whatsappLastEvent,
+      lastError: whatsappLastError,
+      reconnectAttempts,
+      reconnectTimerActive: Boolean(reconnectTimer),
+      lastReconnectReason,
+      lastReconnectAt,
+      lastReadyAt,
+      lastDisconnectAt,
+      lastInitializationStartedAt,
+      lastInitializationFinishedAt,
+    },
+    settings,
+  };
+}
 function ensureSystemUsers() {
   const stamp = now();
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
@@ -723,6 +788,13 @@ let qrCodeData = null;
 let lastQrTime = null;
 let temporaryQrGrant = null;
 let reconnectTimer = null;
+let reconnectAttempts = 0;
+let lastReconnectReason = null;
+let lastReconnectAt = null;
+let lastReadyAt = null;
+let lastDisconnectAt = null;
+let lastInitializationStartedAt = null;
+let lastInitializationFinishedAt = null;
 let initializing = false;
 let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
@@ -852,6 +924,8 @@ async function destroyClient() {
 
 async function restartWhatsApp(reason = "manual restart") {
   connectionGeneration += 1;
+  reconnectAttempts = 0;
+  lastReconnectReason = reason;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -923,10 +997,21 @@ async function initializeBaileys() {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
+  const settings = operationalSettings();
+  const attempt = Math.min(reconnectAttempts, settings.reconnectMaxAttempts);
+  const delay = Math.min(settings.reconnectMaxDelayMs, settings.reconnectBaseDelayMs * (2 ** Math.min(attempt, 6)));
+  reconnectAttempts += 1;
+  lastReconnectAt = new Date().toISOString();
+  lastReconnectReason = whatsappLastError || whatsappLastEvent || "connection_lost";
+  if (reconnectAttempts > settings.reconnectMaxAttempts) {
+    reconnectAttempts = settings.reconnectMaxAttempts;
+    whatsappState = "reconnect_backoff";
+  }
+  console.warn(`[WhatsApp] reconnect scheduled in ${delay}ms (attempt ${reconnectAttempts}/${settings.reconnectMaxAttempts})`);
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     await initializeWhatsApp();
-  }, 5000);
+  }, delay);
 }
 
 function createClient() {
@@ -957,6 +1042,8 @@ function createClient() {
     whatsappLastError = null;
     if (generation !== connectionGeneration) return;
     isReady = true;
+    reconnectAttempts = 0;
+    lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     const connectedPhone = instance.info && instance.info.wid ? instance.info.wid.user : BOT_PHONE_INTL;
     console.log(`[WhatsApp] ready: ${connectedPhone}`);
@@ -978,6 +1065,7 @@ function createClient() {
     whatsappLastError = String(reason || "disconnected");
     if (generation !== connectionGeneration) return;
     isReady = false;
+    lastDisconnectAt = new Date().toISOString();
     qrCodeData = null;
     if (client === instance) client = null;
     console.warn("[WhatsApp] disconnected:", reason);
@@ -1011,15 +1099,21 @@ function createClient() {
 async function initializeWhatsApp() {
   if (initializing || isReady) return;
   initializing = true;
+  lastInitializationStartedAt = new Date().toISOString();
   try {
     await destroyClient();
     client = createClient();
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
-    const initialized = await withTimeoutStrict(client.initialize(), WHATSAPP_INIT_TIMEOUT_MS, initTimeoutMarker);
+    const initialized = await withTimeoutStrict(client.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
     if (initialized === initTimeoutMarker) {
-      console.error(`[WhatsApp] initialize timeout after ${WHATSAPP_INIT_TIMEOUT_MS}ms; scheduling controlled retry`);
+      console.error(`[WhatsApp] initialize timeout after ${operationalSettings().initTimeoutMs}ms; scheduling controlled retry`);
       isReady = false;
       qrCodeData = null;
+      whatsappState = "initialize_timeout";
+      whatsappLastEvent = "initialize_timeout";
+      whatsappLastError = "WhatsApp initialization timed out; controlled retry scheduled";
+      await withTimeout(disposeClientInstance(client, "initialize_timeout"), 15000, null);
+      client = null;
       scheduleReconnect();
     }
   } catch (error) {
@@ -1031,6 +1125,7 @@ async function initializeWhatsApp() {
     scheduleReconnect();
   } finally {
     initializing = false;
+    lastInitializationFinishedAt = new Date().toISOString();
   }
 }
 
@@ -1626,6 +1721,36 @@ app.get("/status", (req, res) => {
     whatsappLastError,
     whatsappInitializing: Boolean(initializing),
   });
+});
+app.get("/api/admin/system/health", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, health: runtimeHealth() });
+});
+app.get("/api/admin/system/settings", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, settings: operationalSettings() });
+});
+app.patch("/api/admin/system/settings", requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const fields = [
+    ["reconnectBaseDelayMs", "whatsapp_reconnect_base_delay_ms", 1000, 60000],
+    ["reconnectMaxDelayMs", "whatsapp_reconnect_max_delay_ms", 10000, 900000],
+    ["reconnectMaxAttempts", "whatsapp_reconnect_max_attempts", 1, 100],
+    ["initTimeoutMs", "whatsapp_init_timeout_ms", 60000, 900000],
+  ];
+  const updates = [];
+  for (const [input, key, minimum, maximum] of fields) {
+    if (body[input] === undefined) continue;
+    const value = Number(body[input]);
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      return res.status(400).json({ error: `${input} must be an integer between ${minimum} and ${maximum}` });
+    }
+    setSetting(key, value);
+    updates.push(input);
+  }
+  if (!updates.length) return res.status(400).json({ error: "No supported settings supplied" });
+  audit("system.settings.updated", "system", "whatsapp", { fields: updates });
+  res.json({ success: true, settings: operationalSettings(), updated: updates });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, (req, res) => {

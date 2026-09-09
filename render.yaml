@@ -2,7 +2,8 @@ services:
   - type: web
     name: whatsapserver-1
     runtime: node
-    plan: free
+    # 1 CPU / 2 GB RAM. Keep this aligned with the paid Render service plan.
+    plan: 1c-2g
     buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=$PWD/.cache/puppeteer npx puppeteer browsers install chrome
     startCommand: node server.js
     healthCheckPath: /status
@@ -28,5 +29,15 @@ services:
         value: /app/data/.baileys_auth
       - key: BAILEYS_ENABLED
         value: "false"
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=1024
+      - key: WHATSAPP_INIT_TIMEOUT_MS
+        value: "180000"
+      - key: WHATSAPP_RECONNECT_BASE_DELAY_MS
+        value: "5000"
+      - key: WHATSAPP_RECONNECT_MAX_DELAY_MS
+        value: "120000"
+      - key: WHATSAPP_RECONNECT_MAX_ATTEMPTS
+        value: "20"
       - key: WHATSAPP_CLIENT_ID
         value: aljarah-main-v2
