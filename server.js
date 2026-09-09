@@ -769,12 +769,16 @@ async function readGroupSnapshot(groupId) {
       const collections = window.require("WAWebCollections");
       const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat || !chat.groupMetadata) return null;
+      const groupMetadata = collections.GroupMetadata || collections.WAWebGroupMetadataCollection;
+      if (groupMetadata?.update) await groupMetadata.update(wid);
       const metadata = chat.groupMetadata.serialize ? chat.groupMetadata.serialize() : chat.groupMetadata;
-      const rawParticipants = Array.isArray(metadata?.participants) ? metadata.participants : [];
+      const rawParticipants = chat.groupMetadata.participants?.serialize ? chat.groupMetadata.participants.serialize() : (Array.isArray(metadata?.participants) ? metadata.participants : []);
+      const { toPn } = window.require("WAWebLidMigrationUtils");
       const participants = rawParticipants.map((participant) => {
         const id = participant && participant.id;
-        const serialized = id && (id._serialized || (id.server && id.user ? `${id.user}@${id.server}` : null) || String(id));
-        return { id: serialized, user: id && id.user ? String(id.user) : "", isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
+        const phoneId = id && toPn ? (toPn(id) || id) : id;
+        const serialized = phoneId && (phoneId._serialized || (phoneId.server && phoneId.user ? `${phoneId.user}@${phoneId.server}` : null) || String(phoneId));
+        return { id: serialized, user: phoneId && phoneId.user ? String(phoneId.user) : "", isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
       }).filter((participant) => participant.id || participant.user);
       return { id: requestedId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants };
     } catch (_) {
