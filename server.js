@@ -2357,6 +2357,11 @@ async function openCreatedGroupForAdmin(groupId) {
     const chats = await withTimeout(client.getChats(), 30000, []);
     const found = Array.isArray(chats) ? chats.find((chat) => chat && chat.isGroup && chat.id && (chat.id._serialized || String(chat.id)) === groupId) : null;
     if (found && typeof found.addParticipants === "function") return found;
+    const snapshot = await readGroupSnapshot(groupId);
+    if (snapshot && snapshot.isGroup) {
+      const GroupChat = require("whatsapp-web.js/src/structures/GroupChat");
+      return new GroupChat(client, { id: { _serialized: groupId }, formattedTitle: snapshot.name || "", isGroup: true, groupMetadata: { participants: [] } });
+    }
     if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 3000));
   }
   return null;
