@@ -128,6 +128,7 @@
  document.querySelectorAll('[data-nav]').forEach(btn=>btn.addEventListener('click',()=>{const n=btn.dataset.nav;({overview:()=>{closeDrawer();window.scrollTo({top:0,behavior:'smooth'})},orders,wallets,support,products,drivers,reports,whatsapp,settings}[n]||(()=>showToast('هذا القسم غير معروف')))()}));
  document.getElementById('add').addEventListener('click',()=>whatsapp());
  document.querySelector('.panel .ghost')?.addEventListener('click',()=>reports());
+ if(new URLSearchParams(location.search).get('storage')==='audit'){settings().then(()=>document.getElementById('storage-inventory-refresh')?.click())}
 })();
 </script>
 
