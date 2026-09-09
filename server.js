@@ -3039,6 +3039,16 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
     res.json({ success: true, message: "Session cleared; a new QR will be generated" });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
+app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
+  if (String(req.query.execute || "") !== "1") return res.status(405).json({ error: "Explicit execute=1 is required" });
+  try {
+    await withTimeout(destroyClient(), 15000, null);
+    qrCodeData = null;
+    if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    scheduleReconnect();
+    res.redirect(303, "/qr?session=cleared");
+  } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
+});
 app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
   if (req.body.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
