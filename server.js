@@ -2292,38 +2292,62 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
   audit("order.recovered_from_group_history", "order", order.id, { groupId, sourceMessageId: candidate.id._serialized });
   res.status(201).json({ success: true, recovered: true, orderNo: order.order_no, status: order.status });
 });
+app.get("/api/admin/cards", requireAdmin, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
+  const cards = db.prepare("SELECT c.id,c.code_last4,c.value_cents,c.status,c.assigned_captain_id,c.sent_at,c.redeemed_at,c.created_at,u.name AS captain_name,u.phone AS captain_phone FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id ORDER BY c.id DESC LIMIT ?").all(limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, cards: cards.map((card) => ({ ...card, value: money(card.value_cents), deliveryStatus: card.sent_at ? "sent" : "pending" })) });
+});
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
-  const value = Number(req.body.value || 5);
-  const phone = phoneWithCountry(String(req.body.phone || "").replace(/[^0-9]/g, ""));
-  if (!Number.isFinite(value) || value <= 0 || value > 1000) return res.status(400).json({ error: "Invalid card value" });
+  if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "محاولات إصدار كثيرة؛ حاول لاحقًا" });
+  const value = Number(req.body?.value);
+  const amountCents = cents(value);
+  const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
+  const issueIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isFinite(value) || amountCents <= 0 || value > 1000 || issueIdempotencyKey.length < 16 || issueIdempotencyKey.length > 100) return res.status(400).json({ error: "قيمة صحيحة ومفتاح idempotency مطلوبان" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم المستفيد الأردني مطلوب" });
   const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (!captain) return res.status(404).json({ error: "يجب اعتماد الكابتن أولًا قبل إصدار بطاقة الرصيد" });
   if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
+  const existing = db.prepare("SELECT id,value_cents,status,assigned_captain_id,code_ciphertext FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+  if (existing) {
+    if (Number(existing.assigned_captain_id) !== captain.id || Number(existing.value_cents) !== amountCents) return res.status(409).json({ error: "مفتاح العملية مستخدم لبطاقة مختلفة" });
+    if (existing.status !== "issued") return res.status(409).json({ error: `البطاقة حالتها ${existing.status} ولا يمكن إعادة إصدارها` });
+    return res.json({ id: existing.id, code: decryptCardCode(existing.code_ciphertext), value: money(existing.value_cents), phone, captainName: captain.name, status: existing.status, reused: true });
+  }
   let code = randomCode();
   while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
-  const encryptedCode = cardEncryptionKey ? encryptCardCode(code) : null;
-  const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?)").run(hashCode(code), code.slice(-4), cents(value), captain.id, encryptedCode, now());
-  audit("topup_card.issued", "topup_card", result.lastInsertRowid, { valueCents: cents(value), captainId: captain.id });
-  res.status(201).json({ id: result.lastInsertRowid, code, value: value.toFixed(2), phone, captainName: captain.name, status: "issued" });
+  const encryptedCode = encryptCardCode(code);
+  const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), amountCents, captain.id, issueIdempotencyKey, encryptedCode, now());
+  audit("topup_card.issued", "topup_card", result.lastInsertRowid, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey });
+  res.status(201).json({ id: result.lastInsertRowid, code, value: money(amountCents), phone, captainName: captain.name, status: "issued", reused: false });
 });
 app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
   const cardId = Number(req.params.id);
+  const deliveryIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isInteger(cardId) || cardId < 1 || deliveryIdempotencyKey.length < 16 || deliveryIdempotencyKey.length > 100) return res.status(400).json({ error: "معرف البطاقة ومفتاح idempotency مطلوبان" });
   const card = db.prepare("SELECT c.*,u.phone AS captain_phone,u.name AS captain_name,u.active AS captain_active FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id WHERE c.id=? LIMIT 1").get(cardId);
   if (!card) return res.status(404).json({ error: "البطاقة غير موجودة" });
+  if (card.delivery_idempotency_key && card.delivery_idempotency_key !== deliveryIdempotencyKey) return res.status(409).json({ error: "إرسال البطاقة مسجل بمفتاح مختلف" });
   if (card.sent_at) return res.json({ success: true, alreadySent: true, status: "sent" });
   if (!card.captain_phone || !card.captain_active) return res.status(409).json({ error: "المستفيد غير نشط أو غير معتمد" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا؛ البطاقة محفوظة ولم تُرسل" });
   if (!cardEncryptionKey || !card.code_ciphertext) return res.status(503).json({ error: "تشفير البطاقة غير مهيأ" });
+  if (cardDeliveryInFlight.has(cardId)) return res.status(409).json({ error: "إرسال البطاقة قيد التنفيذ" });
+  cardDeliveryInFlight.add(cardId);
   try {
     const code = decryptCardCode(card.code_ciphertext);
     const message = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "أدخل الرمز في بوابة الكابتن لإضافة الرصيد تلقائيًا.", "البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط."]);
     const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(card.captain_phone)}@c.us`, message), 20000, null);
     if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
-    db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=? AND sent_at IS NULL").run(now(), cardId);
-    audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null });
+    const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
+    if (!update.changes) return res.json({ success: true, alreadySent: true, status: "sent" });
+    audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey });
     res.json({ success: true, status: "sent" });
-  } catch (error) { audit("topup_card.delivery_failed", "topup_card", cardId, { error: String(error?.message || error) }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
+  } catch (error) { audit("topup_card.delivery_failed", "topup_card", cardId, { deliveryIdempotencyKey, error: String(error?.message || error) }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
+  finally { cardDeliveryInFlight.delete(cardId); }
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
