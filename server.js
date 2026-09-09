@@ -742,7 +742,7 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
     "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
   ];
   const sent = await sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
-  void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول الرسمية إلى الكابتن.", `البوابة: ${captainAppUrl(baseUrl)}`], ownersOnly: true });
+  if (sent) void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول الرسمية إلى الكابتن.", `البوابة: ${captainAppUrl(baseUrl)}`], ownersOnly: true });
   return sent;
 }
 function groupParticipantPhone(participant) {
