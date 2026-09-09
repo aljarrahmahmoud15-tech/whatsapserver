@@ -735,9 +735,11 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const pinLine = prepared.temporaryPin ? `\nالرقم السري المؤقت: ${prepared.temporaryPin}` : "";
   const lines = [
     `الكابتن: ${prepared.name || "حساب الكابتن"}`,
-    "تم تسجيل حسابك داخل شبكة الجراح.",
-    `بوابة التشغيل الرسمية: ${captainAppUrl(baseUrl)}`,
-    "افتح البوابة واضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن».",
+    "تم تسجيلك لدينا ككابتن، وحسابك جاهز للدخول.",
+    `البوابة الرسمية: ${captainAppUrl(baseUrl)}`,
+    "الخطوة 1: افتح البوابة واضغط زر التشغيل الأصفر.",
+    "الخطوة 2: اختر «دخول الكابتن» — وليس «تسجيل كابتن جديد». ",
+    "الخطوة 3: أدخل رقم هاتفك والرقم السري، ثم ادخل إلى حسابك.",
     prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام.",
     "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
   ];
@@ -1974,6 +1976,29 @@ app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
     : db.prepare("SELECT id,message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at FROM messages WHERE group_id=? ORDER BY id DESC LIMIT ?").all(groupId, limit);
   res.setHeader("Cache-Control", "no-store");
   res.json({ groupId, count: rows.length, messages: rows });
+});
+app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) => {
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const videos = Array.isArray(req.body?.videos) ? req.body.videos.slice(0, 3).filter((url) => /^https:\/\//i.test(String(url || ""))) : [];
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (!videos.length) return res.status(400).json({ error: "At least one secure video URL is required" });
+  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+  const captions = [
+    "شرح 1/2 · التسجيل وتسجيل الدخول\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر المسار المناسب: تسجيل كابتن جديد لأول مرة أو دخول الكابتن للحساب المسجل.\nالبوابة: " + captainAppUrl(captainInviteBaseUrl(req)),
+    "شرح 2/2 · بطاقة الشحن وتفعيل الرصيد\nمن دخول الكابتن اختر شحن بطاقة رصيد، ثم أدخل الكود واضغط Enter ليُضاف الرصيد مباشرة إلى محفظتك ويُسجل في النظام."
+  ];
+  const sent = [];
+  for (let index = 0; index < videos.length; index += 1) {
+    const media = await withTimeout(MessageMedia.fromUrl(String(videos[index]), { unsafeMime: true }), 60000, null);
+    if (!media) continue;
+    const message = await withTimeout(chat.sendMessage(media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن." }), 60000, null);
+    if (message) sent.push({ index, messageId: message.id?._serialized || null });
+  }
+  audit("group.guide_videos.sent", "group", groupId, { count: sent.length, videos: sent.map((item) => item.index) });
+  void notifyOperations({ event: "group.guide_videos.sent", title: "تأكيد إرسال فيديوهات شرح الكباتن", lines: [`القروب: ${groupId}`, `عدد الفيديوهات المرسلة: ${sent.length}`, "تم إرسال شرح التسجيل والدخول وبطاقة الشحن داخل القروب."], ownersOnly: true });
+  res.json({ success: true, groupId, sent });
 });
 
 app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
