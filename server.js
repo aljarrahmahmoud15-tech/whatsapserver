@@ -648,12 +648,16 @@ function ensureSystemUsers() {
 }
 function normalizeBotIdentity(stamp = now()) {
   const primary = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
-  const candidates = [...new Set([BOT_PHONE, BOT_PHONE_INTL, primary].map((value) => String(value || "").trim()).filter(Boolean))];
-  if (!candidates.length) return 0;
-  const placeholders = candidates.map(() => "?").join(",");
-  const updated = db.prepare(`UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE phone IN (${placeholders})`).run("شركة الجراح — مالك القروب والبوت", stamp, ...candidates);
-  db.prepare(`UPDATE users SET is_bot=0 WHERE phone NOT IN (${placeholders}) AND is_bot=1`).run(...candidates);
-  return updated.changes;
+  const connected = client && client.info && client.info.wid ? client.info.wid.user : "";
+  const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary, connected].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
+  if (!targets.size) return 0;
+  const rows = db.prepare("SELECT id,phone FROM users").all();
+  const ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
+  const update = db.prepare("UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE id=?");
+  for (const row of ownerRows) update.run("شركة الجراح — مالك القروب والبوت", stamp, row.id);
+  const ownerIds = ownerRows.map((row) => row.id);
+  if (ownerIds.length) db.prepare(`UPDATE users SET is_bot=0 WHERE id NOT IN (${ownerIds.map(() => "?").join(",")}) AND is_bot=1`).run(...ownerIds);
+  return ownerRows.length;
 }
 ensureBlockedPhones();
 ensureSystemUsers();
