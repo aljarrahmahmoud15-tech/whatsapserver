@@ -787,7 +787,8 @@ async function readGroupSnapshot(groupId) {
         const id = participant && participant.id;
         const phoneId = id && toPn ? (toPn(id) || id) : id;
         const serialized = phoneId && (phoneId._serialized || (phoneId.server && phoneId.user ? `${phoneId.user}@${phoneId.server}` : null) || String(phoneId));
-        return { id: serialized, user: phoneId && phoneId.user ? String(phoneId.user) : "", isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
+        const user = phoneId && phoneId.user ? String(phoneId.user) : String(serialized || "").split("@")[0].split(":")[0];
+        return { id: serialized, user, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
       }).filter((participant) => participant.id || participant.user);
       return { id: requestedId, name: String(hydratedChat.formattedTitle || hydratedChat.name || ""), isGroup: true, participants, participantSource: Array.isArray(serializedParticipants) && serializedParticipants.length ? "serialize" : (Array.isArray(modelParticipants) && modelParticipants.length ? "models" : (Array.isArray(metadata?.participants) && metadata.participants.length ? "metadata" : "empty")), participantRawCount: rawParticipants.length };
     } catch (_) {
