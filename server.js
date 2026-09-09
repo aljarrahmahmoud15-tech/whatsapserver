@@ -770,9 +770,16 @@ async function readGroupSnapshot(groupId) {
       const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat || !chat.groupMetadata) return null;
       const groupMetadata = collections.GroupMetadata || collections.WAWebGroupMetadataCollection;
-      if (groupMetadata?.update) await groupMetadata.update(wid);
-      const metadata = chat.groupMetadata.serialize ? chat.groupMetadata.serialize() : chat.groupMetadata;
-      const rawParticipants = chat.groupMetadata.participants?.serialize ? chat.groupMetadata.participants.serialize() : (Array.isArray(metadata?.participants) ? metadata.participants : []);
+      try {
+        await window.require("WAWebGroupQueryJob").queryAndUpdateGroupMetadataById({ id: requestedId });
+      } catch (_) {
+        if (groupMetadata?.update) await groupMetadata.update(wid);
+      }
+      const hydratedChat = collections.Chat.get(wid) || chat;
+      const hydratedMetadata = hydratedChat.groupMetadata || chat.groupMetadata;
+      const metadata = hydratedMetadata.serialize ? hydratedMetadata.serialize() : hydratedMetadata;
+      const participantCollection = hydratedMetadata.participants;
+      const rawParticipants = participantCollection?.serialize ? participantCollection.serialize() : (participantCollection?.getModelsArray ? participantCollection.getModelsArray().map((participant) => participant.serialize ? participant.serialize() : participant) : (Array.isArray(metadata?.participants) ? metadata.participants : []));
       const { toPn } = window.require("WAWebLidMigrationUtils");
       const participants = rawParticipants.map((participant) => {
         const id = participant && participant.id;
