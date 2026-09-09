@@ -498,6 +498,52 @@ function safePathHealth(targetPath) {
     return { exists: false, directory: false, writable: false, error: error.code || "unavailable" };
   }
 }
+function storageInventory() {
+  const files = [];
+  const directories = [];
+  let totalBytes = 0;
+  const walk = (directory, relative = "", depth = 0) => {
+    if (depth > 12) return;
+    let entries = [];
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      const childRelative = relative ? path.join(relative, entry.name) : entry.name;
+      let stat;
+      try { stat = fs.lstatSync(absolute); } catch { continue; }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        directories.push({ path: childRelative, bytes: 0 });
+        walk(absolute, childRelative, depth + 1);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      totalBytes += stat.size;
+      files.push({ path: childRelative, bytes: stat.size, modifiedAt: stat.mtime.toISOString() });
+    }
+  };
+  walk(DATA_DIR);
+  const topLevel = new Map();
+  for (const file of files) {
+    const key = file.path.split(path.sep)[0];
+    topLevel.set(key, (topLevel.get(key) || 0) + file.bytes);
+  }
+  let filesystem = null;
+  try {
+    const stat = fs.statfsSync(DATA_DIR);
+    filesystem = { totalBytes: stat.blocks * stat.bsize, freeBytes: stat.bavail * stat.bsize, availableBytes: stat.bfree * stat.bsize };
+  } catch {}
+  return {
+    dataDir: DATA_DIR,
+    totalBytes,
+    fileCount: files.length,
+    directoryCount: directories.length,
+    filesystem,
+    topLevel: [...topLevel.entries()].map(([name, bytes]) => ({ name, bytes })).sort((a, b) => b.bytes - a.bytes),
+    largestFiles: files.sort((a, b) => b.bytes - a.bytes).slice(0, 100),
+    protectedPaths: ["aljarah.sqlite", "aljarah.sqlite-wal", "aljarah.sqlite-shm", ".wwebjs_auth", ".baileys_auth"],
+  };
+}
 function runtimeHealth() {
   const memory = process.memoryUsage();
   const heap = v8.getHeapStatistics();
@@ -1725,6 +1771,10 @@ app.get("/status", (req, res) => {
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, health: runtimeHealth() });
+});
+app.get("/api/admin/system/storage", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, inventory: storageInventory() });
 });
 app.get("/api/admin/system/settings", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
