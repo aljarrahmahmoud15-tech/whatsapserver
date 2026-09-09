@@ -2367,38 +2367,50 @@ function purgeExperimentalCaptains() {
   return { deletedCaptains: captains.length, deletedPhones: phones };
 }
 
-app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
-  const oldGroupId = String(getSetting("group_id", "")).trim();
-  if (!oldGroupId || !isConfiguredGroup(oldGroupId)) return res.status(409).json({ error: "No currently configured group found" });
-  const oldGroup = await readGroupSnapshot(oldGroupId);
-  if (!oldGroup || !Array.isArray(oldGroup.participants) || oldGroup.participants.length < 1) return res.status(409).json({ error: "Could not read members from the currently configured group" });
-  const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-  const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
-  const rawPhones = [...new Set(oldGroup.participants.map(groupParticipantPhone).filter(Boolean))];
-  const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
-  if (!phones.length) return res.status(409).json({ error: "No eligible members remain after owner and blocked-phone exclusions", oldMemberCount: rawPhones.length });
-  const backupDir = path.join(DATA_DIR, "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupName = `pre-group-reset-${Date.now()}.sqlite`;
-  const backupPath = path.join(backupDir, backupName);
+async function resetGroupInBackground({ operationId, oldGroupId, groupName, backupPath, backupName }) {
   try {
+    const oldGroup = await readGroupSnapshot(oldGroupId);
+    if (!oldGroup || !Array.isArray(oldGroup.participants) || oldGroup.participants.length < 1) {
+      groupCreateState = { ...groupCreateState, status: "failed", finishedAt: now(), error: "Could not read members from the currently configured group" };
+      return;
+    }
+    const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
+    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const rawPhones = [...new Set(oldGroup.participants.map(groupParticipantPhone).filter(Boolean))];
+    const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
+    if (!phones.length) {
+      groupCreateState = { ...groupCreateState, status: "failed", finishedAt: now(), error: "No eligible members remain after owner and blocked-phone exclusions", oldMemberCount: rawPhones.length };
+      return;
+    }
     await db.backup(backupPath);
     const purge = purgeExperimentalCaptains();
     const stamp = now();
     db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE active=1").run(stamp);
     db.prepare("DELETE FROM settings WHERE key='group_id'").run();
-    const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100);
-    const operationId = `RESET-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
-    groupCreateInFlight = true;
-    groupCreateState = { status: "running", operationId, startedAt: stamp, finishedAt: null, error: null, groupId: null, participants: phones.map((phone) => ({ phone, status: "pending" })), reset: true, oldGroupId };
-    void createGroupInBackground({ operationId, groupName, phones });
-    res.status(202).json({ success: true, accepted: true, operationId, oldGroupId, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, backupName, purge, messageSent: false });
+    groupCreateState = { status: "running", operationId, startedAt: groupCreateState.startedAt, finishedAt: null, error: null, groupId: null, participants: phones.map((phone) => ({ phone, status: "pending" })), reset: true, oldGroupId, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, backupName, purge };
+    await createGroupInBackground({ operationId, groupName, phones });
   } catch (error) {
+    groupCreateState = { ...groupCreateState, status: "failed", finishedAt: now(), error: error.message, backupName };
     console.error("[GroupReset] failed:", error.message);
-    res.status(500).json({ error: "Group reset was not completed", details: error.message, backupName });
+    groupCreateInFlight = false;
   }
+}
+
+app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
+  const oldGroupId = String(getSetting("group_id", "")).trim();
+  if (!oldGroupId || !isConfiguredGroup(oldGroupId)) return res.status(409).json({ error: "No currently configured group found" });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = "pre-group-reset-" + Date.now() + ".sqlite";
+  const backupPath = path.join(backupDir, backupName);
+  const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const operationId = "RESET-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupCreateInFlight = true;
+  groupCreateState = { status: "reading_current_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: [], reset: true, oldGroupId, backupName };
+  void resetGroupInBackground({ operationId, oldGroupId, groupName, backupPath, backupName });
+  res.status(202).json({ success: true, accepted: true, operationId, oldGroupId, backupName, messageSent: false });
 });
 
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
