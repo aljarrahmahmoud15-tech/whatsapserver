@@ -2369,6 +2369,27 @@ async function openCreatedGroupForAdmin(groupId) {
     const chats = await withTimeout(client.getChats(), 30000, []);
     const found = Array.isArray(chats) ? chats.find((chat) => chat && chat.isGroup && chat.id && (chat.id._serialized || String(chat.id)) === groupId) : null;
     if (found && typeof found.addParticipants === "function") return found;
+    const modelData = await withTimeout(client.pupPage.evaluate(async (requestedId) => {
+      try {
+        const wid = window.require("WAWebWidFactory").createWid(requestedId);
+        const collections = window.require("WAWebCollections");
+        const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
+        if (!chat || !chat.groupMetadata) return null;
+        const data = chat.serialize ? chat.serialize() : null;
+        if (!data) return null;
+        data.id = data.id || { _serialized: requestedId };
+        data.isGroup = true;
+        data.formattedTitle = data.formattedTitle || chat.formattedTitle || chat.name || "";
+        data.groupMetadata = data.groupMetadata || (chat.groupMetadata.serialize ? chat.groupMetadata.serialize() : chat.groupMetadata);
+        return data;
+      } catch (_) {
+        return null;
+      }
+    }, groupId), 30000, null);
+    if (modelData && modelData.isGroup && modelData.groupMetadata) {
+      const ChatFactory = require("whatsapp-web.js/src/factories/ChatFactory");
+      return ChatFactory.create(client, modelData);
+    }
     if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   return null;
