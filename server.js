@@ -636,6 +636,9 @@ function runtimeHealth() {
 }
 function ensureSystemUsers() {
   const stamp = now();
+  const botPhone = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
+  db.prepare("UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE phone=?").run("شركة الجراح — مالك القروب والبوت", stamp, botPhone);
+  db.prepare("UPDATE users SET is_bot=0 WHERE phone<>? AND is_bot=1").run(botPhone);
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
   if (getSetting("company_rate_bps") === null) setSetting("company_rate_bps", COMPANY_RATE_BPS);

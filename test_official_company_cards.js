@@ -42,5 +42,7 @@ assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), '
 assert(server.includes('async function readGroupSnapshot(groupId)'), 'group membership can be read from the WhatsApp page model');
 assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 'group snapshot refreshes WhatsApp group metadata');
 assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
+assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
+assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
 console.log('official company card and compact top-up flow guardrails verified');
