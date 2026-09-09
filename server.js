@@ -2559,7 +2559,7 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   const members = [];
   for (const participant of (chat.participants || [])) {
     const serialized = participant && participant.id && (participant.id._serialized || String(participant.id));
-    const phone = participant && participant.id && participant.id.user ? String(participant.id.user) : "";
+    const phone = participant && (participant.user || (participant.id && participant.id.user)) ? String(participant.user || participant.id.user) : "";
     if (!phone || phone === BOT_PHONE_INTL) continue;
     let contact = null;
     try { contact = await withTimeout(client.getContactById(serialized), 10000, null); } catch (_) {}
