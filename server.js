@@ -239,6 +239,17 @@ CREATE TABLE IF NOT EXISTS support_tickets (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipient_phone TEXT NOT NULL,
+  recipient_role TEXT NOT NULL,
+  event TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  delivery_status TEXT NOT NULL DEFAULT 'pending',
+  message_id TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS captain_invites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,
@@ -396,8 +407,8 @@ async function sendCompanyOperationsCard(to, title, lines) {
     const sent = await withTimeout(client.sendMessage(to, media, { caption }), 30000, null);
     return Boolean(sent);
   } catch (error) {
-    console.error("[WhatsApp] operations card fallback:", error.message);
-    return sendBotTextRaw(to, caption);
+    console.error("[WhatsApp] operations card not sent because branded media failed:", error.message);
+    return false;
   }
 }
 async function sendBotText(to, text) {
@@ -406,6 +417,24 @@ async function sendBotText(to, text) {
 }
 async function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
+}
+function ownerNotificationPhones() {
+  return [...GROUP_SETUP_OWNER_PHONES].map(phoneWithCountry).filter((phone, index, all) => phone && !isBotPhone(phone) && all.indexOf(phone) === index);
+}
+async function notifyOperations({ event, title, lines, captainPhone = null, ownersOnly = false }) {
+  const owners = ownerNotificationPhones();
+  const recipients = (ownersOnly ? owners : [...owners, phoneWithCountry(captainPhone)]).filter((phone, index, all) => phone && all.indexOf(phone) === index);
+  const results = [];
+  for (const phone of recipients) {
+    const recipientRole = owners.includes(phone) ? "owner" : "captain";
+    const message = lines.filter(Boolean).join("\n");
+    const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,?,?,?,'pending',?)").run(phone, recipientRole, event, title, message, now());
+    let deliveryStatus = "failed";
+    try { if (await sendCompanyOperationsCard(`${phone}@c.us`, title, lines.filter(Boolean))) deliveryStatus = "sent"; } catch (_) {}
+    db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(deliveryStatus, row.lastInsertRowid);
+    results.push({ id: row.lastInsertRowid, phone, recipientRole, deliveryStatus });
+  }
+  return results;
 }
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
@@ -712,7 +741,9 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
     prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام.",
     "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
   ];
-  return sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
+  const sent = await sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
+  void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول الرسمية إلى الكابتن.", `البوابة: ${captainAppUrl(baseUrl)}`], ownersOnly: true });
+  return sent;
 }
 function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
@@ -903,13 +934,13 @@ async function renderOperationsMessageMedia(title, lines = []) {
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
 async function sendGroupBrandedMessage(groupId, title, lines) {
-  const caption = brandedMessage(title, lines);
   try {
     const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
-    return client.sendMessage(groupId, media || caption, media ? { caption } : undefined);
+    if (!media) throw new Error("group operations card render returned no media");
+    return client.sendMessage(groupId, media, { caption: brandedMessage(title, lines) });
   } catch (error) {
-    console.error("[WhatsApp] branded group media fallback:", error.message);
-    return client.sendMessage(groupId, caption);
+    console.error("[WhatsApp] group operations card not sent because branded media failed:", error.message);
+    return null;
   }
 }
 function formatAcceptance(order, captain, producer) {
@@ -1782,6 +1813,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
     const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى شركة الجراح.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
   if (!invite.pin_hash || !invite.phone || !invite.name) return res.status(409).json({ error: "بيانات طلب الكابتن غير مكتملة" });
@@ -1813,6 +1845,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
   audit("captain.group_membership.sync", "user", captainId, { membership });
+  void notifyOperations({ event: "captain.join.approved", title: "تأكيد اعتماد كابتن", lines: [`الكابتن: ${invite.name}`, `الهاتف: ${invite.phone}`, "تم اعتماد التسجيل وإرسال بطاقة الدخول.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
   res.json({ success: true, status: "approved", captainId, notified, membership });
 });
 app.post("/api/captain/login", (req, res) => {
@@ -1926,6 +1959,7 @@ app.patch("/api/admin/system/settings", requireAdmin, (req, res) => {
   }
   if (!updates.length) return res.status(400).json({ error: "No supported settings supplied" });
   audit("system.settings.updated", "system", "whatsapp", { fields: updates });
+  void notifyOperations({ event: "system.settings.updated", title: "تأكيد تحديث إعدادات التشغيل", lines: [`الإعدادات التي تم تحديثها: ${updates.join("، ")}`, "تم حفظ الإعدادات داخل قاعدة البيانات.", "سيستخدم البوت القيم الجديدة في دورة الاتصال القادمة."], ownersOnly: true });
   res.json({ success: true, settings: operationalSettings(), updated: updates });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
@@ -2055,6 +2089,10 @@ app.post("/api/dashboard/captains/redeem", requireDashboardApi, (req, res) => {
       audit("topup_card.redeemed", "topup_card", card.id, { userId: assignedUser.id, valueCents: card.value_cents, redemptionIdempotencyKey }, assignedUser.id);
       return { alreadyRedeemed: false, balanceCents: newBalance, valueCents: card.value_cents };
     })();
+    if (!result.alreadyRedeemed) {
+      const captain = db.prepare("SELECT name,phone FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+    }
     res.json({ success: true, alreadyRedeemed: result.alreadyRedeemed, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
   } catch (error) {
     res.status(400).json({ error: error.message || "Unable to redeem card" });
@@ -2084,6 +2122,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (
     audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
     return result.lastInsertRowid;
   })();
+  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
 
@@ -2091,6 +2130,7 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many restart attempts; try again later" });
   try {
     await restartWhatsApp("admin requested reconnect");
+    void notifyOperations({ event: "whatsapp.reconnect.requested", title: "تأكيد إعادة اتصال البوت", lines: ["تم طلب إعادة اتصال واتساب.", "ستبقى قاعدة البيانات وجلسة واتساب محفوظتين.", "ستصل حالة الاتصال الجديدة إلى لوحة المالك بعد اكتمال الدورة."], ownersOnly: true });
     res.json({ success: true, message: "Reconnect scheduled while preserving the WhatsApp session and application data" });
   } catch (error) {
     console.error("[WhatsApp] admin restart:", error.message);
@@ -2257,6 +2297,7 @@ app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
   const sendLinks = req.body?.sendLinks !== false;
   const results = await syncActiveCaptainsToConfiguredGroup({ sendLinks, baseUrl: captainInviteBaseUrl(req) });
   audit("captains.group_membership.bulk_sync", "group", groupId, { count: results.length, sendLinks });
+  void notifyOperations({ event: "captains.group_membership.bulk_sync", title: "تأكيد مزامنة الكباتن", lines: [`عدد الحسابات التي تمت مزامنتها: ${results.length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`, "تم تسجيل نتيجة المزامنة في النظام."], ownersOnly: true });
   res.json({ success: true, groupId, sendLinks, results });
 });
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
@@ -2266,6 +2307,7 @@ app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => 
   const sendLinks = req.body?.sendLinks !== false;
   const result = await registerGroupMembersAsCaptains({ groupId, sendLinks, baseUrl: captainInviteBaseUrl(req) });
   audit("group.members.registered_as_captains", "group", groupId, { totalMembers: result.totalMembers || 0, registered: (result.results || []).filter((item) => item.status === "registered").length, sendLinks });
+  void notifyOperations({ event: "group.members.registered_as_captains", title: "تأكيد تسجيل أعضاء القروب", lines: [`إجمالي الأعضاء: ${result.totalMembers || 0}`, `الحسابات المسجلة: ${(result.results || []).filter((item) => item.status === "registered").length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`], ownersOnly: true });
   res.json({ success: true, ...result, sendLinks });
 });
 app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
@@ -2297,6 +2339,7 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   if (!name || name.length > 100) return res.status(400).json({ error: "Captain name is invalid" });
   db.prepare("UPDATE users SET name=?,active=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, now(), id);
   audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
+  void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", captainPhone: captain.phone, lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`, active ? "يمكن للكابتن استخدام بوابة التشغيل." : "تم إيقاف الدخول والحركات المالية للحساب." ] });
   res.json({ success: true, id, active, name });
 });
 app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
@@ -2360,6 +2403,7 @@ app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) =
     return result.lastInsertRowid;
   });
   const ledgerId = apply();
+  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
@@ -2378,6 +2422,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
   setSetting("group_id", groupId);
   audit("group.configured", "group", groupId, { groupName });
+  void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
 });
 
@@ -2404,6 +2449,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
     setSetting("group_id", groupId);
     audit("group.joined_and_configured", "group", groupId, { groupName });
+    void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
     res.json({ success: true, groupId, groupName });
   } catch (error) {
     res.status(502).json({ error: "Unable to join group", details: error.message });
@@ -2506,6 +2552,7 @@ app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
     if (!update.changes) return res.json({ success: true, alreadySent: true, status: "sent" });
     audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey });
+    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${card.captain_name}`, `القيمة: ${money(card.value_cents)} JOD`, `رقم البطاقة الداخلي: #${cardId}`, "تم إرسال البطاقة المصوّرة إلى الكابتن.", "يُضاف الرصيد عند إدخال الرمز من بوابة التشغيل."], ownersOnly: true });
     res.json({ success: true, status: "sent" });
   } catch (error) { audit("topup_card.delivery_failed", "topup_card", cardId, { deliveryIdempotencyKey, error: String(error?.message || error) }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
   finally { cardDeliveryInFlight.delete(cardId); }
@@ -2560,6 +2607,10 @@ app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
       audit("topup_card.redeemed", "topup_card", card.id, { userId: user.id, valueCents: card.value_cents, source: "captain_portal" }, user.id);
       return { balanceCents: newBalance, valueCents: card.value_cents, alreadyRedeemed: false };
     })();
+    if (!result.alreadyRedeemed) {
+      const captain = db.prepare("SELECT name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+    }
     res.json({ success: true, credited: money(result.valueCents), balance: money(result.balanceCents), currency: "JOD", alreadyRedeemed: result.alreadyRedeemed });
   } catch (error) { res.status(400).json({ error: error.message || "تعذر استرداد البطاقة" }); }
 });
@@ -2575,6 +2626,7 @@ app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
   const stamp = now();
   db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'new',?,?)").run(ticketCode, captain.name, phoneWithCountry(captain.phone), "topup_card", message, cents(requestedValue), stamp, stamp);
   audit("captain.topup_request.created", "support_ticket", ticketCode, { captainId: captain.id, requestedValueCents: cents(requestedValue) }, captain.id);
+  void notifyOperations({ event: "topup_request.created", title: "طلب شحن رصيد جديد", lines: [`الكابتن: ${captain.name}`, `القيمة المطلوبة: ${money(cents(requestedValue))} JOD`, `رقم الطلب: ${ticketCode}`, "بانتظار موافقة المالك لإصدار البطاقة وإرسالها."], ownersOnly: true });
   res.status(201).json({ success: true, ticketCode, status: "new", message: "تم إرسال طلب شحن الرصيد إلى الشركة" });
 });
 app.post("/api/support/tickets", (req, res) => {
@@ -2596,6 +2648,13 @@ app.post("/api/support/tickets", (req, res) => {
 app.get("/api/admin/support-tickets", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT * FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
+});
+app.get("/api/admin/notifications", requireAdmin, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
+  const rows = db.prepare("SELECT id,recipient_phone,recipient_role,event,title,message,delivery_status,message_id,created_at FROM notifications ORDER BY id DESC LIMIT ?").all(limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, notifications: rows });
 });
 app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (req, res) => {
   const ticketId = Number(req.params.id);
@@ -2626,6 +2685,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=?").run(now(), card.lastInsertRowid);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.lastInsertRowid} إلى WhatsApp.`, now(), ticketId);
     audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.lastInsertRowid, captainId: captain.id });
+    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.lastInsertRowid}`, "تم توليد البطاقة وإرسالها عبر WhatsApp.", "يُضاف الرصيد عند إدخال الرمز في بوابة الكابتن."], ownersOnly: true });
     res.json({ success: true, status: "resolved", cardId: card.lastInsertRowid });
   } catch (error) {
     db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.lastInsertRowid} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);

@@ -12,6 +12,17 @@ assert(server.includes('sendCaptainOperationsCard(`${phoneWithCountry(invite.pho
 assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
 assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');
 assert(server.includes('previous.delete(true)'), 'previous plain reply may be deleted for everyone when WhatsApp permits it');
+assert(server.includes('CREATE TABLE IF NOT EXISTS notifications'), 'notification delivery state is persisted');
+assert(server.includes('async function notifyOperations'), 'owner and captain notification service exists');
+assert(server.includes('app.get("/api/admin/notifications", requireAdmin'), 'owner can read notification history');
+assert(server.includes('system.settings.updated'), 'system settings changes notify the owner');
+assert(server.includes('topup_card.redeemed'), 'wallet redemption notifies captain and owner');
+assert(server.includes('group.configured'), 'group configuration notifies the owner');
+assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchronization notifies the owner');
+assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');
+assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
+assert(server.includes('operations card not sent because branded media failed'), 'plain-text fallback is disabled for individual company messages');
+assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.lastInsertRowid'), 'top-up request fulfillment renders a card image');
 assert(server.includes('client.sendMessage(`${phone}@c.us`, media, { caption })'), 'top-up request sends the generated card in the same action');
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
