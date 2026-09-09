@@ -35,5 +35,7 @@ assert(index.includes("/api/admin/group/register-members"), 'group registration 
 assert(index.includes("params.get('registerGroupMembers')==='1'"), 'group registration can be launched once from the authenticated owner page');
 assert(index.includes("/api/admin/group/send-guide-videos"), 'guide videos can be sent to the configured group');
 assert(server.includes('app.post("/api/admin/group/send-guide-videos", requireAdmin'), 'guide video group API is admin protected');
+assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), 'group diagnostic API is admin protected');
+assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
 console.log('official company card and compact top-up flow guardrails verified');

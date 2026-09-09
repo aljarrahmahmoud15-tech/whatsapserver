@@ -2468,7 +2468,10 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
-    const groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
+    const inviteInfo = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
+    let groupId = inviteInfo && inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id));
+    const existingChat = groupId && groupId.endsWith("@g.us") ? await withTimeout(client.getChatById(groupId), 20000, null) : null;
+    if (!existingChat || !existingChat.isGroup) groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
     const stamp = now();
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
@@ -2481,6 +2484,18 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   } finally {
     groupJoinInFlight = false;
   }
+});
+app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const inviteCode = extractInviteCode(req.query.inviteLink || req.query.inviteCode || "");
+  const configuredId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const inviteInfo = inviteCode ? await withTimeout(client.getInviteInfo(inviteCode), 20000, null) : null;
+  const chat = configuredId ? await withTimeout(client.getChatById(configuredId), 20000, null) : null;
+  res.json({
+    configuredId: configuredId || null,
+    configuredChat: chat ? { isGroup: Boolean(chat.isGroup), name: chat.name || null, participants: Array.isArray(chat.participants) ? chat.participants.length : null } : null,
+    invite: inviteInfo ? { id: inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id)) || null, subject: inviteInfo.subject || null, size: inviteInfo.size || null } : null,
+  });
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
