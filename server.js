@@ -2299,6 +2299,39 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
   res.json({ success: true, id, active, name });
 });
+app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
+  const deletePreviousPlain = req.body?.deletePreviousPlain === true;
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم كابتن أردني صحيح مطلوب" });
+  const captain = db.prepare("SELECT id,phone,name,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  if (!captain) return res.status(404).json({ error: "الكابتن غير مسجل في النظام" });
+  if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  const chatId = `${phone}@c.us`;
+  let deletedPreviousPlain = false;
+  let deletedMessageId = null;
+  if (deletePreviousPlain) {
+    try {
+      const chat = await withTimeout(client.getChatById(chatId), 15000, null);
+      const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
+      const previous = [...messages].reverse().find((message) => {
+        const body = String(message?.body || "");
+        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة الجراح)/.test(body);
+      });
+      if (previous && typeof previous.delete === "function") {
+        const removed = await withTimeout(previous.delete(true), 20000, null);
+        deletedPreviousPlain = removed !== null;
+        deletedMessageId = previous.id?._serialized || null;
+      }
+    } catch (error) {
+      console.error("[WhatsApp] previous plain captain reply cleanup:", error.message);
+    }
+  }
+  const sent = await sendCaptainAppLink(captain, captainInviteBaseUrl(req));
+  if (!sent) return res.status(502).json({ error: "تعذر إرسال بطاقة الدخول الرسمية" });
+  audit("captain.access_card.resent", "user", captain.id, { phone, deletedPreviousPlain, deletedMessageId });
+  res.json({ success: true, captain: { id: captain.id, name: captain.name, phone: captain.phone }, deletedPreviousPlain, cardSent: true });
+});
 app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);

@@ -9,6 +9,9 @@ assert(server.includes('renderOperationsMessageMedia(title, lines)'), 'individua
 assert(server.includes('async function sendBotText(to, text)'), 'text API is preserved as a compatibility wrapper');
 assert(server.includes('return sendCompanyOperationsCard(to, "رسالة رسمية من شركة الجراح", lines)'), 'ordinary company messages use the official card');
 assert(server.includes('sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن"'), 'captain approval is sent as a branded card');
+assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
+assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');
+assert(server.includes('previous.delete(true)'), 'previous plain reply may be deleted for everyone when WhatsApp permits it');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.lastInsertRowid'), 'top-up request fulfillment renders a card image');
 assert(server.includes('client.sendMessage(`${phone}@c.us`, media, { caption })'), 'top-up request sends the generated card in the same action');
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
