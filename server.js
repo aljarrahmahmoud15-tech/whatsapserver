@@ -12,6 +12,8 @@ const pino = require("pino");
 const { execFileSync } = require("child_process");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const sharp = require("sharp");
+sharp.concurrency(1);
+sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 
@@ -2571,25 +2573,24 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     groupInviteState = { status: "sending", operationId, startedAt: groupInviteState.startedAt, finishedAt: null, error: null, sourceGroupId, groupId, inviteUrl, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, participants: participantResults };
     configureGroupId(groupId, groupName);
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
+    const title = "تم تسجيلك في شبكة التشغيل";
+    const lines = [
+      "تم تسجيل رقمك ضمن أعضاء شبكة الجراح التشغيلية.",
+      "هذا ليس تسجيل كابتن جديدًا.",
+      "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
+      `البوابة الرسمية: ${gateway}`,
+      "بعد الدخول استخدم الرقم السري المرسل لك، ثم افتح رابط القروب للانضمام:",
+      `رابط القروب: ${inviteUrl}`,
+    ];
+    const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
+    if (!inviteCardMedia) throw new Error("official invite card render returned no media");
     for (const result of participantResults) {
       if (result.status === "already_present") continue;
       const previous = db.prepare("SELECT id FROM notifications WHERE recipient_phone=? AND event='group.member.invite' AND delivery_status='sent' ORDER BY id DESC LIMIT 1").get(result.phone);
-      if (previous) {
-        result.status = "already_invited";
-        continue;
-      }
-      const title = "تم تسجيلك في شبكة التشغيل";
-      const lines = [
-        "تم تسجيل رقمك ضمن أعضاء شبكة الجراح التشغيلية.",
-        "هذا ليس تسجيل كابتن جديدًا.",
-        "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
-        `البوابة الرسمية: ${gateway}`,
-        "بعد الدخول استخدم الرقم السري المرسل لك، ثم افتح رابط القروب للانضمام:",
-        `رابط القروب: ${inviteUrl}`,
-      ];
+      if (previous) { result.status = "already_invited"; continue; }
       const notification = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,? ,?,?, 'pending',?)").run(result.phone, "captain", "group.member.invite", title, lines.join("\n"), now());
       try {
-        const sent = await sendCaptainOperationsCard(`${result.phone}@c.us`, title, lines);
+        const sent = await withTimeout(client.sendMessage(`${result.phone}@c.us`, inviteCardMedia, { caption: brandedMessage(title, lines) }), 30000, null);
         result.status = sent ? "invite_card_sent" : "failed";
         result.error = sent ? null : "official invite card was not sent";
         db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(sent ? "sent" : "failed", notification.lastInsertRowid);
@@ -2602,7 +2603,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
         result.error = result.error || "WhatsApp session disconnected";
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1800));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
     }
     const failedCount = participantResults.filter((participant) => participant.status === "failed").length;
     groupInviteState = { ...groupInviteState, status: failedCount ? "partial" : "succeeded", finishedAt: now(), error: failedCount ? `${failedCount} invite card(s) require retry` : null, participants: participantResults };

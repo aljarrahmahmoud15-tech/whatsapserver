@@ -47,6 +47,8 @@ assert(server.includes('app.get("/api/admin/group/send-member-invites", requireA
 assert(server.includes('group.member.invite'), 'member invite delivery is persisted as a notification event');
 assert(server.includes('هذا ليس تسجيل كابتن جديدًا'), 'member invite card explains captain login instead of new registration');
 assert(server.includes('groupInviteInFlight'), 'member invite delivery is protected from duplicate execution');
+assert(server.includes('sharp.concurrency(1)'), 'card rendering limits native image concurrency');
+assert(server.includes('const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines)'), 'invite cards reuse one rendered media asset per batch');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
