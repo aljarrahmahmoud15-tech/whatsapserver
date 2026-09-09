@@ -2484,7 +2484,8 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const chats = await client.getChats();
+  const chats = await withTimeout(client.getChats(), 25000, null);
+  if (!Array.isArray(chats)) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
   res.json({ groups: chats.filter((chat) => chat.isGroup).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
 });
 app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
