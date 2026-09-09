@@ -377,15 +377,35 @@ function ensureCustomerLead(phone, chatId, name, messageId, body) {
     ON CONFLICT(phone) DO UPDATE SET chat_id=excluded.chat_id,name=excluded.name,last_message_id=excluded.last_message_id,last_text=excluded.last_text,updated_at=excluded.updated_at`).run(phone, chatId, name || displayPhone(phone), "awaiting_direction", messageId, body, stamp, stamp);
   return db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
 }
-async function sendBotText(to, text) {
+async function sendBotTextRaw(to, text) {
   if (!client || !isReady) return false;
   try {
     await withTimeout(client.sendMessage(to, text), 20000, null);
     return true;
   } catch (error) {
-    console.error("[WhatsApp] customer reply:", error.message);
+    console.error("[WhatsApp] raw message fallback:", error.message);
     return false;
   }
+}
+async function sendCompanyOperationsCard(to, title, lines) {
+  if (!client || !isReady) return false;
+  const caption = brandedMessage(title, lines);
+  try {
+    const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
+    if (!media) throw new Error("operations card render returned no media");
+    const sent = await withTimeout(client.sendMessage(to, media, { caption }), 30000, null);
+    return Boolean(sent);
+  } catch (error) {
+    console.error("[WhatsApp] operations card fallback:", error.message);
+    return sendBotTextRaw(to, caption);
+  }
+}
+async function sendBotText(to, text) {
+  const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 10);
+  return sendCompanyOperationsCard(to, "رسالة رسمية من شركة الجراح", lines);
+}
+async function sendCaptainOperationsCard(to, title, lines) {
+  return sendCompanyOperationsCard(to, title, lines);
 }
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
@@ -684,7 +704,15 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const phone = phoneWithCountry(prepared && prepared.phone);
   if (!isValidJordanPhone(phone)) return false;
   const pinLine = prepared.temporaryPin ? `\nالرقم السري المؤقت: ${prepared.temporaryPin}` : "";
-  return sendBotText(`${phone}@c.us`, `بوابة التشغيل الرسمية لشركة الجراح يا ${prepared.name}:\n${captainAppUrl(baseUrl)}\n\nافتح الرابط ثم اضغط زر التشغيل الأصفر، واختر «دخول الكابتن» للدخول إلى حسابك.${pinLine}\nلا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص.`).catch(() => false);
+  const lines = [
+    `الكابتن: ${prepared.name || "حساب الكابتن"}`,
+    "تم تسجيل حسابك داخل شبكة الجراح.",
+    `بوابة التشغيل الرسمية: ${captainAppUrl(baseUrl)}`,
+    "افتح البوابة واضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن».",
+    prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام.",
+    "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
+  ];
+  return sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
 }
 function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
@@ -824,14 +852,14 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
     <path d="M35 125 H1045 M35 548 H1045" stroke="#f6c84c" stroke-opacity=".3" stroke-width="2"/>
     ${logoFrame}${logo}
     <text x="245" y="101" fill="#f6c84c" font-size="28" font-family="Arial, sans-serif" font-weight="700">AL-JARAH LOGISTICS</text>
-    <text x="245" y="139" fill="#ffffff" font-size="25" font-family="Arial, sans-serif" font-weight="700">شركة الجراح للنقل والخدمات اللوجستية</text>
+    <text x="245" y="139" fill="#ffffff" font-size="23" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح للنقل والخدمات اللوجستية</text>
     <text x="245" y="202" fill="#8fe9df" font-size="22" font-family="Arial, sans-serif" letter-spacing="3">OFFICIAL OPERATIONS CARD</text>
-    <text x="76" y="270" fill="#9fb2c6" font-size="20" font-family="Arial, sans-serif">بطاقة شحن تشغيلية</text>
+    <text x="76" y="270" fill="#9fb2c6" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">بطاقة شحن تشغيلية</text>
     <text x="76" y="335" fill="#ffffff" font-size="38" font-family="Arial, sans-serif" font-weight="700">${safeValue}</text>
-    <text x="76" y="402" fill="#9fb2c6" font-size="20" font-family="Arial, sans-serif">المستفيد</text>
-    <text x="76" y="440" fill="#ffffff" font-size="27" font-family="Arial, sans-serif" font-weight="700">${safeName}</text>
+    <text x="76" y="402" fill="#9fb2c6" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">المستفيد</text>
+    <text x="76" y="440" fill="#ffffff" font-size="25" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${safeName}</text>
     <rect x="650" y="235" width="335" height="145" rx="22" fill="#07111f" stroke="#f6c84c" stroke-opacity=".7" stroke-width="2"/>
-    <text x="680" y="278" fill="#9fb2c6" font-size="18" font-family="Arial, sans-serif">رمز التفعيل</text>
+    <text x="680" y="278" fill="#9fb2c6" font-size="18" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">رمز التفعيل</text>
     <text x="680" y="337" fill="#ffe493" font-size="34" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">${safeCode}</text>
     <text x="76" y="602" fill="#d6e0ec" font-size="18" font-family="Arial, sans-serif">افتح بوابة التشغيل الرسمية ثم اختر دخول الكابتن وأدخل الرمز لإضافة الرصيد مباشرة.</text>
     <text x="76" y="630" fill="#8fe9df" font-size="16" font-family="Arial, sans-serif">${safeUrl}</text>
@@ -842,26 +870,34 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
 }
 async function renderOperationsMessageMedia(title, lines = []) {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
+  const portalPath = path.join(__dirname, "public", "aljarah-portal-bg-desktop-v2.png");
   let logoData = "";
+  let portalData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
+  try { portalData = fs.readFileSync(portalPath).toString("base64"); } catch (_) {}
   const safeTitle = escapeXml(title);
   const visibleLines = lines.map((line) => String(line || "")).filter(Boolean).slice(0, 8);
-  const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="78" y="66" width="144" height="144" preserveAspectRatio="xMidYMid meet"/>` : `<text x="150" y="160" text-anchor="middle" fill="#ffe493" font-size="64" font-weight="700">ج</text>`;
-  const lineMarkup = visibleLines.map((line, index) => `<text x="82" y="${276 + index * 43}" fill="${index === 0 ? "#ffffff" : "#d4dce6"}" font-size="${index === 0 ? 27 : 23}" font-family="Arial, sans-serif">${escapeXml(line).slice(0, 92)}</text>`).join("");
+  const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="424" y="288" width="232" height="232" preserveAspectRatio="xMidYMid meet" opacity=".48"/>` : `<text x="540" y="430" text-anchor="middle" fill="#ffe493" font-size="64" font-weight="700" opacity=".28">ج</text>`;
+  const lineMarkup = visibleLines.map((line, index) => `<text x="86" y="${276 + index * 40}" fill="${index === visibleLines.length - 1 ? "#ffcf72" : "#f5f8ff"}" font-size="${index === visibleLines.length - 1 ? 20 : 23}" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="${index === visibleLines.length - 1 ? 700 : 500}">${escapeXml(line).slice(0, 88)}</text>`).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760">
-    <defs><linearGradient id="ops-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1722"/><stop offset=".58" stop-color="#162d42"/><stop offset="1" stop-color="#070f18"/></linearGradient><radialGradient id="glow"><stop offset="0" stop-color="#48d9d1" stop-opacity=".42"/><stop offset=".56" stop-color="#48d9d1" stop-opacity=".1"/><stop offset="1" stop-color="#48d9d1" stop-opacity="0"/></radialGradient><linearGradient id="ops-gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff0b1"/><stop offset=".5" stop-color="#f2c34f"/><stop offset="1" stop-color="#9c6816"/></linearGradient></defs>
-    <rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#ops-bg)" stroke="url(#ops-gold)" stroke-width="5"/>
+    <defs><linearGradient id="ops-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1722"/><stop offset=".58" stop-color="#162d42"/><stop offset="1" stop-color="#070f18"/></linearGradient><radialGradient id="glow"><stop offset="0" stop-color="#48d9d1" stop-opacity=".45"/><stop offset=".52" stop-color="#48d9d1" stop-opacity=".12"/><stop offset="1" stop-color="#48d9d1" stop-opacity="0"/></radialGradient><linearGradient id="ops-gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff0b1"/><stop offset=".5" stop-color="#f2c34f"/><stop offset="1" stop-color="#9c6816"/></linearGradient></defs>
+    ${portalData ? `<image href="data:image/png;base64,${portalData}" x="0" y="0" width="1080" height="760" preserveAspectRatio="xMidYMid slice" opacity=".30"/>` : ""}
+    <rect width="1080" height="760" fill="#07121d" opacity=".72"/><rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#ops-bg)" fill-opacity=".78" stroke="url(#ops-gold)" stroke-width="6"/>
+    <path d="M42 138 H210 M42 138 V55 M1038 138 H870 M1038 138 V55 M42 622 H210 M42 622 V705 M1038 622 H870 M1038 622 V705" stroke="#f6c84c" stroke-opacity=".72" stroke-width="3"/>
+    <path d="M24 186 H74 M24 186 V74 M1056 186 H1006 M1056 186 V74 M24 574 H74 M24 574 V686 M1056 574 H1006 M1056 574 V686" stroke="#48d9d1" stroke-opacity=".28" stroke-width="2"/>
     <path d="M25 505 C240 380 400 650 675 480 S920 390 1055 300 L1055 740 L25 740 Z" fill="#f6c84c" opacity=".08"/>
-    <circle cx="150" cy="138" r="164" fill="url(#glow)"/><circle cx="150" cy="138" r="119" fill="none" stroke="#f6c84c" stroke-opacity=".44" stroke-width="2"/><circle cx="150" cy="138" r="103" fill="none" stroke="#48d9d1" stroke-opacity=".45" stroke-width="2"/><circle cx="150" cy="138" r="91" fill="#08131f" stroke="#f6c84c" stroke-opacity=".35" stroke-width="2"/>
-    ${logo}<circle cx="150" cy="21" r="8" fill="#48d9d1"/><circle cx="150" cy="21" r="18" fill="none" stroke="#48d9d1" stroke-opacity=".25" stroke-width="3"/>
-    <text x="345" y="92" fill="#f6c84c" font-size="26" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">AL-JARAH OPERATIONS NETWORK</text>
-    <text x="345" y="135" fill="#ffffff" font-size="27" font-family="Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
-    <path d="M82 220 H998" stroke="#f6c84c" stroke-opacity=".42" stroke-width="2"/>
-    <text x="82" y="252" fill="#ffe493" font-size="31" font-family="Arial, sans-serif" font-weight="700">${safeTitle}</text>
+    <circle cx="540" cy="404" r="252" fill="url(#glow)" opacity=".50"/><circle cx="540" cy="404" r="178" fill="none" stroke="#48d9d1" stroke-opacity=".36" stroke-width="2"/><circle cx="540" cy="404" r="157" fill="none" stroke="#f6c84c" stroke-opacity=".40" stroke-width="2"/><circle cx="540" cy="404" r="128" fill="#071522" fill-opacity=".84" stroke="#8fe9df" stroke-opacity=".32" stroke-width="2"/>
+    ${logo}<circle cx="540" cy="226" r="9" fill="#62df99"/><circle cx="540" cy="226" r="22" fill="none" stroke="#62df99" stroke-opacity=".45" stroke-width="3"/><circle cx="540" cy="582" r="6" fill="#f6c84c"/><circle cx="358" cy="404" r="6" fill="#48d9d1"/><circle cx="722" cy="404" r="6" fill="#48d9d1"/>
+    <text x="1000" y="83" text-anchor="end" fill="#f6c84c" font-size="25" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">AL-JARAH OPERATIONS NETWORK</text>
+    <text x="352" y="122" fill="#ffffff" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
+    <rect x="80" y="64" width="238" height="48" rx="20" fill="#5b3e12" fill-opacity=".88" stroke="#ffcf72" stroke-width="2"/><text x="199" y="96" text-anchor="middle" fill="#ffe493" font-size="21" font-family="Arial, sans-serif" font-weight="700">OFFICIAL / VERIFIED</text>
+    <rect x="64" y="164" width="952" height="474" rx="30" fill="#07131f" fill-opacity=".74" stroke="#8fe9df" stroke-opacity=".30" stroke-width="2"/>
+    <text x="86" y="218" fill="#ffe493" font-size="30" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${safeTitle}</text>
+    <path d="M80 238 H1000" stroke="#f6c84c" stroke-opacity=".35" stroke-width="2"/>
     ${lineMarkup}
-    <path d="M82 665 H998" stroke="#48d9d1" stroke-opacity=".28" stroke-width="2"/>
-    <text x="82" y="704" fill="#8fe9df" font-size="20" font-family="Arial, sans-serif">نقل أسرع • تنظيم أدق • سجل موثّق</text>
-    <text x="998" y="704" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">AL-JARAH / OFFICIAL</text>
+    <path d="M80 666 H1000" stroke="#48d9d1" stroke-opacity=".34" stroke-width="2"/>
+    <text x="1000" y="708" text-anchor="end" fill="#8fe9df" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نقل أسرع • تنظيم أدق • سجل موثّق</text>
+    <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">AL-JARAH / OFFICIAL</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
@@ -1765,7 +1801,14 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
     if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
     const captainAppLink = captainAppUrl(captainInviteBaseUrl(req));
-    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\nرقم الهاتف: ${invite.phone}\n${pinText}\nبوابة التشغيل الرسمية: ${captainAppLink}\nافتح البوابة، اضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن». لا تستخدم رابطًا آخر.`);
+    notified = await sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن", [
+      `الكابتن: ${invite.name}`,
+      "تمت الموافقة على طلبك داخل شبكة الجراح.",
+      `رقم الهاتف: ${invite.phone}`,
+      pinText,
+      `بوابة التشغيل الرسمية: ${captainAppLink}`,
+      "افتح البوابة واضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن». لا تستخدم رابطًا آخر."
+    ]);
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
@@ -2542,8 +2585,10 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     return res.status(503).json({ error: "تم إصدار البطاقة لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.lastInsertRowid });
   }
   try {
-    const message = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رمز البطاقة: ${code}`, "أدخل الرمز في بوابة الكابتن لإضافة الرصيد تلقائيًا.", "البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط."]);
-    const sent = await withTimeout(client.sendMessage(`${phone}@c.us`, message), 20000, null);
+    const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+    const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
+    const media = await renderTopupCardMedia({ cardId: card.lastInsertRowid, code, valueCents, captainName: captain.name, appUrl });
+    const sent = await withTimeout(client.sendMessage(`${phone}@c.us`, media, { caption }), 30000, null);
     if (!sent) throw new Error("send timeout");
     db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=?").run(now(), card.lastInsertRowid);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.lastInsertRowid} إلى WhatsApp.`, now(), ticketId);
