@@ -360,7 +360,7 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962775969880"]);
 const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886,+962775969880").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
@@ -2344,6 +2344,62 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
     groupCreateInFlight = false;
   }
 }
+
+function purgeExperimentalCaptains() {
+  normalizeBotIdentity();
+  const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL)]);
+  const captains = db.prepare("SELECT id,phone FROM users WHERE role='captain'").all().filter((captain) => !botPhones.has(phoneWithCountry(captain.phone)));
+  const ids = captains.map((captain) => captain.id);
+  const phones = captains.map((captain) => phoneWithCountry(captain.phone)).filter(Boolean);
+  db.transaction(() => {
+    db.prepare("DELETE FROM wallet_ledger").run();
+    db.prepare("DELETE FROM topup_cards").run();
+    db.prepare("DELETE FROM support_tickets").run();
+    db.prepare("DELETE FROM notifications").run();
+    db.prepare("DELETE FROM captain_invites").run();
+    db.prepare("DELETE FROM customer_leads").run();
+    db.prepare("DELETE FROM messages").run();
+    db.prepare("DELETE FROM orders").run();
+    db.prepare("DELETE FROM audit_logs").run();
+    db.prepare("UPDATE users SET wallet_cents=0,updated_at=? WHERE role='producer' AND is_bot=1").run(now());
+    if (ids.length) db.prepare(`DELETE FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role='captain'`).run(...ids);
+  })();
+  return { deletedCaptains: captains.length, deletedPhones: phones };
+}
+
+app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
+  const oldGroupId = String(getSetting("group_id", "")).trim();
+  if (!oldGroupId || !isConfiguredGroup(oldGroupId)) return res.status(409).json({ error: "No currently configured group found" });
+  const oldGroup = await readGroupSnapshot(oldGroupId);
+  if (!oldGroup || !Array.isArray(oldGroup.participants) || oldGroup.participants.length < 1) return res.status(409).json({ error: "Could not read members from the currently configured group" });
+  const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
+  const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+  const rawPhones = [...new Set(oldGroup.participants.map(groupParticipantPhone).filter(Boolean))];
+  const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
+  if (!phones.length) return res.status(409).json({ error: "No eligible members remain after owner and blocked-phone exclusions", oldMemberCount: rawPhones.length });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-group-reset-${Date.now()}.sqlite`;
+  const backupPath = path.join(backupDir, backupName);
+  try {
+    await db.backup(backupPath);
+    const purge = purgeExperimentalCaptains();
+    const stamp = now();
+    db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE active=1").run(stamp);
+    db.prepare("DELETE FROM settings WHERE key='group_id'").run();
+    const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100);
+    const operationId = `RESET-${crypto.randomBytes(5).toString("hex").toUpperCase()}`;
+    groupCreateInFlight = true;
+    groupCreateState = { status: "running", operationId, startedAt: stamp, finishedAt: null, error: null, groupId: null, participants: phones.map((phone) => ({ phone, status: "pending" })), reset: true, oldGroupId };
+    void createGroupInBackground({ operationId, groupName, phones });
+    res.status(202).json({ success: true, accepted: true, operationId, oldGroupId, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, backupName, purge, messageSent: false });
+  } catch (error) {
+    console.error("[GroupReset] failed:", error.message);
+    res.status(500).json({ error: "Group reset was not completed", details: error.message, backupName });
+  }
+});
 
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
