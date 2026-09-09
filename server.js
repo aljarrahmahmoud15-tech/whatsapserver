@@ -2375,28 +2375,46 @@ async function openCreatedGroupForAdmin(groupId) {
 }
 
 async function finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones }) {
-  const participantResults = phones.map((phone) => ({ phone, status: "pending" }));
+  const destinationSnapshot = await readGroupSnapshot(groupId);
+  const existingPhones = new Set((destinationSnapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
+  const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending" }));
   try {
     const groupChat = await openCreatedGroupForAdmin(groupId);
     if (!groupChat || typeof groupChat.addParticipants !== "function") throw new Error("The newly created group is still unavailable for participant addition");
     groupCreateState = { ...groupCreateState, status: "adding_participants", operationId, groupId, participants: participantResults };
     for (const result of participantResults) {
+      if (result.status === "already_present") continue;
       const participantId = result.phone + "@c.us";
-      const added = await withTimeout(groupChat.addParticipants([participantId]), 60000, null);
-      if (!added || typeof added === "string") {
+      try {
+        const added = await withTimeout(groupChat.addParticipants([participantId]), 60000, null);
+        if (!added || typeof added === "string") {
+          result.status = "failed";
+          result.error = typeof added === "string" ? added : "participant addition timed out";
+          continue;
+        }
+        result.status = "added";
+        result.response = added && typeof added === "object" ? added : null;
+      } catch (error) {
         result.status = "failed";
-        result.error = typeof added === "string" ? added : "participant addition timed out";
-        throw new Error("Could not add " + result.phone + " to the newly created group");
+        result.error = error.message;
+        console.error("[GroupCreate] participant addition failed:", result.phone, error.message);
       }
-      result.status = "added";
-      result.response = added && typeof added === "object" ? added : null;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     const stamp = now();
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
     setSetting("group_id", groupId);
-    const captainSync = await syncActiveCaptainsToConfiguredGroup({ sendLinks: true });
+    let captainSync = null;
+    if (client && isReady) {
+      try {
+        captainSync = await syncActiveCaptainsToConfiguredGroup({ sendLinks: true });
+      } catch (error) {
+        captainSync = { status: "sync_failed", error: error.message };
+      }
+    }
     audit("group.created_and_configured", "group", groupId, { groupName, participants: phones, recovered: true });
-    groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId, participants: participantResults, captainSync, recovered: true };
+    const failedCount = participantResults.filter((participant) => participant.status === "failed").length;
+    groupCreateState = { status: failedCount ? "partial" : "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: failedCount ? `${failedCount} participant(s) require retry` : null, groupId, participants: participantResults, captainSync, recovered: true };
     console.log("[GroupCreate] recovered operation=" + operationId + " group=" + groupId);
   } catch (error) {
     groupCreateState = { ...groupCreateState, status: "failed", operationId, finishedAt: now(), error: error.message, groupId, participants: participantResults, recoverable: true };
