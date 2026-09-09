@@ -2363,18 +2363,13 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
 
 
 async function openCreatedGroupForAdmin(groupId) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     const groupChat = await withTimeout(client.getChatById(groupId), 30000, null);
     if (groupChat && typeof groupChat.addParticipants === "function") return groupChat;
     const chats = await withTimeout(client.getChats(), 30000, []);
     const found = Array.isArray(chats) ? chats.find((chat) => chat && chat.isGroup && chat.id && (chat.id._serialized || String(chat.id)) === groupId) : null;
     if (found && typeof found.addParticipants === "function") return found;
-    const snapshot = await readGroupSnapshot(groupId);
-    if (snapshot && snapshot.isGroup) {
-      const GroupChat = require("whatsapp-web.js/src/structures/GroupChat");
-      return new GroupChat(client, { id: { _serialized: groupId }, formattedTitle: snapshot.name || "", isGroup: true, groupMetadata: { participants: [] } });
-    }
-    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   return null;
 }
