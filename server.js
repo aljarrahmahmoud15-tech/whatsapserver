@@ -779,7 +779,9 @@ async function readGroupSnapshot(groupId) {
       const hydratedMetadata = hydratedChat.groupMetadata || chat.groupMetadata;
       const metadata = hydratedMetadata.serialize ? hydratedMetadata.serialize() : hydratedMetadata;
       const participantCollection = hydratedMetadata.participants;
-      const rawParticipants = participantCollection?.serialize ? participantCollection.serialize() : (participantCollection?.getModelsArray ? participantCollection.getModelsArray().map((participant) => participant.serialize ? participant.serialize() : participant) : (Array.isArray(metadata?.participants) ? metadata.participants : []));
+      const serializedParticipants = participantCollection?.serialize ? participantCollection.serialize() : null;
+      const modelParticipants = participantCollection?.getModelsArray ? participantCollection.getModelsArray() : null;
+      const rawParticipants = Array.isArray(serializedParticipants) ? serializedParticipants : (Array.isArray(modelParticipants) ? modelParticipants.map((participant) => participant.serialize ? participant.serialize() : participant) : (Array.isArray(metadata?.participants) ? metadata.participants : []));
       const { toPn } = window.require("WAWebLidMigrationUtils");
       const participants = rawParticipants.map((participant) => {
         const id = participant && participant.id;
@@ -787,7 +789,7 @@ async function readGroupSnapshot(groupId) {
         const serialized = phoneId && (phoneId._serialized || (phoneId.server && phoneId.user ? `${phoneId.user}@${phoneId.server}` : null) || String(phoneId));
         return { id: serialized, user: phoneId && phoneId.user ? String(phoneId.user) : "", isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
       }).filter((participant) => participant.id || participant.user);
-      return { id: requestedId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants };
+      return { id: requestedId, name: String(hydratedChat.formattedTitle || hydratedChat.name || ""), isGroup: true, participants, participantSource: Array.isArray(serializedParticipants) && serializedParticipants.length ? "serialize" : (Array.isArray(modelParticipants) && modelParticipants.length ? "models" : (Array.isArray(metadata?.participants) && metadata.participants.length ? "metadata" : "empty")), participantRawCount: rawParticipants.length };
     } catch (_) {
       return null;
     }
@@ -2522,7 +2524,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     setSetting("group_id", groupId);
     audit("group.joined_and_configured", "group", groupId, { groupName });
     void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
-    res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length });
+    res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length, participantSource: groupChat.participantSource || null });
   } catch (error) {
     res.status(502).json({ error: "Unable to join group", details: error.message });
   } finally {
@@ -2537,7 +2539,7 @@ app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
   const chat = configuredId ? await readGroupSnapshot(configuredId) || await resolveGroupChat(configuredId) : null;
   res.json({
     configuredId: configuredId || null,
-    configuredChat: chat ? { isGroup: Boolean(chat.isGroup), name: chat.name || null, participants: Array.isArray(chat.participants) ? chat.participants.length : null } : null,
+    configuredChat: chat ? { isGroup: Boolean(chat.isGroup), name: chat.name || null, participants: Array.isArray(chat.participants) ? chat.participants.length : null, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null } : null,
     invite: inviteInfo ? { id: inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id)) || null, subject: inviteInfo.subject || null, size: inviteInfo.size || null } : null,
   });
 });
@@ -2562,7 +2564,7 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
     try { contact = await withTimeout(client.getContactById(serialized), 10000, null); } catch (_) {}
     members.push({ phone, name: String((contact && (contact.name || contact.pushname)) || phone).trim(), id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
   }
-  res.json({ success: true, groupId, groupName: chat.name || null, members });
+  res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
 app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
