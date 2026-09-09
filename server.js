@@ -2512,6 +2512,21 @@ app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   void finalizeExistingGroupInBackground({ operationId, sourceGroupId, groupId, groupName });
   res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId, groupId, messageSent: false });
 });
+
+app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
+  if (String(req.query.execute || "") !== "1") return res.status(405).json({ error: "Use POST or provide the explicit execute=1 confirmation" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
+  const sourceGroupId = String(req.query.sourceGroupId || "120363426604560611@g.us").trim();
+  const groupId = String(req.query.groupId || "120363413760988742@g.us").trim();
+  if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
+  const groupName = String(req.query.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupCreateInFlight = true;
+  groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
+  void finalizeExistingGroupInBackground({ operationId, sourceGroupId, groupId, groupName });
+  res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId, groupId, messageSent: false });
+});
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
