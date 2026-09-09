@@ -1295,12 +1295,24 @@ function createClient() {
     whatsappLastEvent = "ready";
     whatsappLastError = null;
     if (generation !== connectionGeneration) return;
+    const connectedPhone = instance.info && instance.info.wid ? phoneWithCountry(instance.info.wid.user) : null;
+    const expectedPhone = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
+    if (connectedPhone && expectedPhone && connectedPhone !== expectedPhone) {
+      whatsappState = "wrong_account";
+      whatsappLastEvent = "wrong_account";
+      whatsappLastError = "Connected WhatsApp account does not match the configured bot phone";
+      isReady = false;
+      if (client === instance) client = null;
+      console.error(`[WhatsApp] refusing unexpected account: ${connectedPhone}; expected configured bot phone`);
+      void disposeClientInstance(instance, "wrong_account");
+      scheduleReconnect();
+      return;
+    }
     isReady = true;
     reconnectAttempts = 0;
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
-    const connectedPhone = instance.info && instance.info.wid ? instance.info.wid.user : BOT_PHONE_INTL;
-    console.log(`[WhatsApp] ready: ${connectedPhone}`);
+    console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
   });
   instance.on("auth_failure", (message) => {
     whatsappState = "auth_failure";
@@ -3180,5 +3192,31 @@ app.listen(PORT, () => {
   if (BAILEYS_ENABLED) initializeBaileys();
 });
 
+function isRecoverableBrowserLifecycleError(error) {
+  const message = String(error && error.message || error || "");
+  return /Execution context was destroyed|Target closed|Session closed|Protocol error/i.test(message);
+}
+process.on("unhandledRejection", (reason) => {
+  if (!isRecoverableBrowserLifecycleError(reason)) {
+    console.error("[Process] unhandled rejection:", reason);
+    return;
+  }
+  whatsappLastError = "WhatsApp browser context restarted; controlled reconnect scheduled";
+  whatsappLastEvent = "browser_context_reset";
+  isReady = false;
+  console.warn("[Process] recoverable WhatsApp browser lifecycle error; scheduling reconnect");
+  scheduleReconnect();
+});
+process.on("uncaughtException", (error) => {
+  if (!isRecoverableBrowserLifecycleError(error)) {
+    console.error("[Process] uncaught exception:", error);
+    process.exit(1);
+  }
+  whatsappLastError = "WhatsApp browser context restarted; controlled reconnect scheduled";
+  whatsappLastEvent = "browser_context_reset";
+  isReady = false;
+  console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
+  scheduleReconnect();
+});
 process.on("SIGTERM", async () => { await destroyClient(); db.close(); process.exit(0); });
 process.on("SIGINT", async () => { await destroyClient(); db.close(); process.exit(0); });
