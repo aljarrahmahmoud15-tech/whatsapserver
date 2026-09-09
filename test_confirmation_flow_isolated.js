@@ -92,6 +92,7 @@ const context = {
   money: (cents) => (Number(cents) / 100).toFixed(2),
   formatAcceptance: () => "confirmed",
   brandedMessage: () => "rejected",
+  sendGroupBrandedMessage: async (groupId, title, lines) => { messages.push({ groupId, text: `${title}\n${lines.join("\n")}` }); },
   console,
 };
 

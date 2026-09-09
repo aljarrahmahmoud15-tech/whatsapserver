@@ -199,6 +199,8 @@
   <div class="toast" id="toast">رابط القروب غير متاح حاليًا. استخدم خدمة العملاء داخل النظام.</div>
   <script>
     const GROUP_INVITE_URL = 'https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR';
+    const captainInvite = new URLSearchParams(location.search).get('invite');
+    if(captainInvite){document.querySelectorAll('.access-link[href="/captain/register"],.access-link[href="/captain"]').forEach(link=>{link.href=link.getAttribute('href')+'?invite='+encodeURIComponent(captainInvite)});}
     const joinBtn = document.getElementById('joinBtn');
     const toast = document.getElementById('toast');
     const accessBackdrop = document.getElementById('accessBackdrop');

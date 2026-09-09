@@ -11,6 +11,7 @@ const jwt = require("jsonwebtoken");
 const pino = require("pino");
 const { execFileSync } = require("child_process");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const sharp = require("sharp");
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 
@@ -649,7 +650,11 @@ function isConfiguredGroup(groupId) {
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
-  return `${normalized || `http://localhost:${PORT}`}/captain`;
+  return `${normalized || `http://localhost:${PORT}`}/join.html`;
+}
+function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
+  const gateway = captainAppUrl(baseUrl);
+  return inviteToken ? `${gateway}?invite=${encodeURIComponent(inviteToken)}` : gateway;
 }
 async function addCaptainToConfiguredGroup(captain) {
   const groupId = getSetting("group_id", null);
@@ -679,7 +684,7 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const phone = phoneWithCountry(prepared && prepared.phone);
   if (!isValidJordanPhone(phone)) return false;
   const pinLine = prepared.temporaryPin ? `\nالرقم السري المؤقت: ${prepared.temporaryPin}` : "";
-  return sendBotText(`${phone}@c.us`, `رابط حسابك في شركة الجراح يا ${prepared.name}:\n${captainAppUrl(baseUrl)}\n\nالدخول يكون برقم هاتفك والرقم السري.${pinLine}\nاحتفظ بالرقم السري ولا تشاركه مع أي شخص.`).catch(() => false);
+  return sendBotText(`${phone}@c.us`, `بوابة التشغيل الرسمية لشركة الجراح يا ${prepared.name}:\n${captainAppUrl(baseUrl)}\n\nافتح الرابط ثم اضغط زر التشغيل الأصفر، واختر «دخول الكابتن» للدخول إلى حسابك.${pinLine}\nلا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص.`).catch(() => false);
 }
 function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
@@ -788,12 +793,88 @@ function findOrderByQuotedId(quotedId) {
 }
 function brandedMessage(title, lines = []) {
   return [
-    "╭━━━ ✦ شركة الجراح ✦ ━━━╮",
+    "╭━━━ ✦ AL-JARAH OPERATIONS NETWORK ✦ ━━━╮",
+    "┃ شركة الجراح | بوابة التشغيل الرسمية",
+    "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫",
     `┃ ${title}`,
-    "┣━━━━━━━━━━━━━━━━━━━━━━┫",
+    "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫",
     ...lines.map((line) => `┃ ${line}`),
-    "╰━━━ نقل أسرع • تنظيم أدق ━━━╯",
+    "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫",
+    "┃ نقل أسرع • تنظيم أدق • سجل موثّق",
+    "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯",
   ].join("\n");
+}
+function escapeXml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
+}
+async function renderTopupCardMedia({ cardId, code, valueCents, captainName, appUrl }) {
+  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
+  let logoData = "";
+  try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
+  const safeName = escapeXml(captainName || "كابتن شبكة الجراح");
+  const safeCode = escapeXml(code);
+  const safeValue = escapeXml(`${money(valueCents)} JOD`);
+  const safeUrl = escapeXml(appUrl || "https://bot.wasselni-biz.com/join.html");
+  const logoFrame = `<circle cx="142" cy="138" r="86" fill="#48d9d1" opacity=".12"/><circle cx="142" cy="138" r="76" fill="none" stroke="#f6c84c" stroke-opacity=".55" stroke-width="2"/><circle cx="142" cy="138" r="68" fill="none" stroke="#48d9d1" stroke-opacity=".45" stroke-width="2"/><circle cx="142" cy="50" r="7" fill="#48d9d1"/><circle cx="142" cy="50" r="15" fill="none" stroke="#48d9d1" stroke-opacity=".3" stroke-width="2"/>`;
+  const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="76" y="72" width="132" height="132" preserveAspectRatio="xMidYMid meet"/>` : `<circle cx="142" cy="138" r="62" fill="#0b1523" stroke="#f6c84c" stroke-width="4"/><text x="142" y="153" text-anchor="middle" fill="#f6c84c" font-size="54" font-weight="700">ج</text>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="680" viewBox="0 0 1080 680">
+    <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#101b2a"/><stop offset=".55" stop-color="#172c40"/><stop offset="1" stop-color="#08111d"/></linearGradient><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe493"/><stop offset=".52" stop-color="#f3bf3b"/><stop offset="1" stop-color="#b57914"/></linearGradient><filter id="shadow"><feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000" flood-opacity=".42"/></filter></defs>
+    <rect x="18" y="18" width="1044" height="644" rx="42" fill="url(#bg)" stroke="url(#gold)" stroke-width="5" filter="url(#shadow)"/>
+    <path d="M30 470 C260 335 390 590 650 430 S900 350 1050 250 L1050 650 L30 650 Z" fill="#f6c84c" opacity=".08"/>
+    <path d="M35 125 H1045 M35 548 H1045" stroke="#f6c84c" stroke-opacity=".3" stroke-width="2"/>
+    ${logoFrame}${logo}
+    <text x="245" y="101" fill="#f6c84c" font-size="28" font-family="Arial, sans-serif" font-weight="700">AL-JARAH LOGISTICS</text>
+    <text x="245" y="139" fill="#ffffff" font-size="25" font-family="Arial, sans-serif" font-weight="700">شركة الجراح للنقل والخدمات اللوجستية</text>
+    <text x="245" y="202" fill="#8fe9df" font-size="22" font-family="Arial, sans-serif" letter-spacing="3">OFFICIAL OPERATIONS CARD</text>
+    <text x="76" y="270" fill="#9fb2c6" font-size="20" font-family="Arial, sans-serif">بطاقة شحن تشغيلية</text>
+    <text x="76" y="335" fill="#ffffff" font-size="38" font-family="Arial, sans-serif" font-weight="700">${safeValue}</text>
+    <text x="76" y="402" fill="#9fb2c6" font-size="20" font-family="Arial, sans-serif">المستفيد</text>
+    <text x="76" y="440" fill="#ffffff" font-size="27" font-family="Arial, sans-serif" font-weight="700">${safeName}</text>
+    <rect x="650" y="235" width="335" height="145" rx="22" fill="#07111f" stroke="#f6c84c" stroke-opacity=".7" stroke-width="2"/>
+    <text x="680" y="278" fill="#9fb2c6" font-size="18" font-family="Arial, sans-serif">رمز التفعيل</text>
+    <text x="680" y="337" fill="#ffe493" font-size="34" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">${safeCode}</text>
+    <text x="76" y="602" fill="#d6e0ec" font-size="18" font-family="Arial, sans-serif">افتح بوابة التشغيل الرسمية ثم اختر دخول الكابتن وأدخل الرمز لإضافة الرصيد مباشرة.</text>
+    <text x="76" y="630" fill="#8fe9df" font-size="16" font-family="Arial, sans-serif">${safeUrl}</text>
+    <text x="1000" y="602" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">CARD-${escapeXml(cardId)}</text>
+  </svg>`;
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  return new MessageMedia("image/png", png.toString("base64"), `aljarah-topup-card-${cardId}.png`);
+}
+async function renderOperationsMessageMedia(title, lines = []) {
+  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
+  let logoData = "";
+  try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
+  const safeTitle = escapeXml(title);
+  const visibleLines = lines.map((line) => String(line || "")).filter(Boolean).slice(0, 8);
+  const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="78" y="66" width="144" height="144" preserveAspectRatio="xMidYMid meet"/>` : `<text x="150" y="160" text-anchor="middle" fill="#ffe493" font-size="64" font-weight="700">ج</text>`;
+  const lineMarkup = visibleLines.map((line, index) => `<text x="82" y="${276 + index * 43}" fill="${index === 0 ? "#ffffff" : "#d4dce6"}" font-size="${index === 0 ? 27 : 23}" font-family="Arial, sans-serif">${escapeXml(line).slice(0, 92)}</text>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760">
+    <defs><linearGradient id="ops-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1722"/><stop offset=".58" stop-color="#162d42"/><stop offset="1" stop-color="#070f18"/></linearGradient><radialGradient id="glow"><stop offset="0" stop-color="#48d9d1" stop-opacity=".42"/><stop offset=".56" stop-color="#48d9d1" stop-opacity=".1"/><stop offset="1" stop-color="#48d9d1" stop-opacity="0"/></radialGradient><linearGradient id="ops-gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff0b1"/><stop offset=".5" stop-color="#f2c34f"/><stop offset="1" stop-color="#9c6816"/></linearGradient></defs>
+    <rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#ops-bg)" stroke="url(#ops-gold)" stroke-width="5"/>
+    <path d="M25 505 C240 380 400 650 675 480 S920 390 1055 300 L1055 740 L25 740 Z" fill="#f6c84c" opacity=".08"/>
+    <circle cx="150" cy="138" r="164" fill="url(#glow)"/><circle cx="150" cy="138" r="119" fill="none" stroke="#f6c84c" stroke-opacity=".44" stroke-width="2"/><circle cx="150" cy="138" r="103" fill="none" stroke="#48d9d1" stroke-opacity=".45" stroke-width="2"/><circle cx="150" cy="138" r="91" fill="#08131f" stroke="#f6c84c" stroke-opacity=".35" stroke-width="2"/>
+    ${logo}<circle cx="150" cy="21" r="8" fill="#48d9d1"/><circle cx="150" cy="21" r="18" fill="none" stroke="#48d9d1" stroke-opacity=".25" stroke-width="3"/>
+    <text x="345" y="92" fill="#f6c84c" font-size="26" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">AL-JARAH OPERATIONS NETWORK</text>
+    <text x="345" y="135" fill="#ffffff" font-size="27" font-family="Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
+    <path d="M82 220 H998" stroke="#f6c84c" stroke-opacity=".42" stroke-width="2"/>
+    <text x="82" y="252" fill="#ffe493" font-size="31" font-family="Arial, sans-serif" font-weight="700">${safeTitle}</text>
+    ${lineMarkup}
+    <path d="M82 665 H998" stroke="#48d9d1" stroke-opacity=".28" stroke-width="2"/>
+    <text x="82" y="704" fill="#8fe9df" font-size="20" font-family="Arial, sans-serif">نقل أسرع • تنظيم أدق • سجل موثّق</text>
+    <text x="998" y="704" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">AL-JARAH / OFFICIAL</text>
+  </svg>`;
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
+}
+async function sendGroupBrandedMessage(groupId, title, lines) {
+  const caption = brandedMessage(title, lines);
+  try {
+    const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
+    return client.sendMessage(groupId, media || caption, media ? { caption } : undefined);
+  } catch (error) {
+    console.error("[WhatsApp] branded group media fallback:", error.message);
+    return client.sendMessage(groupId, caption);
+  }
 }
 function formatAcceptance(order, captain, producer) {
   return brandedMessage("تم توثيق الرحلة", [
@@ -1302,7 +1383,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: senderPhone });
     console.log(`[Order] #${orderNo} created from ${groupId}`);
     if (typeof client !== "undefined" && client && isReady) {
-      await client.sendMessage(groupId, formatOrderCreated({ order_no: orderNo, price_cents: cents(parsed.price), origin: parsed.origin, destination: parsed.destination, trip_time: parsed.tripTime })).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
+      await sendGroupBrandedMessage(groupId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${orderNo}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(cents(parsed.price))} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار استلام الكابتن وتأكيد الرحلة."].filter(Boolean)).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
     }
     return;
   }
@@ -1317,7 +1398,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
   if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
     await msg.react("⚠️").catch(() => {});
-    await client.sendMessage(groupId, brandedMessage("تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."])).catch(() => {});
+    await sendGroupBrandedMessage(groupId, "تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."]).catch(() => {});
     audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
     void suspendMemberForDebt(groupId, senderPhone, captain.wallet_cents - settlement.captainFeeCents);
     return;
@@ -1331,7 +1412,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   })();
   if (!pending) return;
   audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
-  await client.sendMessage(groupId, formatPendingConfirmation(order, captain)).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
+  await sendGroupBrandedMessage(groupId, "بانتظار اعتماد المنتج", [`🆔 رقم الطلب: #${order.order_no}`, `🚕 وصل رد «تم» من الكابتن: ${captain.name}`, "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.", "⏳ لا توجد تسوية مالية قبل اعتماد المنتج."]).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
 }
 
 function reactionId(value) {
@@ -1416,11 +1497,11 @@ async function handleMessageReaction(reaction) {
   const result = settlePendingOrder(pending.id, messageId, producerPhone);
   if (result.state === "unauthorized" || result.state === "stale") return;
   if (result.state === "insufficient") {
-    await client.sendMessage(target.from, brandedMessage("تعذر توثيق الرحلة", [`⚠️ رصيد الكابتن ${result.captain.name} أصبح غير كافٍ لتغطية ${money(result.requiredCents)} JOD.`, "لم تُسجّل أي تسوية مالية."])).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
+    await sendGroupBrandedMessage(target.from, "تعذر توثيق الرحلة", [`⚠️ رصيد الكابتن ${result.captain.name} أصبح غير كافٍ لتغطية ${money(result.requiredCents)} JOD.`, "لم تُسجّل أي تسوية مالية."]).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
     return;
   }
   if (result.state === "accepted") {
-    await client.sendMessage(target.from, formatAcceptance(result.order, result.captain, result.producer)).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+    await sendGroupBrandedMessage(target.from, "تم توثيق الرحلة", [`🆔 رقم الطلب: #${result.order.order_no}`, `👤 المنتج المعتمد: ${result.producer ? result.producer.name : "غير محدد"}`, `🚕 الكابتن المنفّذ: ${result.captain.name}`, `💰 القيمة الكاملة للرحلة: ${money(result.order.price_cents)} JOD`, `🧾 نوع الطلب: ${result.order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`, `💼 المخصوم من رصيد المنفّذ: ${money(result.order.producer_cents)} JOD`, `📊 صافي حصة المنتج: ${money(result.order.producer_cents - result.order.company_cents)} JOD | حصة الشركة: ${money(result.order.company_cents)} JOD`, "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية."]).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
   }
 }
 
@@ -1551,7 +1632,7 @@ app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)")
     .run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   audit("captain.invite.issued", "captain_invite", token.slice(-8), { expiresAt }, null);
-  res.status(201).json({ success: true, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
+  res.status(201).json({ success: true, inviteUrl: captainGatewayUrl(captainInviteBaseUrl(req), token), expiresAt });
 });
 app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
@@ -1561,9 +1642,9 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
-  const inviteUrl = `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`;
+  const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في شركة الجراح\n\nافتح الرابط لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في شركة الجراح\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -1590,7 +1671,7 @@ app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
       db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,name,phone,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)")
         .run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", name, phone, stamp, stamp, expiresAt);
       audit("captain.invite.imported", "captain_invite", token.slice(-8), { name, phone, expiresAt }, null);
-      created.push({ name, phone, inviteUrl: `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(token)}`, expiresAt });
+      created.push({ name, phone, inviteUrl: captainGatewayUrl(captainInviteBaseUrl(req), token), expiresAt });
     }
   });
   insertInvite(candidates);
@@ -1645,7 +1726,7 @@ app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();
   const invites = db.prepare("SELECT id,status,name,phone,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
     let inviteUrl = null;
-    if (invite.token_ciphertext) { try { inviteUrl = `${captainInviteBaseUrl(req)}/captain?invite=${encodeURIComponent(decryptCardCode(invite.token_ciphertext))}`; } catch {} }
+    if (invite.token_ciphertext) { try { inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), decryptCardCode(invite.token_ciphertext)); } catch {} }
     const { token_ciphertext: _tokenCiphertext, ...safeInvite } = invite;
     return { ...safeInvite, inviteUrl };
   });
@@ -1684,7 +1765,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
     if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
     const captainAppLink = captainAppUrl(captainInviteBaseUrl(req));
-    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\nرقم الهاتف: ${invite.phone}\n${pinText}\nرابط تطبيق الكابتن المباشر: ${captainAppLink}\nهذا الرابط يفتح تطبيق الكابتن مباشرة، ولا يفتح القروب أو الموقع العام.`);
+    notified = await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تمت الموافقة على طلبك يا ${invite.name}.\nرقم الهاتف: ${invite.phone}\n${pinText}\nبوابة التشغيل الرسمية: ${captainAppLink}\nافتح البوابة، اضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن». لا تستخدم رابطًا آخر.`);
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
@@ -1727,6 +1808,7 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
     COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN captain_cents ELSE 0 END),0) AS settled_gross_cents
     FROM orders WHERE captain_user_id=?`).get(user.id);
   const fees = db.prepare("SELECT COALESCE(SUM(-amount_cents),0) AS cents FROM wallet_ledger WHERE user_id=? AND type='captain_fee'").get(user.id);
+  const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
   res.setHeader("Cache-Control", "no-store");
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) },
@@ -1734,6 +1816,7 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
     earnings: { gross: money(totals?.settled_gross_cents || 0), fees: money(fees?.cents || 0), net: money((totals?.settled_gross_cents || 0) - (fees?.cents || 0)) },
     entries,
     trips,
+    topupCards,
   });
 });
 app.post("/api/auth/login", async (req, res) => {
@@ -2339,8 +2422,10 @@ app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
   cardDeliveryInFlight.add(cardId);
   try {
     const code = decryptCardCode(card.code_ciphertext);
-    const message = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "أدخل الرمز في بوابة الكابتن لإضافة الرصيد تلقائيًا.", "البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط."]);
-    const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(card.captain_phone)}@c.us`, message), 20000, null);
+    const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+    const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة."]);
+    const media = await renderTopupCardMedia({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
+    const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(card.captain_phone)}@c.us`, media, { caption }), 30000, null);
     if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
     if (!update.changes) return res.json({ success: true, alreadySent: true, status: "sent" });
@@ -2370,6 +2455,37 @@ app.post("/api/redeem", (req, res) => {
     return { userId: user.id, balanceCents: newBalance, valueCents: card.value_cents };
   })();
   try { res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" }); } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
+  if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول بعد قليل" });
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  const redemptionIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!/^[A-Z0-9-]{8,80}$/.test(code) || redemptionIdempotencyKey.length < 16 || redemptionIdempotencyKey.length > 100) return res.status(400).json({ error: "أدخل رمز بطاقة صحيحًا" });
+  try {
+    const result = db.transaction(() => {
+      const existingKey = db.prepare("SELECT id,value_cents,redeemed_by FROM topup_cards WHERE redemption_idempotency_key=? LIMIT 1").get(redemptionIdempotencyKey);
+      if (existingKey) {
+        if (Number(existingKey.redeemed_by) !== Number(req.captainSession.userId)) throw new Error("مفتاح العملية مرتبط بحساب آخر");
+        const user = db.prepare("SELECT wallet_cents FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+        return { balanceCents: Number(user?.wallet_cents || 0), valueCents: existingKey.value_cents, alreadyRedeemed: true };
+      }
+      const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? LIMIT 1").get(hashCode(code));
+      if (!card) throw new Error("رمز البطاقة غير صحيح");
+      if (card.status !== "issued") throw new Error("تم استخدام هذه البطاقة أو إلغاؤها مسبقًا");
+      if (card.assigned_captain_id && Number(card.assigned_captain_id) !== Number(req.captainSession.userId)) throw new Error("هذه البطاقة مخصصة لكابتن آخر");
+      const user = db.prepare("SELECT id,wallet_cents,active FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+      if (!user || !user.active) throw new Error("حساب الكابتن غير نشط");
+      const newBalance = Number(user.wallet_cents || 0) + Number(card.value_cents || 0);
+      const stamp = now();
+      const update = db.prepare("UPDATE topup_cards SET status='redeemed',redeemed_by=?,redeemed_at=?,redemption_idempotency_key=? WHERE id=? AND status='issued'").run(user.id, stamp, redemptionIdempotencyKey, card.id);
+      if (!update.changes) throw new Error("تم استخدام هذه البطاقة أو إلغاؤها مسبقًا");
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(newBalance, stamp, user.id);
+      db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, "topup", card.value_cents, newBalance, `CARD-${card.id}`, "شحن بطاقة من بوابة التشغيل", stamp);
+      audit("topup_card.redeemed", "topup_card", card.id, { userId: user.id, valueCents: card.value_cents, source: "captain_portal" }, user.id);
+      return { balanceCents: newBalance, valueCents: card.value_cents, alreadyRedeemed: false };
+    })();
+    res.json({ success: true, credited: money(result.valueCents), balance: money(result.balanceCents), currency: "JOD", alreadyRedeemed: result.alreadyRedeemed });
+  } catch (error) { res.status(400).json({ error: error.message || "تعذر استرداد البطاقة" }); }
 });
 app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
   const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
