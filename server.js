@@ -761,13 +761,34 @@ async function resolveGroupChat(groupId, inviteCode = "") {
   }
   return null;
 }
+async function readGroupSnapshot(groupId) {
+  if (!groupId || !client || !isReady || !client.pupPage) return null;
+  return withTimeout(client.pupPage.evaluate(async (requestedId) => {
+    try {
+      const wid = window.require("WAWebWidFactory").createWid(requestedId);
+      const collections = window.require("WAWebCollections");
+      const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
+      if (!chat || !chat.groupMetadata) return null;
+      const metadata = chat.groupMetadata.serialize ? chat.groupMetadata.serialize() : chat.groupMetadata;
+      const rawParticipants = Array.isArray(metadata?.participants) ? metadata.participants : [];
+      const participants = rawParticipants.map((participant) => {
+        const id = participant && participant.id;
+        const serialized = id && (id._serialized || (id.server && id.user ? `${id.user}@${id.server}` : null) || String(id));
+        return { id: serialized, user: id && id.user ? String(id.user) : "", isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
+      }).filter((participant) => participant.id || participant.user);
+      return { id: requestedId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants };
+    } catch (_) {
+      return null;
+    }
+  }, groupId), 30000, null);
+}
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
 async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = true, baseUrl = process.env.PUBLIC_BASE_URL || "", inviteCode = "" } = {}) {
   if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null, results: [] };
   if (!client || !isReady) return { status: "bot_not_ready", groupId, results: [] };
-  const chat = await resolveGroupChat(groupId, inviteCode);
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId, inviteCode);
   if (!chat || !Array.isArray(chat.participants)) return { status: "group_unavailable", groupId, results: [] };
   const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
   const participants = [...new Map(chat.participants.map((participant) => [groupParticipantPhone(participant), participant])).values()];
@@ -1993,7 +2014,7 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (!videos.length) return res.status(400).json({ error: "At least one secure video URL is required" });
-  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
   const captions = [
     "شرح 1/2 · التسجيل وتسجيل الدخول\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر المسار المناسب: تسجيل كابتن جديد لأول مرة أو دخول الكابتن للحساب المسجل.\nالبوابة: " + captainAppUrl(captainInviteBaseUrl(req)),
@@ -2003,7 +2024,7 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
   for (let index = 0; index < videos.length; index += 1) {
     const media = await withTimeout(MessageMedia.fromUrl(String(videos[index]), { unsafeMime: true }), 60000, null);
     if (!media) continue;
-    const message = await withTimeout(chat.sendMessage(media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن." }), 60000, null);
+    const message = await withTimeout(client.sendMessage(groupId, media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن." }), 60000, null);
     if (message) sent.push({ index, messageId: message.id?._serialized || null });
   }
   audit("group.guide_videos.sent", "group", groupId, { count: sent.length, videos: sent.map((item) => item.index) });
@@ -2483,7 +2504,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     const existingChat = groupId && groupId.endsWith("@g.us") ? await withTimeout(client.getChatById(groupId), 20000, null) : null;
     if (!existingChat || !existingChat.isGroup) groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
-    const groupChat = await resolveGroupChat(groupId);
+    const groupChat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
     const stamp = now();
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
@@ -2502,7 +2523,7 @@ app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
   const inviteCode = extractInviteCode(req.query.inviteLink || req.query.inviteCode || "");
   const configuredId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const inviteInfo = inviteCode ? await withTimeout(client.getInviteInfo(inviteCode), 20000, null) : null;
-  const chat = configuredId ? await withTimeout(client.getChatById(configuredId), 20000, null) : null;
+  const chat = configuredId ? await readGroupSnapshot(configuredId) || await resolveGroupChat(configuredId) : null;
   res.json({
     configuredId: configuredId || null,
     configuredChat: chat ? { isGroup: Boolean(chat.isGroup), name: chat.name || null, participants: Array.isArray(chat.participants) ? chat.participants.length : null } : null,
@@ -2519,7 +2540,7 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(409).json({ error: "No configured group" });
-  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
   const members = [];
   for (const participant of (chat.participants || [])) {

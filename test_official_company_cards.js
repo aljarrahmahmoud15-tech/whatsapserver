@@ -39,5 +39,7 @@ assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), '
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
 assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), 'group registration retries group hydration');
+assert(server.includes('async function readGroupSnapshot(groupId)'), 'group membership can be read from the WhatsApp page model');
+assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
 assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
 console.log('official company card and compact top-up flow guardrails verified');
