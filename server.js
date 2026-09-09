@@ -2351,10 +2351,15 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
 
 
 async function openCreatedGroupForAdmin(groupId) {
-  let groupChat = await withTimeout(client.getChatById(groupId), 30000, null);
-  if (groupChat && typeof groupChat.addParticipants === "function") return groupChat;
-  const chats = await withTimeout(client.getChats(), 30000, []);
-  return Array.isArray(chats) ? chats.find((chat) => chat && chat.isGroup && chat.id && (chat.id._serialized || String(chat.id)) === groupId) || null : null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const groupChat = await withTimeout(client.getChatById(groupId), 30000, null);
+    if (groupChat && typeof groupChat.addParticipants === "function") return groupChat;
+    const chats = await withTimeout(client.getChats(), 30000, []);
+    const found = Array.isArray(chats) ? chats.find((chat) => chat && chat.isGroup && chat.id && (chat.id._serialized || String(chat.id)) === groupId) : null;
+    if (found && typeof found.addParticipants === "function") return found;
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  return null;
 }
 
 async function finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones }) {
@@ -2474,6 +2479,38 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   groupCreateState = { ...groupCreateState, status: "recovering", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: phones.map((phone) => ({ phone, status: "pending" })), recoverable: true };
   void finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
   res.status(202).json({ success: true, accepted: true, operationId, groupId, eligibleMemberCount: phones.length, messageSent: false });
+});
+
+async function finalizeExistingGroupInBackground({ operationId, sourceGroupId, groupId, groupName }) {
+  try {
+    const sourceGroup = await readGroupSnapshot(sourceGroupId);
+    if (!sourceGroup || !Array.isArray(sourceGroup.participants) || sourceGroup.participants.length < 1) throw new Error("Could not read members from the source group");
+    const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
+    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const rawPhones = [...new Set(sourceGroup.participants.map(groupParticipantPhone).filter(Boolean))];
+    const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
+    if (!phones.length) throw new Error("No eligible members remain after owner and blocked-phone exclusions");
+    groupCreateState = { ...groupCreateState, status: "recovering_existing_group", operationId, sourceGroupId, groupId, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, participants: phones.map((phone) => ({ phone, status: "pending" })) };
+    await finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
+  } catch (error) {
+    groupCreateState = { ...groupCreateState, status: "failed", operationId, finishedAt: now(), error: error.message, sourceGroupId, groupId, recoverable: true };
+    groupCreateInFlight = false;
+    console.error("[GroupCreate] existing-group recovery failed:", error.message);
+  }
+}
+
+app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
+  const sourceGroupId = String(req.body?.sourceGroupId || "120363426604560611@g.us").trim();
+  const groupId = String(req.body?.groupId || "120363413760988742@g.us").trim();
+  if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
+  const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupCreateInFlight = true;
+  groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
+  void finalizeExistingGroupInBackground({ operationId, sourceGroupId, groupId, groupName });
+  res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId, groupId, messageSent: false });
 });
 app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
