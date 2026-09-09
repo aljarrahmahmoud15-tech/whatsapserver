@@ -87,22 +87,27 @@
     .notice{margin-top:17px;border:1px solid rgba(35,212,201,.16);border-radius:18px;padding:14px 16px;color:#a8d9d4;background:rgba(35,212,201,.045);font-size:11px;line-height:1.9}
     .footer{display:flex;align-items:center;justify-content:space-between;gap:18px;color:#697170;font-size:10px;padding:21px 4px 0}.footer strong{color:#a7aaa6;font-weight:700}
     .toast{position:fixed;z-index:10;bottom:24px;right:24px;left:24px;max-width:460px;margin:auto;padding:15px 17px;border:1px solid rgba(215,173,91,.35);border-radius:15px;background:rgba(17,22,23,.95);box-shadow:var(--shadow);color:#efe4cb;text-align:center;font-size:12px;transform:translateY(150%);transition:.35s}.toast.show{transform:translateY(0)}
+    .access-backdrop{position:fixed;inset:0;z-index:20;background:rgba(3,6,8,.68);backdrop-filter:blur(10px);opacity:0;pointer-events:none;transition:opacity .24s ease}.access-backdrop.open{opacity:1;pointer-events:auto}
+    .access-drawer{position:absolute;top:0;bottom:0;right:0;width:min(520px,100%);padding:24px;overflow:auto;background:linear-gradient(155deg,rgba(24,29,29,.94),rgba(7,12,14,.96));border-left:1px solid rgba(255,226,161,.24);box-shadow:-22px 0 75px rgba(0,0,0,.52);transform:translateX(105%);transition:transform .34s cubic-bezier(.23,1,.32,1)}.access-backdrop.open .access-drawer{transform:translateX(0)}
+    .drawer-top{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,.1)}.drawer-kicker{display:flex;align-items:center;gap:9px;color:var(--teal);font-size:9px;font-weight:800;letter-spacing:1.6px}.drawer-kicker i{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 14px var(--teal)}.drawer-top h2{margin:12px 0 5px;color:var(--gold-hi);font-size:26px;line-height:1.2}.drawer-top p{margin:0;color:var(--muted);font-size:11px;line-height:1.8}.drawer-close{width:39px;height:39px;border:1px solid rgba(255,255,255,.14);border-radius:12px;background:rgba(255,255,255,.045);color:var(--gold-hi);font-size:22px;cursor:pointer;transition:.2s}.drawer-close:hover{background:rgba(215,173,91,.12);transform:rotate(4deg)}
+    .access-seal{display:flex;align-items:center;gap:9px;margin:18px 0;padding:12px 13px;border:1px solid rgba(35,212,201,.17);border-radius:15px;background:rgba(35,212,201,.045);color:#a8d9d4;font-size:10px;line-height:1.7}.access-seal b{display:block;color:#d5f5f1;margin-bottom:2px}.seal-icon{width:30px;height:30px;display:grid;place-items:center;border-radius:10px;background:rgba(35,212,201,.12);color:var(--teal);font-size:15px;flex:none}
+    .access-links{display:grid;gap:10px}.access-link{display:flex;align-items:center;gap:13px;padding:14px;border:1px solid rgba(255,255,255,.11);border-radius:17px;background:linear-gradient(135deg,rgba(255,255,255,.065),rgba(255,255,255,.018));transition:transform .2s,border-color .2s,background .2s}.access-link:hover{transform:translateX(-4px);border-color:rgba(215,173,91,.5);background:linear-gradient(135deg,rgba(215,173,91,.14),rgba(255,255,255,.03))}.access-link-icon{width:42px;height:42px;display:grid;place-items:center;border:1px solid rgba(215,173,91,.23);border-radius:13px;color:var(--gold-hi);background:rgba(215,173,91,.08);font-size:16px;flex:none}.access-link-copy{min-width:0;flex:1}.access-link-copy strong{display:block;color:#f1e8d8;font-size:12px;margin-bottom:3px}.access-link-copy span{display:block;color:#87918e;font-size:10px;line-height:1.6}.access-arrow{color:var(--gold-hi);font-size:18px}.drawer-section-label{color:#73807c;font-size:9px;font-weight:800;letter-spacing:1.4px;margin:22px 0 10px}.group-link-box{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid rgba(215,173,91,.16);border-radius:14px;background:rgba(0,0,0,.2)}.group-link-box input{min-width:0;flex:1;border:0;background:transparent;color:#c9beb0;direction:ltr;text-align:left;font:10px ui-monospace,monospace;padding:7px;outline:0}.copy-link{border:1px solid rgba(215,173,91,.27);border-radius:10px;background:rgba(215,173,91,.1);color:var(--gold-hi);font:inherit;font-size:10px;font-weight:700;padding:9px 10px;cursor:pointer;white-space:nowrap}.drawer-foot{margin-top:22px;padding-top:17px;border-top:1px solid rgba(255,255,255,.09);color:#697572;font-size:9px;line-height:1.8}.drawer-foot strong{color:#aeb8b2}
     @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
     @keyframes spin{to{transform:rotate(386deg)}}
     @media(max-width:940px){body{background-image:url('./aljarah-portal-bg-mobile-v2.png');background-attachment:scroll}.portal{padding:15px 13px 28px}.nav{padding-bottom:17px}.stage{grid-template-columns:1fr;min-height:auto;border-radius:27px}.copy{padding:46px 27px 27px;max-width:none}.emblem-zone{min-height:360px;padding:18px 28px 55px}.emblem-frame{width:min(260px,65vw)}.rail{grid-template-columns:repeat(3,1fr);position:absolute;bottom:15px;left:24px;right:24px;margin:0}.rail-card{padding:10px;display:block;text-align:center}.rail-icon{margin:0 auto 6px;width:31px;height:31px;border-radius:9px}.rail-card strong{font-size:10px}.rail-card span{font-size:8px}.below{grid-template-columns:1fr}.footer{flex-direction:column;align-items:flex-start}.stage:after{background-image:url('./aljarah-portal-bg-mobile-v2.png')}}
-    @media(max-width:560px){.brand-mark{width:44px;height:44px}.brand-name b{font-size:15px}.brand-name small{font-size:8px}.live{font-size:9px;padding:8px 10px}.back{width:36px;height:36px}.nav-right{gap:7px}.copy{padding:39px 21px 23px}.kicker{font-size:9px;letter-spacing:1.4px;margin-bottom:17px}.kicker:before{width:28px}h1{font-size:45px;letter-spacing:-2px;line-height:1.08}.intro{font-size:13px;line-height:2;margin-bottom:24px}.quick{gap:7px;margin-bottom:25px}.chip{font-size:9px;padding:7px 9px}.actions{display:grid;grid-template-columns:1fr;gap:9px}.btn{width:100%;font-size:12px;padding:14px 16px}.emblem-zone{min-height:330px;padding-bottom:74px}.emblem-frame{width:220px}.emblem-caption{bottom:44px;font-size:8px}.rail{left:13px;right:13px;gap:7px}.rail-card{border-radius:13px;padding:9px 4px}.rail-card strong{font-size:8px}.rail-card span{font-size:7px}.panel{padding:19px 16px;border-radius:19px}.steps{grid-template-columns:1fr}.step{min-height:auto;padding:13px}.panel-head h2{font-size:15px}.footer{font-size:9px}}
+    @media(max-width:560px){.brand-mark{width:44px;height:44px}.brand-name b{font-size:15px}.brand-name small{font-size:8px}.live{font-size:9px;padding:8px 10px}.back{width:36px;height:36px}.nav-right{gap:7px}.copy{padding:39px 21px 23px}.kicker{font-size:9px;letter-spacing:1.4px;margin-bottom:17px}.kicker:before{width:28px}h1{font-size:45px;letter-spacing:-2px;line-height:1.08}.intro{font-size:13px;line-height:2;margin-bottom:24px}.quick{gap:7px;margin-bottom:25px}.chip{font-size:9px;padding:7px 9px}.actions{display:grid;grid-template-columns:1fr;gap:9px}.btn{width:100%;font-size:12px;padding:14px 16px}.emblem-zone{min-height:330px;padding-bottom:74px}.emblem-frame{width:220px}.emblem-caption{bottom:44px;font-size:8px}.rail{left:13px;right:13px;gap:7px}.rail-card{border-radius:13px;padding:9px 4px}.rail-card strong{font-size:8px}.rail-card span{font-size:7px}.panel{padding:19px 16px;border-radius:19px}.steps{grid-template-columns:1fr}.step{min-height:auto;padding:13px}.panel-head h2{font-size:15px}.footer{font-size:9px}.access-drawer{padding:18px 14px}.drawer-top h2{font-size:22px}.access-link{padding:12px}.group-link-box input{font-size:8px}.copy-link{font-size:9px;padding:8px}}
   </style>
 </head>
 <body>
   <main class="portal">
     <header class="nav">
-      <a class="brand" href="./dashboard.html" aria-label="لوحة الجراح">
+      <a class="brand" href="/" aria-label="لوحة الجراح">
         <img class="brand-mark" src="./aljarah-logo-mark-clean.png" alt="علامة الجراح" />
         <span class="brand-name"><b>الجراح</b><small>شبكة النقل والخدمات اللوجستية</small></span>
       </a>
       <div class="nav-right">
         <div class="live"><i></i><span>البوابة الرسمية</span></div>
-        <a class="back" href="./dashboard.html" aria-label="العودة إلى اللوحة">⌁</a>
+        <a class="back" href="/" aria-label="العودة إلى اللوحة">⌁</a>
       </div>
     </header>
 
@@ -119,7 +124,7 @@
         <div class="actions">
           <button class="btn btn-main" id="joinBtn"><span>الدخول إلى شبكة التشغيل</span><span class="arrow">←</span></button>
           <a class="btn btn-support" href="./support.html"><span>خدمة العملاء داخل النظام</span><span class="arrow">↗</span></a>
-          <a class="btn btn-plain" href="./dashboard.html">لوحة الجراح</a>
+          <a class="btn btn-plain" href="/">لوحة الجراح</a>
         </div>
       </div>
 
@@ -137,7 +142,39 @@
       </div>
     </section>
 
-    <section class="below">
+    <section class="access-backdrop" id="accessBackdrop" aria-hidden="true">
+      <aside class="access-drawer" role="dialog" aria-modal="true" aria-labelledby="accessTitle">
+        <div class="drawer-top">
+          <div>
+            <div class="drawer-kicker"><i></i> PRIVATE ACCESS GATE</div>
+            <h2 id="accessTitle">بوابة الوصول الخاصة</h2>
+            <p>اختر المسار المناسب، وكل رابط يفتح المساحة المرتبطة به مباشرة.</p>
+          </div>
+          <button class="drawer-close" id="closeAccess" type="button" aria-label="إغلاق">×</button>
+        </div>
+        <div class="access-seal"><span class="seal-icon">⌁</span><span><b>مسار موثّق داخل شبكة الجراح</b>لا نطلب كلمة مرور أو رمز تحقق داخل هذه الشاشة.</span></div>
+        <div class="drawer-section-label">SELECT YOUR ROUTE / اختر المسار</div>
+        <div class="access-links">
+          <a class="access-link" href="/captain/register">
+            <span class="access-link-icon">♧</span><span class="access-link-copy"><strong>تسجيل كابتن جديد</strong><span>أرسل طلب الانضمام، اختر PIN من 5 أرقام، وانتظر اعتماد الشركة.</span></span><span class="access-arrow">←</span>
+          </a>
+          <a class="access-link" href="/captain">
+            <span class="access-link-icon">↗</span><span class="access-link-copy"><strong>دخول الكابتن</strong><span>افتح حسابك وشاهد الرحلات، الرصيد، والأرباح الفعلية.</span></span><span class="access-arrow">←</span>
+          </a>
+          <a class="access-link" href="./support.html">
+            <span class="access-link-icon">✦</span><span class="access-link-copy"><strong>مسار الراكب وخدمة العملاء</strong><span>سجّل طلب نقل أو أرسل استفسارًا إلى مكتب الخدمة الداخلي.</span></span><span class="access-arrow">←</span>
+          </a>
+          <a class="access-link" href="#network-info" onclick="closeAccessPanel()">
+            <span class="access-link-icon">i</span><span class="access-link-copy"><strong>معلومات الشبكة</strong><span>تعرّف على آلية الطلب، القبول، والتوثيق قبل البدء.</span></span><span class="access-arrow">←</span>
+          </a>
+        </div>
+        <div class="drawer-section-label">OFFICIAL GROUP / القروب الرسمي</div>
+        <div class="group-link-box"><input id="groupLink" value="https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR" readonly aria-label="رابط القروب الرسمي"><button class="copy-link" id="copyGroup" type="button">نسخ الرابط</button></div>
+        <div class="drawer-foot"><strong>للكابتن المعتمد:</strong> استخدم رابط التسجيل أولًا. بعد الموافقة، سيصلك رابط الدخول وتتم إضافتك إلى القروب التشغيلي وفق صلاحيتك.</div>
+      </aside>
+    </section>
+
+    <section class="below" id="network-info">
       <div class="panel">
         <div class="panel-head"><div><h2>كيف يبدأ المسار؟</h2><p>تجربة تشغيل مبنية على ثلاث لحظات واضحة</p></div></div>
         <div class="steps">
@@ -164,10 +201,16 @@
     const GROUP_INVITE_URL = 'https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR';
     const joinBtn = document.getElementById('joinBtn');
     const toast = document.getElementById('toast');
-    joinBtn.addEventListener('click', () => {
-      if (GROUP_INVITE_URL) window.location.href = GROUP_INVITE_URL;
-      else { toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 3600); }
-    });
+    const accessBackdrop = document.getElementById('accessBackdrop');
+    const closeAccess = document.getElementById('closeAccess');
+    const groupLink = document.getElementById('groupLink');
+    function openAccess(){accessBackdrop.classList.add('open');accessBackdrop.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';closeAccess.focus()}
+    function closeAccessPanel(){accessBackdrop.classList.remove('open');accessBackdrop.setAttribute('aria-hidden','true');document.body.style.overflow='';joinBtn.focus()}
+    joinBtn.addEventListener('click', openAccess);
+    closeAccess.addEventListener('click', closeAccessPanel);
+    accessBackdrop.addEventListener('click', (event) => { if(event.target === accessBackdrop) closeAccessPanel(); });
+    document.addEventListener('keydown', (event) => { if(event.key === 'Escape' && accessBackdrop.classList.contains('open')) closeAccessPanel(); });
+    document.getElementById('copyGroup').addEventListener('click', async () => { try { await navigator.clipboard.writeText(GROUP_INVITE_URL); toast.textContent='تم نسخ رابط القروب الرسمي'; } catch { groupLink.select(); toast.textContent='حدّد الرابط وانسخه يدويًا'; } toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 3000); });
   </script>
 </body>
 </html>
