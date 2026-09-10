@@ -36,6 +36,9 @@ assert(index.includes("params.get('registerGroupMembers')==='1'"), 'group regist
 assert(index.includes("/api/admin/group/send-guide-videos"), 'guide videos can be sent to the configured group');
 assert(server.includes('app.post("/api/admin/group/send-guide-videos", requireAdmin'), 'guide video group API is admin protected');
 assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), 'group diagnostic API is admin protected');
+assert(server.includes('app.get("/api/admin/group/live-messages", requireAdmin'), 'live group message inspection is admin protected');
+assert(server.includes('chat.fetchMessages({ limit })'), 'live group message inspection reads recent WhatsApp messages');
+assert(server.includes('parsedOrder: parseOrder(body)'), 'live group message inspection exposes order parsing results');
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
 assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), 'group registration retries group hydration');

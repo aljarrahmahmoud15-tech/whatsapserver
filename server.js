@@ -2967,6 +2967,35 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   }
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
+app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || !chat.isGroup || typeof chat.fetchMessages !== "function") return res.status(404).json({ error: "Configured chat is not a readable group" });
+  const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
+  const rows = (Array.isArray(messages) ? messages : []).map((message) => {
+    const body = String(message?.body || "").trim();
+    return {
+      id: message?.id?._serialized || null,
+      timestamp: message?.timestamp || null,
+      from: message?.from || null,
+      to: message?.to || null,
+      fromMe: Boolean(message?.fromMe),
+      author: message?.author || null,
+      body,
+      type: message?.type || null,
+      hasMedia: Boolean(message?.hasMedia),
+      hasQuotedMessage: Boolean(message?.hasQuotedMsg),
+      parsedOrder: parseOrder(body),
+      captainAcceptance: isCaptainAcceptance(body),
+    };
+  });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, groupId, count: rows.length, messages: rows });
+});
 app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
