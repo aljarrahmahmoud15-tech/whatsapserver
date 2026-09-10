@@ -3,7 +3,7 @@ const fs = require("fs");
 
 const source = fs.readFileSync("./server.js", "utf8");
 const handlerStart = source.indexOf("async function handleIncomingMessage(msg, { allowSelf = false } = {})");
-const handlerEnd = source.indexOf("async function handleIncomingMessage(msg, options = {})", handlerStart);
+const handlerEnd = source.indexOf("function reactionId(", handlerStart);
 assert(handlerStart >= 0 && handlerEnd > handlerStart, "معالج رسائل القروب موجود");
 const handler = source.slice(handlerStart, handlerEnd);
 const logPosition = handler.indexOf("INSERT OR IGNORE INTO messages");

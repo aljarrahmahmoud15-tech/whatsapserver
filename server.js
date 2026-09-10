@@ -27,6 +27,8 @@ const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
+const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
@@ -722,8 +724,12 @@ function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_conf
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
   const stamp = now();
-  db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
-  setSetting("group_id", groupId);
+  db.transaction(() => {
+    db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?").run(stamp, groupId);
+    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
+    setSetting("group_id", groupId);
+    setSetting("active_group_id", groupId);
+  })();
   audit("group.configured", "group", groupId, { groupName });
 }
 function isConfiguredGroup(groupId) {
@@ -2002,13 +2008,17 @@ app.get("/status", (req, res) => {
   const groupId = getSetting("group_id", null);
   const activeGroupId = getSetting("active_group_id", null);
   const configuredGroupId = groupId || activeGroupId;
+  const groupReceiverReady = Boolean(isReady || baileysReady);
   res.setHeader("Cache-Control", "no-store");
   res.json({
     ready: Boolean(isReady),
     phone: connectedBotPhone(),
     groupConfigured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
     groupId: configuredGroupId || null,
-    groupReceiverReady: Boolean(baileysReady),
+    groupReceiverReady,
+    groupReceiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
+    lastGroupEventAt: lastGroupMessageTelemetry?.at || null,
+    lastGroupEventMatched: lastGroupMessageTelemetry ? Boolean(lastGroupMessageTelemetry.configured) : null,
     qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
     whatsappState,
     whatsappLastEvent,
@@ -2380,9 +2390,7 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
       result.status = "added";
       result.response = added && typeof added === "object" ? added : null;
     }
-    const stamp = now();
-    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(createdGroupId, groupName, stamp, stamp);
-    setSetting("group_id", createdGroupId);
+    configureGroupId(createdGroupId, groupName);
     const captainSync = await syncActiveCaptainsToConfiguredGroup({ sendLinks: true });
     audit("group.created_and_configured", "group", createdGroupId, { groupName, participants: phones });
     groupCreateState = { status: "succeeded", operationId, startedAt: groupCreateState.startedAt, finishedAt: now(), error: null, groupId: createdGroupId, participants: participantResults, captainSync };
@@ -2456,9 +2464,7 @@ async function finalizeCreatedGroupInBackground({ operationId, groupId, groupNam
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
-    const stamp = now();
-    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
-    setSetting("group_id", groupId);
+    configureGroupId(groupId, groupName);
     let captainSync = null;
     if (client && isReady) {
       try {
@@ -2520,7 +2526,7 @@ async function resetGroupInBackground({ operationId, oldGroupId, groupName, back
     const purge = purgeExperimentalCaptains();
     const stamp = now();
     db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE active=1").run(stamp);
-    db.prepare("DELETE FROM settings WHERE key='group_id'").run();
+    db.prepare("DELETE FROM settings WHERE key IN ('group_id','active_group_id')").run();
     groupCreateState = { status: "running", operationId, startedAt: groupCreateState.startedAt, finishedAt: null, error: null, groupId: null, participants: phones.map((phone) => ({ phone, status: "pending" })), reset: true, oldGroupId, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, backupName, purge };
     await createGroupInBackground({ operationId, groupName, phones });
   } catch (error) {
@@ -2850,10 +2856,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "قروب الجراح").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
-  const stamp = now();
-  db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
-  setSetting("group_id", groupId);
-  audit("group.configured", "group", groupId, { groupName });
+  configureGroupId(groupId, groupName);
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
 });
@@ -2914,9 +2917,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
     const groupChat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
-    const stamp = now();
-    db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
-    setSetting("group_id", groupId);
+    configureGroupId(groupId, groupName);
     audit("group.joined_and_configured", "group", groupId, { groupName });
     void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
     res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length, participantSource: groupChat.participantSource || null });
@@ -2937,6 +2938,23 @@ app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
     configuredChat: chat ? { isGroup: Boolean(chat.isGroup), name: chat.name || null, participants: Array.isArray(chat.participants) ? chat.participants.length : null, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null } : null,
     invite: inviteInfo ? { id: inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id)) || null, subject: inviteInfo.subject || null, size: inviteInfo.size || null } : null,
   });
+});
+app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(lastGroupEventGroupId || "").trim();
+  const expectedGroupId = String(req.body?.groupId || groupId).trim();
+  if (!groupId || !groupId.endsWith("@g.us") || !lastGroupMessageTelemetry?.at) return res.status(409).json({ error: "No recent group event is available" });
+  if (expectedGroupId !== groupId) return res.status(409).json({ error: "The observed group changed; refresh diagnostics before adopting it" });
+  const observedAt = Date.parse(lastGroupMessageTelemetry.at);
+  if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
+  const groupName = String(chat.name || "قروب الجراح").trim().slice(0, 160) || "قروب الجراح";
+  const previousGroupId = getSetting("group_id", null);
+  configureGroupId(groupId, groupName);
+  audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
+  void notifyOperations({ event: "group.adopted_from_live_event", title: "تم إصلاح استقبال رسائل القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم اعتماد القروب الذي وصلت منه الرسائل الفعلية.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
+  res.json({ success: true, groupId, groupName, previousGroupId, membersLoaded: Array.isArray(chat.participants) ? chat.participants.length : null });
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -3293,120 +3311,18 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   audit("message.sent", "chat", chatId, { messageId: sent.id._serialized });
   res.json({ success: true, messageId: sent.id._serialized });
 });
-
-// مسار الإدارة لتحديث وتثبيت معرّف القروب النشط يدوياً أو تلقائياً
-app.post('/api/admin/group', express.json(), (req, res) => {
-  const { groupId } = req.body;
-  if (!groupId) {
-    return res.status(400).json({ error: 'groupId is required' });
-  }
-  activeGroupId = groupId;
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
-  console.log(`[Admin] Active group JID updated to: ${activeGroupId}`);
-  return res.json({ success: true, activeGroupId });
-});
-
-// معالجة ورصد الرسائل الواردة وتحديث معرّف القروب النشط ديناميكياً عند تفاعل الأدمن أو الكباتن
-async function handleIncomingMessage(msg, options = {}) {
-  const remoteJid = msg.key.remoteJid;
-  const isGroup = remoteJid.endsWith('@g.us');
-
-  if (isGroup) {
-    const storedGroupId = db.prepare('SELECT value FROM settings WHERE key = ?').get('active_group_id');
-    const currentActiveGroup = storedGroupId ? storedGroupId.value : activeGroupId;
-
-    if (currentActiveGroup && remoteJid !== currentActiveGroup && options.autoSwitch) {
-      activeGroupId = remoteJid;
-      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
-      console.log(`[System] Automatically switched active group JID to: ${activeGroupId}`);
-    }
-  }
-}
-// =========================================================================
-// الحزمة الشاملة لتطوير وإصلاح النظام (الصلاحيات الهرمية + مزامنة القروب والوضع)
-// =========================================================================
-
-// 1. إنشاء جدول الأدوار والصلاحيات في قاعدة البيانات إذا لم يكن موجوداً
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS user_roles (
-    phone TEXT PRIMARY KEY,
-    role TEXT NOT NULL, -- 'owner', 'admin', 'supervisor', 'captain'
-    name TEXT,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-
-// 2. مسار إداري شامل لتحديث وتثبيت معرّف القروب النشط يدوياً
-app.post('/api/admin/group', express.json(), (req, res) => {
-  const { groupId, adminToken } = req.body;
-  if (adminToken && adminToken !== ADMIN_TOKEN) {
-    return res.status(403).json({ error: 'Unauthorized token' });
-  }
-  if (!groupId) {
-    return res.status(400).json({ error: 'groupId is required' });
-  }
-  activeGroupId = groupId;
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
-  console.log(`[Admin] Active group JID updated to: ${activeGroupId}`);
-  return res.json({ success: true, activeGroupId });
-});
-
-// 3. مسار إداري للمالك لمنح الصلاحيات (Admin, Supervisor, Captain)
-app.post('/api/admin/roles/grant', express.json(), (req, res) => {
-  const { targetPhone, role, name, adminToken } = req.body;
-
-  if (adminToken && adminToken !== ADMIN_TOKEN) {
-    return res.status(403).json({ error: 'Unauthorized: Owner access required' });
-  }
-
-  if (!targetPhone || !['admin', 'supervisor', 'captain'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid phone or role specification' });
-  }
-
-  try {
-    const cleanPhone = targetPhone.replace(/[^0-9]/g, '');
-    db.prepare(`
-      INSERT OR REPLACE INTO user_roles (phone, role, name, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
-    `).run(cleanPhone, role, name || 'مستخدم');
-
-    console.log(`[Security] Role assigned successfully: Phone ${cleanPhone} is now [${role}]`);
-    return res.json({ success: true, message: `Role ${role} assigned to ${cleanPhone} successfully.` });
-  } catch (err) {
-    console.error('[Security Error] Failed to update role:', err.message);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// 4. دالة التحقق من رتبة المستخدم في النظام
-function getUserRole(phone) {
-  if (!phone) return 'captain';
-  const clean = phone.replace(/[^0-9]/g, '');
-  if (clean === BOT_PHONE || clean === BOT_PHONE_INTL) {
-    return 'owner';
-  }
-  const record = db.prepare('SELECT role FROM user_roles WHERE phone = ?').get(clean);
-  return record ? record.role : 'captain';
+function reconcileConfiguredGroupFromEnvironment() {
+  if (!WHATSAPP_GROUP_ID) return;
+  if (!WHATSAPP_GROUP_ID.endsWith("@g.us")) throw new Error("WHATSAPP_GROUP_ID must end with @g.us");
+  const storedGroupId = getSetting("group_id", null);
+  const legacyGroupId = getSetting("active_group_id", null);
+  if (storedGroupId === WHATSAPP_GROUP_ID && legacyGroupId === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID)) return;
+  configureGroupId(WHATSAPP_GROUP_ID, configuredGroup(WHATSAPP_GROUP_ID)?.group_name || WHATSAPP_GROUP_NAME);
+  console.log(`[Config] synchronized active WhatsApp group from environment: ${WHATSAPP_GROUP_ID}`);
 }
 
-// 5. معالجة ورصد الرسائل الواردة وتحديث معرّف القروب النشط ديناميكياً
-async function handleIncomingMessage(msg, options = {}) {
-  const remoteJid = msg.key?.remoteJid;
-  if (!remoteJid) return;
+reconcileConfiguredGroupFromEnvironment();
 
-  const isGroup = remoteJid.endsWith('@g.us');
-
-  if (isGroup) {
-    const storedGroupId = db.prepare('SELECT value FROM settings WHERE key = ?').get('active_group_id');
-    const currentActiveGroup = storedGroupId ? storedGroupId.value : activeGroupId;
-
-    if (currentActiveGroup && remoteJid !== currentActiveGroup && options.autoSwitch) {
-      activeGroupId = remoteJid;
-      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('active_group_id', activeGroupId);
-      console.log(`[System] Automatically switched active group JID to: ${activeGroupId}`);
-    }
-  }
-}
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);

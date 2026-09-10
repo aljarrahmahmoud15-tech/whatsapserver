@@ -41,3 +41,7 @@ services:
         value: "20"
       - key: WHATSAPP_CLIENT_ID
         value: aljarah-main-v2
+      - key: WHATSAPP_GROUP_ID
+        value: 120363410053044535@g.us
+      - key: WHATSAPP_GROUP_NAME
+        value: "( ꧁★مشتركة الرمثا واربد الكبرى★꧂)"

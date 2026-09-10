@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>إصلاح استقبال رسائل القروب</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI", Tahoma, Arial, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #07111d; color: #f5f8ff; }
+    main { width: min(680px, calc(100% - 32px)); background: #101c2e; border: 1px solid #29445f; border-radius: 20px; padding: 24px; box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+    h1 { margin-top: 0; font-size: 24px; }
+    p { color: #b8c8d9; line-height: 1.8; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; background: #0b1727; border-radius: 14px; padding: 16px; }
+    dt { color: #8ea1b9; } dd { margin: 0; overflow-wrap: anywhere; }
+    button, a { display: inline-block; border-radius: 12px; padding: 11px 16px; font: inherit; text-decoration: none; }
+    button { border: 0; cursor: pointer; background: #42d6d0; color: #06131f; font-weight: 700; }
+    button:disabled { opacity: .5; cursor: wait; }
+    a { color: #b8c8d9; border: 1px solid #29445f; margin-inline-start: 8px; }
+    #result { margin-top: 16px; white-space: pre-wrap; }
+    .ok { color: #62df99; } .error { color: #ff8b8b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>إصلاح استقبال رسائل القروب</h1>
+    <p>تعتمد هذه الأداة آخر قروب وصل منه حدث فعلي خلال آخر 15 دقيقة، بعد أن يتحقق الخادم أنه قروب واتساب صالح. لا تُحذف أي بيانات أو جلسة.</p>
+    <dl>
+      <dt>القروب المحفوظ</dt><dd id="configured">جاري الفحص…</dd>
+      <dt>آخر قروب مرصود</dt><dd id="observed">جاري الفحص…</dd>
+      <dt>وقت الحدث</dt><dd id="observed-at">—</dd>
+    </dl>
+    <button id="adopt" type="button" disabled>اعتماد القروب المرصود</button>
+    <a href="/">العودة إلى لوحة الإدارة</a>
+    <div id="result" role="status" aria-live="polite"></div>
+  </main>
+  <script>
+    const configured = document.getElementById('configured');
+    const observed = document.getElementById('observed');
+    const observedAt = document.getElementById('observed-at');
+    const adopt = document.getElementById('adopt');
+    const result = document.getElementById('result');
+    let observedGroupId = '';
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(body.error || `تعذر إتمام العملية (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
+      return body;
+    }
+
+    async function load() {
+      try {
+        const [status, diagnostic] = await Promise.all([
+          api('/status'),
+          api('/api/admin/diagnostics/last-group-event'),
+        ]);
+        configured.textContent = status.groupId || 'غير محدد';
+        observedGroupId = diagnostic.groupId || '';
+        observed.textContent = observedGroupId || 'لا يوجد حدث قروب حديث';
+        observedAt.textContent = diagnostic.telemetry?.at || '—';
+        adopt.disabled = !observedGroupId || diagnostic.telemetry?.configured === true;
+        if (diagnostic.telemetry?.configured === true) {
+          result.className = 'ok';
+          result.textContent = 'القروب المرصود معتمد بالفعل.';
+        }
+      } catch (error) {
+        result.className = 'error';
+        result.textContent = error.status === 401 ? 'انتهت جلسة الإدارة. عد إلى لوحة الإدارة وسجّل الدخول ثم افتح هذه الصفحة مجددًا.' : error.message;
+      }
+    }
+
+    adopt.addEventListener('click', async () => {
+      adopt.disabled = true;
+      result.className = '';
+      result.textContent = 'جاري التحقق واعتماد القروب…';
+      try {
+        const data = await api('/api/admin/group/adopt-last-seen', {
+          method: 'POST',
+          body: JSON.stringify({ groupId: observedGroupId }),
+        });
+        configured.textContent = data.groupId;
+        result.className = 'ok';
+        result.textContent = `تم اعتماد القروب «${data.groupName}» بنجاح. عدد الأعضاء المقروء: ${data.membersLoaded ?? 'غير متاح'}.`;
+      } catch (error) {
+        adopt.disabled = false;
+        result.className = 'error';
+        result.textContent = error.message;
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>
