@@ -30,6 +30,7 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://bot.wasselni-biz.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 if (runningOnRender && path.resolve(DATA_DIR) !== "/app/data") {
   throw new Error(`Persistent DATA_DIR is required on Render; received ${DATA_DIR}`);
@@ -714,7 +715,7 @@ function isConfiguredGroup(groupId) {
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
-  return `${normalized || `http://localhost:${PORT}`}/join.html`;
+  return `${normalized || PUBLIC_APP_URL}/join.html`;
 }
 function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
   const gateway = captainAppUrl(baseUrl);
@@ -2826,6 +2827,20 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   audit("group.configured", "group", groupId, { groupName });
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
+});
+
+app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = "120363426604560611@g.us";
+  const groupName = "🔥 وصلني الآن 🔥 🔥Waslni Now🔥";
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
+  const stamp = now();
+  db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?").run(stamp, groupId);
+  configureGroupId(groupId, groupName);
+  groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: now(), error: null, groupId, participants: [] };
+  groupInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: now(), error: null, groupId, inviteUrl: null, participants: [] };
+  res.json({ success: true, groupId, groupName, membersLoaded: chat.participants.length, newGroupUnused: true });
 });
 
 app.post("/api/admin/group/invite-info", requireAdmin, async (req, res) => {

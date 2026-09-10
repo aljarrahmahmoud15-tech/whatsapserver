@@ -49,6 +49,10 @@ assert(server.includes('هذا ليس تسجيل كابتن جديدًا'), 'mem
 assert(server.includes('groupInviteInFlight'), 'member invite delivery is protected from duplicate execution');
 assert(server.includes('sharp.concurrency(1)'), 'card rendering limits native image concurrency');
 assert(server.includes('const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines)'), 'invite cards reuse one rendered media asset per batch');
+assert(server.includes('app.get("/api/admin/group/use-original", requireAdmin'), 'original WhatsApp group can be reactivated safely');
+assert(server.includes('const groupId = "120363426604560611@g.us"'), 'original active group id is explicit');
+assert(server.includes('UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?'), 'new or historical groups are deactivated without deletion');
+assert(server.includes('newGroupUnused: true'), 'relink response confirms the new group is unused');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
