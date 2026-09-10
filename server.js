@@ -2077,8 +2077,9 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (!videos.length) return res.status(400).json({ error: "At least one secure video URL is required" });
-  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
-  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+  const snapshot = await readGroupSnapshot(groupId);
+  const chat = await resolveGroupChat(groupId);
+  if (!snapshot || !snapshot.isGroup || !chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a hydrated group" });
   const captions = [
     "شرح 1/2 · التسجيل وتسجيل الدخول\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر المسار المناسب: تسجيل كابتن جديد لأول مرة أو دخول الكابتن للحساب المسجل.\nالبوابة: " + captainAppUrl(captainInviteBaseUrl(req)),
     "شرح 2/2 · بطاقة الشحن وتفعيل الرصيد\nمن دخول الكابتن اختر شحن بطاقة رصيد، ثم أدخل الكود واضغط Enter ليُضاف الرصيد مباشرة إلى محفظتك ويُسجل في النظام."
@@ -2090,9 +2091,16 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
     try {
       const media = await withTimeoutStrict(mediaFromRemoteVideoUrl(String(videos[index]), index), 120000, null);
       if (!media) throw new Error("media download or conversion timed out");
-      const message = await withTimeoutStrict(client.sendMessage(groupId, media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن.", waitUntilMsgSent: true }), 180000, null);
-      if (!message) throw new Error("WhatsApp did not return a sent message");
-      sent.push({ index, messageId: message.id?._serialized || null });
+      const caption = captions[index] || "شرح بوابة التشغيل الرسمية للكباتن.";
+      const message = await withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), 180000, null);
+      let confirmed = message && message.id?._serialized ? message : null;
+      if (!confirmed) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const recent = await withTimeout(chat.fetchMessages({ limit: 20, fromMe: true }), 30000, []);
+        confirmed = recent.find((item) => item && item.hasMedia && String(item.body || "") === caption) || null;
+      }
+      if (!confirmed) throw new Error("WhatsApp returned no confirmed outgoing media message");
+      sent.push({ index, messageId: confirmed.id?._serialized || null });
     } catch (error) {
       errors.push({ index, error: String(error?.message || error).slice(0, 240) });
     }
