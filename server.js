@@ -2973,7 +2973,9 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
-  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  await readGroupSnapshot(groupId);
+  let chat = await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || !chat.isGroup) chat = await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || typeof chat.fetchMessages !== "function") return res.status(404).json({ error: "Configured chat is not a readable group" });
   const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
