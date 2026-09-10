@@ -381,6 +381,23 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
     new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
   ]);
 }
+async function mediaFromRemoteVideoUrl(url, index = 0) {
+  const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
+  if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (!contentType.includes("video") && !String(url).toLowerCase().endsWith(".mp4")) throw new Error("Guide URL did not return a video");
+  if (contentLength > 60 * 1024 * 1024) throw new Error("Guide video is larger than the safe upload limit");
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length || buffer.length > 60 * 1024 * 1024) throw new Error("Guide video body is empty or too large");
+  const temporaryPath = path.join(DATA_DIR, `.guide-video-${process.pid}-${Date.now()}-${index}.mp4`);
+  fs.writeFileSync(temporaryPath, buffer);
+  try {
+    return MessageMedia.fromFilePath(temporaryPath);
+  } finally {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+  }
+}
 function normalizeCustomerText(value) {
   return String(value || "").trim().toLowerCase().replace(/[إأآ]/g, "ا").replace(/ى/g, "ي").replace(/\s+/g, " ");
 }
@@ -2066,7 +2083,7 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
   ];
   const sent = [];
   for (let index = 0; index < videos.length; index += 1) {
-    const media = await withTimeout(MessageMedia.fromUrl(String(videos[index]), { unsafeMime: true }), 60000, null);
+    const media = await withTimeout(mediaFromRemoteVideoUrl(String(videos[index]), index), 60000, null);
     if (!media) continue;
     const message = await withTimeout(client.sendMessage(groupId, media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن." }), 60000, null);
     if (message) sent.push({ index, messageId: message.id?._serialized || null });

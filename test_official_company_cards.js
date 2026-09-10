@@ -41,6 +41,8 @@ assert(server.includes('membersLoaded: groupChat.participants.length'), 'group r
 assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), 'group registration retries group hydration');
 assert(server.includes('async function readGroupSnapshot(groupId)'), 'group membership can be read from the WhatsApp page model');
 assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 'group snapshot refreshes WhatsApp group metadata');
+assert(server.includes('async function mediaFromRemoteVideoUrl(url, index = 0)'), 'guide videos download through a bounded temporary file');
+assert(server.includes('MessageMedia.fromFilePath(temporaryPath)'), 'guide videos are converted from the downloaded local file');
 assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
 assert(server.includes('async function sendGroupMemberInvitesInBackground'), 'group member invitations have a separate safe background flow');
 assert(server.includes('app.get("/api/admin/group/send-member-invites", requireAdmin'), 'member invite delivery is admin protected');
