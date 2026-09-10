@@ -2843,6 +2843,24 @@ app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   res.json({ success: true, groupId, groupName, membersLoaded: chat.participants.length, newGroupUnused: true });
 });
 
+app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => {
+  const groupId = String(req.query.groupId || "").trim();
+  const newGroupId = "120363413760988742@g.us";
+  const originalGroupId = "120363426604560611@g.us";
+  const expectedName = "شركة الجراح — شبكة التشغيل الرسمية";
+  if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
+  if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup || chat.name !== expectedName) return res.status(404).json({ error: "The explicitly targeted unapproved group was not verified" });
+  const participantCount = Array.isArray(chat.participants) ? chat.participants.length : 0;
+  await withTimeout(chat.leave(), 60000, null);
+  const deleted = await withTimeout(chat.delete(), 60000, false);
+  db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id=?").run(now(), groupId);
+  audit("group.unapproved.deleted", "group", groupId, { participantCount, botLeft: true, chatDeleted: Boolean(deleted), originalGroupId });
+  res.json({ success: true, groupId, groupName: expectedName, participantCount, botLeft: true, chatDeleted: Boolean(deleted), originalGroupUntouched: true, note: "The bot left and deleted its chat; WhatsApp may retain the group for remaining members." });
+});
+
 app.post("/api/admin/group/invite-info", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
