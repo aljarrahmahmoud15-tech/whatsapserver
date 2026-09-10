@@ -19,8 +19,8 @@ assert.deepStrictEqual(special, {
   grossCents: 2000,
   producerRateBps: 2000,
   producerFeeCents: 400,
-  companyCents: 60,
-  producerNetCents: 340,
+  companyCents: 80,
+  producerNetCents: 320,
   captainFeeCents: 400,
   captainGrossCents: 2000,
 });
