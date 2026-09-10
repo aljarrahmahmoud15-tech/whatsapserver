@@ -365,8 +365,8 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962775969880"]);
-const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886,+962775969880").split(",")].map(phoneWithCountry).filter(Boolean));
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
+const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
@@ -2515,7 +2515,7 @@ async function resetGroupInBackground({ operationId, oldGroupId, groupName, back
       return;
     }
     const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const blockedPhones = new Set([...BLOCKED_PHONE_SET]);
     const rawPhones = [...new Set(oldGroup.participants.map(groupParticipantPhone).filter(Boolean))];
     const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
     if (!phones.length) {
@@ -2561,7 +2561,7 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "A valid newly created group id is required" });
   if (groupCreateState.status !== "failed" || groupCreateState.groupId !== groupId) return res.status(409).json({ error: "No failed newly created group is available for recovery", status: groupCreateState.status, groupId: groupCreateState.groupId || null });
   const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-  const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+  const blockedPhones = new Set([...BLOCKED_PHONE_SET]);
   const phones = [...new Set((groupCreateState.participants || []).map((participant) => phoneWithCountry(participant && participant.phone)).filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone)))];
   if (!phones.length) return res.status(409).json({ error: "No eligible members are available for recovery" });
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
@@ -2577,7 +2577,7 @@ async function finalizeExistingGroupInBackground({ operationId, sourceGroupId, g
     const sourceGroup = await readGroupSnapshot(sourceGroupId);
     if (!sourceGroup || !Array.isArray(sourceGroup.participants) || sourceGroup.participants.length < 1) throw new Error("Could not read members from the source group");
     const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const blockedPhones = new Set([...BLOCKED_PHONE_SET]);
     const rawPhones = [...new Set(sourceGroup.participants.map(groupParticipantPhone).filter(Boolean))];
     const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
     if (!phones.length) throw new Error("No eligible members remain after owner and blocked-phone exclusions");
@@ -2602,7 +2602,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const destinationGroup = await readGroupSnapshot(groupId);
     const existingPhones = new Set((destinationGroup?.participants || []).map(groupParticipantPhone).filter(Boolean));
     const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-    const blockedPhones = new Set([phoneWithCountry("0775969880"), ...BLOCKED_PHONE_SET]);
+    const blockedPhones = new Set([...BLOCKED_PHONE_SET]);
     const rawPhones = [...new Set(sourceGroup.participants.map(groupParticipantPhone).filter(Boolean))];
     const phones = rawPhones.filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone));
     const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending" }));
