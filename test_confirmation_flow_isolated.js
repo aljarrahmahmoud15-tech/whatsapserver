@@ -26,7 +26,7 @@ const order = {
 const users = {
   1: { id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 },
   2: { id: 2, phone: "962771111111", name: "المنتج", role: "producer", wallet_cents: 0 },
-  3: { id: 3, phone: "962772222222", name: "الكابتن", role: "captain", wallet_cents: 1000 },
+  3: { id: 3, phone: "962772222222", name: "الكابتن", role: "captain", wallet_cents: 100 },
 };
 const ledgers = [];
 const messages = [];
@@ -84,7 +84,7 @@ const context = {
   PRODUCER_RATE_BPS: 1500,
   SPECIAL_ORDER_RATE_BPS: 2000,
   COMPANY_FROM_PRODUCER_RATE_BPS: 1500,
-  CAPTAIN_MIN_BALANCE_CENTS: 0,
+  CAPTAIN_MIN_BALANCE_CENTS: -200,
   calculateSettlement,
   companyUser: () => ({ ...users[1] }),
   now: () => "2026-01-01T00:00:00.000Z",
@@ -117,7 +117,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
   assert.strictEqual(order.status, "accepted", "لايك المنتج على رسالة تم يوثق الطلب");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد اعتماد المنتج");
-  assert.strictEqual(users[3].wallet_cents, 700, "يخصم 15% من رصيد الكابتن للطلب العادي");
+  assert.strictEqual(users[3].wallet_cents, -200, "يُسجّل خصم 15% كمديونية مسموحة على رصيد الكابتن");
   assert.strictEqual(users[2].wallet_cents, 255, "يضاف صافي حصة المنتج بعد عمولة الشركة");
   assert.strictEqual(users[1].wallet_cents, 45, "تأخذ الشركة 15% من حصة المنتج فقط");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التوثيق");

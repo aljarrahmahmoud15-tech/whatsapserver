@@ -1559,13 +1559,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
-  if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
-    await msg.react("⚠️").catch(() => {});
-    await sendGroupBrandedMessage(groupId, "تعذر تثبيت الطلب", [`⚠️ الكابتن ${captain.name} لا يملك رصيدًا يغطي خصم ${money(settlement.captainFeeCents)} JOD.`, "اطلب بطاقة شحن من خدمة العملاء داخل النظام."]).catch(() => {});
-    audit("order.rejected.insufficient_wallet", "order", order.id, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
-    void suspendMemberForDebt(groupId, senderPhone, captain.wallet_cents - settlement.captainFeeCents);
-    return;
-  }
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
     if (!current || current.status !== "open" || current.pending_message_id) return false;
@@ -1617,9 +1610,9 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
       const stamp = now();
       db.prepare("UPDATE orders SET pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open'").run(stamp, orderId);
-      audit("order.rejected.insufficient_wallet_after_confirmation", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents });
+      audit("order.rejected.debt_limit_after_confirmation", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
       void suspendMemberForDebt(current.group_id, captain.phone, captain.wallet_cents - settlement.captainFeeCents);
-      return { state: "insufficient", order: current, captain, producer, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents };
+      return { state: "debt_limit", order: current, captain, producer, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
     }
     const company = companyUser();
     const stamp = now();
@@ -1659,12 +1652,12 @@ async function handleMessageReaction(reaction) {
   if (!pending) return;
   const result = settlePendingOrder(pending.id, messageId, producerPhone);
   if (result.state === "unauthorized" || result.state === "stale") return;
-  if (result.state === "insufficient") {
-    await sendGroupBrandedMessage(target.from, "تعذر توثيق الرحلة", [`⚠️ رصيد الكابتن ${result.captain.name} أصبح غير كافٍ لتغطية ${money(result.requiredCents)} JOD.`, "لم تُسجّل أي تسوية مالية."]).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
+  if (result.state === "debt_limit") {
+    await sendGroupBrandedMessage(target.from, "تعذر توثيق الرحلة", [`⚠️ سيؤدي هذا الحجز إلى تجاوز حد مديونية الكابتن ${result.captain.name}.`, `الحد المسموح: ${money(result.debtLimitCents)} JOD.`, "لم تُسجّل أي تسوية مالية."]).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
     return;
   }
   if (result.state === "accepted") {
-    await sendGroupBrandedMessage(target.from, "تم توثيق الرحلة", [`🆔 رقم الطلب: #${result.order.order_no}`, `👤 المنتج المعتمد: ${result.producer ? result.producer.name : "غير محدد"}`, `🚕 الكابتن المنفّذ: ${result.captain.name}`, `💰 القيمة الكاملة للرحلة: ${money(result.order.price_cents)} JOD`, `🧾 نوع الطلب: ${result.order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`, `💼 المخصوم من رصيد المنفّذ: ${money(result.order.producer_cents)} JOD`, `📊 صافي حصة المنتج: ${money(result.order.producer_cents - result.order.company_cents)} JOD | حصة الشركة: ${money(result.order.company_cents)} JOD`, "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية."]).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+    await sendGroupBrandedMessage(target.from, "تم توثيق الرحلة", [`🆔 رقم الطلب: #${result.order.order_no}`, `👤 المنتج المعتمد: ${result.producer ? result.producer.name : "غير محدد"}`, `🚕 الكابتن المنفّذ: ${result.captain.name}`, `💰 القيمة الكاملة للرحلة: ${money(result.order.price_cents)} JOD`, `🧾 نوع الطلب: ${result.order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`, `💼 المخصوم من رصيد المنفّذ: ${money(result.order.producer_cents)} JOD`, `📊 صافي حصة المنتج: ${money(result.order.producer_cents - result.order.company_cents)} JOD | حصة الشركة: ${money(result.order.company_cents)} JOD`, result.captain.wallet_cents < 0 ? `⚠️ مديونية الكابتن بعد التسوية: ${money(result.captain.wallet_cents)} JOD` : "✅ لا توجد مديونية على الكابتن بعد التسوية.", "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية."]).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
   }
 }
 
@@ -2977,7 +2970,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   await readGroupSnapshot(groupId);
   let chat = await withTimeout(client.getChatById(groupId), 25000, null);
   if (!chat || !chat.isGroup) chat = await resolveGroupChat(groupId);
-  if (!chat || !chat.isGroup || typeof chat.fetchMessages !== "function") return res.status(404).json({ error: "Configured chat is not a readable group" });
+  if (!chat || typeof chat.fetchMessages !== "function") return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
   const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();
