@@ -43,6 +43,9 @@ assert(server.includes('async function readGroupSnapshot(groupId)'), 'group memb
 assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 'group snapshot refreshes WhatsApp group metadata');
 assert(server.includes('async function mediaFromRemoteVideoUrl(url, index = 0)'), 'guide videos download through a bounded temporary file');
 assert(server.includes('MessageMedia.fromFilePath(temporaryPath)'), 'guide videos are converted from the downloaded local file');
+assert(server.includes('app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin'), 'guide video send telemetry is admin protected');
+assert(server.includes('waitUntilMsgSent: true'), 'guide video delivery waits for WhatsApp send confirmation');
+assert(server.includes('errors.push({ index, error:'), 'guide video failures expose a bounded diagnostic reason');
 assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send through the stable WhatsApp client API');
 assert(server.includes('async function sendGroupMemberInvitesInBackground'), 'group member invitations have a separate safe background flow');
 assert(server.includes('app.get("/api/admin/group/send-member-invites", requireAdmin'), 'member invite delivery is admin protected');

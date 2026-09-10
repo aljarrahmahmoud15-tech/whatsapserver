@@ -1078,6 +1078,7 @@ let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
 let lastGroupMessageTelemetry = null;
+let lastGuideVideoTelemetry = null;
 let lastGroupEventGroupId = null;
 let baileysSocket = null;
 let baileysReady = false;
@@ -2057,6 +2058,7 @@ app.patch("/api/admin/system/settings", requireAdmin, (req, res) => {
   res.json({ success: true, settings: operationalSettings(), updated: updates });
 });
 app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
+app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const requestedLimit = Number(req.query.limit || 50);
@@ -2082,15 +2084,23 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
     "شرح 2/2 · بطاقة الشحن وتفعيل الرصيد\nمن دخول الكابتن اختر شحن بطاقة رصيد، ثم أدخل الكود واضغط Enter ليُضاف الرصيد مباشرة إلى محفظتك ويُسجل في النظام."
   ];
   const sent = [];
+  const errors = [];
+  const startedAt = now();
   for (let index = 0; index < videos.length; index += 1) {
-    const media = await withTimeout(mediaFromRemoteVideoUrl(String(videos[index]), index), 60000, null);
-    if (!media) continue;
-    const message = await withTimeout(client.sendMessage(groupId, media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن." }), 60000, null);
-    if (message) sent.push({ index, messageId: message.id?._serialized || null });
+    try {
+      const media = await withTimeoutStrict(mediaFromRemoteVideoUrl(String(videos[index]), index), 120000, null);
+      if (!media) throw new Error("media download or conversion timed out");
+      const message = await withTimeoutStrict(client.sendMessage(groupId, media, { caption: captions[index] || "شرح بوابة التشغيل الرسمية للكباتن.", waitUntilMsgSent: true }), 180000, null);
+      if (!message) throw new Error("WhatsApp did not return a sent message");
+      sent.push({ index, messageId: message.id?._serialized || null });
+    } catch (error) {
+      errors.push({ index, error: String(error?.message || error).slice(0, 240) });
+    }
   }
-  audit("group.guide_videos.sent", "group", groupId, { count: sent.length, videos: sent.map((item) => item.index) });
-  void notifyOperations({ event: "group.guide_videos.sent", title: "تأكيد إرسال فيديوهات شرح الكباتن", lines: [`القروب: ${groupId}`, `عدد الفيديوهات المرسلة: ${sent.length}`, "تم إرسال شرح التسجيل والدخول وبطاقة الشحن داخل القروب."], ownersOnly: true });
-  res.json({ success: true, groupId, sent });
+  lastGuideVideoTelemetry = { groupId, requested: videos.length, sent: sent.length, errors, startedAt, finishedAt: now() };
+  audit("group.guide_videos.sent", "group", groupId, { count: sent.length, videos: sent.map((item) => item.index), errors });
+  void notifyOperations({ event: "group.guide_videos.sent", title: "تأكيد إرسال فيديوهات شرح الكباتن", lines: [`القروب: ${groupId}`, `عدد الفيديوهات المرسلة: ${sent.length}`, errors.length ? `فشل: ${errors.length} · راجع تشخيص الإرسال.` : "تم إرسال شرح التسجيل والدخول وبطاقة الشحن داخل القروب."], ownersOnly: true });
+  res.json({ success: errors.length === 0, groupId, sent, errors });
 });
 
 app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
