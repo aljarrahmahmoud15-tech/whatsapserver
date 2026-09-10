@@ -905,10 +905,12 @@ function parseOrder(text) {
   const routeLine = lines.find((line) => /من\s+.+\s+إلى|من\s+.+\s+الى/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i);
   const timeMatch = normalized.match(/(\d{1,2}(?::\d{2})?\s*(?:صباحا|مساء|ص|م)?)/i);
-  const requestKind = /(?:راكب|حمولة|سيارة|سياره|اوردر|order)/i.test(normalized);
+  const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
+  const requestKind = Boolean(requestKindMatch);
   return {
     isOrder: price !== null && (/وصلني\s*(?:الآن|الان)?/i.test(normalized) || requestKind),
     price,
+    requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
     tripTime: timeMatch ? timeMatch[1].trim() : null,
