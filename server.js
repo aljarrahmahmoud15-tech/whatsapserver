@@ -34,7 +34,7 @@ const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://bot.wasselni-biz.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 if (runningOnRender && path.resolve(DATA_DIR) !== "/app/data") {
   throw new Error(`Persistent DATA_DIR is required on Render; received ${DATA_DIR}`);
@@ -1802,7 +1802,9 @@ function expireCaptainInvites() {
 function captainInviteBaseUrl(req) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
   const protocol = forwardedProto === "https" ? "https" : "http";
-  return String(process.env.PUBLIC_BASE_URL || `${protocol}://${req.get("host")}`).replace(/\/$/, "");
+  const configured = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  const base = configured && !/bot\.wasselni-biz\.com/i.test(configured) ? configured : `${protocol}://${req.get("host")}`;
+  return base.replace(/\/$/, "");
 }
 function requireQrAccess(req, res, next) {
   if (!consumeRateLimit(qrRate, clientAddress(req), QR_RATE_LIMIT_MAX)) {
