@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>لوحة إدارة WhatsApp Bot</title>
+  <style>
+    :root{color-scheme:dark;--bg:#08111f;--card:#101d31;--muted:#9cafc8;--text:#f3f7ff;--accent:#38d39f;--danger:#ff7070;--line:#243750}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#15365a 0,#08111f 45%);font-family:Tahoma,Arial,sans-serif;color:var(--text);min-height:100vh}.wrap{max-width:1100px;margin:auto;padding:28px 18px}.card{background:rgba(16,29,49,.94);border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:0 14px 45px #0004;margin-bottom:18px}h1,h2{margin-top:0}h1{font-size:28px}.muted{color:var(--muted)}label{display:block;margin:12px 0 6px;color:var(--muted)}input{width:100%;border:1px solid var(--line);background:#0a1628;color:var(--text);border-radius:10px;padding:12px;font-size:15px}button{border:0;border-radius:10px;padding:12px 16px;font-weight:700;cursor:pointer;background:var(--accent);color:#062218;margin-top:14px}button.secondary{background:#223650;color:var(--text);margin-right:8px}.hidden{display:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}.metric{border:1px solid var(--line);border-radius:14px;padding:16px}.metric b{display:block;font-size:22px;margin-top:8px}.ok{color:var(--accent)}.bad{color:var(--danger)}table{width:100%;border-collapse:collapse}th,td{text-align:right;border-bottom:1px solid var(--line);padding:11px 7px}pre{white-space:pre-wrap;background:#081423;border:1px solid var(--line);border-radius:10px;padding:12px;direction:ltr;text-align:left}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.notice{padding:11px;border-radius:10px;background:#17283f;color:var(--muted);margin-top:12px}.error{color:var(--danger)}a{color:#77cfff}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <section id="login" class="card" style="max-width:520px;margin:8vh auto">
+    <h1>لوحة إدارة البوت</h1><p class="muted">أدخل ADMIN_TOKEN للوصول إلى بيانات التشغيل.</p>
+    <label for="token">رمز الإدارة</label><input id="token" type="password" autocomplete="current-password" placeholder="ADMIN_TOKEN">
+    <button onclick="login()">تسجيل الدخول</button><div id="loginMsg" class="notice hidden"></div>
+  </section>
+  <section id="app" class="hidden">
+    <div class="row"><div><h1>لوحة إدارة WhatsApp</h1><p class="muted">مراقبة الحالة، الجلسة والكباتن</p></div><button class="secondary" onclick="logout()">خروج</button></div>
+    <div class="grid"><div class="metric"><span class="muted">الخدمة</span><b id="service">—</b></div><div class="metric"><span class="muted">جلسة WhatsApp</span><b id="wa">—</b></div><div class="metric"><span class="muted">التخزين</span><b id="storage">—</b></div><div class="metric"><span class="muted">QR</span><b id="qrState">—</b></div></div>
+    <section class="card"><div class="row"><h2>حالة النظام</h2><button onclick="refresh()">تحديث</button></div><pre id="status">جارٍ التحميل…</pre><a id="qrLink" class="hidden" target="_blank" rel="noreferrer">فتح رابط QR مؤقت</a></section>
+    <section class="card"><h2>الكباتن</h2><table><thead><tr><th>الاسم</th><th>الهاتف</th><th>الحالة</th><th>الرصيد</th></tr></thead><tbody id="captains"><tr><td colspan="4">جارٍ التحميل…</td></tr></tbody></table></section>
+    <section class="card"><h2>تغيير رمز الإدارة</h2><p class="muted">استخدم رمزًا من 16 حرفًا على الأقل يحتوي أحرفًا كبيرة وصغيرة ورقمًا ورمزًا.</p><label for="newToken">الرمز الجديد</label><input id="newToken" type="password" autocomplete="new-password"><button onclick="changeToken()">حفظ الرمز الجديد</button><div id="changeMsg" class="notice hidden"></div></section>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let token=localStorage.getItem('adminToken')||'';
+function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}
+async function api(url,options={}){const r=await fetch(url,{...options,headers:{...headers(),...(options.headers||{})}});let data;try{data=await r.json()}catch{data={error:await r.text()}}if(!r.ok)throw new Error(data.error||'HTTP '+r.status);return data}
+async function login(){const value=$('token').value.trim();if(!value)return;token=value;try{await api('/api/admin/bot/status');localStorage.setItem('adminToken',token);$('login').classList.add('hidden');$('app').classList.remove('hidden');refresh()}catch(e){token='';$('loginMsg').textContent='فشل تسجيل الدخول: '+e.message;$('loginMsg').classList.remove('hidden')}}
+function logout(){localStorage.removeItem('adminToken');token='';location.reload()}
+function setMetric(id,value,good=true){$(id).textContent=value;$(id).className=good?'ok':'bad'}
+async function refresh(){try{const [health,bot,caps]=await Promise.all([fetch('/health').then(r=>r.json()),api('/api/admin/bot/status'),api('/api/admin/captains')]);setMetric('service',health.ok?'Online':'Offline',!!health.ok);setMetric('wa',bot.bot.ready?'Ready':'Offline',bot.bot.ready);setMetric('storage',bot.storage.dataDirWritable?'Writable':'Read-only',bot.storage.dataDirWritable);setMetric('qrState',bot.session.qrAvailable?'Available':'Protected',!bot.session.qrAvailable);$('status').textContent=JSON.stringify(bot,null,2);$('captains').innerHTML=caps.captains.map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.phone)}</td><td class="${c.active?'ok':'bad'}">${c.active?'نشط':'موقوف'}</td><td>${esc(c.balance)}</td></tr>`).join('')||'<tr><td colspan="4">لا يوجد كباتن</td></tr>';try{const q=await api('/api/admin/qr-temporary-link',{method:'POST'});$('qrLink').href=q.url;$('qrLink').classList.remove('hidden')}catch{}}catch(e){$('status').textContent=e.message;if(e.message.includes('401'))logout()}}
+async function changeToken(){const value=$('newToken').value;try{const result=await api('/api/admin/change-password',{method:'POST',body:JSON.stringify({newToken:value})});token=value;localStorage.setItem('adminToken',token);$('changeMsg').textContent=result.message+' — حدّث ADMIN_TOKEN في Render ثم أعد التشغيل.';$('changeMsg').classList.remove('hidden');$('newToken').value=''}catch(e){$('changeMsg').textContent=e.message;$('changeMsg').classList.remove('hidden')}}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+if(token){$('login').classList.add('hidden');$('app').classList.remove('hidden');refresh()}
+</script>
+</body></html>

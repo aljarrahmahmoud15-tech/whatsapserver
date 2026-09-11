@@ -85,6 +85,13 @@ const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
+let activeAdminToken = ADMIN_TOKEN;
+if (!activeAdminToken) {
+  try {
+    activeAdminToken = fs.readFileSync(PERSISTED_ADMIN_TOKEN_PATH, "utf8").trim();
+  } catch {}
+}
 app.disable("x-powered-by");
 app.use(cors(CORS_ORIGIN ? { origin: CORS_ORIGIN, credentials: false } : { origin: false }));
 app.use((req, res, next) => {
@@ -111,6 +118,9 @@ app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+});
+app.get("/admin.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
@@ -1659,6 +1669,7 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(captainBalance, stamp, captain.id);
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp, ledgerDetails);
     audit("order.accepted", "order", orderId, { captainId: captain.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: producer.phone });
+    console.log(`[Order] accepted #${current.order_no} group=${current.group_id} captain=${captain.phone} confirmedBy=${producer.phone}`);
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id) };
   })();
 }
@@ -1697,7 +1708,7 @@ function parseCookies(header = "") {
 }
 function isAdmin(req) {
   const header = String(req.headers.authorization || "");
-  if (ADMIN_TOKEN && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), ADMIN_TOKEN)) return true;
+  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return true;
   if (!JWT_SECRET) return false;
   const session = parseCookies(req.headers.cookie || "").aljarah_session;
   if (!session) return false;
@@ -1789,8 +1800,8 @@ function requireQrAccess(req, res, next) {
   const queryToken = String(req.query.token || "");
   const header = String(req.headers.authorization || "");
   const bearerToken = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  const isQueryAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(queryToken, ADMIN_TOKEN);
-  const isBearerAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(bearerToken, ADMIN_TOKEN);
+  const isQueryAdmin = Boolean(activeAdminToken) && constantTimeEquals(queryToken, activeAdminToken);
+  const isBearerAdmin = Boolean(activeAdminToken) && constantTimeEquals(bearerToken, activeAdminToken);
   const isPublicWindow = QR_PUBLIC && Date.now() - QR_START_TIME < QR_PUBLIC_DURATION_MS;
   if (isPublicWindow || isQueryAdmin || isBearerAdmin || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
   return res.status(401).send("QR access is protected. Use an admin token or a temporary QR grant.");
@@ -2053,6 +2064,58 @@ app.get("/status", (req, res) => {
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, health: runtimeHealth() });
+});
+app.post("/api/admin/change-password", requireAdmin, (req, res) => {
+  const newToken = String(req.body?.newToken || "");
+  if (!/^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z\d]).{16,128}$/.test(newToken)) {
+    return res.status(400).json({ error: "newToken must be 16-128 characters and include uppercase, lowercase, number, and symbol" });
+  }
+  try {
+    const temporaryPath = `${PERSISTED_ADMIN_TOKEN_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temporaryPath, `${newToken}\n`, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporaryPath, PERSISTED_ADMIN_TOKEN_PATH);
+    activeAdminToken = newToken;
+    audit("admin.token.changed", "system", "admin", { persisted: true });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ success: true, message: "ADMIN_TOKEN changed and persisted", restartRequiredForRenderEnv: true });
+  } catch (error) {
+    console.error("[Security] admin token persistence failed:", error.message);
+    res.status(500).json({ error: "Unable to persist ADMIN_TOKEN" });
+  }
+});
+app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
+  const health = runtimeHealth();
+  const inventory = storageInventory();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    status: health.whatsapp?.ready ? "connected" : "offline",
+    bot: {
+      ready: Boolean(health.whatsapp?.ready),
+      state: health.whatsapp?.state || "unknown",
+      lastEvent: health.whatsapp?.lastEvent || null,
+      lastError: health.whatsapp?.lastError || null,
+      lastReadyAt: health.whatsapp?.lastReadyAt || null,
+      lastDisconnectAt: health.whatsapp?.lastDisconnectAt || null,
+      reconnectAttempts: Number(health.whatsapp?.reconnectAttempts || 0),
+    },
+    session: {
+      dataDir: health.storage?.dataDir || DATA_DIR,
+      authPath: health.storage?.authPath || AUTH_PATH,
+      qrAvailable: Boolean(health.whatsapp?.qrAvailable),
+      authPathWritable: Boolean(health.storage?.authPathHealth?.writable),
+    },
+    storage: {
+      dataDirExists: Boolean(health.storage?.dataDirHealth?.exists),
+      dataDirWritable: Boolean(health.storage?.dataDirHealth?.writable),
+      databaseExists: Boolean(health.storage?.databaseFileHealth?.exists),
+      databaseWritable: Boolean(health.storage?.databaseFileHealth?.writable),
+      usedBytes: Number(inventory.inventory?.totalBytes || inventory.totalBytes || 0),
+      freeBytes: Number(inventory.inventory?.filesystem?.freeBytes || inventory.filesystem?.freeBytes || 0),
+      availableBytes: Number(inventory.inventory?.filesystem?.availableBytes || inventory.filesystem?.availableBytes || 0),
+    },
+    checkedAt: new Date().toISOString(),
+  });
 });
 app.get("/api/admin/system/storage", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
@@ -3279,6 +3342,35 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.name AS producer_name, c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
   res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(row.producer_cents), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+});
+app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const groupId = String(req.query.groupId || "").trim();
+  const rows = groupId
+    ? db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone
+        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id
+        WHERE o.status IN ('accepted','completed') AND o.group_id=? ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(groupId, limit)
+    : db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone
+        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id
+        WHERE o.status IN ('accepted','completed') ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    count: rows.length,
+    groupId: groupId || null,
+    orders: rows.map((row) => ({
+      ...row,
+      price: money(row.price_cents),
+      company: money(row.company_cents),
+      producerGross: money(row.producer_cents),
+      producer: money(row.producer_cents - row.company_cents),
+      captain: money(row.captain_cents),
+      captainFee: money(row.producer_cents),
+      orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
+      confirmationMethod: row.accepted_message_id ? "group_reaction" : "recorded_confirmation",
+    })),
+  });
 });
 app.get("/api/admin/wallets", requireAdmin, (req, res) => {
   const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,updated_at FROM users ORDER BY role,id").all();
