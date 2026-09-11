@@ -2184,12 +2184,13 @@ app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req,
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   try {
     const chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
-    if (!chat || !chat.isGroup) return res.status(404).json({ error: "Official group is not available in the WhatsApp session" });
     const media = await withTimeoutStrict(mediaFromRemoteVideoUrl(videoUrl, 0), 120000, null);
     if (!media) return res.status(504).json({ error: "Video download or conversion timed out" });
     const portal = captainAppUrl(captainInviteBaseUrl(req));
     const caption = `شرح الكابتن المعتمد\n\nطريقة التسجيل، متابعة الرصيد والطلبات، وشرح بطاقة الشحن خطوة بخطوة.\n\nرابط التسجيل والبوابة الرسمية:\n${portal}`;
-    const sent = await withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), 180000, null);
+    const sent = chat && typeof chat.sendMessage === "function"
+      ? await withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), 180000, null)
+      : await withTimeoutStrict(client.sendMessage(groupId, media, { caption, waitUntilMsgSent: false }), 180000, null);
     if (!sent) return res.status(504).json({ error: "WhatsApp returned no confirmation" });
     audit("group.approved_guide_video.sent", "group", groupId, { messageId: sent.id?._serialized || null });
     res.json({ success: true, groupId, messageId: sent.id?._serialized || null, portal });
