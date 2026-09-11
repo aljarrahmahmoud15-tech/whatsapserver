@@ -943,6 +943,20 @@ function parseOrder(text) {
     orderKind: /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
   };
 }
+function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
+  if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
+  const existingByMessage = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+  if (existingByMessage) return existingByMessage;
+  const recentCutoff = new Date(Date.now() - 120000).toISOString();
+  const recentDuplicate = db.prepare("SELECT * FROM orders WHERE group_id=? AND producer_user_id=? AND raw_text=? AND created_at>=? ORDER BY id DESC LIMIT 1").get(groupId, producer.id, body, recentCutoff);
+  if (recentDuplicate) return recentDuplicate;
+  const stamp = now();
+  const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
+  const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
+  audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: producer.phone });
+  console.log(`[Order] #${orderNo} created from ${groupId}`);
+  return db.prepare("SELECT * FROM orders WHERE id=?").get(result.lastInsertRowid);
+}
 function latestEligibleGroupOrderMessage(messages, groupId) {
   return (Array.isArray(messages) ? messages : [])
     .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
@@ -1564,7 +1578,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const stamp = now();
   const messageId = msg.id && msg.id._serialized;
   if (!messageId) return;
   const parsed = parseOrder(body);
@@ -1575,12 +1588,10 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
         ? companyUser()
         : upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
     if (!producer || producer.active === 0) return;
-    const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-    const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
-    audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: senderPhone });
-    console.log(`[Order] #${orderNo} created from ${groupId}`);
+    const order = createOrderRecord({ messageId, groupId, body, producer, parsed });
+    if (!order) return;
     if (typeof client !== "undefined" && client && isReady) {
-      await sendGroupBrandedMessage(groupId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${orderNo}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(cents(parsed.price))} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار استلام الكابتن وتأكيد الرحلة."].filter(Boolean)).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
+      await sendGroupBrandedMessage(groupId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${order.order_no}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(cents(parsed.price))} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار استلام الكابتن وتأكيد الرحلة."].filter(Boolean)).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
     }
     return;
   }
@@ -3426,7 +3437,17 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const sent = await client.sendMessage(chatId, message);
   const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
   audit("message.sent", "chat", chatId, { messageId, responseObject: Boolean(sent) });
-  res.json({ success: true, messageId });
+  const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
+  let order = null;
+  if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
+    const producer = companyUser();
+    const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
+    order = createOrderRecord({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
+    if (order) {
+      await sendGroupBrandedMessage(chatId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${order.order_no}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(order.price_cents)} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار رد الكابتن بكلمة «تم»."].filter(Boolean)).catch((error) => console.error("[WhatsApp] admin order acknowledgement send:", error.message));
+    }
+  }
+  res.json({ success: true, messageId, order: order ? { id: order.id, orderNo: order.order_no, status: order.status } : null });
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
