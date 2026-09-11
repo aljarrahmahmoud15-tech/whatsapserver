@@ -3157,6 +3157,36 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, count: rows.length, messages: rows });
 });
+app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const requestedLimit = Number(req.body?.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
+  const chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || typeof chat.fetchMessages !== "function") return res.status(504).json({ error: "Unable to read configured group" });
+  const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
+  const candidates = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
+    .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+  const imported = [];
+  const skipped = [];
+  for (const message of candidates) {
+    const messageId = message.id && message.id._serialized;
+    if (!messageId) { skipped.push({ reason: "missing_message_id" }); continue; }
+    const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+    if (existing) { skipped.push({ messageId, reason: "already_registered", orderNo: existing.order_no }); continue; }
+    const parsed = parseOrder(message.body);
+    const senderPhone = phoneWithCountry(message.author || message.from || "");
+    const producer = senderPhone ? upsertUser({ phone: senderPhone, name: String(message._data?.notifyName || message._data?.pushname || senderPhone), role: "producer" }) : companyUser();
+    const order = producer ? createOrderRecord({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
+    if (order) {
+      imported.push({ messageId, orderNo: order.order_no, status: order.status, historical: true, needsCaptainLink: true });
+      audit("order.imported_from_group_history", "order", order.id, { groupId, sourceMessageId: messageId, historical: true, needsCaptainLink: true });
+    } else skipped.push({ messageId, reason: "not_created" });
+  }
+  res.status(201).json({ success: true, groupId, scanned: messages.length, candidates: candidates.length, imported, skipped });
+});
 app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
