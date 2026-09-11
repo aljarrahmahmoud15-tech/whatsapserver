@@ -2866,6 +2866,17 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
   res.status(201).json({ success: true, id: result.lastInsertRowid, accountLinkSent: true });
 });
+app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
+  const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE id=? AND role='captain'").get(id);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.created_at,o.updated_at,p.name AS producer_name
+    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id);
+  const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(captain_cents),0) AS earnings_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
+  res.json({ captain: { ...captain, balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, earnings: money(totals.earnings_cents) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
+});
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,active FROM users WHERE id=? AND role='captain'").get(id);
