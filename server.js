@@ -2889,6 +2889,19 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", captainPhone: captain.phone, lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`, active ? "يمكن للكابتن استخدام بوابة التشغيل." : "تم إيقاف الدخول والحركات المالية للحساب." ] });
   res.json({ success: true, id, active, name });
 });
+app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents FROM users WHERE id=? AND role='captain'").get(id);
+  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const trips = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id=?").get(id).count;
+  const ledger = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(id).count;
+  const cards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=?").get(id).count;
+  if (captain.wallet_cents !== 0 || trips || ledger || cards) return res.status(409).json({ error: "لا يمكن حذف كابتن لديه رحلات أو حركات مالية أو رصيد غير مُسوّى. استخدم الإيقاف عن العمل بدلًا من الحذف.", reasons: { balance: money(captain.wallet_cents), trips, ledger, redeemedCards: cards } });
+  db.transaction(() => { db.prepare("DELETE FROM captain_invites WHERE approved_user_id=?").run(id); db.prepare("DELETE FROM users WHERE id=? AND role='captain'").run(id); })();
+  audit("captain.deleted", "user", id, { phone: captain.phone, name: captain.name });
+  res.json({ success: true, deleted: id });
+});
 app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
   const deletePreviousPlain = req.body?.deletePreviousPlain === true;
