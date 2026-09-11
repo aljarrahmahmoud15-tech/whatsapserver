@@ -1002,7 +1002,7 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
   const safeName = escapeXml(captainName || "كابتن شبكة الجراح");
   const safeCode = escapeXml(code);
   const safeValue = escapeXml(`${money(valueCents)} JOD`);
-  const safeUrl = escapeXml(appUrl || "https://bot.wasselni-biz.com/join.html");
+  const safeUrl = escapeXml(appUrl || "https://whatsapserver-2.onrender.com/join.html");
   const logoFrame = `<circle cx="142" cy="138" r="86" fill="#48d9d1" opacity=".12"/><circle cx="142" cy="138" r="76" fill="none" stroke="#f6c84c" stroke-opacity=".55" stroke-width="2"/><circle cx="142" cy="138" r="68" fill="none" stroke="#48d9d1" stroke-opacity=".45" stroke-width="2"/><circle cx="142" cy="50" r="7" fill="#48d9d1"/><circle cx="142" cy="50" r="15" fill="none" stroke="#48d9d1" stroke-opacity=".3" stroke-width="2"/>`;
   const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="76" y="72" width="132" height="132" preserveAspectRatio="xMidYMid meet"/>` : `<circle cx="142" cy="138" r="62" fill="#0b1523" stroke="#f6c84c" stroke-width="4"/><text x="142" y="153" text-anchor="middle" fill="#f6c84c" font-size="54" font-weight="700">ج</text>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="680" viewBox="0 0 1080 680">
