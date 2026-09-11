@@ -43,7 +43,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 RUN mkdir -p /app/data && chown -R node:node /app
-USER node
 
 EXPOSE 10000
-CMD ["node", "server.js"]
+# Render mounts the persistent disk after image build; fix its ownership at startup.
+CMD ["sh", "-c", "chown -R node:node /app/data && exec su -s /bin/sh node -c 'exec node server.js'"]
