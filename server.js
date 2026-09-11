@@ -2183,7 +2183,7 @@ app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req,
   if (!/^https:\/\//i.test(videoUrl)) return res.status(400).json({ error: "A secure video URL is required" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   try {
-    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Official group is not available in the WhatsApp session" });
     const media = await withTimeoutStrict(mediaFromRemoteVideoUrl(videoUrl, 0), 120000, null);
     if (!media) return res.status(504).json({ error: "Video download or conversion timed out" });
