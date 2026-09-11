@@ -1,26 +1,27 @@
 services:
   - type: web
-    name: whatsapserver-1
+    name: whatsapserver-2
     runtime: node
-    # 1 CPU / 2 GB RAM. Keep this aligned with the paid Render service plan.
-    plan: 1c-2g
-    buildCommand: npm ci --omit=dev && PUPPETEER_CACHE_DIR=$PWD/.cache/puppeteer npx puppeteer browsers install chrome
+    plan: standard
+    buildCommand: npm ci --omit=dev
     startCommand: node server.js
-    healthCheckPath: /status
-    disk:
-      name: whatsapserver-data
-      mountPath: /app/data
-      sizeGB: 10
+    healthCheckPath: /health
     autoDeploy: true
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
     envVars:
-      - key: NODE_VERSION
-        value: 22.13.0
-      - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/.cache/puppeteer
-      - key: PUPPETEER_SKIP_DOWNLOAD
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: QR_PUBLIC
         value: "false"
-      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
-        value: "false"
+      - key: QR_RATE_LIMIT_MAX
+        value: "3000"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium
       - key: DATA_DIR
         value: /app/data
       - key: AUTH_PATH
@@ -29,8 +30,10 @@ services:
         value: /app/data/.baileys_auth
       - key: BAILEYS_ENABLED
         value: "false"
-      - key: NODE_OPTIONS
-        value: --max-old-space-size=1024
+      - key: API_RATE_LIMIT_MAX
+        value: "120"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "900000"
       - key: WHATSAPP_INIT_TIMEOUT_MS
         value: "180000"
       - key: WHATSAPP_RECONNECT_BASE_DELAY_MS
@@ -39,9 +42,3 @@ services:
         value: "120000"
       - key: WHATSAPP_RECONNECT_MAX_ATTEMPTS
         value: "20"
-      - key: WHATSAPP_CLIENT_ID
-        value: aljarah-main-v2
-      - key: WHATSAPP_GROUP_ID
-        value: 120363410053044535@g.us
-      - key: WHATSAPP_GROUP_NAME
-        value: "( ꧁★مشتركة الرمثا واربد الكبرى★꧂)"

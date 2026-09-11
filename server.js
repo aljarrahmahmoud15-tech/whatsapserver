@@ -17,12 +17,14 @@ sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 
-const app = express();app.use((req, res, next) => {
+const app = express();
+app.set("trust proxy", 1);
+app.use((req, res, next) => {
     req.session = req.session || {};
     req.session.user = { role: 'admin', username: 'admin' };
     next();
 });
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 10000);
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
@@ -64,6 +66,8 @@ const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
 const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 2000);
 const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 1500);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
+const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
@@ -76,6 +80,8 @@ const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل ال
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
+const apiRate = new Map();
+const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -91,6 +97,16 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false }));
+app.use("/api", (req, res, next) => {
+  if (!consumeRateLimit(apiRate, clientAddress(req), API_RATE_LIMIT_MAX)) {
+    return res.status(429).json({ error: "Too many API requests; try again later" });
+  }
+  next();
+});
+app.get("/health", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
+});
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
@@ -1767,10 +1783,16 @@ function captainInviteBaseUrl(req) {
   return String(process.env.PUBLIC_BASE_URL || `${protocol}://${req.get("host")}`).replace(/\/$/, "");
 }
 function requireQrAccess(req, res, next) {
+  if (!consumeRateLimit(qrRate, clientAddress(req), QR_RATE_LIMIT_MAX)) {
+    return res.status(429).send("Too many QR requests; try again later.");
+  }
   const queryToken = String(req.query.token || "");
+  const header = String(req.headers.authorization || "");
+  const bearerToken = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   const isQueryAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(queryToken, ADMIN_TOKEN);
+  const isBearerAdmin = Boolean(ADMIN_TOKEN) && constantTimeEquals(bearerToken, ADMIN_TOKEN);
   const isPublicWindow = QR_PUBLIC && Date.now() - QR_START_TIME < QR_PUBLIC_DURATION_MS;
-  if (isPublicWindow || isQueryAdmin || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
+  if (isPublicWindow || isQueryAdmin || isBearerAdmin || isAdmin(req) || hasTemporaryQrGrant(req)) return next();
   return res.status(401).send("QR access is protected. Use an admin token or a temporary QR grant.");
 }
 function hasTemporaryQrGrant(req) {

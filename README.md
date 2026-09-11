@@ -47,3 +47,22 @@
 ## قواعد الأمان
 
 لا توجد مسارات عامة للإرسال أو تسجيل الخروج. لا تُضاف بيانات تجريبية إلى قاعدة البيانات. يجب تأمين نطاق الإدارة خلف HTTPS، وعدم نشر `ADMIN_TOKEN` أو أي بيانات تفويض GitHub/Hostinger أو جلسة واتساب. قبل ربط القروب الحقيقي اختبر على قروب داخلي صغير أو في وقت توقف، ثم راقب `/status` وسجلات الخدمة.
+
+## نشر Render الإنتاجي
+
+1. أنشئ متغيرات البيئة في Render، ولا تضع الأسرار في GitHub أو في `.env` committed. استخدم قيمة قوية لـ `ADMIN_TOKEN`، مثل `openssl rand -base64 32`، واجعل `QR_PUBLIC=false` و`NODE_ENV=production` و`PORT=10000` و`PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium`.
+2. أضف Persistent Disk بحجم 1GB على الأقل إلى المسار `/app/data`. تحفظ الخدمة جلسة WhatsApp Web.js وقاعدة SQLite تحت هذا المسار؛ من دون القرص ستحتاج إلى مسح QR بعد كل نشر.
+3. استخدم Dockerfile الموجود في المستودع، واضبط Health Check Path إلى `/health`، وفَعّل Auto-Deploy من فرع `main`.
+4. نفّذ النشر وانتظر أن يعيد `/health` استجابة HTTP 200. راقب `/status` وسجلات الخدمة لأي فشل في Chromium أو إغلاق للجلسة.
+5. أثناء الربط الأول افتح `https://YOUR-SERVICE.onrender.com/qr?token=ADMIN_TOKEN`، أو أرسل `Authorization: Bearer ADMIN_TOKEN`؛ يدعم المسار الطريقتين. امسح الرمز من WhatsApp عبر الأجهزة المرتبطة.
+6. بعد نجاح الربط، غيّر `QR_PUBLIC` إلى `false`، وأبقِ `ADMIN_TOKEN` سريًا. لا تشارك رابط QR أو الرمز في قنوات عامة.
+
+### فحص سريع
+
+```bash
+curl -i https://YOUR-SERVICE.onrender.com/health
+curl -i -H "Authorization: Bearer $ADMIN_TOKEN" https://YOUR-SERVICE.onrender.com/qr
+curl -i "https://YOUR-SERVICE.onrender.com/qr?token=$ADMIN_TOKEN"
+```
+
+تطبق الخدمة محدد معدل عام على مسارات `/api/*` بالإضافة إلى الحدود الأشد للمسارات الحساسة. كما أنها تعيد محاولة الاتصال بعد `disconnected` أو أخطاء دورة حياة Chromium، وتغلق العميل وقاعدة البيانات بشكل سليم عند `SIGTERM` و`SIGINT`.
