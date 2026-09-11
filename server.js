@@ -930,7 +930,9 @@ function parseOrder(text) {
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+إلى|من\s+.+\s+الى/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i);
-  const timeMatch = normalized.match(/(\d{1,2}(?::\d{2})?\s*(?:صباحا|مساء|ص|م)?)/i);
+  const labeledTimeMatch = normalized.match(/(?:الوقت|موعد|time)\s*[:：]?\s*(\d{1,2}:\d{2}\s*(?:صباحا|مساء|ص|م)?)/i);
+  const clockTimeMatch = normalized.match(/\b(\d{1,2}:\d{2}\s*(?:صباحا|مساء|ص|م)?)\b/i);
+  const timeMatch = labeledTimeMatch || clockTimeMatch;
   const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
@@ -3436,6 +3438,17 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.name AS producer_name, c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
   res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(row.producer_cents), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+});
+app.post("/api/admin/orders/remove-test", requireAdmin, async (req, res) => {
+  if (String(req.body?.confirm || "") !== "TEST-3001") return res.status(400).json({ error: "Explicit TEST-3001 confirmation is required" });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-test-order-delete-${Date.now()}.sqlite`;
+  const backupPath = path.join(backupDir, backupName);
+  await db.backup(backupPath);
+  const result = db.prepare("DELETE FROM orders WHERE raw_text LIKE 'TEST-3001 %'").run();
+  audit("test_order.removed", "order", "TEST-3001", { deleted: result.changes, backupName });
+  res.json({ success: true, deleted: result.changes, backupName });
 });
 app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
