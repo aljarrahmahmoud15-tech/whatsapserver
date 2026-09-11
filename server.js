@@ -3424,8 +3424,9 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const sent = await client.sendMessage(chatId, message);
-  audit("message.sent", "chat", chatId, { messageId: sent.id._serialized });
-  res.json({ success: true, messageId: sent.id._serialized });
+  const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
+  audit("message.sent", "chat", chatId, { messageId, responseObject: Boolean(sent) });
+  res.json({ success: true, messageId });
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
