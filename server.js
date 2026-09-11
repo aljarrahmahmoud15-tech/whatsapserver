@@ -1982,7 +1982,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
       `رقم الهاتف: ${invite.phone}`,
       pinText,
       `بوابة التشغيل الرسمية: ${captainAppLink}`,
-      "افتح البوابة واضغط زر التشغيل الأصفر، ثم اختر «دخول الكابتن». لا تستخدم رابطًا آخر."
+      "افتح رابط التسجيل نفسه؛ بعد اعتماد الشركة ستفتح واجهة الكابتن الخاصة تلقائيًا. لا تستخدم رابطًا آخر."
     ]);
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
