@@ -3163,7 +3163,11 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
   const requestedLimit = Number(req.body?.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  const chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
+  let chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
+  if (!chat || typeof chat.fetchMessages !== "function") {
+    const chats = await withTimeout(client.getChats(), 30000, []);
+    chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
+  }
   if (!chat || typeof chat.fetchMessages !== "function") return res.status(504).json({ error: "Unable to read configured group" });
   const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
   const candidates = (Array.isArray(messages) ? messages : [])
