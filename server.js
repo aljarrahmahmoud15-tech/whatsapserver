@@ -1729,12 +1729,9 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
       specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
       companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
     });
-    if (captain.wallet_cents - settlement.captainFeeCents < CAPTAIN_MIN_BALANCE_CENTS) {
-      const stamp = now();
-      db.prepare("UPDATE orders SET pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open'").run(stamp, orderId);
-      audit("order.rejected.debt_limit_after_confirmation", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
-      void suspendMemberForDebt(current.group_id, captain.phone, captain.wallet_cents - settlement.captainFeeCents);
-      return { state: "debt_limit", order: current, captain, producer, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
+    const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
+    if (projectedCaptainBalance < 0) {
+      audit("order.captain_debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
     const company = companyUser();
     const stamp = now();
@@ -1743,7 +1740,7 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     const producerBalance = Number(producer.wallet_cents || 0) + settlement.producerNetCents;
     const ledgerDetails = JSON.stringify({ orderNo: current.order_no, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
     const companyFinalBalance = companyBalance;
-    const captainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
+    const captainBalance = projectedCaptainBalance;
     db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,accepted_message_id=?,accepted_at=?,company_cents=?,producer_cents=?,captain_cents=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, expectedMessageId, stamp, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(companyFinalBalance, stamp, company.id);
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp, ledgerDetails);
