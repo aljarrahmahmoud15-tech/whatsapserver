@@ -1199,6 +1199,10 @@ let lastGroupSetupProbe = null;
 let lastGroupMessageTelemetry = null;
 let lastGuideVideoTelemetry = null;
 let lastGroupEventGroupId = null;
+let lastOfficialGroupEventGroupId = null;
+let lastOfficialGroupMessageTelemetry = null;
+let lastIgnoredGroupEventGroupId = null;
+let lastIgnoredGroupMessageTelemetry = null;
 let baileysSocket = null;
 let baileysReady = false;
 let baileysQrCodeData = null;
@@ -1550,15 +1554,27 @@ function resolveGroupChatId(message) {
 function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
-  lastGroupEventGroupId = groupId;
-  lastGroupMessageTelemetry = {
+  const configured = isConfiguredGroup(groupId);
+  const telemetry = {
     at: now(),
     event,
     fromMe: Boolean(msg.fromMe),
-    configured: isConfiguredGroup(groupId),
+    configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
   };
-  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${lastGroupMessageTelemetry.configured} quoted=${lastGroupMessageTelemetry.hasQuotedMessage}`);
+  // Keep the general last-event fields for backward compatibility, but retain
+  // separate official/ignored streams so an unrelated group cannot overwrite
+  // the official group's diagnostic status.
+  lastGroupEventGroupId = groupId;
+  lastGroupMessageTelemetry = telemetry;
+  if (configured) {
+    lastOfficialGroupEventGroupId = groupId;
+    lastOfficialGroupMessageTelemetry = telemetry;
+  } else {
+    lastIgnoredGroupEventGroupId = groupId;
+    lastIgnoredGroupMessageTelemetry = telemetry;
+  }
+  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage}`);
 }
 
 function baileysJidPhone(jid) {
@@ -2142,6 +2158,11 @@ app.get("/status", (req, res) => {
     lastGroupEventGroupId,
     lastGroupEventAt: lastGroupMessageTelemetry?.at || null,
     lastGroupEventMatched: lastGroupMessageTelemetry ? Boolean(lastGroupMessageTelemetry.configured) : null,
+    lastOfficialGroupEventGroupId,
+    lastOfficialGroupEventAt: lastOfficialGroupMessageTelemetry?.at || null,
+    lastOfficialGroupEventMatched: lastOfficialGroupMessageTelemetry ? Boolean(lastOfficialGroupMessageTelemetry.configured) : null,
+    lastIgnoredGroupEventGroupId,
+    lastIgnoredGroupEventAt: lastIgnoredGroupMessageTelemetry?.at || null,
     qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
     whatsappState,
     whatsappLastEvent,
@@ -2236,7 +2257,12 @@ app.patch("/api/admin/system/settings", requireAdmin, (req, res) => {
   void notifyOperations({ event: "system.settings.updated", title: "تأكيد تحديث إعدادات التشغيل", lines: [`الإعدادات التي تم تحديثها: ${updates.join("، ")}`, "تم حفظ الإعدادات داخل قاعدة البيانات.", "سيستخدم البوت القيم الجديدة في دورة الاتصال القادمة."], ownersOnly: true });
   res.json({ success: true, settings: operationalSettings(), updated: updates });
 });
-app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({ groupId: lastGroupEventGroupId, telemetry: lastGroupMessageTelemetry }));
+app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => res.json({
+  groupId: lastGroupEventGroupId,
+  telemetry: lastGroupMessageTelemetry,
+  official: { groupId: lastOfficialGroupEventGroupId, telemetry: lastOfficialGroupMessageTelemetry },
+  ignored: { groupId: lastIgnoredGroupEventGroupId, telemetry: lastIgnoredGroupMessageTelemetry },
+}));
 app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
