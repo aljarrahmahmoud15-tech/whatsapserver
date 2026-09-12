@@ -1699,6 +1699,17 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
   if (producer && producer.is_bot === 1) {
+    const isDryRun = String(order.raw_text || "").includes("TEST-DRY-RUN");
+    if (isDryRun) {
+      const stampNow = now();
+      const result = db.prepare("UPDATE orders SET status='test_confirmed',captain_user_id=?,accepted_message_id=?,accepted_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, messageId, stampNow, stampNow, order.id, messageId);
+      if (result.changes === 1) {
+        audit("order.test_confirmed", "order", order.id, { captainId: captain.id, messageId, financialSettlement: false });
+        await msg.react("👍").catch((error) => console.error("[WhatsApp] dry-run reaction:", error.message));
+        await sendGroupBrandedMessage(groupId, "تم تثبيت الاختبار", [`🧪 رقم الاختبار: #${order.order_no}`, `🚕 المنفّذ: ${captain.name}`, `💰 القيمة الاختبارية: ${money(order.price_cents)} JOD`, "✅ تمت قراءة السعر و«تم» ووضع 👍.", "🚫 اختبار جاف: لم تُسجّل أي عمولة أو حركة محفظة أو مديونية."]).catch((error) => console.error("[WhatsApp] dry-run confirmation card:", error.message));
+      }
+      return;
+    }
     const confirmed = settlePendingOrder(order.id, messageId, producer.phone);
     if (confirmed.state === "accepted") {
       await msg.react("👍").catch((error) => console.error("[WhatsApp] bot confirmation reaction:", error.message));
