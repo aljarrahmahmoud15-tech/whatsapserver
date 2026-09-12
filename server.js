@@ -1612,6 +1612,15 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   })();
   if (!pending) return;
   audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
+  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
+  if (producer && producer.is_bot === 1) {
+    const confirmed = settlePendingOrder(order.id, messageId, producer.phone);
+    if (confirmed.state === "accepted") {
+      await msg.react("👍").catch((error) => console.error("[WhatsApp] bot confirmation reaction:", error.message));
+      await sendGroupBrandedMessage(groupId, "تم تثبيت الطلب", [`🆔 رقم الطلب: #${confirmed.order.order_no}`, `🚕 الكابتن المنفّذ: ${confirmed.captain.name}`, `💰 القيمة: ${money(confirmed.order.price_cents)} JOD`, "✅ تم تثبيت الطلب وتسجيل التسوية." ]).catch((error) => console.error("[WhatsApp] bot confirmation card:", error.message));
+    }
+    return;
+  }
   await sendGroupBrandedMessage(groupId, "بانتظار اعتماد المنتج", [`🆔 رقم الطلب: #${order.order_no}`, `🚕 وصل رد «تم» من الكابتن: ${captain.name}`, "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.", "⏳ لا توجد تسوية مالية قبل اعتماد المنتج."]).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
 }
 
@@ -3533,7 +3542,7 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
   let order = null;
   if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
-    const producer = companyUser();
+    const producer = botEmployeeUser();
     const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
     order = createOrderRecord({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
     if (order) {
