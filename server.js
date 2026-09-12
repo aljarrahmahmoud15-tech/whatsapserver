@@ -2139,6 +2139,7 @@ app.get("/status", (req, res) => {
     groupId: configuredGroupId || null,
     groupReceiverReady,
     groupReceiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
+    lastGroupEventGroupId,
     lastGroupEventAt: lastGroupMessageTelemetry?.at || null,
     lastGroupEventMatched: lastGroupMessageTelemetry ? Boolean(lastGroupMessageTelemetry.configured) : null,
     qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
