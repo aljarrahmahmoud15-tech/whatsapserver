@@ -1038,7 +1038,7 @@ function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
   const isCommand = /^#(?:تسجيل|استرداد)\s*(?:الطلب)?$/i.test(String(body || "").trim());
   return Boolean(
     fromMe && isCommand && quoted && !quoted.fromMe && resolveGroupChatId(quoted) === groupId &&
-    quoted.id && quoted.id._serialized && parseOrder(quoted.body).isOrder
+    serializedMessageId(quoted) && parseOrder(quoted.body).isOrder
   );
 }
 function isCaptainAcceptance(text) {
@@ -1052,7 +1052,7 @@ function findOrderByQuotedId(quotedId) {
   return db.prepare("SELECT * FROM orders WHERE source_message_id=? AND status='open' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
 }
 function findOrderByQuotedMessage(groupId, quoted) {
-  const byId = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null);
+  const byId = findOrderByQuotedId(serializedMessageId(quoted));
   if (byId) return byId;
   const body = String(quoted && quoted.body || "");
   if (!body || !parseOrder(body).isOrder) return null;
@@ -1559,12 +1559,22 @@ function resolveGroupChatId(message) {
   const candidates = [message && message.from, message && message.to, message && message.id && message.id.remote];
   return candidates.map((value) => String(value || "")).find((value) => value.endsWith("@g.us")) || "";
 }
+function serializedMessageId(message) {
+  const raw = message && message.id;
+  return String(
+    raw?._serialized ||
+    raw?.id ||
+    message?._data?.id ||
+    message?._data?.key?.id ||
+    ""
+  ).trim() || null;
+}
 
 function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
   const configured = isConfiguredGroup(groupId);
-  const messageId = msg && msg.id && msg.id._serialized ? String(msg.id._serialized) : null;
+  const messageId = serializedMessageId(msg);
   const quotedMessageId = String(
     msg?._data?.quotedStanzaID ||
     msg?._data?.contextInfo?.stanzaId ||
@@ -1669,7 +1679,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
-    const messageId = msg.id && msg.id._serialized;
+    const messageId = serializedMessageId(msg);
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -1698,7 +1708,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const messageId = msg.id && msg.id._serialized;
+  const messageId = serializedMessageId(msg);
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
