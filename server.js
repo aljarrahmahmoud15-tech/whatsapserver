@@ -1698,7 +1698,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!pending) return;
   audit("order.pending_producer_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.captainFeeCents });
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
-  if (producer && producer.is_bot === 1) {
+  // تفاعل البوت 👍 على رسالة «تم» يعتمد الطلب مباشرة، ولا يتطلب تفاعل المنتج.
+  if (producer) {
     const isDryRun = String(order.raw_text || "").includes("TEST-DRY-RUN");
     if (isDryRun) {
       const stampNow = now();
@@ -1706,14 +1707,14 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       if (result.changes === 1) {
         audit("order.test_confirmed", "order", order.id, { captainId: captain.id, messageId, financialSettlement: false });
         await msg.react("👍").catch((error) => console.error("[WhatsApp] dry-run reaction:", error.message));
-        await sendGroupBrandedMessage(groupId, "تم تثبيت الاختبار", [`🧪 رقم الاختبار: #${order.order_no}`, `🚕 المنفّذ: ${captain.name}`, `💰 القيمة الاختبارية: ${money(order.price_cents)} JOD`, "✅ تمت قراءة السعر و«تم» ووضع 👍.", "🚫 اختبار جاف: لم تُسجّل أي عمولة أو حركة محفظة أو مديونية."]).catch((error) => console.error("[WhatsApp] dry-run confirmation card:", error.message));
+        await sendGroupBrandedMessage(groupId, "تم تثبيت الاختبار", [`🧪 رقم الاختبار: #${order.order_no}`, `🚕 المنفّذ: ${captain.name}`, `💰 القيمة الاختبارية: ${money(order.price_cents)} JOD`, "✅ اعتمد البوت الاختبار ووضع 👍 على رسالة «تم»." , "🚫 اختبار جاف: لم تُسجّل أي حركة محفظة أو مديونية."]).catch((error) => console.error("[WhatsApp] dry-run confirmation card:", error.message));
       }
       return;
     }
     const confirmed = settlePendingOrder(order.id, messageId, producer.phone);
     if (confirmed.state === "accepted") {
       await msg.react("👍").catch((error) => console.error("[WhatsApp] bot confirmation reaction:", error.message));
-      await sendGroupBrandedMessage(groupId, "تم تثبيت الطلب", [`🆔 رقم الطلب: #${confirmed.order.order_no}`, `🚕 الكابتن المنفّذ: ${confirmed.captain.name}`, `💰 القيمة: ${money(confirmed.order.price_cents)} JOD`, "✅ تم تثبيت الطلب وتسجيل التسوية." ]).catch((error) => console.error("[WhatsApp] bot confirmation card:", error.message));
+      await sendGroupBrandedMessage(groupId, "تم تثبيت الطلب", [`🆔 رقم الطلب: #${confirmed.order.order_no}`, `🚕 الكابتن المنفّذ: ${confirmed.captain.name}`, `💰 القيمة: ${money(confirmed.order.price_cents)} JOD`, "✅ اعتمد البوت الطلب ووضع 👍 على رسالة «تم»." ]).catch((error) => console.error("[WhatsApp] bot confirmation card:", error.message));
     }
     return;
   }
