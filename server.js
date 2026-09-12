@@ -865,6 +865,20 @@ async function readGroupSnapshot(groupId) {
     }
   }, groupId), 30000, null);
 }
+async function resolveReadableGroupChat(groupId) {
+  if (!groupId || !client || !isReady) return null;
+  let chat = await resolveGroupChat(groupId);
+  if (chat && typeof chat.fetchMessages === "function") return chat;
+  const chats = await withTimeout(client.getChats(), 30000, []);
+  chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
+  return chat && typeof chat.fetchMessages === "function" ? chat : null;
+}
+async function fetchGroupHistory(groupId, limit) {
+  const chat = await resolveReadableGroupChat(groupId);
+  if (!chat) return { chat: null, messages: [] };
+  const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 45000, []);
+  return { chat, messages: Array.isArray(messages) ? messages : [] };
+}
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
@@ -3143,10 +3157,8 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   await readGroupSnapshot(groupId);
-  let chat = await withTimeout(client.getChatById(groupId), 25000, null);
-  if (!chat || !chat.isGroup) chat = await resolveGroupChat(groupId);
-  if (!chat || typeof chat.fetchMessages !== "function") return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
-  const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
+  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  if (!chat) return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();
     return {
@@ -3173,13 +3185,8 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
   const requestedLimit = Number(req.body?.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  let chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
-  if (!chat || typeof chat.fetchMessages !== "function") {
-    const chats = await withTimeout(client.getChats(), 30000, []);
-    chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
-  }
-  if (!chat || typeof chat.fetchMessages !== "function") return res.status(504).json({ error: "Unable to read configured group" });
-  const messages = await withTimeout(chat.fetchMessages({ limit }), 30000, []);
+  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidates = (Array.isArray(messages) ? messages : [])
     .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
     .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
@@ -3206,9 +3213,8 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  const chat = await withTimeout(client.getChatById(groupId), 25000, null);
-  if (!chat || typeof chat.fetchMessages !== "function") return res.status(504).json({ error: "Unable to read configured group" });
-  const messages = await withTimeout(chat.fetchMessages({ limit: 100 }), 25000, []);
+  const { chat, messages } = await fetchGroupHistory(groupId, 100);
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidate = latestEligibleGroupOrderMessage(messages, groupId);
   if (!candidate || !candidate.id || !candidate.id._serialized) return res.status(404).json({ error: "No eligible order message found in recent group messages" });
   const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);

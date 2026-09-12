@@ -25,5 +25,9 @@ assert(source.includes("Date.now() - observedAt > 15 * 60 * 1000"), "لا يمك
 assert(source.includes("const groupReceiverReady = Boolean(isReady || baileysReady);"), "جاهزية مستقبل القروب تشمل مستقبل whatsapp-web.js الرئيسي");
 assert(source.includes('const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";'), "يمكن تثبيت معرف القروب عبر بيئة النشر");
 assert(source.includes("reconcileConfiguredGroupFromEnvironment();"), "تتم مزامنة معرف القروب عند بدء الخدمة");
+assert(source.includes("async function resolveReadableGroupChat(groupId)"), "قارئ التاريخ يبحث عن كائن القروب القابل للقراءة");
+assert(source.includes("async function fetchGroupHistory(groupId, limit)"), "قارئ التاريخ موحد لمسارات الرسائل والاستيراد");
+assert(source.includes("fetchMessages({ limit, fromMe: false })"), "الاستيراد التاريخي يطلب رسائل القروب الواردة فقط");
+assert(source.includes('app.post("/api/admin/group/import-order-history", requireAdmin'), "مسار استيراد تاريخ الحجوزات محمي إداريًا");
 
 console.log("group receiver regression guardrails verified");
