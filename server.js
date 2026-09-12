@@ -1624,6 +1624,21 @@ async function handleBaileysUpsert(message) {
   await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
+async function reactToCaptainAcceptance(message, messageId) {
+  const liveMessage = client && isReady && messageId
+    ? await withTimeout(client.getMessageById(messageId), 12000, null)
+    : null;
+  const target = liveMessage || message;
+  if (!target || typeof target.react !== "function") return false;
+  try {
+    await withTimeout(target.react("👍"), 12000, null);
+    return true;
+  } catch (error) {
+    console.error("[WhatsApp] captain acceptance reaction:", error.message);
+    return false;
+  }
+}
+
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const groupId = resolveGroupChatId(msg);
@@ -1721,18 +1736,20 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (producer) {
     const isDryRun = String(order.raw_text || "").includes("TEST-DRY-RUN");
     if (isDryRun) {
+      const reacted = await reactToCaptainAcceptance(msg, messageId);
+      if (!reacted) return;
       const stampNow = now();
       const result = db.prepare("UPDATE orders SET status='test_confirmed',captain_user_id=?,accepted_message_id=?,accepted_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, messageId, stampNow, stampNow, order.id, messageId);
       if (result.changes === 1) {
         audit("order.test_confirmed", "order", order.id, { captainId: captain.id, messageId, financialSettlement: false });
-        await msg.react("👍").catch((error) => console.error("[WhatsApp] dry-run reaction:", error.message));
         await sendGroupBrandedMessage(groupId, "تم تثبيت الاختبار", [`🧪 رقم الاختبار: #${order.order_no}`, `🚕 المنفّذ: ${captain.name}`, `💰 القيمة الاختبارية: ${money(order.price_cents)} JOD`, "✅ اعتمد البوت الاختبار ووضع 👍 على رسالة «تم»." , "🚫 اختبار جاف: لم تُسجّل أي حركة محفظة أو مديونية."]).catch((error) => console.error("[WhatsApp] dry-run confirmation card:", error.message));
       }
       return;
     }
+    const reacted = await reactToCaptainAcceptance(msg, messageId);
+    if (!reacted) return;
     const confirmed = settlePendingOrder(order.id, messageId, producer.phone);
     if (confirmed.state === "accepted") {
-      await msg.react("👍").catch((error) => console.error("[WhatsApp] bot confirmation reaction:", error.message));
       await sendGroupBrandedMessage(groupId, "تم تثبيت الطلب", [`🆔 رقم الطلب: #${confirmed.order.order_no}`, `🚕 الكابتن المنفّذ: ${confirmed.captain.name}`, `💰 القيمة: ${money(confirmed.order.price_cents)} JOD`, "✅ اعتمد البوت الطلب ووضع 👍 على رسالة «تم»." ]).catch((error) => console.error("[WhatsApp] bot confirmation card:", error.message));
     }
     return;
