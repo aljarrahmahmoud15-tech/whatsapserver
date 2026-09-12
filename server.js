@@ -391,7 +391,7 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962775969880"]);
 const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
@@ -567,6 +567,14 @@ function ensureBlockedPhones() {
   const insert = db.prepare("INSERT OR IGNORE INTO blocked_phones(phone,note,created_at) VALUES(?,?,?)");
   for (const value of BLOCKED_PHONES) insert.run(phoneWithCountry(value), "مستبعد نهائيًا من القروب والنظام", now());
 }
+function sanitizeLegacyPhone() {
+  const legacyPhone = phoneWithCountry("0775969880");
+  const stamp = now();
+  db.transaction(() => {
+    db.prepare("UPDATE users SET active=0, is_bot=0, updated_at=? WHERE phone=? AND phone<>?").run(stamp, legacyPhone, phoneWithCountry(BOT_PHONE));
+    db.prepare("UPDATE captain_invites SET status='cancelled' WHERE phone=? AND status IN ('issued','pending')").run(legacyPhone);
+  })();
+}
 
 function getSetting(key, fallback = null) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -707,6 +715,7 @@ function normalizeBotIdentity(stamp = now()) {
   return ownerRows.length;
 }
 ensureBlockedPhones();
+sanitizeLegacyPhone();
 ensureSystemUsers();
 
 function isBotPhone(phone) {
