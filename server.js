@@ -778,6 +778,17 @@ function ensureProducerUser(phone, name) {
     .run(normalized, String(name || displayPhone(normalized)).trim() || displayPhone(normalized), stamp, stamp);
   return findActiveRegisteredUser(normalized);
 }
+function ensureCaptainUser(phone, name) {
+  const normalized = phoneWithCountry(phone);
+  if (!normalized) return null;
+  const existing = findActiveRegisteredUser(normalized);
+  if (existing) return existing.role === "captain" ? existing : null;
+  const stamp = now();
+  db.prepare("INSERT OR IGNORE INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?)")
+    .run(normalized, String(name || displayPhone(normalized)).trim() || displayPhone(normalized), stamp, stamp);
+  const captain = findActiveRegisteredUser(normalized);
+  return captain && captain.role === "captain" ? captain : null;
+}
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
   return `${normalized || PUBLIC_APP_URL}/join.html`;
@@ -1656,7 +1667,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا يُقبل «تم» إلا كرد مباشر على رسالة المنتج التي أنشأت الطلب.
   const order = quoted && quoted.id ? findOrderByQuotedId(quoted.id._serialized) : null;
   if (!order) return;
-  const captain = findActiveRegisteredUser(senderPhone);
+  const captain = ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.role !== "captain") return;
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
