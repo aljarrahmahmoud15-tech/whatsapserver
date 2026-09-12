@@ -867,9 +867,9 @@ async function readGroupSnapshot(groupId) {
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
-  let chat = await resolveGroupChat(groupId);
+  let chat = await withTimeout(client.getChatById(groupId), 10000, null);
   if (chat && typeof chat.fetchMessages === "function") return chat;
-  const chats = await withTimeout(client.getChats(), 30000, []);
+  const chats = await withTimeout(client.getChats(), 15000, []);
   chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
   return chat && typeof chat.fetchMessages === "function" ? chat : null;
 }
