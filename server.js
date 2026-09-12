@@ -1614,7 +1614,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
-  if (botGenerated && !parseOrder(body).isOrder) return;
+  if (botGenerated && !parseOrder(body).isOrder && !isCaptainAcceptance(body)) return;
   const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   let insertedMessage = { changes: 0 };
   if (body) {
@@ -1666,8 +1666,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // يمكن أن يأتي «تم» بعد رسائل عادية؛ نطابق الاقتباس إن وُجد، وإلا نستخدم آخر طلب مفتوح.
   const order = (quoted ? findOrderByQuotedMessage(groupId, quoted) : null) || latestOpenOrder(groupId);
   if (!order) return;
-  const captain = ensureCaptainUser(senderPhone, senderName);
-  if (!captain || captain.role !== "captain") return;
+  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
+  if (!captain || (captain.role !== "captain" && captain.is_bot !== 1)) return;
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
