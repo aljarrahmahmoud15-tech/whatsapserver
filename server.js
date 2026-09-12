@@ -930,9 +930,6 @@ function parseOrder(text) {
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+إلى|من\s+.+\s+الى/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i);
-  const labeledTimeMatch = normalized.match(/(?:الوقت|موعد|time)\s*[:：]?\s*(\d{1,2}:\d{2}\s*(?:صباحا|مساء|ص|م)?)/i);
-  const clockTimeMatch = normalized.match(/\b(\d{1,2}:\d{2}\s*(?:صباحا|مساء|ص|م)?)\b/i);
-  const timeMatch = labeledTimeMatch || clockTimeMatch;
   const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
@@ -941,7 +938,7 @@ function parseOrder(text) {
     requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
-    tripTime: timeMatch ? timeMatch[1].trim() : null,
+    tripTime: null,
     orderKind: /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
   };
 }
