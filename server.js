@@ -762,6 +762,12 @@ function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
   return configured > 0 && Boolean(configuredGroup(groupId));
 }
+function findActiveRegisteredUser(phone) {
+  const normalized = phoneWithCountry(phone);
+  if (!normalized) return null;
+  return db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(normalized)
+    || db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(String(phone || "").trim());
+}
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
   return `${normalized || PUBLIC_APP_URL}/join.html`;
@@ -975,7 +981,8 @@ function parseOrder(text) {
   const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|ركاب|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
-    isOrder: price !== null && (/وصلني\s*(?:الآن|الان)?/i.test(normalized) || requestKind),
+    // الصيغة التشغيلية المعتمدة: كلمة «السعر» يتبعها الرقم فقط؛ المسار/نوع الرحلة اختياري وغير معتمد للتمييز.
+    isOrder: price !== null && /(?:السعر|سعر|price)\s*[:：]?\s*\d+(?:[.,]\d{1,2})?/i.test(normalized),
     price,
     requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,
     origin: route ? route[1].trim() : null,
@@ -1011,7 +1018,7 @@ function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
   );
 }
 function isCaptainAcceptance(text) {
-  return /(^|\s)تم(?:\s|$)|تم\s+اول\s+راكب|تم\s+أول\s+راكب/i.test(String(text || "").trim());
+  return String(text || "").trim() === "تم";
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -1623,9 +1630,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
-    const producer = botGenerated
-      ? botEmployeeUser()
-      : upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
+    const producer = botGenerated ? botEmployeeUser() : findActiveRegisteredUser(senderPhone);
     if (!producer || producer.active === 0) return;
     const order = createOrderRecord({ messageId, groupId, body, producer, parsed });
     if (!order) return;
@@ -1638,7 +1643,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   const order = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null) || latestOpenOrder(groupId);
   if (!order) return;
-  const captain = upsertUser({ phone: senderPhone, name: senderName, role: "captain" });
+  const captain = findActiveRegisteredUser(senderPhone);
+  if (!captain) return;
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
@@ -3250,7 +3256,7 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
     if (existing) { skipped.push({ messageId, reason: "already_registered", orderNo: existing.order_no }); continue; }
     const parsed = parseOrder(message.body);
     const senderPhone = phoneWithCountry(message.author || message.from || "");
-    const producer = senderPhone ? upsertUser({ phone: senderPhone, name: String(message._data?.notifyName || message._data?.pushname || senderPhone), role: "producer" }) : companyUser();
+    const producer = senderPhone ? findActiveRegisteredUser(senderPhone) : null;
     const order = producer ? createOrderRecord({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (order) {
       imported.push({ messageId, orderNo: order.order_no, status: order.status, historical: true, needsCaptainLink: true });
