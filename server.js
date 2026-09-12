@@ -1663,8 +1663,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (!isCaptainAcceptance(body)) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  // لا يُقبل «تم» إلا كرد مباشر على رسالة المنتج التي أنشأت الطلب.
-  const order = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
+  // يمكن أن يأتي «تم» بعد رسائل عادية؛ نطابق الاقتباس إن وُجد، وإلا نستخدم آخر طلب مفتوح.
+  const order = (quoted ? findOrderByQuotedMessage(groupId, quoted) : null) || latestOpenOrder(groupId);
   if (!order) return;
   const captain = ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.role !== "captain") return;
