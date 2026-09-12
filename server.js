@@ -1985,14 +1985,14 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (invite.phone) {
     let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
     if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
-    const captainAppLink = captainAppUrl(captainInviteBaseUrl(req));
+    const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
     notified = await sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن", [
       `الكابتن: ${invite.name}`,
       "تمت الموافقة على طلبك داخل شبكة الجراح.",
       `رقم الهاتف: ${invite.phone}`,
       pinText,
-      `بوابة التشغيل الرسمية: ${captainAppLink}`,
-      "افتح رابط التسجيل نفسه؛ بعد اعتماد الشركة ستفتح واجهة الكابتن الخاصة تلقائيًا. لا تستخدم رابطًا آخر."
+      `رابط دخول الكابتن المباشر: ${captainAppLink}`,
+      "افتح رابط دخول الكابتن المرفق، ثم أدخل رقم هاتفك والرقم السري. هذا الرابط مخصص للدخول بعد الموافقة، وليس لتسجيل كابتن جديد."
     ]);
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);

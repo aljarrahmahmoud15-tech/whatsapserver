@@ -75,5 +75,7 @@ assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'th
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
 assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
 assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
+assert(server.includes('const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));'), 'approval flow uses the direct captain login URL');
+assert(server.includes('رابط دخول الكابتن المباشر'), 'approval message labels the direct captain login URL');
 assert(fs.readFileSync('./public/captain.html', 'utf8').includes("get('mode') === 'login' ? 'login' : 'registration'"), 'direct login URL opens the captain login screen');
 console.log('official company card and compact top-up flow guardrails verified');
