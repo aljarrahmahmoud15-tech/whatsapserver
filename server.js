@@ -768,6 +768,16 @@ function findActiveRegisteredUser(phone) {
   return db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(normalized)
     || db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(String(phone || "").trim());
 }
+function ensureProducerUser(phone, name) {
+  const normalized = phoneWithCountry(phone);
+  if (!normalized) return null;
+  const existing = findActiveRegisteredUser(normalized);
+  if (existing) return existing;
+  const stamp = now();
+  db.prepare("INSERT OR IGNORE INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'producer',0,1,0,?,?)")
+    .run(normalized, String(name || displayPhone(normalized)).trim() || displayPhone(normalized), stamp, stamp);
+  return findActiveRegisteredUser(normalized);
+}
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
   return `${normalized || PUBLIC_APP_URL}/join.html`;
@@ -1632,7 +1642,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
-    const producer = botGenerated ? botEmployeeUser() : findActiveRegisteredUser(senderPhone);
+    const producer = botGenerated ? botEmployeeUser() : ensureProducerUser(senderPhone, senderName);
     if (!producer || producer.active === 0) return;
     const order = createOrderRecord({ messageId, groupId, body, producer, parsed });
     if (!order) return;
