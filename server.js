@@ -1042,6 +1042,13 @@ function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
   return db.prepare("SELECT * FROM orders WHERE source_message_id=? AND status='open' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
 }
+function findOrderByQuotedMessage(groupId, quoted) {
+  const byId = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null);
+  if (byId) return byId;
+  const body = String(quoted && quoted.body || "");
+  if (!body || !parseOrder(body).isOrder) return null;
+  return db.prepare("SELECT * FROM orders WHERE group_id=? AND raw_text=? AND status='open' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId, body);
+}
 function brandedMessage(title, lines = []) {
   return [
     "╭━━━ ✦ AL-JARAH OPERATIONS NETWORK ✦ ━━━╮",
@@ -1657,7 +1664,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!isCaptainAcceptance(body)) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // لا يُقبل «تم» إلا كرد مباشر على رسالة المنتج التي أنشأت الطلب.
-  const order = quoted && quoted.id ? findOrderByQuotedId(quoted.id._serialized) : null;
+  const order = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
   if (!order) return;
   const captain = ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.role !== "captain") return;
