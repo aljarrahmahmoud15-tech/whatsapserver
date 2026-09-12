@@ -1564,12 +1564,22 @@ function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
   const configured = isConfiguredGroup(groupId);
+  const messageId = msg && msg.id && msg.id._serialized ? String(msg.id._serialized) : null;
+  const quotedMessageId = String(
+    msg?._data?.quotedStanzaID ||
+    msg?._data?.contextInfo?.stanzaId ||
+    msg?.quotedMsgId?._serialized ||
+    msg?.quotedMsgId ||
+    ""
+  ).trim() || null;
   const telemetry = {
     at: now(),
     event,
     fromMe: Boolean(msg.fromMe),
     configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
+    messageId,
+    quotedMessageId,
   };
   // Keep the general last-event fields for backward compatibility, but retain
   // separate official/ignored streams so an unrelated group cannot overwrite
@@ -1583,7 +1593,7 @@ function recordGroupMessageTelemetry(event, msg) {
     lastIgnoredGroupEventGroupId = groupId;
     lastIgnoredGroupMessageTelemetry = telemetry;
   }
-  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage}`);
+  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage} messageId=${messageId || "none"} quotedMessageId=${quotedMessageId || "none"}`);
 }
 
 function baileysJidPhone(jid) {
