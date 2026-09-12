@@ -975,7 +975,7 @@ function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
-  const priceMatch = normalized.match(new RegExp("(?:السعر|سعر|price)\\s*[:：]?\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)", "i")) || normalized.match(new RegExp("(?:^|\\n)\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)\\s*(?:دينار(?:ا)?|دنانير|اردني|أردني|JOD)(?=\\s|$)", "i"));
+  const priceMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)", "i"));
   const price = priceMatch ? Number(normalizeDigits(priceMatch[1]).replace(/[٫,]/g, ".")) : null;
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+(?:إلى|الى)\s+|من\s+.+\s+ل(?:ـ)?\s*/i.test(line)) || "";

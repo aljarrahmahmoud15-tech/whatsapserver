@@ -22,8 +22,8 @@ assert.strictEqual(abbreviatedRoute.isOrder, true, "تُسجل صيغة المس
 assert.strictEqual(abbreviatedRoute.origin, "دير يوسف", "يُستخرج مبدأ المسار من الصيغة المختصرة");
 assert.strictEqual(abbreviatedRoute.destination, "شفا بدران", "تُستخرج وجهة المسار من الصيغة المختصرة");
 const compactJordanianFare = context.parseOrder("10 أردني\nركاب عدد 2\nمن الرمثا إلى عمان\nالان");
-assert.strictEqual(compactJordanianFare.isOrder, true, "تُسجل صيغة السعر الأردني المختصرة");
-assert.strictEqual(compactJordanianFare.price, 10, "يُستخرج السعر من صيغة 10 أردني");
+assert.strictEqual(compactJordanianFare.isOrder, false, "لا تُسجل الصيغ التي لا تحتوي على كلمة السعر");
+assert.strictEqual(compactJordanianFare.price, null, "لا تُستخرج قيمة من صيغة لا تحتوي على كلمة السعر");
 assert.strictEqual(compactJordanianFare.requestKind, "ركاب", "يُتعرف على صيغة ركاب");
 assert.strictEqual(compactJordanianFare.origin, "الرمثا", "يُستخرج منشأ الطلب المختصر");
 assert.strictEqual(compactJordanianFare.destination, "عمان", "تُستخرج وجهة الطلب المختصر");
