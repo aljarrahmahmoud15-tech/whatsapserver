@@ -867,9 +867,9 @@ async function readGroupSnapshot(groupId) {
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
-  let chat = await withTimeout(client.getChatById(groupId), 10000, null);
+  let chat = await withTimeout(client.getChatById(groupId), 5000, null);
   if (chat && typeof chat.fetchMessages === "function") return chat;
-  const chats = await withTimeout(client.getChats(), 15000, []);
+  const chats = await withTimeout(client.getChats(), 8000, []);
   chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
   return chat && typeof chat.fetchMessages === "function" ? chat : null;
 }
@@ -900,7 +900,7 @@ async function fetchGroupHistory(groupId, limit) {
     } catch (error) {
       return { chat: null, messages: [], error: String(error?.message || error) };
     }
-  }, groupId, limit), 60000, { chat: null, messages: [] });
+  }, groupId, limit), 20000, { chat: null, messages: [] });
   return messages;
 }
 function createCaptainPin() {
