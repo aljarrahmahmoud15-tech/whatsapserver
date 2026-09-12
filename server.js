@@ -925,12 +925,12 @@ function audit(action, entityType, entityId, details, actorUserId = null) {
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
-  const priceMatch = normalized.match(/(?:السعر|سعر|price)\s*[:：]?\s*(\d+(?:[.,]\d{1,2})?)/i);
+  const priceMatch = normalized.match(/(?:السعر|سعر|price)\s*[:：]?\s*(\d+(?:[.,]\d{1,2})?)/i) || normalized.match(/(?:^|\n)\s*(\d+(?:[.,]\d{1,2})?)\s*(?:دينار(?:ا)?|دنانير|اردني|أردني|JOD)(?=\s|$)/i);
   const price = priceMatch ? Number(priceMatch[1].replace(",", ".")) : null;
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+(?:إلى|الى)\s+|من\s+.+\s+ل(?:ـ)?\s*/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+ل(?:ـ)?\s*(.+)/i);
-  const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
+  const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|ركاب|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
     isOrder: price !== null && (/وصلني\s*(?:الآن|الان)?/i.test(normalized) || requestKind),

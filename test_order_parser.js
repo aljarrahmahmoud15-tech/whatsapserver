@@ -21,6 +21,12 @@ const abbreviatedRoute = context.parseOrder("السعر 5\nراكب شب من د
 assert.strictEqual(abbreviatedRoute.isOrder, true, "تُسجل صيغة المسار المختصرة باستخدام ل");
 assert.strictEqual(abbreviatedRoute.origin, "دير يوسف", "يُستخرج مبدأ المسار من الصيغة المختصرة");
 assert.strictEqual(abbreviatedRoute.destination, "شفا بدران", "تُستخرج وجهة المسار من الصيغة المختصرة");
+const compactJordanianFare = context.parseOrder("10 أردني\nركاب عدد 2\nمن الرمثا إلى عمان\nالان");
+assert.strictEqual(compactJordanianFare.isOrder, true, "تُسجل صيغة السعر الأردني المختصرة");
+assert.strictEqual(compactJordanianFare.price, 10, "يُستخرج السعر من صيغة 10 أردني");
+assert.strictEqual(compactJordanianFare.requestKind, "ركاب", "يُتعرف على صيغة ركاب");
+assert.strictEqual(compactJordanianFare.origin, "الرمثا", "يُستخرج منشأ الطلب المختصر");
+assert.strictEqual(compactJordanianFare.destination, "عمان", "تُستخرج وجهة الطلب المختصر");
 assert.strictEqual(context.parseOrder("السعر 5").isOrder, false, "لا يُسجل السعر وحده كطلب");
 assert.strictEqual(context.parseOrder("هل سعر 5 مناسب من إربد إلى عمّان؟").isOrder, false, "لا يُسجل الاستفسار العادي الذي يذكر سعرًا ومسارًا كطلب");
 
