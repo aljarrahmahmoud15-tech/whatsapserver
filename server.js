@@ -772,22 +772,14 @@ function ensureProducerUser(phone, name) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
   const existing = findActiveRegisteredUser(normalized);
-  if (existing) return existing;
-  const stamp = now();
-  db.prepare("INSERT OR IGNORE INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'producer',0,1,0,?,?)")
-    .run(normalized, String(name || displayPhone(normalized)).trim() || displayPhone(normalized), stamp, stamp);
-  return findActiveRegisteredUser(normalized);
+  return existing && existing.role !== "company" ? existing : null;
 }
 function ensureCaptainUser(phone, name) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
   const existing = findActiveRegisteredUser(normalized);
-  if (existing) return existing.role === "captain" ? existing : null;
-  const stamp = now();
-  db.prepare("INSERT OR IGNORE INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?)")
-    .run(normalized, String(name || displayPhone(normalized)).trim() || displayPhone(normalized), stamp, stamp);
-  const captain = findActiveRegisteredUser(normalized);
-  return captain && captain.role === "captain" ? captain : null;
+  // المنتج والمنفذ وصفان لسياق الطلب؛ لا يُقبل إلا عضو مسجل غير حساب الشركة.
+  return existing && existing.role !== "company" ? existing : null;
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
