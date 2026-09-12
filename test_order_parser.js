@@ -27,7 +27,8 @@ assert.strictEqual(compactJordanianFare.price, 10, "يُستخرج السعر م
 assert.strictEqual(compactJordanianFare.requestKind, "ركاب", "يُتعرف على صيغة ركاب");
 assert.strictEqual(compactJordanianFare.origin, "الرمثا", "يُستخرج منشأ الطلب المختصر");
 assert.strictEqual(compactJordanianFare.destination, "عمان", "تُستخرج وجهة الطلب المختصر");
-assert.strictEqual(context.parseOrder("السعر 5").isOrder, false, "لا يُسجل السعر وحده كطلب");
-assert.strictEqual(context.parseOrder("هل سعر 5 مناسب من إربد إلى عمّان؟").isOrder, false, "لا يُسجل الاستفسار العادي الذي يذكر سعرًا ومسارًا كطلب");
+assert.strictEqual(context.parseOrder("السعر 5").isOrder, true, "السعر مع الرقم وحده يشكل طلبًا");
+assert.strictEqual(context.parseOrder("هل السعر ٥ مناسب من إربد إلى عمّان؟").isOrder, true, "أي رسالة تحتوي على السعر ورقم تُسجل كطلب");
+assert.strictEqual(context.parseOrder("السعر ٥٫٥").price, 5.5, "تُحوّل الأرقام العربية والفاصلة العشرية إلى قيمة رقمية");
 
 console.log("order parser verified");

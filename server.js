@@ -973,8 +973,10 @@ function audit(action, entityType, entityId, details, actorUserId = null) {
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
-  const priceMatch = normalized.match(/(?:السعر|سعر|price)\s*[:：]?\s*(\d+(?:[.,]\d{1,2})?)/i) || normalized.match(/(?:^|\n)\s*(\d+(?:[.,]\d{1,2})?)\s*(?:دينار(?:ا)?|دنانير|اردني|أردني|JOD)(?=\s|$)/i);
-  const price = priceMatch ? Number(priceMatch[1].replace(",", ".")) : null;
+  const digitPattern = "[0-9٠-٩۰-۹]";
+  const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
+  const priceMatch = normalized.match(new RegExp("(?:السعر|سعر|price)\\s*[:：]?\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)", "i")) || normalized.match(new RegExp("(?:^|\\n)\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)\\s*(?:دينار(?:ا)?|دنانير|اردني|أردني|JOD)(?=\\s|$)", "i"));
+  const price = priceMatch ? Number(normalizeDigits(priceMatch[1]).replace(/[٫,]/g, ".")) : null;
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+(?:إلى|الى)\s+|من\s+.+\s+ل(?:ـ)?\s*/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+ل(?:ـ)?\s*(.+)/i);
@@ -982,7 +984,7 @@ function parseOrder(text) {
   const requestKind = Boolean(requestKindMatch);
   return {
     // الصيغة التشغيلية المعتمدة: كلمة «السعر» يتبعها الرقم فقط؛ المسار/نوع الرحلة اختياري وغير معتمد للتمييز.
-    isOrder: price !== null && /(?:السعر|سعر|price)\s*[:：]?\s*\d+(?:[.,]\d{1,2})?/i.test(normalized),
+    isOrder: price !== null,
     price,
     requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,
     origin: route ? route[1].trim() : null,
