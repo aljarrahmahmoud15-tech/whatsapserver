@@ -875,9 +875,33 @@ async function resolveReadableGroupChat(groupId) {
 }
 async function fetchGroupHistory(groupId, limit) {
   const chat = await resolveReadableGroupChat(groupId);
-  if (!chat) return { chat: null, messages: [] };
-  const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 45000, []);
-  return { chat, messages: Array.isArray(messages) ? messages : [] };
+  if (chat) {
+    const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 45000, []);
+    return { chat, messages: Array.isArray(messages) ? messages : [] };
+  }
+  if (!client?.pupPage) return { chat: null, messages: [] };
+  const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit) => {
+    try {
+      const wid = window.require("WAWebWidFactory").createWid(requestedId);
+      const store = window.Store || {};
+      const chat = store.Chat?.get ? store.Chat.get(wid) : null;
+      if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [] };
+      const filter = (message) => !message.isNotification && !message.id?.fromMe && String(message.from || "") === requestedId;
+      let models = chat.msgs.getModelsArray().filter(filter);
+      while (models.length < requestedLimit && store.ConversationMsgs?.loadEarlierMsgs) {
+        const earlier = await store.ConversationMsgs.loadEarlierMsgs(chat);
+        if (!earlier?.length) break;
+        models = [...earlier.filter(filter), ...models];
+      }
+      models.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+      models = models.slice(-requestedLimit);
+      const serialize = (message) => window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
+      return { chat: { id: requestedId, isGroup: true }, messages: models.map(serialize) };
+    } catch (error) {
+      return { chat: null, messages: [], error: String(error?.message || error) };
+    }
+  }, groupId, limit), 60000, { chat: null, messages: [] });
+  return messages;
 }
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
