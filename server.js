@@ -1571,7 +1571,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (!insertedMessage.changes) return;
+  if (!insertedMessage.changes && !isCaptainAcceptance(body)) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
@@ -1581,11 +1581,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
-    const producer = botGenerated && BOT_FINANCIAL_MODE === "wallet"
+    const producer = botGenerated
       ? botEmployeeUser()
-      : botGenerated
-        ? companyUser()
-        : upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
+      : upsertUser({ phone: senderPhone, name: senderName, role: "producer" });
     if (!producer || producer.active === 0) return;
     const order = createOrderRecord({ messageId, groupId, body, producer, parsed });
     if (!order) return;
