@@ -73,5 +73,7 @@ assert(server.includes('originalGroupUntouched: true'), 'deletion response confi
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
-assert(server.includes('الخطوة 2: اختر «دخول الكابتن»'), 'captain card explains the exact login choice');
+assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
+assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
+assert(fs.readFileSync('./public/captain.html', 'utf8').includes("get('mode') === 'login' ? 'login' : 'registration'"), 'direct login URL opens the captain login screen');
 console.log('official company card and compact top-up flow guardrails verified');

@@ -766,6 +766,10 @@ function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
   return `${normalized || PUBLIC_APP_URL}/join.html`;
 }
+function captainLoginUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return `${normalized || PUBLIC_APP_URL}/captain?mode=login`;
+}
 function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
   const gateway = captainAppUrl(baseUrl);
   return inviteToken ? `${gateway}?invite=${encodeURIComponent(inviteToken)}` : gateway;
@@ -801,15 +805,15 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const lines = [
     `الكابتن: ${prepared.name || "حساب الكابتن"}`,
     "تم تسجيلك لدينا ككابتن، وحسابك جاهز للدخول.",
-    `البوابة الرسمية: ${captainAppUrl(baseUrl)}`,
-    "الخطوة 1: افتح البوابة واضغط زر التشغيل الأصفر.",
-    "الخطوة 2: اختر «دخول الكابتن» — وليس «تسجيل كابتن جديد». ",
-    "الخطوة 3: أدخل رقم هاتفك والرقم السري، ثم ادخل إلى حسابك.",
+    `رابط الدخول المباشر: ${captainLoginUrl(baseUrl)}`,
+    "الخطوة 1: افتح رابط الدخول المباشر المرفق.",
+    "الخطوة 2: أدخل رقم هاتفك والرقم السري.",
+    "الخطوة 3: اضغط «دخول البوابة» للوصول إلى حسابك.",
     prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام.",
     "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
   ];
   const sent = await sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
-  if (sent) void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول الرسمية إلى الكابتن.", `البوابة: ${captainAppUrl(baseUrl)}`], ownersOnly: true });
+  if (sent) void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول المباشر الرسمية إلى الكابتن.", `الرابط: ${captainLoginUrl(baseUrl)}`], ownersOnly: true });
   return sent;
 }
 function groupParticipantPhone(participant) {
