@@ -1653,10 +1653,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (!isCaptainAcceptance(body)) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  const order = findOrderByQuotedId(quoted && quoted.id ? quoted.id._serialized : null) || latestOpenOrder(groupId);
+  // لا يُقبل «تم» إلا كرد مباشر على رسالة المنتج التي أنشأت الطلب.
+  const order = quoted && quoted.id ? findOrderByQuotedId(quoted.id._serialized) : null;
   if (!order) return;
   const captain = findActiveRegisteredUser(senderPhone);
-  if (!captain) return;
+  if (!captain || captain.role !== "captain") return;
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
