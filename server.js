@@ -3076,7 +3076,7 @@ app.post("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) =
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null) || isConfiguredGroup(groupId)) return res.status(409).json({ error: "The configured production group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const chat = await withTimeout(client.getChatById(groupId), 15000, null);
+  const chat = await withTimeout(client.getChatById(groupId), 15000, null) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || typeof chat.leave !== "function") return res.status(404).json({ error: "Unconfigured group could not be verified" });
   const groupName = String(chat.name || chat.formattedTitle || "");
   const left = await withTimeout(chat.leave(), 60000, false);
@@ -3089,7 +3089,7 @@ app.get("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) =>
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null) || isConfiguredGroup(groupId)) return res.status(409).json({ error: "The configured production group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const chat = await withTimeout(client.getChatById(groupId), 15000, null);
+  const chat = await withTimeout(client.getChatById(groupId), 15000, null) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || typeof chat.leave !== "function") return res.status(404).json({ error: "Unconfigured group could not be verified" });
   const groupName = String(chat.name || chat.formattedTitle || "");
   const left = await withTimeout(chat.leave(), 60000, false);
