@@ -989,21 +989,21 @@ async function resolveReadableGroupChat(groupId) {
   chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
   return chat && typeof chat.fetchMessages === "function" ? chat : null;
 }
-async function fetchGroupHistory(groupId, limit) {
+async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {}) {
   let chat = await resolveReadableGroupChat(groupId);
   if (!chat) chat = await resolveGroupChat(groupId);
   if (chat) {
-    const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 90000, []);
+    const messages = await withTimeout(chat.fetchMessages(includeOutgoing ? { limit } : { limit, fromMe: false }), 90000, []);
     return { chat, messages: Array.isArray(messages) ? messages : [] };
   }
   if (!client?.pupPage) return { chat: null, messages: [] };
-  const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit) => {
+  const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit, includeOutgoingMessages) => {
     try {
       const wid = window.require("WAWebWidFactory").createWid(requestedId);
       const collections = window.require("WAWebCollections");
       const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [] };
-      const filter = (message) => !message.isNotification && !message.id?.fromMe && String(message.from || "") === requestedId;
+      const filter = (message) => !message.isNotification && (includeOutgoingMessages || !message.id?.fromMe) && String(message.from || "") === requestedId;
       let models = chat.msgs.getModelsArray().filter(filter);
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
@@ -1051,7 +1051,7 @@ async function fetchGroupHistory(groupId, limit) {
     } catch (error) {
       return { chat: null, messages: [], error: String(error?.message || error) };
     }
-  }, groupId, limit), 20000, { chat: null, messages: [] });
+  }, groupId, limit, includeOutgoing), 20000, { chat: null, messages: [] });
   return messages;
 }
 function createCaptainPin() {
@@ -3662,7 +3662,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = `pre-confirmed-orders-import-${Date.now()}.sqlite`;
   await db.backup(path.join(backupDir, backupName));
-  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
   if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
@@ -3697,8 +3697,14 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
     let producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quotedContact?.number || quoted.author || quoted?._data?.author || "");
     if (!quoted.fromMe && !isValidJordanPhone(producerPhone)) producerPhone = phoneWithCountry(quotedContact?.number || "");
-    const confirmedByPhone = reactedByBot ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
-    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot }); continue; }
+    const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
+    const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
+      const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
+      const body = String(message?.body || "");
+      return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
+    });
+    const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
+    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     let captainPhone = phoneWithCountry(acceptance.__authorPhone || acceptanceContact?.number || liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author?._serialized || acceptance.author || acceptance?._data?.author || "");
     if (!isValidJordanPhone(captainPhone)) captainPhone = phoneWithCountry(acceptanceContact?.number || "");

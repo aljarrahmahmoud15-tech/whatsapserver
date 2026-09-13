@@ -28,8 +28,8 @@ assert(source.includes("reconcileConfiguredGroupFromEnvironment();"), "تتم م
 assert.match(source, /app\.post\("\/api\/admin\/group\/leave-unconfigured", requireAdmin,/, "مسار خروج البوت من القروب غير المعتمد محمي إداريًا");
 assert(source.includes("deleted: false"), "خروج البوت لا يحذف القروب غير المعتمد");
 assert(source.includes("async function resolveReadableGroupChat(groupId)"), "قارئ التاريخ يبحث عن كائن القروب القابل للقراءة");
-assert(source.includes("async function fetchGroupHistory(groupId, limit)"), "قارئ التاريخ موحد لمسارات الرسائل والاستيراد");
-assert(source.includes("fetchMessages({ limit, fromMe: false })"), "الاستيراد التاريخي يطلب رسائل القروب الواردة فقط");
+assert(source.includes("async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {})"), "قارئ التاريخ موحد ويدعم تضمين بطاقات تأكيد البوت عند الحاجة");
+assert(source.includes("includeOutgoing ? { limit } : { limit, fromMe: false }"), "قارئ السجل يعزل الرسائل الواردة افتراضيًا ويضم بطاقات البوت فقط لمسار التثبيت");
 assert(source.includes('window.require("WAWebChatLoadMessages")') && source.includes("loader?.loadEarlierMsgs") && source.includes("loader.loadEarlierMsgs({ chat })"), "القارئ التاريخي يستخدم API تحميل الرسائل الفعلي في WhatsApp Web");
 assert(source.includes("window.WWebJS?.getMessageModel"), "رسائل WhatsApp Web تُحوّل إلى نموذج النظام");
 assert(source.includes('app.post("/api/admin/group/import-order-history", requireAdmin'), "مسار استيراد تاريخ الحجوزات محمي إداريًا");
