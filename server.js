@@ -1580,6 +1580,8 @@ function recordGroupMessageTelemetry(event, msg) {
     fromMe: Boolean(msg.fromMe),
     configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
+    messageId: String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null,
+    quotedMessageId: String(msg?.quotedMsg?.id?._serialized || msg?._data?.quotedMsg?.id?._serialized || "").trim() || null,
   };
   // Keep the general last-event fields for backward compatibility, but retain
   // separate official/ignored streams so an unrelated group cannot overwrite
@@ -1670,7 +1672,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
-    const messageId = String(msg?.id?._serialized || msg?.id || msg?._data?.id || "").trim();
+    const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -1699,7 +1701,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const messageId = String(msg?.id?._serialized || msg?.id || msg?._data?.id || "").trim();
+  const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {

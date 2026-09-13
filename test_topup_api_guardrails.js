@@ -20,7 +20,7 @@ assert.ok(index.includes('crypto.randomUUID()'), 'owner UI creates request idemp
 assert.ok(index.includes('/api/admin/cards?limit=12'), 'owner UI reads recent card history');
 assert.ok(index.includes('id="topup-history-refresh"'), 'owner UI provides history refresh');
 assert.ok(index.includes('data-card-history-send'), 'owner UI provides controlled resend action');
-assert.ok(index.includes('https://bot.wasselni-biz.com/join.html'), 'owner invite points to the official operations gateway');
+assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'owner invite points to the official operations gateway');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has a redemption form');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app submits redemption to the session API');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('renderTopupCards'), 'captain app renders card notifications');

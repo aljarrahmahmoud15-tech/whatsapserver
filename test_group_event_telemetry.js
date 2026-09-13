@@ -12,6 +12,7 @@ assert(telemetry.includes("event"), "يسجل نوع الحدث فقط");
 assert(telemetry.includes("fromMe"), "يسجل جهة الرسالة دون رقم أو نص");
 assert(telemetry.includes("configured"), "يسجل ما إذا كان القروب مهيأً");
 assert(!telemetry.includes("msg.body"), "لا يحفظ نص رسالة القروب في القياس التشخيصي");
-assert(!telemetry.includes("_serialized"), "لا يحفظ معرّف رسالة القروب في القياس التشخيصي");
+assert(telemetry.includes("messageId"), "يحفظ معرّف الرسالة لربط الردود");
+assert(telemetry.includes("quotedMessageId"), "يحفظ معرّف الرسالة المقتبسة لربط تم");
 
 console.log("group event telemetry privacy guardrails verified");
