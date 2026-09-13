@@ -1006,9 +1006,9 @@ async function fetchGroupHistory(groupId, limit) {
       const filter = (message) => !message.isNotification && !message.id?.fromMe && String(message.from || "") === requestedId;
       let models = chat.msgs.getModelsArray().filter(filter);
       let loader = null;
-      try { loader = window.require("WAWebConversationMsgs"); } catch (_) { loader = window.Store?.ConversationMsgs || null; }
+      try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
       while (models.length < requestedLimit && loader?.loadEarlierMsgs) {
-        const earlier = await loader.loadEarlierMsgs(chat);
+        const earlier = await loader.loadEarlierMsgs({ chat });
         if (!earlier?.length) break;
         models = [...earlier.filter(filter), ...models];
       }

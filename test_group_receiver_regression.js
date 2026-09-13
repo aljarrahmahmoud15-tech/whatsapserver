@@ -30,7 +30,7 @@ assert(source.includes("deleted: false"), "خروج البوت لا يحذف ا�
 assert(source.includes("async function resolveReadableGroupChat(groupId)"), "قارئ التاريخ يبحث عن كائن القروب القابل للقراءة");
 assert(source.includes("async function fetchGroupHistory(groupId, limit)"), "قارئ التاريخ موحد لمسارات الرسائل والاستيراد");
 assert(source.includes("fetchMessages({ limit, fromMe: false })"), "الاستيراد التاريخي يطلب رسائل القروب الواردة فقط");
-assert(source.includes('window.require("WAWebConversationMsgs")') && source.includes("loader?.loadEarlierMsgs"), "القارئ التاريخي يدعم تحميل الرسائل الأقدم من WhatsApp Web مع fallback متوافق");
+assert(source.includes('window.require("WAWebChatLoadMessages")') && source.includes("loader?.loadEarlierMsgs") && source.includes("loader.loadEarlierMsgs({ chat })"), "القارئ التاريخي يستخدم API تحميل الرسائل الفعلي في WhatsApp Web");
 assert(source.includes("window.WWebJS?.getMessageModel"), "رسائل WhatsApp Web تُحوّل إلى نموذج النظام");
 assert(source.includes('app.post("/api/admin/group/import-order-history", requireAdmin'), "مسار استيراد تاريخ الحجوزات محمي إداريًا");
 
