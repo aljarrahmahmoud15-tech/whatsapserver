@@ -1,0 +1,31 @@
+const assert = require('assert');
+const fs = require('fs');
+
+const server = fs.readFileSync('./server.js', 'utf8');
+const owner = fs.readFileSync('./public/index.html', 'utf8');
+const captain = fs.readFileSync('./public/captain.html', 'utf8');
+
+assert(!server.includes("req.session.user = { role: 'admin'"), 'no fake admin session middleware');
+assert(server.includes('CREATE TABLE IF NOT EXISTS captain_phone_aliases'), 'captain aliases are persisted');
+assert(server.includes('CREATE TABLE IF NOT EXISTS captain_auth_challenges'), 'WhatsApp OTP challenges are persisted');
+assert(server.includes('CREATE TABLE IF NOT EXISTS captain_merge_history'), 'captain merges are audited');
+assert(server.includes('CREATE TABLE IF NOT EXISTS order_settlements'), 'financial settlements have a dedicated table');
+assert(server.includes('order_id INTEGER NOT NULL UNIQUE'), 'each order can have only one settlement');
+assert(server.includes('idx_wallet_ledger_idempotency'), 'wallet adjustments have a unique idempotency index');
+assert(server.includes('app.post("/api/captain/whatsapp/request-code"'), 'captain can request a WhatsApp OTP');
+assert(server.includes('app.post("/api/captain/whatsapp/verify"'), 'captain can verify a WhatsApp OTP');
+assert(server.includes('app.get("/api/admin/captains/:id/merge-preview"'), 'captain merge has a dry preview');
+assert(server.includes('app.post("/api/admin/captains/:id/merge"'), 'captain accounts can be merged safely');
+assert(server.includes('await db.backup(path.join(backupDir, backupName))'), 'destructive/history operations create a SQLite backup');
+assert(server.includes('app.post("/api/admin/group/import-confirmed-orders"'), 'confirmed group orders can be imported');
+assert(server.includes('app.post("/api/admin/orders/reconcile-captains"'), 'historical orders can be reconciled to captain accounts');
+assert(server.includes('settlement_state=\'settled\''), 'settled orders are explicitly marked');
+assert(owner.includes('إدارة الكباتن'), 'owner navigation exposes captain management');
+assert(owner.includes('تسجيل مثبتات آخر 24 ساعة'), 'owner UI exposes 24-hour confirmed-order import');
+assert(owner.includes('الحسابات المفعلة'), 'owner UI shows active captain accounts');
+assert(owner.includes('دمج حساب'), 'owner UI exposes audited merge action');
+assert(captain.includes('id="reg-auth-method"'), 'registration offers authentication method choice');
+assert(captain.includes('value="whatsapp"'), 'WhatsApp authentication is selectable');
+assert(captain.includes('/api/captain/whatsapp/request-code'), 'captain UI requests WhatsApp OTP');
+assert(captain.includes('/api/captain/whatsapp/verify'), 'captain UI verifies WhatsApp OTP');
+console.log('captain management, authentication, and historical-order guardrails verified');

@@ -30,6 +30,7 @@ const users = {
 };
 const ledgers = [];
 const messages = [];
+let settlementRecord = null;
 
 const db = {
   transaction(fn) { return () => fn(); },
@@ -39,25 +40,41 @@ const db = {
       get(...args) {
         if (normalized.startsWith("SELECT * FROM orders WHERE id=?")) return args[0] === order.id ? { ...order } : null;
         if (normalized.startsWith("SELECT * FROM users WHERE id=?")) return users[args[0]] ? { ...users[args[0]] } : null;
+        if (normalized.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return settlementRecord;
+        if (normalized.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return users[args[0]] ? { wallet_cents: users[args[0]].wallet_cents } : null;
         if (normalized.startsWith("SELECT * FROM orders WHERE group_id=?")) {
           return order.group_id === args[0] && order.status === "open" && order.pending_message_id === args[1] ? { ...order } : null;
         }
         throw new Error(`Unexpected get query: ${normalized}`);
       },
       run(...args) {
-        if (normalized.startsWith("UPDATE orders SET status='accepted'")) {
-          const [captainId, acceptedMessageId, acceptedAt, companyCents, producerCents, captainCents, updatedAt, orderId, expectedMessageId] = args;
-          if (order.id !== orderId || order.status !== "open" || order.pending_message_id !== expectedMessageId) return { changes: 0 };
-          Object.assign(order, { status: "accepted", captain_user_id: captainId, accepted_message_id: acceptedMessageId, accepted_at: acceptedAt, company_cents: companyCents, producer_cents: producerCents, captain_cents: captainCents, pending_message_id: null, pending_captain_user_id: null, updated_at: updatedAt });
+        if (normalized.startsWith("INSERT OR IGNORE INTO order_settlements")) {
+          if (settlementRecord) return { changes: 0 };
+          settlementRecord = { id: 1, status: "pending" };
           return { changes: 1 };
         }
-        if (normalized.startsWith("UPDATE users SET wallet_cents=?")) {
-          const [balance, , userId] = args;
-          users[userId].wallet_cents = balance;
+        if (normalized.startsWith("UPDATE orders SET status='accepted'")) {
+          const [captainId, captainPhone, captainName, acceptedMessageId, acceptedAt, confirmedByPhone, companyCents, producerCents, captainCents, updatedAt, orderId, expectedMessageId] = args;
+          if (order.id !== orderId || order.status !== "open" || order.pending_message_id !== expectedMessageId) return { changes: 0 };
+          Object.assign(order, { status: "accepted", captain_user_id: captainId, captain_phone_snapshot: captainPhone, captain_name_snapshot: captainName, accepted_message_id: acceptedMessageId, accepted_at: acceptedAt, confirmed_by_phone: confirmedByPhone, company_cents: companyCents, producer_cents: producerCents, captain_cents: captainCents, pending_message_id: null, pending_captain_user_id: null, updated_at: updatedAt });
+          return { changes: 1 };
+        }
+        if (normalized.startsWith("UPDATE users SET wallet_cents=wallet_cents+?")) {
+          const [amount, , userId] = args;
+          users[userId].wallet_cents += amount;
+          return { changes: 1 };
+        }
+        if (normalized.startsWith("UPDATE users SET wallet_cents=wallet_cents-?")) {
+          const [amount, , userId] = args;
+          users[userId].wallet_cents -= amount;
           return { changes: 1 };
         }
         if (normalized.startsWith("INSERT INTO wallet_ledger")) {
           ledgers.push(args);
+          return { changes: 1 };
+        }
+        if (normalized.startsWith("UPDATE order_settlements SET status='applied'")) {
+          settlementRecord.status = "applied";
           return { changes: 1 };
         }
         throw new Error(`Unexpected run query: ${normalized}`);

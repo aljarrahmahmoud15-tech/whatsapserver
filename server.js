@@ -19,11 +19,6 @@ const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = requi
 
 const app = express();
 app.set("trust proxy", 1);
-app.use((req, res, next) => {
-    req.session = req.session || {};
-    req.session.user = { role: 'admin', username: 'admin' };
-    next();
-});
 const PORT = Number(process.env.PORT || 10000);
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
@@ -80,6 +75,7 @@ const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل ال
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
+const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
@@ -300,22 +296,86 @@ CREATE TABLE IF NOT EXISTS captain_invites (
   decided_at TEXT,
   FOREIGN KEY(approved_user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS captain_phone_aliases (
+  phone TEXT PRIMARY KEY,
+  captain_user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(captain_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS captain_auth_challenges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  captain_user_id INTEGER NOT NULL,
+  phone TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  verified_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(captain_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS captain_merge_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_captain_id INTEGER NOT NULL,
+  target_captain_id INTEGER NOT NULL,
+  source_phone TEXT NOT NULL,
+  target_phone TEXT NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS order_settlements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK(status IN ('pending','applied','reversed')) DEFAULT 'pending',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  captain_user_id INTEGER NOT NULL,
+  producer_user_id INTEGER,
+  price_cents INTEGER NOT NULL,
+  company_cents INTEGER NOT NULL,
+  producer_cents INTEGER NOT NULL,
+  captain_fee_cents INTEGER NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL,
+  applied_at TEXT,
+  FOREIGN KEY(order_id) REFERENCES orders(id),
+  FOREIGN KEY(captain_user_id) REFERENCES users(id),
+  FOREIGN KEY(producer_user_id) REFERENCES users(id)
+);
 `);
 
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
 if (!existingInviteColumns.includes("token_ciphertext")) db.exec("ALTER TABLE captain_invites ADD COLUMN token_ciphertext TEXT");
 const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all().map((column) => column.name);
 if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
+if (!existingLedgerColumns.includes("idempotency_key")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN idempotency_key TEXT");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency ON wallet_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 if (!existingUserColumns.includes("is_bot")) db.exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0");
 if (!existingUserColumns.includes("captain_pin_hash")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_hash TEXT");
 if (!existingUserColumns.includes("captain_pin_ciphertext")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_ciphertext TEXT");
+if (!existingUserColumns.includes("captain_auth_method")) db.exec("ALTER TABLE users ADD COLUMN captain_auth_method TEXT NOT NULL DEFAULT 'pin'");
+if (!existingUserColumns.includes("captain_whatsapp_verified_at")) db.exec("ALTER TABLE users ADD COLUMN captain_whatsapp_verified_at TEXT");
+if (!existingUserColumns.includes("captain_last_login_at")) db.exec("ALTER TABLE users ADD COLUMN captain_last_login_at TEXT");
+if (!existingUserColumns.includes("account_status")) db.exec("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'");
+if (!existingUserColumns.includes("approved_at")) db.exec("ALTER TABLE users ADD COLUMN approved_at TEXT");
+if (!existingUserColumns.includes("activated_at")) db.exec("ALTER TABLE users ADD COLUMN activated_at TEXT");
+if (!existingUserColumns.includes("merged_into_user_id")) db.exec("ALTER TABLE users ADD COLUMN merged_into_user_id INTEGER");
+const existingInviteAuthColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
+if (!existingInviteAuthColumns.includes("auth_method")) db.exec("ALTER TABLE captain_invites ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'pin'");
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
 if (!existingOrderColumns.includes("order_kind")) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'normal'");
 if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_captain_user_id INTEGER");
 if (!existingOrderColumns.includes("pending_message_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_message_id TEXT");
 if (!existingOrderColumns.includes("pending_at")) db.exec("ALTER TABLE orders ADD COLUMN pending_at TEXT");
+if (!existingOrderColumns.includes("producer_phone_snapshot")) db.exec("ALTER TABLE orders ADD COLUMN producer_phone_snapshot TEXT");
+if (!existingOrderColumns.includes("producer_name_snapshot")) db.exec("ALTER TABLE orders ADD COLUMN producer_name_snapshot TEXT");
+if (!existingOrderColumns.includes("captain_phone_snapshot")) db.exec("ALTER TABLE orders ADD COLUMN captain_phone_snapshot TEXT");
+if (!existingOrderColumns.includes("captain_name_snapshot")) db.exec("ALTER TABLE orders ADD COLUMN captain_name_snapshot TEXT");
+if (!existingOrderColumns.includes("confirmed_by_phone")) db.exec("ALTER TABLE orders ADD COLUMN confirmed_by_phone TEXT");
+if (!existingOrderColumns.includes("settlement_state")) db.exec("ALTER TABLE orders ADD COLUMN settlement_state TEXT NOT NULL DEFAULT 'pending'");
+if (!existingOrderColumns.includes("import_source")) db.exec("ALTER TABLE orders ADD COLUMN import_source TEXT NOT NULL DEFAULT 'live'");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
 if (!existingCardColumns.includes("assigned_captain_id")) db.exec("ALTER TABLE topup_cards ADD COLUMN assigned_captain_id INTEGER");
 if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN sent_at TEXT");
@@ -328,6 +388,18 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_void_idempotency ON topup_cards(void_idempotency_key) WHERE void_idempotency_key IS NOT NULL AND void_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_redemption_idempotency ON topup_cards(redemption_idempotency_key) WHERE redemption_idempotency_key IS NOT NULL AND redemption_idempotency_key <> ''");
+db.exec(`
+  UPDATE users SET account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END
+  WHERE account_status IS NULL OR account_status NOT IN ('pending','approved','active','suspended','merged','rejected');
+  UPDATE orders SET
+    producer_phone_snapshot=COALESCE(producer_phone_snapshot,(SELECT phone FROM users WHERE users.id=orders.producer_user_id)),
+    producer_name_snapshot=COALESCE(producer_name_snapshot,(SELECT name FROM users WHERE users.id=orders.producer_user_id)),
+    captain_phone_snapshot=COALESCE(captain_phone_snapshot,(SELECT phone FROM users WHERE users.id=orders.captain_user_id)),
+    captain_name_snapshot=COALESCE(captain_name_snapshot,(SELECT name FROM users WHERE users.id=orders.captain_user_id))
+  WHERE producer_phone_snapshot IS NULL OR captain_phone_snapshot IS NULL;
+  UPDATE orders SET settlement_state='settled'
+  WHERE status IN ('accepted','completed') AND EXISTS(SELECT 1 FROM wallet_ledger WHERE wallet_ledger.order_id=orders.id);
+`);
 
 const now = () => new Date().toISOString();
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -362,6 +434,22 @@ const randomCode = () => {
 };
 const displayPhone = (phone) => phone ? `+${phone}` : "غير معروف";
 const isValidJordanPhone = (phone) => /^9627\d{8}$/.test(String(phone));
+function normalizeCaptainAuthMethod(value) {
+  return String(value || "pin").trim().toLowerCase() === "whatsapp" ? "whatsapp" : "pin";
+}
+function findCaptainByPhone(value, { activeOnly = false } = {}) {
+  const phone = phoneWithCountry(value);
+  if (!phone) return null;
+  const activeClause = activeOnly ? " AND u.active=1 AND u.account_status='active'" : "";
+  return db.prepare(`SELECT u.* FROM users u WHERE u.phone=? AND u.role='captain'${activeClause} LIMIT 1`).get(phone)
+    || db.prepare(`SELECT u.* FROM captain_phone_aliases a JOIN users u ON u.id=a.captain_user_id WHERE a.phone=? AND u.role='captain'${activeClause} LIMIT 1`).get(phone);
+}
+function captainAuthCodeHash(phone, code) {
+  return crypto.createHmac("sha256", CAPTAIN_SESSION_SECRET).update(`${phone}:${String(code)}`).digest("hex");
+}
+function createCaptainWhatsappCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
 function consumeRateLimit(store, key, maxAttempts) {
   const current = Date.now();
   const entry = store.get(key);
@@ -774,8 +862,9 @@ function isConfiguredGroup(groupId) {
 function findActiveRegisteredUser(phone) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
-  return db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(normalized)
-    || db.prepare("SELECT * FROM users WHERE phone=? AND active=1 LIMIT 1").get(String(phone || "").trim());
+  return db.prepare("SELECT * FROM users WHERE phone=? AND active=1 AND account_status='active' LIMIT 1").get(normalized)
+    || findCaptainByPhone(normalized, { activeOnly: true })
+    || db.prepare("SELECT * FROM users WHERE phone=? AND active=1 AND account_status='active' LIMIT 1").get(String(phone || "").trim());
 }
 function ensureProducerUser(phone, name) {
   const normalized = phoneWithCountry(phone);
@@ -786,9 +875,7 @@ function ensureProducerUser(phone, name) {
 function ensureCaptainUser(phone, name) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
-  const existing = findActiveRegisteredUser(normalized);
-  // المنتج والمنفذ وصفان لسياق الطلب؛ لا يُقبل إلا عضو مسجل غير حساب الشركة.
-  return existing && existing.role !== "company" ? existing : null;
+  return findCaptainByPhone(normalized, { activeOnly: true });
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
@@ -818,27 +905,28 @@ function ensureCaptainAccessCredentials(captain) {
   const phone = phoneWithCountry(captain && captain.phone);
   const current = captain && captain.id
     ? captain
-    : db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+    : db.prepare("SELECT id,phone,name,role,active,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (current && captain && captain.temporaryPin) return { ...current, temporaryPin: captain.temporaryPin };
+  if (current && normalizeCaptainAuthMethod(current.captain_auth_method) === "whatsapp") return { ...current, temporaryPin: null };
   if (!current || current.captain_pin_hash) return { ...(current || captain), temporaryPin: null };
   const temporaryPin = createCaptainPin();
-  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, now(), current.id);
+  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), now(), current.id);
   return { ...current, temporaryPin };
 }
 async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const prepared = ensureCaptainAccessCredentials(captain);
   const phone = phoneWithCountry(prepared && prepared.phone);
   if (!isValidJordanPhone(phone)) return false;
-  const pinLine = prepared.temporaryPin ? `\nالرقم السري المؤقت: ${prepared.temporaryPin}` : "";
+  const whatsappAuth = normalizeCaptainAuthMethod(prepared.captain_auth_method) === "whatsapp";
   const lines = [
     `الكابتن: ${prepared.name || "حساب الكابتن"}`,
     "تم تسجيلك لدينا ككابتن، وحسابك جاهز للدخول.",
     `رابط الدخول المباشر: ${captainLoginUrl(baseUrl)}`,
     "الخطوة 1: افتح رابط الدخول المباشر المرفق.",
-    "الخطوة 2: أدخل رقم هاتفك والرقم السري.",
+    whatsappAuth ? "الخطوة 2: اختر WhatsApp واطلب رمز التحقق على رقمك." : "الخطوة 2: أدخل رقم هاتفك والرقم السري.",
     "الخطوة 3: اضغط «دخول البوابة» للوصول إلى حسابك.",
-    prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام.",
-    "لا تستخدم رابطًا آخر ولا تشارك الرقم السري مع أي شخص."
+    whatsappAuth ? "رمز WhatsApp صالح لمدة 10 دقائق ويُرسل عند الطلب." : (prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام."),
+    "لا تستخدم رابطًا آخر ولا تشارك رمز الدخول مع أي شخص."
   ];
   const sent = await sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
   if (sent) void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول المباشر الرسمية إلى الكابتن.", `الرابط: ${captainLoginUrl(baseUrl)}`], ownersOnly: true });
@@ -1024,7 +1112,7 @@ function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
   if (recentDuplicate) return recentDuplicate;
   const stamp = now();
   const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-  const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, "open", stamp, stamp);
+  const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "open", stamp, stamp);
   audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: producer.phone });
   console.log(`[Order] #${orderNo} created from ${groupId}`);
   return db.prepare("SELECT * FROM orders WHERE id=?").get(result.lastInsertRowid);
@@ -1787,6 +1875,8 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current || current.status !== "open" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
+    const existingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
+    if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     const producerAuthorized = producer && (
       phoneWithCountry(producer.phone) === phoneWithCountry(producerPhone) ||
@@ -1810,26 +1900,62 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     const company = companyUser();
     const stamp = now();
     const botEmployeeProducer = producer.is_bot === 1;
-    const companyBalance = Number(company.wallet_cents || 0) + settlement.companyCents;
-    const producerBalance = Number(producer.wallet_cents || 0) + settlement.producerNetCents;
     const ledgerDetails = JSON.stringify({ orderNo: current.order_no, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
-    const companyFinalBalance = companyBalance;
-    const captainBalance = projectedCaptainBalance;
-    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,accepted_message_id=?,accepted_at=?,company_cents=?,producer_cents=?,captain_cents=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, expectedMessageId, stamp, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(companyFinalBalance, stamp, company.id);
+    const settlementKey = `ORDER-${current.order_no}-${orderId}`;
+    const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.captainFeeCents, ledgerDetails, stamp);
+    if (!settlementInsert.changes) return { state: "already_settled" };
+    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(producerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
+    const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp, ledgerDetails);
-    if (botEmployeeProducer) {
-      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
-      db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_bot_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة منتج البوت الموظف", stamp, ledgerDetails);
-    } else {
-      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(producerBalance, stamp, producer.id);
-      db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج بعد حصة الشركة", stamp, ledgerDetails);
-    }
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(captainBalance, stamp, captain.id);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
+    const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, botEmployeeProducer ? "صافي حصة منتج البوت الموظف" : "صافي حصة المنتج بعد حصة الشركة", stamp, ledgerDetails);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.captainFeeCents, stamp, captain.id);
+    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp, ledgerDetails);
+    db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     audit("order.accepted", "order", orderId, { captainId: captain.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: producer.phone });
     console.log(`[Order] accepted #${current.order_no} group=${current.group_id} captain=${captain.phone} confirmedBy=${producer.phone}`);
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id) };
+  })();
+}
+
+function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone }) {
+  return db.transaction(() => {
+    const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+    const captain = db.prepare("SELECT * FROM users WHERE id=? AND role='captain' AND active=1 AND account_status='active'").get(captainId);
+    if (!current || !captain) return { state: "unlinked" };
+    const existingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
+    if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled", order: current, captain };
+    const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
+    if (!producer) return { state: "missing_producer" };
+    const settlement = calculateSettlement({
+      priceCents: current.price_cents,
+      orderKind: current.order_kind,
+      regularProducerRateBps: Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS)),
+      specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
+      companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
+    });
+    const company = companyUser();
+    const stamp = acceptedAt || now();
+    const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
+    const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
+    const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.captainFeeCents, details, now());
+    if (!inserted.changes) return { state: "already_settled", order: current, captain };
+    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source='group_history_24h',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, now(), orderId);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
+    const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "تسوية طلب مؤكد مستورد من سجل القروب", now(), details);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, now(), producer.id);
+    const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.captainFeeCents, now(), captain.id);
+    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, "خصم طلب مؤكد مستورد من سجل القروب", now(), details);
+    db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
+    audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
+    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id) };
   })();
 }
 
@@ -2038,7 +2164,7 @@ app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
 app.get("/api/captain/invites/:token", (req, res) => {
   expireCaptainInvites();
   const publicToken = getSetting("captain_public_invite_token", null);
-  let invite = db.prepare("SELECT id,status,name,phone,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
+  let invite = db.prepare("SELECT id,status,name,phone,auth_method,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
   if (!invite && publicToken && constantTimeEquals(req.params.token, publicToken)) invite = { id: 0, status: "issued", name: null, phone: null, token_last8: publicToken.slice(-8), created_at: now(), updated_at: now(), expires_at: null, submitted_at: null, decided_at: null, decision_note: null };
   if (!invite) return res.status(404).json({ error: "بطاقة الدعوة غير موجودة" });
   if (invite.status === "expired") return res.status(410).json({ error: "انتهت صلاحية بطاقة الدعوة" });
@@ -2066,23 +2192,23 @@ app.post("/api/captain/invites/:token/apply", (req, res) => {
   const rawPhone = String(req.body?.phone || "").trim();
   const phone = phoneWithCountry(rawPhone);
   const pin = String(req.body?.pin || "").trim();
+  const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod);
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
-  if (!validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
-  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
+  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
   if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
   if (existing && existing.role === "captain" && existing.id !== invite.approved_user_id) return res.status(409).json({ error: "يوجد حساب كابتن بهذا الرقم مسبقًا" });
   const stamp = now();
-  const pinHash = bcrypt.hashSync(pin, 10);
-  const pinCiphertext = cardEncryptionKey ? encryptCardCode(pin) : null;
-  db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=?,submitted_at=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
-    .run(name, phone, pinHash, pinCiphertext, stamp, stamp, invite.id);
-  audit("captain.join.requested", "captain_invite", invite.id, { name, phone }, null);
+  const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
+  db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,submitted_at=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
+    .run(name, phone, pinHash, authMethod, stamp, stamp, invite.id);
+  audit("captain.join.requested", "captain_invite", invite.id, { name, phone, authMethod }, null);
   res.status(202).json({ success: true, status: "pending", token: createdInviteToken || req.params.token, message: "تم إرسال طلبك إلى الشركة للموافقة" });
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();
-  const invites = db.prepare("SELECT id,status,name,phone,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
+  const invites = db.prepare("SELECT id,status,name,phone,auth_method,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
     let inviteUrl = null;
     if (invite.token_ciphertext) { try { inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), decryptCardCode(invite.token_ciphertext)); } catch {} }
     const { token_ciphertext: _tokenCiphertext, ...safeInvite } = invite;
@@ -2107,28 +2233,28 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
-  if (!invite.pin_hash || !invite.phone || !invite.name) return res.status(409).json({ error: "بيانات طلب الكابتن غير مكتملة" });
-  const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(invite.phone);
+  const authMethod = normalizeCaptainAuthMethod(invite.auth_method);
+  if ((authMethod === "pin" && !invite.pin_hash) || !invite.phone || !invite.name) return res.status(409).json({ error: "بيانات طلب الكابتن غير مكتملة" });
+  const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(invite.phone) || findCaptainByPhone(invite.phone);
   if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
   let captainId;
   if (existing) {
-    db.prepare("UPDATE users SET name=?,active=1,captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(invite.name, invite.pin_hash, invite.pin_ciphertext, stamp, existing.id);
+    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=? AND role='captain'").run(invite.name, authMethod, authMethod === "pin" ? invite.pin_hash : null, stamp, stamp, stamp, existing.id);
     captainId = existing.id;
   } else {
-    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,created_at,updated_at) VALUES(?,?,\'captain\',0,1,0,?,?,?,?)").run(invite.phone, invite.name, invite.pin_hash, invite.pin_ciphertext, stamp, stamp).lastInsertRowid;
+    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,\'captain\',0,1,0,?,NULL,?,'active',?,?,?,?)").run(invite.phone, invite.name, authMethod === "pin" ? invite.pin_hash : null, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
   }
   db.prepare("UPDATE captain_invites SET status='approved',approved_user_id=?,decision_note=?,decided_at=?,updated_at=? WHERE id=? AND status='pending'").run(captainId, note || "تمت الموافقة", stamp, stamp, id);
   audit("captain.join.approved", "captain_invite", id, { captainId, phone: invite.phone });
   let notified = false;
   if (invite.phone) {
-    let pinText = "الرقم السري الذي اخترته محفوظ في النظام.";
-    if (invite.pin_ciphertext) { try { pinText = `الرقم السري الذي اخترته: ${decryptCardCode(invite.pin_ciphertext)}`; } catch {} }
+    const authText = authMethod === "whatsapp" ? "طريقة الدخول: رمز تحقق يُرسل إلى رقم WhatsApp نفسه." : "طريقة الدخول: رقم الهاتف والرمز السري من 5 أرقام الذي اخترته.";
     const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
     notified = await sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن", [
       `الكابتن: ${invite.name}`,
       "تمت الموافقة على طلبك داخل شبكة الجراح.",
       `رقم الهاتف: ${invite.phone}`,
-      pinText,
+      authText,
       `رابط دخول الكابتن المباشر: ${captainAppLink}`,
       "افتح رابط دخول الكابتن المرفق، ثم أدخل رقم هاتفك والرقم السري. هذا الرابط مخصص للدخول بعد الموافقة، وليس لتسجيل كابتن جديد."
     ]);
@@ -2140,29 +2266,69 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   res.json({ success: true, status: "approved", captainId, notified, membership });
 });
 app.post("/api/captain/login", (req, res) => {
-  const username = String(req.body?.username || "").trim();
-  const password = String(req.body?.password || "");
   const pin = String(req.body?.pin || "").trim();
   const rawPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "");
   const phone = phoneWithCountry(rawPhone) || rawPhone;
   if (!phone) return res.status(400).json({ error: "رقم هاتف الكابتن مطلوب" });
-  const user = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone)
-    || db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(rawPhone);
+  if (!consumeRateLimit(loginRate, `${clientAddress(req)}:${phone}`, 10)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  const user = findCaptainByPhone(phone) || findCaptainByPhone(rawPhone);
   if (!user) return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم" });
-  const pinValid = user.captain_pin_hash ? (validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash)) : (username === CAPTAIN_USERNAME && validCaptainPassword(password));
+  if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "pin") return res.status(409).json({ error: "هذا الحساب يستخدم رمز تحقق WhatsApp" });
+  const pinValid = Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash);
   if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
-  if (!user.active) return res.status(403).json({ error: "حساب الكابتن موقوف" });
+  if (!user.active || user.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
+  const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
+  db.prepare("UPDATE users SET captain_last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), user.id);
+  setCaptainSessionCookie(res, token);
+  res.json({ success: true, authMethod: "pin", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
+});
+app.post("/api/captain/whatsapp/request-code", async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (!consumeRateLimit(whatsappAuthRate, `${clientAddress(req)}:${phone}`, 4)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const user = findCaptainByPhone(phone, { activeOnly: true });
+  if (!user) return res.status(404).json({ error: "لا يوجد حساب كابتن مفعل بهذا الرقم" });
+  if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "whatsapp") return res.status(409).json({ error: "هذا الحساب يستخدم الرقم السري من 5 أرقام" });
+  const code = createCaptainWhatsappCode();
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  db.transaction(() => {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
+    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
+  })();
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في شركة الجراح: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  if (!sent) {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
+    return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
+  }
+  audit("captain.whatsapp_code.sent", "user", user.id, { phone: user.phone, expiresAt });
+  res.json({ success: true, expiresAt, message: "تم إرسال رمز التحقق إلى رقم WhatsApp المسجل" });
+});
+app.post("/api/captain/whatsapp/verify", (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const code = String(req.body?.code || "").trim();
+  if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "رقم الهاتف ورمز التحقق مطلوبان" });
+  const user = findCaptainByPhone(phone, { activeOnly: true });
+  if (!user || normalizeCaptainAuthMethod(user.captain_auth_method) !== "whatsapp") return res.status(401).json({ error: "تعذر التحقق من الحساب" });
+  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
+  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز التحقق؛ اطلب رمزًا جديدًا" });
+  db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
+  if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return res.status(401).json({ error: "رمز التحقق غير صحيح" });
+  const stamp = now();
+  db.prepare("UPDATE captain_auth_challenges SET verified_at=? WHERE id=?").run(stamp, challenge.id);
+  db.prepare("UPDATE users SET captain_whatsapp_verified_at=?,captain_last_login_at=?,updated_at=? WHERE id=?").run(stamp, stamp, stamp, user.id);
   const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
   setCaptainSessionCookie(res, token);
-  res.json({ success: true, user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
+  audit("captain.whatsapp_login.verified", "user", user.id, { phone: user.phone });
+  res.json({ success: true, authMethod: "whatsapp", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: true } });
 });
 app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
   res.json({ success: true });
 });
 app.get("/api/captain/overview", requireCaptain, (req, res) => {
-  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
-  if (!user || !user.active) return res.status(403).json({ error: "Captain account is inactive" });
+  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+  if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
   const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.captain_cents,o.created_at,o.updated_at,
     COALESCE((SELECT -SUM(w.amount_cents) FROM wallet_ledger w WHERE w.user_id=o.captain_user_id AND w.order_id=o.id AND w.type='captain_fee'),0) AS captain_fee_cents
@@ -2178,7 +2344,7 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
   const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
   res.setHeader("Cache-Control", "no-store");
   res.json({
-    user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) },
+    user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
     earnings: { gross: money(totals?.settled_gross_cents || 0), fees: money(fees?.cents || 0), net: money((totals?.settled_gross_cents || 0) - (fees?.cents || 0)) },
     entries,
@@ -2531,7 +2697,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
   const amountCents = Math.round(amount * 100);
   const signedAmount = direction === "credit" ? amountCents : -amountCents;
-  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE user_id=? AND type IN ('admin_credit','admin_debit') AND details_json LIKE ? LIMIT 1").get(id, `%\\"idempotencyKey\\":\\"${idempotencyKey.replace(/[\\%_]/g, "\\$&")}\\"%`);
+  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
   const nextBalance = captain.wallet_cents + signedAmount;
   if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `Debit exceeds the captain debt limit (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
@@ -2539,7 +2705,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (
   const stamp = now();
   const ledgerId = db.transaction(() => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "dashboard" }));
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "dashboard" }), idempotencyKey);
     audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
     return result.lastInsertRowid;
   })();
@@ -3007,8 +3173,24 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
 
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
-  const rows = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE role='captain' ORDER BY active DESC, id DESC").all();
-  res.json({ captains: rows.map((row) => ({ ...row, balance: money(row.wallet_cents) })) });
+  const rows = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
+    COUNT(CASE WHEN o.status IN ('accepted','completed') THEN 1 END) AS confirmed_orders,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.price_cents ELSE 0 END),0) AS gross_fares_cents,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.producer_cents ELSE 0 END),0) AS captain_fee_cents,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.company_cents ELSE 0 END),0) AS company_commission_cents,
+    MAX(CASE WHEN o.status IN ('accepted','completed') THEN o.accepted_at END) AS last_confirmed_at
+    FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id
+    WHERE u.role='captain' AND u.account_status<>'merged'
+    GROUP BY u.id ORDER BY u.active DESC,u.id DESC`).all();
+  res.json({ captains: rows.map((row) => ({
+    ...row,
+    authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
+    balance: money(row.wallet_cents),
+    grossFares: money(row.gross_fares_cents),
+    captainFees: money(row.captain_fee_cents),
+    companyCommission: money(row.company_commission_cents),
+    netEarnings: money(Number(row.gross_fares_cents || 0) - Number(row.captain_fee_cents || 0)),
+  })) });
 });
 app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
@@ -3033,19 +3215,23 @@ app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => 
 app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();
+  const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod || "whatsapp");
+  const pin = String(req.body?.pin || "").trim();
   if (!/^\d{8,15}$/.test(phone) || !name || name.length > 100) return res.status(400).json({ error: "Captain name and a valid phone are required" });
-  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "PIN must contain exactly 5 digits" });
+  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
   if (existing && existing.role !== "captain") return res.status(409).json({ error: "Phone is already assigned to another role" });
   const stamp = now();
+  const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
   if (existing) {
-    db.prepare("UPDATE users SET name=?,active=1,updated_at=? WHERE id=?").run(name, stamp, existing.id);
-    audit("captain.reactivated", "user", existing.id, { phone, name });
+    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?").run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
+    audit("captain.reactivated", "user", existing.id, { phone, name, authMethod });
     void addCaptainToConfiguredGroup({ phone, name });
     void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
     return res.json({ success: true, id: existing.id, reactivated: true, accountLinkSent: true });
   }
-  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?)").run(phone, name, stamp, stamp);
-  audit("captain.created", "user", result.lastInsertRowid, { phone, name });
+  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?,'active',?,?,?,?)").run(phone, name, pinHash, authMethod, stamp, stamp, stamp, stamp);
+  audit("captain.created", "user", result.lastInsertRowid, { phone, name, authMethod });
   void addCaptainToConfiguredGroup({ phone, name });
   void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
   res.status(201).json({ success: true, id: result.lastInsertRowid, accountLinkSent: true });
@@ -3053,13 +3239,13 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
 app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
-  const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE id=? AND role='captain'").get(id);
+  const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,captain_auth_method,captain_whatsapp_verified_at,captain_last_login_at,is_bot,created_at,updated_at FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
-  const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.created_at,o.updated_at,p.name AS producer_name
+  const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.accepted_at,o.settlement_state,o.created_at,o.updated_at,p.name AS producer_name
     FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id);
   const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(captain_cents),0) AS earnings_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
-  res.json({ captain: { ...captain, balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, earnings: money(totals.earnings_cents) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
+  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN price_cents ELSE 0 END),0) AS gross_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN producer_cents ELSE 0 END),0) AS fee_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN company_cents ELSE 0 END),0) AS company_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
+  res.json({ captain: { ...captain, authMethod: normalizeCaptainAuthMethod(captain.captain_auth_method), balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, grossEarnings: money(totals.gross_cents), captainFees: money(totals.fee_cents), companyCommission: money(totals.company_cents), netEarnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)), earnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), captainFee: money(order.producer_cents), netEarnings: money(Number(order.price_cents || 0) - Number(order.producer_cents || 0)), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
 });
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
@@ -3068,7 +3254,7 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const name = req.body.name === undefined ? captain.name : String(req.body.name).trim();
   const active = req.body.active === undefined ? captain.active : (req.body.active ? 1 : 0);
   if (!name || name.length > 100) return res.status(400).json({ error: "Captain name is invalid" });
-  db.prepare("UPDATE users SET name=?,active=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, now(), id);
+  db.prepare("UPDATE users SET name=?,active=?,account_status=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, active ? "active" : "suspended", now(), id);
   audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
   void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", captainPhone: captain.phone, lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`, active ? "يمكن للكابتن استخدام بوابة التشغيل." : "تم إيقاف الدخول والحركات المالية للحساب." ] });
   res.json({ success: true, id, active, name });
@@ -3080,17 +3266,74 @@ app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   if (!captain) return res.status(404).json({ error: "Captain not found" });
   const trips = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id=?").get(id).count;
   const ledger = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(id).count;
-  const cards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=?").get(id).count;
-  if (captain.wallet_cents !== 0 || trips || ledger || cards) return res.status(409).json({ error: "لا يمكن حذف كابتن لديه رحلات أو حركات مالية أو رصيد غير مُسوّى. استخدم الإيقاف عن العمل بدلًا من الحذف.", reasons: { balance: money(captain.wallet_cents), trips, ledger, redeemedCards: cards } });
+  const cards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?").get(id, id).count;
+  const aliases = db.prepare("SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id=?").get(id).count;
+  if (captain.wallet_cents !== 0 || trips || ledger || cards || aliases) return res.status(409).json({ error: "لا يمكن حذف كابتن لديه رحلات أو حركات مالية أو رصيد أو أسماء بديلة مرتبطة. استخدم الإيقاف عن العمل بدلًا من الحذف.", reasons: { balance: money(captain.wallet_cents), trips, ledger, cards, aliases } });
   db.transaction(() => { db.prepare("DELETE FROM captain_invites WHERE approved_user_id=?").run(id); db.prepare("DELETE FROM users WHERE id=? AND role='captain'").run(id); })();
   audit("captain.deleted", "user", id, { phone: captain.phone, name: captain.name });
   res.json({ success: true, deleted: id });
+});
+app.get("/api/admin/captains/:id/merge-preview", requireAdmin, (req, res) => {
+  const sourceId = Number(req.params.id);
+  const targetId = Number(req.query.targetId);
+  if (!Number.isInteger(sourceId) || !Number.isInteger(targetId) || sourceId === targetId) return res.status(400).json({ error: "Source and target captain ids are required" });
+  const source = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status FROM users WHERE id=? AND role='captain'").get(sourceId);
+  const target = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status FROM users WHERE id=? AND role='captain'").get(targetId);
+  if (!source || !target) return res.status(404).json({ error: "Captain account not found" });
+  const references = {
+    captainOrders: db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id=? OR pending_captain_user_id=?").get(sourceId, sourceId).count,
+    producerOrders: db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=?").get(sourceId).count,
+    ledger: db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(sourceId).count,
+    cards: db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE assigned_captain_id=? OR redeemed_by=?").get(sourceId, sourceId).count,
+    aliases: db.prepare("SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id=?").get(sourceId).count,
+  };
+  res.json({ source: { ...source, balance: money(source.wallet_cents) }, target: { ...target, balance: money(target.wallet_cents) }, references, resultingBalance: money(Number(source.wallet_cents || 0) + Number(target.wallet_cents || 0)), confirmation: `MERGE ${sourceId} INTO ${targetId}` });
+});
+app.post("/api/admin/captains/:id/merge", requireAdmin, async (req, res) => {
+  const sourceId = Number(req.params.id);
+  const targetId = Number(req.body?.targetId);
+  const reason = String(req.body?.reason || "").trim().slice(0, 240);
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (!Number.isInteger(sourceId) || !Number.isInteger(targetId) || sourceId === targetId || confirmation !== `MERGE ${sourceId} INTO ${targetId}` || !reason) return res.status(400).json({ error: "Target, reason, and exact merge confirmation are required" });
+  const source = db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(sourceId);
+  const target = db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(targetId);
+  if (!source || !target) return res.status(404).json({ error: "Captain account not found" });
+  if (source.account_status === "merged" || target.account_status === "merged") return res.status(409).json({ error: "A merged account cannot be merged again" });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-captain-merge-${sourceId}-into-${targetId}-${Date.now()}.sqlite`;
+  await db.backup(path.join(backupDir, backupName));
+  const stamp = now();
+  const details = db.transaction(() => {
+    const counts = {
+      captainOrders: db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,updated_at=? WHERE captain_user_id=?").run(targetId, target.phone, target.name, stamp, sourceId).changes,
+      pendingOrders: db.prepare("UPDATE orders SET pending_captain_user_id=?,updated_at=? WHERE pending_captain_user_id=?").run(targetId, stamp, sourceId).changes,
+      producerOrders: db.prepare("UPDATE orders SET producer_user_id=?,producer_phone_snapshot=?,producer_name_snapshot=?,updated_at=? WHERE producer_user_id=?").run(targetId, target.phone, target.name, stamp, sourceId).changes,
+      ledger: db.prepare("UPDATE wallet_ledger SET user_id=? WHERE user_id=?").run(targetId, sourceId).changes,
+      cardsAssigned: db.prepare("UPDATE topup_cards SET assigned_captain_id=? WHERE assigned_captain_id=?").run(targetId, sourceId).changes,
+      cardsRedeemed: db.prepare("UPDATE topup_cards SET redeemed_by=? WHERE redeemed_by=?").run(targetId, sourceId).changes,
+      invites: db.prepare("UPDATE captain_invites SET approved_user_id=? WHERE approved_user_id=?").run(targetId, sourceId).changes,
+      settlementsCaptain: db.prepare("UPDATE order_settlements SET captain_user_id=? WHERE captain_user_id=?").run(targetId, sourceId).changes,
+      settlementsProducer: db.prepare("UPDATE order_settlements SET producer_user_id=? WHERE producer_user_id=?").run(targetId, sourceId).changes,
+    };
+    db.prepare("UPDATE captain_phone_aliases SET captain_user_id=? WHERE captain_user_id=?").run(targetId, sourceId);
+    db.prepare("INSERT INTO captain_phone_aliases(phone,captain_user_id,created_at) VALUES(?,?,?) ON CONFLICT(phone) DO UPDATE SET captain_user_id=excluded.captain_user_id").run(source.phone, targetId, stamp);
+    const mergedPhone = `merged:${sourceId}:${source.phone}`;
+    const targetBalance = Number(target.wallet_cents || 0) + Number(source.wallet_cents || 0);
+    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(targetBalance, stamp, targetId);
+    db.prepare("UPDATE users SET phone=?,wallet_cents=0,active=0,account_status='merged',merged_into_user_id=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE id=?").run(mergedPhone, targetId, stamp, sourceId);
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(sourceId);
+    db.prepare("INSERT INTO captain_merge_history(source_captain_id,target_captain_id,source_phone,target_phone,details_json,created_at) VALUES(?,?,?,?,?,?)").run(sourceId, targetId, source.phone, target.phone, JSON.stringify({ reason, counts, sourceBalanceCents: source.wallet_cents, targetBalanceBeforeCents: target.wallet_cents, targetBalanceAfterCents: targetBalance, backupName }), stamp);
+    audit("captain.merged", "user", targetId, { sourceId, sourcePhone: source.phone, targetPhone: target.phone, reason, counts, backupName });
+    return { counts, targetBalance };
+  })();
+  res.json({ success: true, sourceId, targetId, backupName, ...details, balance: money(details.targetBalance) });
 });
 app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
   const deletePreviousPlain = req.body?.deletePreviousPlain === true;
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم كابتن أردني صحيح مطلوب" });
-  const captain = db.prepare("SELECT id,phone,name,active,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  const captain = db.prepare("SELECT id,phone,name,active,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (!captain) return res.status(404).json({ error: "الكابتن غير مسجل في النظام" });
   if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
@@ -3133,7 +3376,7 @@ app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) =
   const amountCents = Math.round(amount * 100);
   if (amountCents < 1) return res.status(400).json({ error: "Amount is too small" });
   const signedAmount = direction === "credit" ? amountCents : -amountCents;
-  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE user_id=? AND type IN ('admin_credit','admin_debit') AND details_json LIKE ? LIMIT 1").get(id, `%\\"idempotencyKey\\":\\"${idempotencyKey.replace(/[\\%_]/g, "\\$&")}\\"%`);
+  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
   const nextBalance = captain.wallet_cents + signedAmount;
   if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `Debit exceeds the captain debt limit (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
@@ -3142,7 +3385,7 @@ app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) =
   const stamp = now();
   const apply = db.transaction(() => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details));
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
     audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance });
     return result.lastInsertRowid;
   });
@@ -3369,6 +3612,77 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
     } else skipped.push({ messageId, reason: "not_created" });
   }
   res.status(201).json({ success: true, groupId, scanned: messages.length, candidates: candidates.length, imported, skipped });
+});
+app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const hours = Math.max(1, Math.min(Number(req.body?.hours || 24), 168));
+  const requestedLimit = Number(req.body?.limit || 300);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 300;
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-confirmed-orders-import-${Date.now()}.sqlite`;
+  await db.backup(path.join(backupDir, backupName));
+  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
+    const timestamp = Number(message?.timestamp || 0) * 1000;
+    return message && !message.fromMe && String(message.from || "") === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
+  });
+  const imported = [];
+  const unlinked = [];
+  const skipped = [];
+  for (const acceptance of acceptanceMessages) {
+    const acceptanceMessageId = serializedMessageId(acceptance);
+    if (!acceptanceMessageId || typeof acceptance.getQuotedMessage !== "function") { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
+    const quoted = await withTimeout(acceptance.getQuotedMessage(), 12000, null);
+    const parsed = quoted ? parseOrder(quoted.body) : null;
+    if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
+    const reactions = typeof acceptance.getReactions === "function" ? await withTimeout(acceptance.getReactions(), 12000, []) : [];
+    const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
+    const reactionPhones = [];
+    let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
+    for (const reaction of thumbs) {
+      for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
+        const senderPhone = phoneWithCountry(sender?.senderId || sender?.id?._serialized || "");
+        if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
+      }
+    }
+    if (!reactedByBot && reactionPhones.some((phone) => isBotReactionSender(phone, connectedBotPhone()))) reactedByBot = true;
+    const orderMessageId = serializedMessageId(quoted);
+    const producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quoted.author || quoted?._data?.author || "");
+    const confirmedByPhone = reactedByBot ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
+    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction" }); continue; }
+    const acceptanceContact = typeof acceptance.getContact === "function" ? await withTimeout(acceptance.getContact(), 8000, null) : null;
+    const captainPhone = phoneWithCountry(acceptance.author || acceptance?._data?.author || acceptanceContact?.number || "");
+    const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
+    const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
+    const producer = quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone);
+    let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
+    if (!order) {
+      if (producer) order = createOrderRecord({ messageId: orderMessageId, groupId, body: String(quoted.body || ""), producer, parsed });
+      else {
+        const stamp = new Date(Number(quoted.timestamp || 0) * 1000 || Date.now()).toISOString();
+        const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
+        const created = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,settlement_state,import_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'unlinked','group_history_24h',?,?)").run(orderNo, orderMessageId, groupId, String(quoted.body || ""), cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, null, producerPhone || null, quoted?._data?.notifyName || null, "open", stamp, stamp);
+        order = db.prepare("SELECT * FROM orders WHERE id=?").get(created.lastInsertRowid);
+      }
+    }
+    if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
+    const acceptedAt = new Date(Number(acceptance.timestamp || 0) * 1000 || Date.now()).toISOString();
+    if (!captain || !producer) {
+      db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
+      unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: !captain ? "captain_not_registered" : "producer_not_registered" });
+      continue;
+    }
+    const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt, confirmedByPhone });
+    if (result.state === "accepted") imported.push({ orderNo: order.order_no, captainId: captain.id, captainPhone: captain.phone });
+    else skipped.push({ orderNo: order.order_no, reason: result.state });
+  }
+  audit("orders.confirmed_history.imported", "group", groupId, { hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, imported: imported.length, unlinked: unlinked.length, skipped: skipped.length, backupName });
+  res.status(201).json({ success: true, groupId, hours, scanned: messages.length, confirmedCandidates: acceptanceMessages.length, imported, unlinked, skipped, backupName });
 });
 app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 5)) return res.status(429).json({ error: "Too many recovery attempts; try again later" });
@@ -3612,8 +3926,50 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
   res.json({ leads: rows });
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
-  res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(row.producer_cents), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
+  res.json({ orders: rows.map((row) => ({ ...row, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(row.producer_cents), captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0)), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+});
+app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
+  const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id IS NULL OR o.settlement_state='unlinked' ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
+  res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
+});
+app.post("/api/admin/orders/:id/link-captain", requireAdmin, (req, res) => {
+  const orderId = Number(req.params.id);
+  const captainId = Number(req.body?.captainId);
+  const applySettlement = req.body?.applySettlement === true;
+  const reason = String(req.body?.reason || "ربط إداري موثق").trim().slice(0, 240);
+  if (!Number.isInteger(orderId) || !Number.isInteger(captainId)) return res.status(400).json({ error: "Valid orderId and captainId are required" });
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+  const captain = db.prepare("SELECT * FROM users WHERE id=? AND role='captain' AND active=1 AND account_status='active'").get(captainId);
+  if (!order || !captain) return res.status(404).json({ error: "Order or active captain not found" });
+  if (order.captain_user_id && Number(order.captain_user_id) !== captainId) return res.status(409).json({ error: "Order is already linked to another captain" });
+  let settlement = null;
+  if (applySettlement && order.status === "accepted" && order.accepted_message_id && order.producer_user_id) {
+    settlement = settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId: order.accepted_message_id, acceptedAt: order.accepted_at || now(), confirmedByPhone: order.confirmed_by_phone || order.producer_phone_snapshot || "" });
+  } else {
+    db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,settlement_state=CASE WHEN settlement_state='unlinked' THEN 'pending' ELSE settlement_state END,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, now(), orderId);
+  }
+  audit("order.captain.linked", "order", orderId, { captainId, applySettlement, settlementState: settlement?.state || "not_applied", reason });
+  res.json({ success: true, orderId, captainId, settlement: settlement?.state || "not_applied" });
+});
+app.post("/api/admin/orders/reconcile-captains", requireAdmin, (req, res) => {
+  const applySettlement = req.body?.applySettlement === true;
+  const rows = db.prepare("SELECT * FROM orders WHERE captain_phone_snapshot IS NOT NULL AND (captain_user_id IS NULL OR settlement_state='unlinked') ORDER BY id").all();
+  const linked = [], settled = [], skipped = [];
+  for (const order of rows) {
+    const captain = findCaptainByPhone(order.captain_phone_snapshot, { activeOnly: true });
+    if (!captain) { skipped.push({ orderNo: order.order_no, reason: "captain_not_registered", phone: order.captain_phone_snapshot }); continue; }
+    if (applySettlement && order.status === "accepted" && order.accepted_message_id && order.producer_user_id) {
+      const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: order.accepted_message_id, acceptedAt: order.accepted_at || now(), confirmedByPhone: order.confirmed_by_phone || order.producer_phone_snapshot || "" });
+      if (["accepted", "already_settled"].includes(result.state)) settled.push({ orderNo: order.order_no, captainId: captain.id, state: result.state });
+      else skipped.push({ orderNo: order.order_no, reason: result.state });
+    } else {
+      db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,settlement_state=CASE WHEN settlement_state='unlinked' THEN 'pending' ELSE settlement_state END,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, now(), order.id);
+      linked.push({ orderNo: order.order_no, captainId: captain.id });
+    }
+  }
+  audit("orders.captain.reconciled", "order", "bulk", { applySettlement, linked: linked.length, settled: settled.length, skipped: skipped.length });
+  res.json({ success: true, applySettlement, linked, settled, skipped });
 });
 app.post("/api/admin/orders/remove-test", requireAdmin, async (req, res) => {
   if (String(req.body?.confirm || "") !== "TEST-3001") return res.status(400).json({ error: "Explicit TEST-3001 confirmation is required" });
@@ -3644,12 +4000,17 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
     groupId: groupId || null,
     orders: rows.map((row) => ({
       ...row,
+      producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل",
+      producer_phone: row.producer_phone || row.producer_phone_snapshot || null,
+      captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل",
+      captain_phone: row.captain_phone || row.captain_phone_snapshot || null,
       price: money(row.price_cents),
       company: money(row.company_cents),
       producerGross: money(row.producer_cents),
       producer: money(row.producer_cents - row.company_cents),
       captain: money(row.captain_cents),
       captainFee: money(row.producer_cents),
+      captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0)),
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
       confirmationMethod: row.accepted_message_id ? "group_reaction" : "recorded_confirmation",
     })),
