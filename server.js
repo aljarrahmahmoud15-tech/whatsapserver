@@ -3614,6 +3614,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       hasMedia: Boolean(message?.hasMedia),
       hasQuotedMessage: Boolean(message?.hasQuotedMsg || message?.__quoted),
       quotedMessageId: serializedMessageId(message?.__quoted),
+      reactions: (Array.isArray(message?.__reactions) ? message.__reactions : []).map((reaction) => ({ emoji: reaction.aggregateEmoji || reaction.reaction || null, hasReactionByMe: Boolean(reaction.hasReactionByMe), senderPhones: (Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => sender.__senderPhone || null).filter(Boolean) })),
       parsedOrder: parseOrder(body),
       captainAcceptance: isCaptainAcceptance(body),
     };
@@ -3697,7 +3698,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     let producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quotedContact?.number || quoted.author || quoted?._data?.author || "");
     if (!quoted.fromMe && !isValidJordanPhone(producerPhone)) producerPhone = phoneWithCountry(quotedContact?.number || "");
     const confirmedByPhone = reactedByBot ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
-    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction" }); continue; }
+    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     let captainPhone = phoneWithCountry(acceptance.__authorPhone || acceptanceContact?.number || liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author?._serialized || acceptance.author || acceptance?._data?.author || "");
     if (!isValidJordanPhone(captainPhone)) captainPhone = phoneWithCountry(acceptanceContact?.number || "");
