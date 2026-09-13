@@ -98,9 +98,9 @@ const context = {
   isBotReactionSender,
   connectedBotPhone: () => "0775696880",
   getSetting: (_key, fallback) => fallback,
-  PRODUCER_RATE_BPS: 1500,
-  SPECIAL_ORDER_RATE_BPS: 2000,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 1500,
+  PRODUCER_RATE_BPS: 1200,
+  SPECIAL_ORDER_RATE_BPS: 1200,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 400,
   CAPTAIN_MIN_BALANCE_CENTS: -200,
   calculateSettlement,
   companyUser: () => ({ ...users[1] }),
@@ -134,9 +134,9 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
   assert.strictEqual(order.status, "accepted", "لايك المنتج على رسالة تم يوثق الطلب");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد اعتماد المنتج");
-  assert.strictEqual(users[3].wallet_cents, -200, "يُسجّل خصم 15% كمديونية مسموحة على رصيد الكابتن");
-  assert.strictEqual(users[2].wallet_cents, 255, "يضاف صافي حصة المنتج بعد عمولة الشركة");
-  assert.strictEqual(users[1].wallet_cents, 45, "تأخذ الشركة 15% من حصة المنتج فقط");
+  assert.strictEqual(users[3].wallet_cents, 20, "يُخصم 4% من محفظة الكابتن الذي شارك تم");
+  assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% من قيمة الطلب لمحفظة المنتج");
+  assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% من قيمة الطلب لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التوثيق");
   console.log("isolated confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

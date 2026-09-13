@@ -1,7 +1,9 @@
-const REGULAR_PRODUCER_RATE_BPS = 1500;
-const SPECIAL_ORDER_PRODUCER_RATE_BPS = 2000;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 1500;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 2000;
+// Approved settlement policy: the producer receives 12% in their wallet,
+// while the captain who confirms the trip pays 4% from their wallet.
+const REGULAR_PRODUCER_RATE_BPS = 1200;
+const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1200;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
 
 function calculateSettlement({
   priceCents,
@@ -17,8 +19,8 @@ function calculateSettlement({
   const producerRateBps = normalizedKind === "order" ? specialOrderProducerRateBps : regularProducerRateBps;
   const producerFeeCents = Math.round(grossCents * producerRateBps / 10000);
   const companyRateBps = normalizedKind === "order" ? specialOrderCompanyFromProducerRateBps : companyFromProducerRateBps;
-  const companyCents = Math.round(producerFeeCents * companyRateBps / 10000);
-  const producerNetCents = producerFeeCents - companyCents;
+  const companyCents = Math.round(grossCents * companyRateBps / 10000);
+  const producerNetCents = producerFeeCents;
   return {
     orderKind: normalizedKind,
     grossCents,
@@ -26,7 +28,7 @@ function calculateSettlement({
     producerFeeCents,
     companyCents,
     producerNetCents,
-    captainFeeCents: producerFeeCents,
+    captainFeeCents: companyCents,
     captainGrossCents: grossCents,
   };
 }

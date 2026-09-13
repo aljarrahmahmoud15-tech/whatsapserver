@@ -41,6 +41,7 @@ const QR_PUBLIC = process.env.QR_PUBLIC === "true";
 const QR_START_TIME = Date.now();
 const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
+const PUBLIC_REPORT_ORIGIN = process.env.PUBLIC_REPORT_ORIGIN || "https://jrahreport-nkgxsmah.manus.space";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
@@ -57,9 +58,9 @@ const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS |
 const BOT_FINANCIAL_MODE = process.env.BOT_FINANCIAL_MODE || "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
 const COMPANY_RATE_BPS = Number(process.env.COMPANY_RATE_BPS || 1500);
-const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1500);
-const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 2000);
-const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 1500);
+const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1200);
+const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 1200);
+const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 400);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -89,7 +90,14 @@ if (!activeAdminToken) {
   } catch {}
 }
 app.disable("x-powered-by");
-app.use(cors(CORS_ORIGIN ? { origin: CORS_ORIGIN, credentials: false } : { origin: false }));
+app.use(cors({
+  credentials: false,
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    const allowed = [CORS_ORIGIN, PUBLIC_REPORT_ORIGIN].filter(Boolean);
+    return callback(null, allowed.includes(origin) ? origin : false);
+  },
+}));
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -1947,6 +1955,10 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
       companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
     });
     const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
+    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
+      audit("order.captain_debt_limit", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+      return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
+    }
     if (projectedCaptainBalance < 0) {
       audit("order.captain_debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
@@ -1960,13 +1972,13 @@ function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
     db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(producerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "15% من حصة المنتج", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "4% من قيمة الطلب من محفظة الكابتن المؤكد", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, botEmployeeProducer ? "صافي حصة منتج البوت الموظف" : "صافي حصة المنتج بعد حصة الشركة", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.captainFeeCents, stamp, captain.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, current.order_kind === "order" ? "خصم 20% من رصيد المنفّذ لأوردر" : "خصم 15% من رصيد المنفّذ", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.captainFeeCents, captainBalance, `ORDER-${current.order_no}`, "خصم 4% من قيمة الطلب من محفظة الكابتن الذي شارك تم", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     audit("order.accepted", "order", orderId, { captainId: captain.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, captainFeeCents: settlement.captainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: producer.phone });
     console.log(`[Order] accepted #${current.order_no} group=${current.group_id} captain=${captain.phone} confirmedBy=${producer.phone}`);
@@ -1990,6 +2002,11 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
       specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
       companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
     });
+    const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.captainFeeCents;
+    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
+      audit("order.history.captain_debt_limit", "order", orderId, { captainId: captain.id, requiredCents: settlement.captainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+      return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
+    }
     const company = companyUser();
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
@@ -2419,6 +2436,43 @@ app.post("/api/auth/logout", (req, res) => {
   res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
   res.json({ success: true });
 });
+app.get("/api/public/operations-feed", (req, res) => {
+  const redact = (value) => String(value || "")
+    .replace(/(?:\+?962|0)?7\d{8,9}/g, "رقم مخفي")
+    .replace(/Bearer\s+\S+/gi, "Bearer مخفي")
+    .slice(0, 280);
+  const groupId = getSetting("group_id", null) || getSetting("active_group_id", null);
+  const recentNotifications = db.prepare("SELECT id,event,title,message,delivery_status,created_at FROM notifications WHERE recipient_role='owner' ORDER BY id DESC LIMIT 12").all().map((row) => ({
+    id: `notification-${row.id}`,
+    type: /error|failed|debt|unlinked|pending/i.test(`${row.event} ${row.title}`) ? "warning" : /info|backup|settings/i.test(`${row.event} ${row.title}`) ? "info" : "success",
+    label: row.delivery_status === "sent" ? "تنبيه تشغيلي" : "يتطلب متابعة",
+    title: redact(row.title),
+    text: redact(row.message),
+    time: row.created_at,
+  }));
+  const recentSettlements = db.prepare("SELECT o.order_no,o.status,o.settlement_state,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.updated_at FROM orders o WHERE o.settlement_state IN ('settled','unlinked','pending') ORDER BY o.updated_at DESC LIMIT 10").all().map((row) => ({
+    orderNo: row.order_no,
+    status: row.status,
+    settlementState: row.settlement_state,
+    price: money(row.price_cents),
+    companyShare: money(row.company_cents),
+    producerShare: money(row.producer_cents),
+    captainCash: money(row.captain_cents || row.price_cents),
+    updatedAt: row.updated_at,
+  }));
+  const groupReceiverReady = Boolean(isReady || baileysReady);
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({
+    success: true,
+    generatedAt: now(),
+    refreshAfterMs: 30000,
+    status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
+    updates: recentNotifications,
+    settlements: recentSettlements,
+    policy: { producerWalletRate: "12%", confirmingCaptainWalletRate: "-4%", captainCashRate: "100%", debtLimit: "-2.00 JOD", idempotent: true },
+  });
+});
+
 app.get("/status", (req, res) => {
   const groupId = getSetting("group_id", null);
   const activeGroupId = getSetting("active_group_id", null);
@@ -3999,7 +4053,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { regular: { captainWalletDeduction: "15%", producerGross: "15%", companyFromProducer: "15%", producerNet: "12.75% من قيمة الطلب" }, order: { captainWalletDeduction: "20%", producerGross: "20%", companyFromProducer: "20%", producerNet: "16% من قيمة الطلب" }, fare: "لا تُضاف قيمة الرحلة الكاملة إلى محفظة المنفّذ" }, confirmation: { method: "لايك المنتج على رسالة تم", settlementAfterConfirmation: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "4% من قيمة الطلب", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: "-2.00 JOD", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "لايك المنتج على رسالة تم", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
