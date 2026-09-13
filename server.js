@@ -1574,22 +1574,12 @@ function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
   const configured = isConfiguredGroup(groupId);
-  const messageId = serializedMessageId(msg);
-  const quotedMessageId = String(
-    msg?._data?.quotedStanzaID ||
-    msg?._data?.contextInfo?.stanzaId ||
-    msg?.quotedMsgId?._serialized ||
-    msg?.quotedMsgId ||
-    ""
-  ).trim() || null;
   const telemetry = {
     at: now(),
     event,
     fromMe: Boolean(msg.fromMe),
     configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
-    messageId,
-    quotedMessageId,
   };
   // Keep the general last-event fields for backward compatibility, but retain
   // separate official/ignored streams so an unrelated group cannot overwrite
@@ -1603,7 +1593,7 @@ function recordGroupMessageTelemetry(event, msg) {
     lastIgnoredGroupEventGroupId = groupId;
     lastIgnoredGroupMessageTelemetry = telemetry;
   }
-  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage} messageId=${messageId || "none"} quotedMessageId=${quotedMessageId || "none"}`);
+  console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage}`);
 }
 
 function baileysJidPhone(jid) {
@@ -1674,12 +1664,13 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
-  if (botGenerated && !parseOrder(body).isOrder && !isCaptainAcceptance(body)) return;
+  if (botGenerated && !parseOrder(body).isOrder) return;
+  const captainAcceptance = String(body || "").trim() === "تم";
   const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
-    const messageId = serializedMessageId(msg);
+    const messageId = String(msg?.id?._serialized || msg?.id || msg?._data?.id || "").trim();
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -1702,26 +1693,33 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (!insertedMessage.changes && !isCaptainAcceptance(body)) return;
+  if (!insertedMessage.changes) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
   }
   if (!body) return;
-  const messageId = serializedMessageId(msg);
+  const messageId = String(msg?.id?._serialized || msg?.id || msg?._data?.id || "").trim();
   if (!messageId) return;
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
-    const producer = botGenerated ? botEmployeeUser() : ensureProducerUser(senderPhone, senderName);
+    const producer = botGenerated
+      ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
+      : ensureProducerUser(senderPhone, senderName);
     if (!producer || producer.active === 0) return;
-    const order = createOrderRecord({ messageId, groupId, body, producer, parsed });
+    const orderCreator = typeof createOrderRecord === "function" ? createOrderRecord : ({ messageId: sourceId, groupId: sourceGroupId, body: rawText, producer: sourceProducer, parsed: sourceParsed }) => {
+      const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
+      const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, sourceId, sourceGroupId, rawText, cents(sourceParsed.price), sourceParsed.origin, sourceParsed.destination, sourceParsed.tripTime, sourceParsed.orderKind, sourceProducer.id, "open", now(), now());
+      return { id: result.lastInsertRowid, order_no: orderNo, price_cents: cents(sourceParsed.price) };
+    };
+    const order = orderCreator({ messageId, groupId, body, producer, parsed });
     if (!order) return;
     if (typeof client !== "undefined" && client && isReady) {
       await sendGroupBrandedMessage(groupId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${order.order_no}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(cents(parsed.price))} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار استلام الكابتن وتأكيد الرحلة."].filter(Boolean)).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
     }
     return;
   }
-  if (!isCaptainAcceptance(body)) return;
+  if (!captainAcceptance) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // يمكن أن يأتي «تم» بعد رسائل عادية؛ نطابق الاقتباس إن وُجد، وإلا نستخدم آخر طلب مفتوح.
   const order = (quoted ? findOrderByQuotedMessage(groupId, quoted) : null) || latestOpenOrder(groupId);
