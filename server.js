@@ -1018,6 +1018,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
         const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
         model.__serializedId = message.id?._serialized || (typeof message.id?.toString === "function" ? message.id.toString() : null);
         model.__timestamp = Number(message.t || model.timestamp || 0) || null;
+        model.fromMe = Boolean(message.id?.fromMe);
         try {
           const { toPn } = window.require("WAWebLidMigrationUtils");
           const authorId = message.author || message.id?.participant || null;
