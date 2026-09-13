@@ -1016,7 +1016,7 @@ async function fetchGroupHistory(groupId, limit) {
       models = models.slice(-requestedLimit);
       const serialize = (message) => {
         const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
-        model.__serializedId = message.id?._serialized || null;
+        model.__serializedId = message.id?._serialized || (typeof message.id?.toString === "function" ? message.id.toString() : null);
         model.__timestamp = Number(message.t || model.timestamp || 0) || null;
         try {
           const { toPn } = window.require("WAWebLidMigrationUtils");
