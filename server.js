@@ -1014,7 +1014,18 @@ async function fetchGroupHistory(groupId, limit) {
       }
       models.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
       models = models.slice(-requestedLimit);
-      const serialize = (message) => window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
+      const serialize = (message) => {
+        const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
+        model.__serializedId = message.id?._serialized || null;
+        model.__timestamp = Number(message.t || model.timestamp || 0) || null;
+        try {
+          const { toPn } = window.require("WAWebLidMigrationUtils");
+          const authorId = message.author || message.id?.participant || null;
+          const phoneId = authorId && toPn ? (toPn(authorId) || authorId) : authorId;
+          model.__authorPhone = phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0];
+        } catch (_) { model.__authorPhone = null; }
+        return model;
+      };
       return { chat: { id: requestedId, isGroup: true }, messages: models.map(serialize) };
     } catch (error) {
       return { chat: null, messages: [], error: String(error?.message || error) };
@@ -1653,6 +1664,7 @@ function resolveGroupChatId(message) {
 function serializedMessageId(message) {
   const raw = message && message.id;
   return String(
+    message?.__serializedId ||
     raw?._serialized ||
     raw?.id ||
     message?._data?.id ||
@@ -3631,8 +3643,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
-    const timestamp = Number(message?.timestamp || 0) * 1000;
-    return message && !message.fromMe && String(message.from || "") === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
+    const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
+    const fromGroup = String(message?.from?._serialized || message?.from || "");
+    return message && !message.fromMe && fromGroup === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
   });
   const imported = [];
   const unlinked = [];
@@ -3651,17 +3664,20 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
     for (const reaction of thumbs) {
       for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
-        const senderPhone = phoneWithCountry(sender?.senderId || sender?.id?._serialized || "");
+        const senderPhone = await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
         if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
       }
     }
     if (!reactedByBot && reactionPhones.some((phone) => isBotReactionSender(phone, connectedBotPhone()))) reactedByBot = true;
     const orderMessageId = serializedMessageId(quoted);
-    const producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quoted.author || quoted?._data?.author || "");
+    const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
+    let producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quotedContact?.number || quoted.author || quoted?._data?.author || "");
+    if (!quoted.fromMe && !isValidJordanPhone(producerPhone)) producerPhone = phoneWithCountry(quotedContact?.number || "");
     const confirmedByPhone = reactedByBot ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
     if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction" }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
-    const captainPhone = phoneWithCountry(liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author || acceptance?._data?.author || acceptanceContact?.number || "");
+    let captainPhone = phoneWithCountry(acceptance.__authorPhone || acceptanceContact?.number || liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author?._serialized || acceptance.author || acceptance?._data?.author || "");
+    if (!isValidJordanPhone(captainPhone)) captainPhone = phoneWithCountry(acceptanceContact?.number || "");
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
     const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
     const producer = quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone);
@@ -3676,7 +3692,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       }
     }
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
-    const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || 0) * 1000 || Date.now()).toISOString();
+    const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now()).toISOString();
     if (!captain || !producer) {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
       unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: !captain ? "captain_not_registered" : "producer_not_registered" });
