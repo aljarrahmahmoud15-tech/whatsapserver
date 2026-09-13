@@ -990,9 +990,10 @@ async function resolveReadableGroupChat(groupId) {
   return chat && typeof chat.fetchMessages === "function" ? chat : null;
 }
 async function fetchGroupHistory(groupId, limit) {
-  const chat = await resolveReadableGroupChat(groupId);
+  let chat = await resolveReadableGroupChat(groupId);
+  if (!chat) chat = await resolveGroupChat(groupId);
   if (chat) {
-    const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 45000, []);
+    const messages = await withTimeout(chat.fetchMessages({ limit, fromMe: false }), 90000, []);
     return { chat, messages: Array.isArray(messages) ? messages : [] };
   }
   if (!client?.pupPage) return { chat: null, messages: [] };
