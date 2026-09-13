@@ -1036,8 +1036,10 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
         } catch (_) { model.__quoted = null; }
         try {
           const reactionCollection = await collections.Reactions.find(model.__serializedId);
-          const reactionRows = reactionCollection?.reactions?.serialize ? reactionCollection.reactions.serialize() : [];
+          const directReactions = message.reactions?.serialize ? message.reactions.serialize() : (Array.isArray(message.reactions) ? message.reactions : []);
+          const reactionRows = reactionCollection?.reactions?.serialize ? reactionCollection.reactions.serialize() : directReactions;
           const { toPn } = window.require("WAWebLidMigrationUtils");
+          model.__hasReaction = Boolean(message.hasReaction || model.hasReaction || reactionRows.length);
           model.__reactions = (Array.isArray(reactionRows) ? reactionRows : []).map((reaction) => ({
             ...reaction,
             senders: (Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => {
@@ -1046,7 +1048,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
               return { ...sender, __senderPhone: phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0] };
             }),
           }));
-        } catch (_) { model.__reactions = []; }
+        } catch (_) { model.__reactions = []; model.__hasReaction = Boolean(message.hasReaction || model.hasReaction); }
         return model;
       };
       return { chat: { id: requestedId, isGroup: true }, messages: await Promise.all(models.map(serialize)) };
@@ -3618,6 +3620,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       hasMedia: Boolean(message?.hasMedia),
       hasQuotedMessage: Boolean(message?.hasQuotedMsg || message?.__quoted),
       quotedMessageId: serializedMessageId(message?.__quoted),
+      hasReaction: Boolean(message?.hasReaction || message?.__hasReaction),
       reactions: (Array.isArray(message?.__reactions) ? message.__reactions : []).map((reaction) => ({ emoji: reaction.aggregateEmoji || reaction.reaction || null, hasReactionByMe: Boolean(reaction.hasReactionByMe), senderPhones: (Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => sender.__senderPhone || null).filter(Boolean) })),
       parsedOrder: parseOrder(body),
       captainAcceptance: isCaptainAcceptance(body),
@@ -3659,8 +3662,8 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const hours = Math.max(1, Math.min(Number(req.body?.hours || 24), 168));
-  const requestedLimit = Number(req.body?.limit || 300);
-  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 300;
+  const requestedLimit = Number(req.body?.limit || 1000);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 2000)) : 1000;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
