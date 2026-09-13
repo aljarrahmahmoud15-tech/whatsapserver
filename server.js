@@ -1003,7 +1003,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
       const collections = window.require("WAWebCollections");
       const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [] };
-      const filter = (message) => !message.isNotification && (includeOutgoingMessages || !message.id?.fromMe) && String(message.from || "") === requestedId;
+      const filter = (message) => !message.isNotification && (includeOutgoingMessages || !message.id?.fromMe);
       let models = chat.msgs.getModelsArray().filter(filter);
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
