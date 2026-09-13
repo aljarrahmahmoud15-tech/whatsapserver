@@ -3596,9 +3596,10 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   await readGroupSnapshot(groupId);
-  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing });
   if (!chat) return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();
@@ -3620,7 +3621,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
     };
   });
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, groupId, count: rows.length, messages: rows });
+  res.json({ success: true, groupId, includeOutgoing, count: rows.length, messages: rows });
 });
 app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
