@@ -1911,6 +1911,17 @@ async function resolveReactionSenderPhone(reaction) {
   return phoneWithCountry(contact && contact.number ? contact.number : "");
 }
 
+async function hasVisibleThumbReaction(messageId) {
+  if (!client || !client.pupPage || !messageId) return false;
+  return Boolean(await withTimeout(client.pupPage.evaluate((targetId) => {
+    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(targetId) : targetId.replace(/["\\]/g, "\\$&");
+    const node = document.querySelector(`[data-id="${escaped}"]`);
+    if (!node) return false;
+    const reactionNodes = Array.from(node.querySelectorAll('[data-testid*="reaction"], [aria-label*="تفاعل"], [aria-label*="reaction"]'));
+    return reactionNodes.some((item) => String(item.textContent || item.getAttribute("aria-label") || "").includes("👍"));
+  }, messageId), 8000, false));
+}
+
 function settlePendingOrder(orderId, expectedMessageId, producerPhone) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
@@ -3691,6 +3702,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
+    const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
     const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
     const quoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
@@ -3718,8 +3730,8 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       const body = String(message?.__caption || message?.body || "");
       return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
     });
-    const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
-    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard }); continue; }
+    const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || (visibleThumbReaction ? "visual_thumb_unresolved" : "");
+    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     let captainPhone = phoneWithCountry(acceptance.__authorPhone || acceptanceContact?.number || liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author?._serialized || acceptance.author || acceptance?._data?.author || "");
     if (!isValidJordanPhone(captainPhone)) captainPhone = phoneWithCountry(acceptanceContact?.number || "");
@@ -3738,9 +3750,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     }
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
     const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now()).toISOString();
-    if (!captain || !producer) {
+    if (!captain || !producer || confirmedByPhone === "visual_thumb_unresolved") {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
-      unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: !captain ? "captain_not_registered" : "producer_not_registered" });
+      unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: confirmedByPhone === "visual_thumb_unresolved" ? "reaction_owner_unresolved" : (!captain ? "captain_not_registered" : "producer_not_registered") });
       continue;
     }
     const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt, confirmedByPhone });
