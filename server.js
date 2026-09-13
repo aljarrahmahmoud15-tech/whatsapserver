@@ -1914,9 +1914,11 @@ async function resolveReactionSenderPhone(reaction) {
 async function hasVisibleThumbReaction(messageId) {
   if (!client || !client.pupPage || !messageId) return false;
   return Boolean(await withTimeout(client.pupPage.evaluate((targetId) => {
-    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(targetId) : targetId.replace(/["\\]/g, "\\$&");
-    const node = document.querySelector(`[data-id="${escaped}"]`);
+    const rawId = String(targetId).split("_")[2] || String(targetId);
+    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(rawId) : rawId.replace(/["\\]/g, "\\$&");
+    const node = document.querySelector(`[data-id*="${escaped}"]`);
     if (!node) return false;
+    if (String(node.textContent || "").includes("👍")) return true;
     const reactionNodes = Array.from(node.querySelectorAll('[data-testid*="reaction"], [aria-label*="تفاعل"], [aria-label*="reaction"]'));
     return reactionNodes.some((item) => String(item.textContent || item.getAttribute("aria-label") || "").includes("👍"));
   }, messageId), 8000, false));
@@ -3700,7 +3702,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 750));
     }
     const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
     const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
