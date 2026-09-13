@@ -1000,13 +1000,15 @@ async function fetchGroupHistory(groupId, limit) {
   const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit) => {
     try {
       const wid = window.require("WAWebWidFactory").createWid(requestedId);
-      const store = window.Store || {};
-      const chat = store.Chat?.get ? store.Chat.get(wid) : null;
+      const collections = window.require("WAWebCollections");
+      const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [] };
       const filter = (message) => !message.isNotification && !message.id?.fromMe && String(message.from || "") === requestedId;
       let models = chat.msgs.getModelsArray().filter(filter);
-      while (models.length < requestedLimit && store.ConversationMsgs?.loadEarlierMsgs) {
-        const earlier = await store.ConversationMsgs.loadEarlierMsgs(chat);
+      let loader = null;
+      try { loader = window.require("WAWebConversationMsgs"); } catch (_) { loader = window.Store?.ConversationMsgs || null; }
+      while (models.length < requestedLimit && loader?.loadEarlierMsgs) {
+        const earlier = await loader.loadEarlierMsgs(chat);
         if (!earlier?.length) break;
         models = [...earlier.filter(filter), ...models];
       }
@@ -3637,11 +3639,13 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   const skipped = [];
   for (const acceptance of acceptanceMessages) {
     const acceptanceMessageId = serializedMessageId(acceptance);
-    if (!acceptanceMessageId || typeof acceptance.getQuotedMessage !== "function") { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
-    const quoted = await withTimeout(acceptance.getQuotedMessage(), 12000, null);
+    if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
+    const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
+    if (typeof liveAcceptance.getQuotedMessage !== "function") { skipped.push({ messageId: acceptanceMessageId, reason: "acceptance_not_hydrated" }); continue; }
+    const quoted = await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null);
     const parsed = quoted ? parseOrder(quoted.body) : null;
     if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
-    const reactions = typeof acceptance.getReactions === "function" ? await withTimeout(acceptance.getReactions(), 12000, []) : [];
+    const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, []) : [];
     const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
     const reactionPhones = [];
     let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
@@ -3656,9 +3660,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quoted.author || quoted?._data?.author || "");
     const confirmedByPhone = reactedByBot ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
     if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction" }); continue; }
-    const acceptanceContact = typeof acceptance.getContact === "function" ? await withTimeout(acceptance.getContact(), 8000, null) : null;
-    const captainPhone = phoneWithCountry(acceptance.author || acceptance?._data?.author || acceptanceContact?.number || "");
-    const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
+    const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
+    const captainPhone = phoneWithCountry(liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author || acceptance?._data?.author || acceptanceContact?.number || "");
+    const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
     const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
     const producer = quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone);
     let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -3672,7 +3676,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       }
     }
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
-    const acceptedAt = new Date(Number(acceptance.timestamp || 0) * 1000 || Date.now()).toISOString();
+    const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || 0) * 1000 || Date.now()).toISOString();
     if (!captain || !producer) {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
       unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: !captain ? "captain_not_registered" : "producer_not_registered" });
