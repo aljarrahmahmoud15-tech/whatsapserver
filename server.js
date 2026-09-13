@@ -1019,6 +1019,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
         model.__serializedId = message.id?._serialized || (typeof message.id?.toString === "function" ? message.id.toString() : null);
         model.__timestamp = Number(message.t || model.timestamp || 0) || null;
         model.fromMe = Boolean(message.id?.fromMe);
+        model.__caption = String(message.caption || message.text || model.caption || "");
         try {
           const { toPn } = window.require("WAWebLidMigrationUtils");
           const authorId = message.author || message.id?.participant || null;
@@ -3612,6 +3613,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       fromMe: Boolean(message?.fromMe),
       author: message?.author || null,
       body,
+      caption: message?.__caption || null,
       type: message?.type || null,
       hasMedia: Boolean(message?.hasMedia),
       hasQuotedMessage: Boolean(message?.hasQuotedMsg || message?.__quoted),
@@ -3702,7 +3704,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
     const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
       const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
-      const body = String(message?.body || "");
+      const body = String(message?.__caption || message?.body || "");
       return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
     });
     const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || "";
