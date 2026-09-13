@@ -3687,6 +3687,10 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   for (const acceptance of acceptanceMessages) {
     const acceptanceMessageId = serializedMessageId(acceptance);
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
+    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
+      await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
     const quoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
