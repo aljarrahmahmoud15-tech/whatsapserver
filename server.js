@@ -1014,7 +1014,7 @@ async function fetchGroupHistory(groupId, limit) {
       }
       models.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
       models = models.slice(-requestedLimit);
-      const serialize = (message) => {
+      const serialize = async (message) => {
         const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
         model.__serializedId = message.id?._serialized || (typeof message.id?.toString === "function" ? message.id.toString() : null);
         model.__timestamp = Number(message.t || model.timestamp || 0) || null;
@@ -1024,9 +1024,30 @@ async function fetchGroupHistory(groupId, limit) {
           const phoneId = authorId && toPn ? (toPn(authorId) || authorId) : authorId;
           model.__authorPhone = phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0];
         } catch (_) { model.__authorPhone = null; }
+        try {
+          const quoted = window.require("WAWebQuotedMsgModelUtils").getQuotedMsgObj(message);
+          if (quoted) {
+            model.__quoted = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(quoted) : quoted.serialize();
+            model.__quoted.__serializedId = quoted.id?._serialized || (typeof quoted.id?.toString === "function" ? quoted.id.toString() : null);
+            model.__quoted.__timestamp = Number(quoted.t || model.__quoted.timestamp || 0) || null;
+          }
+        } catch (_) { model.__quoted = null; }
+        try {
+          const reactionCollection = await collections.Reactions.find(model.__serializedId);
+          const reactionRows = reactionCollection?.reactions?.serialize ? reactionCollection.reactions.serialize() : [];
+          const { toPn } = window.require("WAWebLidMigrationUtils");
+          model.__reactions = (Array.isArray(reactionRows) ? reactionRows : []).map((reaction) => ({
+            ...reaction,
+            senders: (Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => {
+              const senderId = sender.senderId || sender.id;
+              const phoneId = senderId && toPn ? (toPn(senderId) || senderId) : senderId;
+              return { ...sender, __senderPhone: phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0] };
+            }),
+          }));
+        } catch (_) { model.__reactions = []; }
         return model;
       };
-      return { chat: { id: requestedId, isGroup: true }, messages: models.map(serialize) };
+      return { chat: { id: requestedId, isGroup: true }, messages: await Promise.all(models.map(serialize)) };
     } catch (error) {
       return { chat: null, messages: [], error: String(error?.message || error) };
     }
@@ -3582,8 +3603,8 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();
     return {
-      id: message?.id?._serialized || null,
-      timestamp: message?.timestamp || null,
+      id: serializedMessageId(message),
+      timestamp: message?.timestamp || message?.__timestamp || null,
       from: message?.from || null,
       to: message?.to || null,
       fromMe: Boolean(message?.fromMe),
@@ -3591,7 +3612,8 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       body,
       type: message?.type || null,
       hasMedia: Boolean(message?.hasMedia),
-      hasQuotedMessage: Boolean(message?.hasQuotedMsg),
+      hasQuotedMessage: Boolean(message?.hasQuotedMsg || message?.__quoted),
+      quotedMessageId: serializedMessageId(message?.__quoted),
       parsedOrder: parseOrder(body),
       captainAcceptance: isCaptainAcceptance(body),
     };
@@ -3608,17 +3630,17 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
   const { chat, messages } = await fetchGroupHistory(groupId, limit);
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidates = (Array.isArray(messages) ? messages : [])
-    .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
-    .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+    .filter((message) => message && !message.fromMe && String(message?.from?._serialized || message.from || "") === groupId && parseOrder(message.body).isOrder)
+    .sort((a, b) => Number(a.timestamp || a.__timestamp || 0) - Number(b.timestamp || b.__timestamp || 0));
   const imported = [];
   const skipped = [];
   for (const message of candidates) {
-    const messageId = message.id && message.id._serialized;
+    const messageId = serializedMessageId(message);
     if (!messageId) { skipped.push({ reason: "missing_message_id" }); continue; }
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
     if (existing) { skipped.push({ messageId, reason: "already_registered", orderNo: existing.order_no }); continue; }
     const parsed = parseOrder(message.body);
-    const senderPhone = phoneWithCountry(message.author || message.from || "");
+    const senderPhone = phoneWithCountry(message.__authorPhone || message?.author?._serialized || message.author || message?.from?._serialized || message.from || "");
     const producer = senderPhone ? findActiveRegisteredUser(senderPhone) : null;
     const order = producer ? createOrderRecord({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (order) {
@@ -3654,17 +3676,18 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const acceptanceMessageId = serializedMessageId(acceptance);
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
     const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
-    if (typeof liveAcceptance.getQuotedMessage !== "function") { skipped.push({ messageId: acceptanceMessageId, reason: "acceptance_not_hydrated" }); continue; }
-    const quoted = await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null);
+    const quoted = typeof liveAcceptance.getQuotedMessage === "function"
+      ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
+      : acceptance.__quoted || null;
     const parsed = quoted ? parseOrder(quoted.body) : null;
     if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
-    const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, []) : [];
+    const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, acceptance.__reactions || []) : (acceptance.__reactions || []);
     const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
     const reactionPhones = [];
     let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
     for (const reaction of thumbs) {
       for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
-        const senderPhone = await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
+        const senderPhone = phoneWithCountry(sender?.__senderPhone || "") || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
         if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
       }
     }
