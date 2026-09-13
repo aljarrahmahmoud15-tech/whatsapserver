@@ -3669,6 +3669,10 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = `pre-confirmed-orders-import-${Date.now()}.sqlite`;
   await db.backup(path.join(backupDir, backupName));
+  if (client.interface && typeof client.interface.openChatWindow === "function") {
+    await withTimeout(client.interface.openChatWindow(groupId), 15000, null);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
   const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
   if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
