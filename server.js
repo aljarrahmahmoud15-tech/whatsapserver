@@ -1732,6 +1732,73 @@ function serializedMessageId(message) {
   ).trim() || null;
 }
 
+const whatsappLidPhoneCache = new Map();
+function serializedWhatsappUserId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (value._serialized) return String(value._serialized).trim();
+  if (value.id) return serializedWhatsappUserId(value.id);
+  if (value.user && value.server) return `${value.user}@${value.server}`;
+  return "";
+}
+function directJordanPhoneFromWhatsappValue(value) {
+  if (!value) return "";
+  const serialized = serializedWhatsappUserId(value);
+  if (/@lid$/i.test(serialized)) return "";
+  const raw = typeof value === "object"
+    ? (value.number || value.userid || value.phoneNumber?.user || value.phoneNumber?._serialized || serialized)
+    : serialized;
+  const normalized = phoneWithCountry(String(raw || "").split("@")[0].split(":")[0]);
+  return isValidJordanPhone(normalized) ? normalized : "";
+}
+async function resolveWhatsappUserPhone(...values) {
+  for (const value of values) {
+    const direct = directJordanPhoneFromWhatsappValue(value);
+    if (direct) return direct;
+  }
+  const lidIds = [...new Set(values.map(serializedWhatsappUserId).filter((id) => /@lid$/i.test(id)))];
+  for (const lid of lidIds) {
+    const cached = whatsappLidPhoneCache.get(lid);
+    if (cached && isValidJordanPhone(cached)) return cached;
+  }
+  if (!client || !isReady || !lidIds.length || typeof client.getContactLidAndPhone !== "function") return "";
+  try {
+    const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
+    for (let index = 0; index < lidIds.length; index += 1) {
+      const mapping = Array.isArray(mappings) ? mappings[index] : null;
+      const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+      if (!phone) continue;
+      const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
+      whatsappLidPhoneCache.set(lid, phone);
+      whatsappLidPhoneCache.set(lidIds[index], phone);
+      return phone;
+    }
+  } catch (error) {
+    console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
+  }
+  return "";
+}
+async function resolveMessageSenderPhone(message, knownContact = null) {
+  if (message?.fromMe) return connectedBotPhone();
+  let contact = knownContact;
+  if (!contact && typeof message?.getContact === "function") {
+    contact = await withTimeout(message.getContact(), 8000, null);
+  }
+  return resolveWhatsappUserPhone(
+    contact,
+    contact?.number,
+    contact?.id,
+    contact?._data?.id,
+    contact?._data?.userid,
+    message?.__authorPhone,
+    message?.author,
+    message?._data?.author,
+    message?.id?.participant,
+    message?._data?.id?.participant,
+    message?._data?.participant,
+  );
+}
+
 function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
@@ -1811,8 +1878,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const body = String(msg.body || "").trim();
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
-  const candidates = [msg.fromMe ? connectedBotPhone() : "", contact && contact.number, msg.author, msg._data && msg._data.author];
-  const senderPhone = candidates.map(phoneWithCountry).find(isValidJordanPhone) || "";
+  const senderPhone = msg.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(msg, contact);
   const primarySender = Boolean(msg.fromMe) && senderPhone === connectedBotPhone();
   if (!isConfiguredGroup(groupId)) {
     if (setupCommand) {
@@ -1923,11 +1989,11 @@ function reactionId(value) {
 async function resolveReactionSenderPhone(reaction) {
   const rawId = reaction && reaction.senderId;
   const serialized = reactionId(rawId) || String(rawId || "");
-  const direct = phoneWithCountry(serialized.replace(/@.*$/, ""));
-  if (isValidJordanPhone(direct)) return direct;
+  const direct = directJordanPhoneFromWhatsappValue(serialized);
+  if (direct) return direct;
   if (!client || !isReady || !serialized) return "";
   const contact = await withTimeout(client.getContactById(serialized), 8000, null);
-  return phoneWithCountry(contact && contact.number ? contact.number : "");
+  return resolveWhatsappUserPhone(contact, serialized);
 }
 
 async function hasVisibleThumbReaction(messageId) {
@@ -3886,7 +3952,7 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
     if (existing) { skipped.push({ messageId, reason: "already_registered", orderNo: existing.order_no }); continue; }
     const parsed = parseOrder(message.body);
-    const senderPhone = phoneWithCountry(message.__authorPhone || message?.author?._serialized || message.author || message?.from?._serialized || message.from || "");
+    const senderPhone = await resolveMessageSenderPhone(message);
     const producer = senderPhone ? findActiveRegisteredUser(senderPhone) : null;
     const order = producer ? createOrderRecord({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (order) {
@@ -3942,15 +4008,14 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
     for (const reaction of thumbs) {
       for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
-        const senderPhone = phoneWithCountry(sender?.__senderPhone || "") || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
+        const senderPhone = directJordanPhoneFromWhatsappValue(sender?.__senderPhone) || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
         if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
       }
     }
     if (!reactedByBot && reactionPhones.some((phone) => isBotReactionSender(phone, connectedBotPhone()))) reactedByBot = true;
     const orderMessageId = serializedMessageId(quoted);
     const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
-    let producerPhone = quoted.fromMe ? connectedBotPhone() : phoneWithCountry(quotedContact?.number || quoted.author || quoted?._data?.author || "");
-    if (!quoted.fromMe && !isValidJordanPhone(producerPhone)) producerPhone = phoneWithCountry(quotedContact?.number || "");
+    const producerPhone = quoted.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(quoted, quotedContact);
     const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
     const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
       const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
@@ -3960,8 +4025,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || (visibleThumbReaction ? "visual_thumb_unresolved" : "");
     if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
-    let captainPhone = phoneWithCountry(acceptance.__authorPhone || acceptanceContact?.number || liveAcceptance.author || liveAcceptance?._data?.author || acceptance.author?._serialized || acceptance.author || acceptance?._data?.author || "");
-    if (!isValidJordanPhone(captainPhone)) captainPhone = phoneWithCountry(acceptanceContact?.number || "");
+    const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
     const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
     const producer = quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone);
