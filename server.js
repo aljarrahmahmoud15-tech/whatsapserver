@@ -883,7 +883,7 @@ function ensureProducerUser(phone, name) {
 function ensureCaptainUser(phone, name) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
-  return findCaptainByPhone(normalized, { activeOnly: true });
+  return findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
@@ -1863,7 +1863,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const order = (quoted ? findOrderByQuotedMessage(groupId, quoted) : null) || latestOpenOrder(groupId);
   if (!order) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
-  if (!captain || (captain.role !== "captain" && captain.is_bot !== 1)) return;
+  if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
   const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
   const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
   const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
@@ -2342,7 +2342,13 @@ app.post("/api/captain/login", (req, res) => {
   if (!phone) return res.status(400).json({ error: "رقم هاتف الكابتن مطلوب" });
   if (!consumeRateLimit(loginRate, `${clientAddress(req)}:${phone}`, 10)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
   const user = findCaptainByPhone(phone) || findCaptainByPhone(rawPhone);
-  if (!user) return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم" });
+  if (!user) {
+    const invite = db.prepare("SELECT status FROM captain_invites WHERE phone=? ORDER BY id DESC LIMIT 1").get(phone) || db.prepare("SELECT status FROM captain_invites WHERE phone=? ORDER BY id DESC LIMIT 1").get(rawPhone);
+    if (invite?.status === "pending") return res.status(409).json({ error: "تسجيلك قيد مراجعة الشركة؛ لا يمكن الدخول قبل اعتماد الكابتن" });
+    if (invite?.status === "issued") return res.status(409).json({ error: "أكمل تسجيل الكابتن لأول مرة من رابط التسجيل قبل محاولة الدخول" });
+    if (invite?.status === "rejected") return res.status(403).json({ error: "تم رفض طلب تسجيل الكابتن؛ راجع الشركة لإعادة التفعيل" });
+    return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم؛ تأكد من رقم الهاتف أو سجّل الكابتن لأول مرة" });
+  }
   if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "pin") return res.status(409).json({ error: "هذا الحساب يستخدم رمز تحقق WhatsApp" });
   const pinValid = Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash);
   if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
