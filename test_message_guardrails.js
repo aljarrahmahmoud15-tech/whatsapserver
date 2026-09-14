@@ -19,7 +19,7 @@ const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const messageGuard = server.indexOf("const botGenerated = isBotGeneratedMessage(msg);");
 const messageInsert = server.indexOf("INSERT OR IGNORE INTO messages", server.indexOf("async function handleIncomingMessage("));
 assert.ok(messageGuard > -1 && messageGuard < messageInsert, "bot message guard must run before message persistence");
-assert.match(server, /isBotReactionSender\(producerPhone, connectedBotPhone\(\)\)/);
+assert.match(server, /isBotReactionSender\(confirmerPhone, connectedBotPhone\(\)\)/);
 assert.match(server, /isBotFinancialRole\(normalized, BOT_PHONE, role\)/);
 
 const handlerStart = server.indexOf("async function handleIncomingMessage(");

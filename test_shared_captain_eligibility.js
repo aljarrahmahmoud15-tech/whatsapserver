@@ -12,6 +12,14 @@ assert.ok(
   'inactive or suspended users remain blocked from claiming orders'
 );
 assert.ok(
+  server.includes('findActiveRegisteredUser(confirmerPhone)') && server.includes('confirmer.is_bot === 1'),
+  'all active registered users can confirm while bot and company identities remain blocked'
+);
+assert.ok(
+  server.includes('confirmingCaptainFeeCents') && server.includes('خصم 12% لصاحب تنزيل الطلب و4% للشركة'),
+  'confirming captain pays the downloader share plus company share'
+);
+assert.ok(
   server.includes('تسجيلك قيد مراجعة الشركة؛ لا يمكن الدخول قبل اعتماد الكابتن'),
   'pending captain registrations receive a clear status message'
 );

@@ -10,6 +10,7 @@ assert.deepStrictEqual(regular, {
   companyCents: 80,
   producerNetCents: 240,
   captainFeeCents: 80,
+  confirmingCaptainFeeCents: 320,
   captainGrossCents: 2000,
 });
 
@@ -22,6 +23,7 @@ assert.deepStrictEqual(special, {
   companyCents: 80,
   producerNetCents: 240,
   captainFeeCents: 80,
+  confirmingCaptainFeeCents: 320,
   captainGrossCents: 2000,
 });
 

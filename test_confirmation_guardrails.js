@@ -13,9 +13,9 @@ assert.match(server, /ضع 👍 على رسالة «تم» نفسها/);
 assert.match(server, /if \(!isConfiguredGroup\(target\.from\)\) return;/);
 assert.match(server, /رسائل البوت العادية ليست رسائل تشغيلية/);
 assert.match(server, /isBotGeneratedMessage\(msg\)/);
-assert.match(server, /isBotReactionSender\(producerPhone, connectedBotPhone\(\)\)/);
-assert.match(server, /phoneWithCountry\(producer\.phone\) === phoneWithCountry\(producerPhone\)/);
-assert.match(server, /producer\.role === "company" && isGroupSetupOwner\(producerPhone\)/);
+assert.match(server, /isBotReactionSender\(confirmerPhone, connectedBotPhone\(\)\)/);
+assert.match(server, /findActiveRegisteredUser\(confirmerPhone\)/);
+assert.match(server, /confirmingCaptainFeeCents/);
 assert.match(server, /pending_message_id/);
 assert.match(server, /order\.accepted/);
 
