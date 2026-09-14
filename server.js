@@ -1873,8 +1873,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (!captainAcceptance) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  // يمكن أن يأتي «تم» بعد رسائل عادية؛ نطابق الاقتباس إن وُجد، وإلا نستخدم آخر طلب مفتوح.
-  const order = (quoted ? findOrderByQuotedMessage(groupId, quoted) : null) || latestOpenOrder(groupId);
+  // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
+  if (!quoted) return;
+  const order = findOrderByQuotedMessage(groupId, quoted);
   if (!order) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;

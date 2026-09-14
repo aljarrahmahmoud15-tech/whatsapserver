@@ -10,6 +10,8 @@ assert.match(server, /if \(!reaction \|\| reaction\.reaction !== "👍"\) return
 assert.match(server, /const requestKindMatch = normalized\.match\(\/\(\?:راكب/);
 assert.match(server, /استقبال\\s\+مطار/);
 assert.match(server, /ضع 👍 على رسالة «تم» نفسها/);
+assert.match(server, /if \(!quoted\) return;/);
+assert.match(server, /const order = findOrderByQuotedMessage\(groupId, quoted\)/);
 assert.match(server, /if \(!isConfiguredGroup\(target\.from\)\) return;/);
 assert.match(server, /رسائل البوت العادية ليست رسائل تشغيلية/);
 assert.match(server, /isBotGeneratedMessage\(msg\)/);
