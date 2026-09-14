@@ -1306,7 +1306,7 @@ function formatAcceptance(order, captain, producer) {
     `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
-    "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية.",
+    "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
   ]);
 }
 function formatPendingConfirmation(order, captain) {
@@ -1889,29 +1889,13 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!pending) return;
   audit("order.pending_shared_captain_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
-  // تفاعل البوت 👍 على رسالة «تم» يعتمد الطلب مباشرة، ولا يتطلب تفاعل المنتج.
-  if (producer) {
-    const isDryRun = String(order.raw_text || "").includes("TEST-DRY-RUN");
-    if (isDryRun) {
-      const reacted = await reactToCaptainAcceptance(msg, messageId);
-      if (!reacted) return;
-      const stampNow = now();
-      const result = db.prepare("UPDATE orders SET status='test_confirmed',captain_user_id=?,accepted_message_id=?,accepted_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, messageId, stampNow, stampNow, order.id, messageId);
-      if (result.changes === 1) {
-        audit("order.test_confirmed", "order", order.id, { captainId: captain.id, messageId, financialSettlement: false });
-        await sendGroupBrandedMessage(groupId, "تم تثبيت الاختبار", [`🧪 رقم الاختبار: #${order.order_no}`, `🚕 المنفّذ: ${captain.name}`, `💰 القيمة الاختبارية: ${money(order.price_cents)} JOD`, "✅ اعتمد البوت الاختبار ووضع 👍 على رسالة «تم»." , "🚫 اختبار جاف: لم تُسجّل أي حركة محفظة أو مديونية."]).catch((error) => console.error("[WhatsApp] dry-run confirmation card:", error.message));
-      }
-      return;
-    }
-    const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) return;
-    const confirmed = settlePendingOrder(order.id, messageId, captain.phone);
-    if (confirmed.state === "accepted") {
-      await sendGroupBrandedMessage(groupId, "تم تثبيت الطلب", [`🆔 رقم الطلب: #${confirmed.order.order_no}`, `🚕 الكابتن المنفّذ: ${confirmed.captain.name}`, `💰 القيمة: ${money(confirmed.order.price_cents)} JOD`, "✅ اعتمد البوت الطلب ووضع 👍 على رسالة «تم»." ]).catch((error) => console.error("[WhatsApp] bot confirmation card:", error.message));
-    }
-    return;
-  }
-  await sendGroupBrandedMessage(groupId, "بانتظار اعتماد المنتج", [`🆔 رقم الطلب: #${order.order_no}`, `🚕 وصل رد «تم» من الكابتن: ${captain.name}`, "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.", "⏳ لا توجد تسوية مالية قبل اعتماد المنتج."]).catch((error) => console.error("[WhatsApp] pending confirmation send:", error.message));
+  // لا يعتمد «تم» وحده: يجب أن يضع كابتن تنزيل الطلب 👍 على رسالة «تم».
+  await sendGroupBrandedMessage(groupId, "بانتظار اعتماد كابتن تنزيل الطلب", [
+    `🆔 رقم الطلب: #${order.order_no}`,
+    `🚕 الكابتن الذي وضع تم: ${captain.name}`,
+    `✅ يجب على كابتن تنزيل الطلب${producer ? ` (${producer.name})` : ""} وضع 👍 على رسالة «تم» نفسها.`,
+    "⏳ لا توجد تسوية مالية قبل اعتماد كابتن تنزيل الطلب."
+  ]).catch((error) => console.error("[WhatsApp] pending downloader approval send:", error.message));
 }
 
 function reactionId(value) {
@@ -2043,12 +2027,14 @@ async function handleMessageReaction(reaction) {
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
-  const confirmerPhone = await resolveReactionSenderPhone(reaction);
-  const confirmer = findActiveRegisteredUser(confirmerPhone);
-  if (!confirmerPhone || !confirmer || confirmer.is_bot === 1 || confirmer.role === "company" || isBlockedPhone(confirmerPhone) || isBotReactionSender(confirmerPhone, connectedBotPhone())) return;
+  const approverPhone = await resolveReactionSenderPhone(reaction);
   const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
-  const result = settlePendingOrder(pending.id, messageId, confirmerPhone);
+  const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
+  const approver = findActiveRegisteredUser(approverPhone);
+  if (!approverPhone || !producer || !approver || approver.is_bot === 1 || approver.role === "company" || isBlockedPhone(approverPhone) || isBotReactionSender(approverPhone, connectedBotPhone())) return;
+  if (phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+  const result = settlePendingOrder(pending.id, messageId, approverPhone);
   if (result.state === "unauthorized" || result.state === "stale") return;
   if (result.state === "debt_limit") {
     await sendGroupBrandedMessage(target.from, "تعذر توثيق الرحلة", [`⚠️ سيؤدي هذا الحجز إلى تجاوز حد مديونية الكابتن ${result.captain.name}.`, `الحد المسموح: ${money(result.debtLimitCents)} JOD.`, "لم تُسجّل أي تسوية مالية."]).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));

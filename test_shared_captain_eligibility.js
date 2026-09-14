@@ -32,8 +32,8 @@ assert.ok(
   'captain registration immediately approves and activates the account'
 );
 assert.ok(
-  server.includes('confirmingCaptainWalletDebit: "4% من قيمة الطلب"'),
-  'the agreed accounting rule remains unchanged'
+  server.includes('confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)"'),
+  'the agreed 12% plus 4% accounting rule is exposed'
 );
 
 console.log('shared captain eligibility and registration status guardrails verified');
