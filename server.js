@@ -3304,6 +3304,56 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
   res.json({ ...groupCreateState, inFlight: groupCreateInFlight, configuredGroupId: getSetting("group_id", null) });
 });
 
+app.get("/api/admin/users", requireAdmin, (req, res) => {
+  normalizeBotIdentity();
+  const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,captain_auth_method,created_at,updated_at FROM users ORDER BY is_bot DESC,role,name,id").all();
+  res.json({ users: users.map((user) => ({ ...user, balance: money(user.wallet_cents), protected: Boolean(user.is_bot || user.role === "company") })) });
+});
+app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(id);
+  if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
+  if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن تغيير دوره أو حذفه" });
+  const name = req.body.name === undefined ? user.name : String(req.body.name).trim();
+  const phone = req.body.phone === undefined ? user.phone : phoneWithCountry(String(req.body.phone));
+  const role = req.body.role === undefined ? user.role : String(req.body.role).trim().toLowerCase();
+  const active = req.body.active === undefined ? Number(user.active) : (req.body.active ? 1 : 0);
+  const pin = req.body.pin === undefined ? null : String(req.body.pin || "").trim();
+  if (!name || name.length > 100) return res.status(400).json({ error: "اسم المستخدم غير صالح" });
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (!["producer", "captain"].includes(role)) return res.status(400).json({ error: "الدور يجب أن يكون captain أو producer" });
+  const duplicate = db.prepare("SELECT id FROM users WHERE phone=? AND id<>? LIMIT 1").get(phone, id);
+  if (duplicate) return res.status(409).json({ error: "رقم الهاتف مستخدم لحساب آخر" });
+  if (pin && (!validCaptainPin(pin) || role !== "captain")) return res.status(400).json({ error: "الرمز السري يجب أن يكون 5 أرقام ويُستخدم للكابتن فقط" });
+  const stamp = now();
+  const pinHash = role === "captain" && pin ? bcrypt.hashSync(pin, 10) : (role === "captain" ? user.captain_pin_hash : null);
+  const authMethod = role === "captain" ? (user.captain_auth_method || "pin") : "pin";
+  db.prepare("UPDATE users SET phone=?,name=?,role=?,active=?,account_status=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method=?,updated_at=? WHERE id=?")
+    .run(phone, name, role, active, active ? "active" : "suspended", pinHash, authMethod, stamp, id);
+  audit("admin.user.updated", "user", id, { phone, name, role, active, pinChanged: Boolean(pin) });
+  res.json({ success: true, user: db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,captain_auth_method,created_at,updated_at FROM users WHERE id=?").get(id) });
+});
+app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot FROM users WHERE id=? LIMIT 1").get(id);
+  if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
+  if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن حذفه" });
+  const refs = {
+    orders: db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?").get(id, id, id).count,
+    ledger: db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(id).count,
+    settlements: db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?").get(id, id).count,
+    cards: db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?").get(id, id).count,
+  };
+  if (Object.values(refs).some((count) => Number(count) > 0) || Number(user.wallet_cents) !== 0) return res.status(409).json({ error: "لا يمكن حذف مستخدم مرتبط بطلبات أو محاسبة أو بطاقات أو رصيد. استخدم الإيقاف بدل الحذف.", reasons: { ...refs, balance: money(user.wallet_cents) } });
+  db.transaction(() => {
+    db.prepare("DELETE FROM captain_phone_aliases WHERE captain_user_id=?").run(id);
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(id);
+    db.prepare("UPDATE captain_invites SET approved_user_id=NULL WHERE approved_user_id=?").run(id);
+    db.prepare("DELETE FROM users WHERE id=?").run(id);
+  })();
+  audit("admin.user.deleted", "user", id, { phone: user.phone, name: user.name, role: user.role });
+  res.json({ success: true, deleted: id });
+});
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
