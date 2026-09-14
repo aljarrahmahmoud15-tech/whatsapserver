@@ -57,10 +57,12 @@ const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(3
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
 const BOT_FINANCIAL_MODE = process.env.BOT_FINANCIAL_MODE || "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
-const COMPANY_RATE_BPS = Number(process.env.COMPANY_RATE_BPS || 1500);
-const PRODUCER_RATE_BPS = Number(process.env.PRODUCER_RATE_BPS || 1200);
-const SPECIAL_ORDER_RATE_BPS = Number(process.env.SPECIAL_ORDER_RATE_BPS || 1200);
-const COMPANY_FROM_PRODUCER_RATE_BPS = Number(process.env.COMPANY_FROM_PRODUCER_RATE_BPS || 400);
+// Approved immutable settlement policy: 12% to the captain who posted the
+// order and 4% to the company, both charged to the confirming captain.
+const COMPANY_RATE_BPS = 400;
+const PRODUCER_RATE_BPS = 1200;
+const SPECIAL_ORDER_RATE_BPS = 1200;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -805,10 +807,11 @@ function ensureSystemUsers() {
   db.prepare("UPDATE users SET role='captain',account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,updated_at=? WHERE is_bot=0 AND role='producer'").run(stamp);
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
-  if (getSetting("company_rate_bps") === null) setSetting("company_rate_bps", COMPANY_RATE_BPS);
-  if (getSetting("producer_rate_bps") === null) setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
-  if (getSetting("special_order_rate_bps") === null) setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
-  if (getSetting("company_from_producer_rate_bps") === null) setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  // Normalize legacy deployments that still contain the former 15% settings.
+  setSetting("company_rate_bps", COMPANY_RATE_BPS);
+  setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
+  setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
+  setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
   if (getSetting("currency") === null) setSetting("currency", "JOD");
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
 }
@@ -1957,10 +1960,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!order) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
-  const rateProducer = Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS));
-  const rateSpecialOrder = Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS));
-  const rateCompanyFromProducer = Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS));
-  const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: rateProducer, specialOrderProducerRateBps: rateSpecialOrder, companyFromProducerRateBps: rateCompanyFromProducer });
+  const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
     if (!current || current.status !== "open" || current.pending_message_id) return false;
@@ -2023,9 +2023,10 @@ function settlePendingOrder(orderId, expectedMessageId, confirmerPhone) {
     const settlement = calculateSettlement({
       priceCents: current.price_cents,
       orderKind: current.order_kind,
-      regularProducerRateBps: Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS)),
-      specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
-      companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
+      regularProducerRateBps: PRODUCER_RATE_BPS,
+      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
+      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
+      specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
     });
     const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
@@ -2071,9 +2072,10 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const settlement = calculateSettlement({
       priceCents: current.price_cents,
       orderKind: current.order_kind,
-      regularProducerRateBps: Number(getSetting("producer_rate_bps", PRODUCER_RATE_BPS)),
-      specialOrderProducerRateBps: Number(getSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS)),
-      companyFromProducerRateBps: Number(getSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS)),
+      regularProducerRateBps: PRODUCER_RATE_BPS,
+      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
+      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
+      specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
     });
     const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {

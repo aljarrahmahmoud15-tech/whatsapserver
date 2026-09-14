@@ -43,5 +43,26 @@ assert.ok(
   server.includes('confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)"'),
   'the agreed 12% plus 4% accounting rule is exposed'
 );
+assert.ok(
+  server.includes('const PRODUCER_RATE_BPS = 1200;') &&
+  server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
+  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 400;'),
+  'the approved 12% downloader and 4% company rates are immutable policy constants'
+);
+assert.ok(
+  server.includes('setSetting("producer_rate_bps", PRODUCER_RATE_BPS);') &&
+  server.includes('setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);'),
+  'legacy stored settlement settings are normalized during startup'
+);
+assert.doesNotMatch(
+  server,
+  /regularProducerRateBps:\s*Number\(getSetting\("producer_rate_bps"/,
+  'settlement cannot reuse stale producer-rate settings'
+);
+assert.doesNotMatch(
+  server,
+  /companyFromProducerRateBps:\s*Number\(getSetting\("company_from_producer_rate_bps"/,
+  'settlement cannot reuse stale company-rate settings'
+);
 
 console.log('shared captain eligibility and registration status guardrails verified');
