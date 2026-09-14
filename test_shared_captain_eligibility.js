@@ -8,6 +8,10 @@ assert.ok(
   'active registered operational users can participate as captains'
 );
 assert.ok(
+  server.includes("UPDATE users SET role='captain'") && server.includes('if (role !== "captain")'),
+  'all human users are migrated and maintained as captains'
+);
+assert.ok(
   server.includes('captain.active !== 1 || captain.account_status !== "active"'),
   'inactive or suspended users remain blocked from claiming orders'
 );

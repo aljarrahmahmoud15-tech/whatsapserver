@@ -800,6 +800,9 @@ function runtimeHealth() {
 function ensureSystemUsers() {
   const stamp = now();
   normalizeBotIdentity(stamp);
+  // Every human subscriber is a captain. Only the internal company and bot
+  // identities retain their operational roles.
+  db.prepare("UPDATE users SET role='captain',account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,updated_at=? WHERE is_bot=0 AND role='producer'").run(stamp);
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
   if (getSetting("company_rate_bps") === null) setSetting("company_rate_bps", COMPANY_RATE_BPS);
@@ -3400,13 +3403,13 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   const pin = req.body.pin === undefined ? null : String(req.body.pin || "").trim();
   if (!name || name.length > 100) return res.status(400).json({ error: "اسم المستخدم غير صالح" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
-  if (!["producer", "captain"].includes(role)) return res.status(400).json({ error: "الدور يجب أن يكون captain أو producer" });
+  if (role !== "captain") return res.status(400).json({ error: "كل المستخدمين البشريين يُعاملون ككابتن" });
   const duplicate = db.prepare("SELECT id FROM users WHERE phone=? AND id<>? LIMIT 1").get(phone, id);
   if (duplicate) return res.status(409).json({ error: "رقم الهاتف مستخدم لحساب آخر" });
-  if (pin && (!validCaptainPin(pin) || role !== "captain")) return res.status(400).json({ error: "الرمز السري يجب أن يكون 5 أرقام ويُستخدم للكابتن فقط" });
+  if (pin && !validCaptainPin(pin)) return res.status(400).json({ error: "الرمز السري يجب أن يكون 5 أرقام" });
   const stamp = now();
-  const pinHash = role === "captain" && pin ? bcrypt.hashSync(pin, 10) : (role === "captain" ? user.captain_pin_hash : null);
-  const authMethod = role === "captain" ? (user.captain_auth_method || "pin") : "pin";
+  const pinHash = pin ? bcrypt.hashSync(pin, 10) : user.captain_pin_hash;
+  const authMethod = user.captain_auth_method || "pin";
   db.prepare("UPDATE users SET phone=?,name=?,role=?,active=?,account_status=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method=?,updated_at=? WHERE id=?")
     .run(phone, name, role, active, active ? "active" : "suspended", pinHash, authMethod, stamp, id);
   audit("admin.user.updated", "user", id, { phone, name, role, active, pinChanged: Boolean(pin) });
