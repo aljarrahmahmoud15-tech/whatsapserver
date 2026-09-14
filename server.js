@@ -4237,7 +4237,10 @@ app.listen(PORT, () => {
 
 function isRecoverableBrowserLifecycleError(error) {
   const message = String(error && error.message || error || "");
-  return /Execution context was destroyed|Target closed|Session closed|Protocol error/i.test(message);
+  // During WhatsApp LOGOUT/disconnect, an async page evaluation can finish
+  // after Chromium has already detached its frame. The disconnect handler
+  // owns retrying this recoverable browser-lifecycle failure.
+  return /Execution context was destroyed|Target closed|Session closed|Protocol error|Attempted to use detached Frame|Frame was detached/i.test(message);
 }
 process.on("unhandledRejection", (reason) => {
   if (!isRecoverableBrowserLifecycleError(reason)) {
