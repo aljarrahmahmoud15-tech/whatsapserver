@@ -2588,7 +2588,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12%", confirmingCaptainWalletRate: "-4%", captainCashRate: "100%", debtLimit: "-2.00 JOD", idempotent: true },
+    policy: { producerWalletRate: "12%", confirmingCaptainWalletRate: "-16% (12% downloader + 4% company)", captainCashRate: "100%", debtLimit: "-2.00 JOD", idempotent: true },
   });
 });
 
@@ -4222,7 +4222,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "4% من قيمة الطلب", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: "-2.00 JOD", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "لايك المنتج على رسالة تم", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: "-2.00 JOD", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
