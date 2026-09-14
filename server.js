@@ -2241,7 +2241,7 @@ app.get("/api/captain/invites/:token", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ invite: { ...invite, canSubmit: invite.status === "issued" || invite.status === "pending" } });
 });
-app.post("/api/captain/invites/:token/apply", (req, res) => {
+app.post("/api/captain/invites/:token/apply", async (req, res) => {
   expireCaptainInvites();
   const publicToken = getSetting("captain_public_invite_token", null);
   let createdInviteToken = null;
@@ -2271,10 +2271,30 @@ app.post("/api/captain/invites/:token/apply", (req, res) => {
   if (existing && existing.role === "captain" && existing.id !== invite.approved_user_id) return res.status(409).json({ error: "يوجد حساب كابتن بهذا الرقم مسبقًا" });
   const stamp = now();
   const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
-  db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,submitted_at=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
-    .run(name, phone, pinHash, authMethod, stamp, stamp, invite.id);
-  audit("captain.join.requested", "captain_invite", invite.id, { name, phone, authMethod }, null);
-  res.status(202).json({ success: true, status: "pending", token: createdInviteToken || req.params.token, message: "تم إرسال طلبك إلى الشركة للموافقة" });
+  let captainId = existing?.id || null;
+  if (existing) {
+    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=? AND role='captain'")
+      .run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
+  } else {
+    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,NULL,?,'active',?,?,?,?)")
+      .run(phone, name, pinHash, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
+  }
+  db.prepare("UPDATE captain_invites SET status='approved',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,approved_user_id=?,submitted_at=COALESCE(submitted_at,?),decided_at=?,decision_note=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
+    .run(name, phone, pinHash, authMethod, captainId, stamp, stamp, "تم الاعتماد والتفعيل تلقائيًا عند التسجيل", stamp, invite.id);
+  audit("captain.join.auto_approved", "captain_invite", invite.id, { captainId, name, phone, authMethod }, null);
+  const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
+  const authText = authMethod === "whatsapp" ? "طريقة الدخول: اطلب رمز تحقق WhatsApp إلى رقمك." : "طريقة الدخول: استخدم رقم الهاتف والرمز السري الذي اخترته.";
+  const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
+  const notified = captain.phone ? await sendCaptainOperationsCard(`${phone}@c.us`, "تم تسجيل وتفعيل الكابتن", [
+    `الكابتن: ${name}`,
+    "تم تسجيل حسابك واعتماده وتفعيله مباشرة داخل شبكة الجراح.",
+    `رقم الهاتف: ${phone}`,
+    authText,
+    `رابط الدخول المباشر: ${captainAppLink}`
+  ]).catch(() => false) : false;
+  void notifyOperations({ event: "captain.join.auto_approved", title: "تسجيل كابتن مباشر", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "تم إنشاء الحساب واعتماده وتفعيله تلقائيًا.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
+  res.status(201).json({ success: true, status: "approved", activated: true, captainId, notified, membership, token: createdInviteToken || req.params.token, message: "تم تسجيل الكابتن واعتماد حسابه وتفعيله مباشرة" });
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();

@@ -20,6 +20,10 @@ assert.ok(
   'unsubmitted captain registrations receive a clear next step'
 );
 assert.ok(
+  server.includes('status=\'approved\',name=?,phone=?,pin_hash=?') && server.includes('activated: true'),
+  'captain registration immediately approves and activates the account'
+);
+assert.ok(
   server.includes('confirmingCaptainWalletDebit: "4% من قيمة الطلب"'),
   'the agreed accounting rule remains unchanged'
 );
