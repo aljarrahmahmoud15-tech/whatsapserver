@@ -889,15 +889,27 @@ function findActiveRegisteredUser(phone) {
     || db.prepare("SELECT * FROM users WHERE phone=? AND active=1 AND account_status='active' LIMIT 1").get(String(phone || "").trim());
 }
 function ensureProducerUser(phone, name) {
-  const normalized = phoneWithCountry(phone);
-  if (!normalized) return null;
-  const existing = findActiveRegisteredUser(normalized);
-  return existing && existing.role !== "company" ? existing : null;
+  return ensureCaptainUser(phone, name);
 }
 function ensureCaptainUser(phone, name) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
-  return findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
+  if (!isValidJordanPhone(normalized) || isBlockedPhone(normalized)) return null;
+  const existing = findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
+  if (existing && (existing.role === "company" || existing.is_bot === 1)) return null;
+  if (existing && existing.role !== "company" && existing.is_bot !== 1) return existing;
+  const stamp = now();
+  const displayName = String(name || displayPhone(normalized)).trim().slice(0, 100) || displayPhone(normalized);
+  const temporaryPin = createCaptainPin();
+  try {
+    const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,account_status,approved_at,activated_at,captain_auth_method,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?, 'active',?,?, 'pin',?,?)").run(normalized, displayName, bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, stamp, stamp, stamp, stamp);
+    const captain = db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
+    audit("captain.auto_registered_from_approved_group", "user", captain.id, { phone: normalized, source: "approved_group" });
+    return captain;
+  } catch (error) {
+    if (!String(error?.message || error).includes("UNIQUE")) throw error;
+    return findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
+  }
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");

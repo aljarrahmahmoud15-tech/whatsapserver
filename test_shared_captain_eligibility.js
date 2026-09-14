@@ -12,6 +12,10 @@ assert.ok(
   'all human users are migrated and maintained as captains'
 );
 assert.ok(
+  server.includes('captain.auto_registered_from_approved_group') && server.includes("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot"),
+  'valid approved-group senders are auto-registered as active captains'
+);
+assert.ok(
   server.includes('captain.active !== 1 || captain.account_status !== "active"'),
   'inactive or suspended users remain blocked from claiming orders'
 );
