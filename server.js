@@ -153,6 +153,17 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS staff_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('accountant','operations')),
+  password_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  last_login_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS groups_config (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   group_id TEXT NOT NULL UNIQUE,
@@ -2062,19 +2073,38 @@ function parseCookies(header = "") {
   }, {});
 }
 function isAdmin(req) {
+  const session = getWebAdminSession(req);
+  return session?.role === "company";
+}
+function getWebAdminSession(req) {
   const header = String(req.headers.authorization || "");
-  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return true;
-  if (!JWT_SECRET) return false;
-  const session = parseCookies(req.headers.cookie || "").aljarah_session;
-  if (!session) return false;
+  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return { role: "company", username: ADMIN_USERNAME, source: "admin_token" };
+  if (!JWT_SECRET) return null;
+  const token = parseCookies(req.headers.cookie || "").aljarah_session;
+  if (!token) return null;
   try {
-    const payload = jwt.verify(session, JWT_SECRET);
-    return payload && payload.role === "company";
-  } catch { return false; }
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || !["company", "accountant", "operations"].includes(payload.role)) return null;
+    return payload;
+  } catch { return null; }
 }
 function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
   next();
+}
+function requireStaff(req, res, next) {
+  const session = getWebAdminSession(req);
+  if (!session || !["company", "accountant", "operations"].includes(session.role)) return res.status(401).json({ error: "تسجيل دخول الموظف مطلوب" });
+  req.staffSession = session;
+  next();
+}
+function requireStaffRole(...roles) {
+  return (req, res, next) => {
+    const session = getWebAdminSession(req);
+    if (!session || !roles.includes(session.role)) return res.status(403).json({ error: "هذه الصلاحية غير متاحة لهذا الحساب" });
+    req.staffSession = session;
+    next();
+  };
 }
 function requireAdminOrDashboardApi(req, res, next) {
   if (!isAdmin(req) && !isDashboardApi(req)) return res.status(401).json({ error: "Unauthorized" });
@@ -2457,10 +2487,76 @@ app.post("/api/auth/login", async (req, res) => {
   setSessionCookie(res, token);
   res.json({ success: true, role: "company", username });
 });
+app.post("/api/auth/staff-login", (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const account = db.prepare("SELECT id,username,name,role,password_hash,active FROM staff_accounts WHERE username=? LIMIT 1").get(username);
+  if (!JWT_SECRET || !account || !account.active || !bcrypt.compareSync(password, account.password_hash)) return res.status(401).json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة" });
+  db.prepare("UPDATE staff_accounts SET last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), account.id);
+  setSessionCookie(res, jwt.sign({ role: account.role, staffId: account.id, username: account.username, name: account.name }, JWT_SECRET, { expiresIn: "12h" }));
+  res.json({ success: true, role: account.role, name: account.name, username: account.username });
+});
 app.post("/api/auth/logout", (req, res) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
   res.json({ success: true });
+});
+app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username } }));
+app.get("/api/staff/overview", requireStaff, (req, res) => {
+  const totals = db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open, SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed FROM orders").get();
+  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, role: req.staffSession.role });
+});
+app.get("/api/staff/orders", requireStaff, (req, res) => {
+  const rows = db.prepare("SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.created_at,p.name AS producer_name,c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200").all();
+  res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents) })) });
+});
+app.get("/api/staff/captains", requireStaffRole("operations"), (req, res) => {
+  const captains = db.prepare("SELECT id,phone,name,active,account_status,created_at,captain_last_login_at FROM users WHERE role='captain' AND account_status<>'merged' ORDER BY active DESC,name").all().map((row) => ({ ...row, lastLoginAt: row.captain_last_login_at }));
+  res.json({ captains });
+});
+app.get("/api/staff/wallets", requireStaffRole("accountant"), (req, res) => {
+  const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,updated_at FROM users WHERE role IN ('captain','producer') ORDER BY role,name").all();
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents) })) });
+});
+app.get("/api/admin/staff", requireAdmin, (req, res) => {
+  const accounts = db.prepare("SELECT id,username,name,role,active,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all();
+  res.json({ accounts });
+});
+app.post("/api/admin/staff", requireAdmin, (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const name = String(req.body?.name || "").trim();
+  const role = String(req.body?.role || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  if (!/^[a-z0-9._-]{3,40}$/.test(username) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || password.length < 10) return res.status(400).json({ error: "بيانات الموظف غير صالحة؛ كلمة المرور 10 أحرف على الأقل" });
+  try {
+    const stamp = now();
+    const result = db.prepare("INSERT INTO staff_accounts(username,name,role,password_hash,active,created_at,updated_at) VALUES(?,?,?,?,1,?,?)").run(username, name, role, bcrypt.hashSync(password, 12), stamp, stamp);
+    audit("staff.account.created", "staff_account", result.lastInsertRowid, { username, role });
+    res.status(201).json({ success: true, id: result.lastInsertRowid, username, name, role });
+  } catch (error) { res.status(409).json({ error: error.code === "SQLITE_CONSTRAINT_UNIQUE" ? "اسم المستخدم مستخدم مسبقًا" : "تعذر إنشاء الحساب" }); }
+});
+app.patch("/api/admin/staff/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const account = db.prepare("SELECT * FROM staff_accounts WHERE id=? LIMIT 1").get(id);
+  if (!account) return res.status(404).json({ error: "حساب الموظف غير موجود" });
+  const name = req.body.name === undefined ? account.name : String(req.body.name).trim();
+  const role = req.body.role === undefined ? account.role : String(req.body.role).trim().toLowerCase();
+  const active = req.body.active === undefined ? account.active : (req.body.active ? 1 : 0);
+  const password = req.body.password === undefined ? "" : String(req.body.password);
+  if (!name || name.length > 100 || !["accountant", "operations"].includes(role) || (password && password.length < 10)) return res.status(400).json({ error: "بيانات التعديل غير صالحة" });
+  const stamp = now();
+  if (password) db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,password_hash=?,updated_at=? WHERE id=?").run(name, role, active, bcrypt.hashSync(password, 12), stamp, id);
+  else db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,updated_at=? WHERE id=?").run(name, role, active, stamp, id);
+  audit("staff.account.updated", "staff_account", id, { name, role, active, passwordChanged: Boolean(password) });
+  res.json({ success: true });
+});
+app.delete("/api/admin/staff/:id", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const account = db.prepare("SELECT id,username,role FROM staff_accounts WHERE id=? LIMIT 1").get(id);
+  if (!account) return res.status(404).json({ error: "حساب الموظف غير موجود" });
+  db.prepare("DELETE FROM staff_accounts WHERE id=?").run(id);
+  audit("staff.account.deleted", "staff_account", id, { username: account.username, role: account.role });
+  res.json({ success: true, deleted: id });
 });
 app.get("/api/public/operations-feed", (req, res) => {
   const redact = (value) => String(value || "")
