@@ -1315,6 +1315,19 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
+async function sendFinalBookingCard(groupId, producerName, captainName) {
+  try {
+    const media = await withTimeout(renderOperationsMessageMedia("تم تثبيت الحجز", [
+      `الطلب باسم: ${producerName || "غير محدد"}`,
+      `التنفيذ باسم: ${captainName || "غير محدد"}`,
+    ]), 30000, null);
+    if (!media) throw new Error("final booking card render returned no media");
+    return client.sendMessage(groupId, media);
+  } catch (error) {
+    console.error("[WhatsApp] final booking card not sent:", error.message);
+    return null;
+  }
+}
 function formatAcceptance(order, captain, producer) {
   return brandedMessage("تم توثيق الرحلة", [
     `🆔 رقم الطلب: #${order.order_no}`,
@@ -1913,16 +1926,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     const sourceMessageId = quotedForRecovery.id._serialized;
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
     if (existing) {
-      await msg.react("ℹ️").catch(() => {});
       return;
     }
     await handleIncomingMessage(quotedForRecovery, { allowSelf: true });
     const recovered = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
     if (recovered) {
       audit("order.recovered_from_quoted_message", "order", recovered.id, { groupId, sourceMessageId });
-      await msg.react("✅").catch(() => {});
-    } else {
-      await msg.react("⚠️").catch(() => {});
     }
     return;
   }
@@ -1947,9 +1956,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     };
     const order = orderCreator({ messageId, groupId, body, producer, parsed });
     if (!order) return;
-    if (typeof client !== "undefined" && client && isReady) {
-      await sendGroupBrandedMessage(groupId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${order.order_no}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(cents(parsed.price))} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار استلام الكابتن وتأكيد الرحلة."].filter(Boolean)).catch((error) => console.error("[WhatsApp] order acknowledgement send:", error.message));
-    }
     return;
   }
   if (!captainAcceptance) return;
@@ -1972,13 +1978,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   })();
   if (!pending) return;
   audit("order.pending_shared_captain_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
-  // لا يعتمد «تم» وحده: يجب أن يضع كابتن تنزيل الطلب 👍 على رسالة «تم».
-  await sendGroupBrandedMessage(groupId, "بانتظار اعتماد كابتن تنزيل الطلب", [
-    `🆔 رقم الطلب: #${order.order_no}`,
-    `🚕 الكابتن الذي وضع تم: ${captain.name}`,
-    `✅ يجب على كابتن تنزيل الطلب${producer ? ` (${producer.name})` : ""} وضع 👍 على رسالة «تم» نفسها.`,
-    "⏳ لا توجد تسوية مالية قبل اعتماد كابتن تنزيل الطلب."
-  ]).catch((error) => console.error("[WhatsApp] pending downloader approval send:", error.message));
+  // لا يرسل البوت ردًا هنا؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
 }
 
 function reactionId(value) {
@@ -2156,10 +2156,7 @@ async function handleMessageReaction(reaction) {
     const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
     if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
     const result = cancelOrderForReactionRemoval(candidate.id, messageId, approverPhone);
-    if (result.state === "cancelled") {
-      const names = `${result.producer?.name || "غير محدد"} - ${result.captain?.name || "غير محدد"}`;
-      await client.sendMessage(target.from, `تم إلغاء الطلب: ${names}`).catch((error) => console.error("[WhatsApp] cancellation send:", error.message));
-    }
+    // إزالة 👍 تلغي الطلب بصمت؛ لا يرسل البوت ردًا خارج بطاقة التثبيت النهائية.
     return;
   }
   const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
@@ -2170,13 +2167,9 @@ async function handleMessageReaction(reaction) {
   if (phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
   const result = settlePendingOrder(pending.id, messageId, approverPhone);
   if (result.state === "unauthorized" || result.state === "stale") return;
-  if (result.state === "debt_limit") {
-    await sendGroupBrandedMessage(target.from, "تعذر توثيق الرحلة", [`⚠️ سيؤدي هذا الحجز إلى تجاوز حد مديونية الكابتن ${result.captain.name}.`, `الحد المسموح: ${money(result.debtLimitCents)} JOD.`, "لم تُسجّل أي تسوية مالية."]).catch((error) => console.error("[WhatsApp] confirmation rejection send:", error.message));
-    return;
-  }
+  if (result.state === "debt_limit") return;
   if (result.state === "accepted") {
-    const names = `${result.producer ? result.producer.name : "غير محدد"} - ${result.captain.name}`;
-    await client.sendMessage(target.from, `تم تثبيت الطلب: ${names}`).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+    await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name);
   }
 }
 
@@ -4498,9 +4491,6 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     const producer = botEmployeeUser();
     const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
     order = createOrderRecord({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
-    if (order) {
-      await sendGroupBrandedMessage(chatId, "تم تسجيل الطلب", [`🆔 رقم الطلب: #${order.order_no}`, `🛣️ المسار: ${parsed.origin || "غير محدد"} ← ${parsed.destination || "غير محدد"}`, `💰 القيمة: ${money(order.price_cents)} JOD`, parsed.tripTime ? `🕒 الموعد: ${parsed.tripTime}` : "", "⏳ بانتظار رد الكابتن بكلمة «تم»."].filter(Boolean)).catch((error) => console.error("[WhatsApp] admin order acknowledgement send:", error.message));
-    }
   }
   res.json({ success: true, messageId, order: order ? { id: order.id, orderNo: order.order_no, status: order.status } : null });
 });

@@ -111,6 +111,7 @@ const context = {
   formatAcceptance: () => "confirmed",
   brandedMessage: () => "rejected",
   sendGroupBrandedMessage: async (groupId, title, lines) => { messages.push({ groupId, text: `${title}\n${lines.join("\n")}` }); },
+  sendFinalBookingCard: async (groupId, producerName, captainName) => { messages.push({ groupId, mediaCard: true, text: `${producerName} - ${captainName}`, caption: undefined }); },
   console,
 };
 
@@ -139,6 +140,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% من قيمة الطلب لمحفظة المنتج");
   assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% من قيمة الطلب لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التوثيق");
-  assert.match(messages[0].text, /تم تثبيت الطلب: المنتج - الكابتن/);
+  assert.strictEqual(messages[0].mediaCard, true, "التأكيد النهائي بطاقة شعار فقط");
+  assert.strictEqual(messages[0].caption, undefined, "لا يوجد شرح أو caption أسفل البطاقة");
+  assert.match(messages[0].text, /المنتج - الكابتن/);
   console.log("isolated confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
