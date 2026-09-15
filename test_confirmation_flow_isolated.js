@@ -109,7 +109,7 @@ const context = {
   audit: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
-  sendFinalBookingConfirmation: async (groupId, orderNo) => { messages.push({ groupId, text: `تم تثبيت الطلب #${orderNo}` }); },
+  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✓ تثبيت #${details.orderNo}|م:${String(details.executorName || "").slice(0, 6)}|س:${String(details.consumerName || "").slice(0, 6)}|${Number(details.priceCents || 0) / 100}د` }); },
   console,
 };
 
@@ -138,7 +138,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.match(messages[0].text, /تم تثبيت الطلب/);
+  assert.match(messages[0].text, /✓ تثبيت/);
   assert.ok(messages[0].text.length <= 40, "التأكيد لا يتجاوز 40 حرفًا");
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

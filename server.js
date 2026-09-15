@@ -1676,9 +1676,9 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
   }
 }
 function finalBookingConfirmationText({ orderNo, executorName, consumerName, priceCents }) {
-  const prefix = `✓ تم تثبيت الطلب #${String(orderNo || "")}`;
+  const prefix = `✓ تثبيت #${String(orderNo || "")}`;
   const price = `${money(priceCents)}د`;
-  const separator = " | ";
+  const separator = "|";
   const labels = ["م:", "س:"];
   const fixedLength = prefix.length + separator.length * 3 + labels[0].length + labels[1].length + price.length;
   const available = Math.max(0, 40 - fixedLength);

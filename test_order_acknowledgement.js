@@ -5,7 +5,7 @@ const source = fs.readFileSync("./server.js", "utf8");
 assert(source.includes("function finalBookingConfirmationText"), "يوجد مسار مستقل لتأكيد التثبيت النصي");
 assert(source.includes("async function sendFinalBookingConfirmation"), "إرسال التأكيد النصي بمهلة آمنة");
 assert(source.includes(".slice(0, 40)"), "التأكيد لا يتجاوز 40 حرفًا");
-assert(source.includes("✓ تم تثبيت الطلب #"), "التأكيد يحمل علامة الصح ورقم الطلب");
+assert(source.includes("✓ تثبيت #"), "التأكيد يحمل علامة الصح ورقم الطلب");
 assert(source.includes("labels = [\"م:\", \"س:\"]"), "التأكيد يضم المنفذ والمستهلك");
 assert(source.includes("priceCents"), "التأكيد يضم قيمة الطلب");
 assert(source.includes("Image booking cards are disabled"), "بطاقات الصور معطلة");
