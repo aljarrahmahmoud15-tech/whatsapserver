@@ -101,6 +101,7 @@ const context = {
   PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1200,
   COMPANY_FROM_PRODUCER_RATE_BPS: 400,
+  BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -200,
   calculateSettlement,
   companyUser: () => ({ ...users[1] }),

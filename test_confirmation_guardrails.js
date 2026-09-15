@@ -18,7 +18,8 @@ assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "بانتظار �
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
 assert.match(server, /if \(!quoted\) return;/);
 assert.match(server, /const candidate = findOrderByQuotedMessage\(groupId, quoted\)/);
-assert.match(server, /isBotReactionSender\(approverPhone, connectedBotPhone\(\)\)/);
+assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);
+assert.match(server, /const approver = botCompanyApproval \? companyUser\(\) : findActiveRegisteredUser\(approverPhone\)/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
 assert.match(server, /confirmingCaptainFeeCents/);
 console.log("hidden candidate confirmation guardrails verified");

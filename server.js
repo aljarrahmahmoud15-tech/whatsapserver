@@ -55,7 +55,8 @@ const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSW
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
-const BOT_FINANCIAL_MODE = process.env.BOT_FINANCIAL_MODE || "company";
+// The operational bot 0779110123 is always settled through the internal company wallet.
+const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
 // Approved immutable settlement policy: 12% to the captain who posted the
 // order and 4% to the company, both charged to the confirming captain.
@@ -375,6 +376,7 @@ CREATE TABLE IF NOT EXISTS order_settlements (
   idempotency_key TEXT NOT NULL UNIQUE,
   captain_user_id INTEGER NOT NULL,
   producer_user_id INTEGER,
+  charged_user_id INTEGER,
   price_cents INTEGER NOT NULL,
   company_cents INTEGER NOT NULL,
   producer_cents INTEGER NOT NULL,
@@ -384,7 +386,8 @@ CREATE TABLE IF NOT EXISTS order_settlements (
   applied_at TEXT,
   FOREIGN KEY(order_id) REFERENCES orders(id),
   FOREIGN KEY(captain_user_id) REFERENCES users(id),
-  FOREIGN KEY(producer_user_id) REFERENCES users(id)
+  FOREIGN KEY(producer_user_id) REFERENCES users(id),
+  FOREIGN KEY(charged_user_id) REFERENCES users(id)
 );
 `);
 
@@ -394,6 +397,9 @@ const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all
 if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
 if (!existingLedgerColumns.includes("idempotency_key")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN idempotency_key TEXT");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency ON wallet_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
+const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlements)").all().map((column) => column.name);
+if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 if (!existingUserColumns.includes("is_bot")) db.exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0");
 if (!existingUserColumns.includes("captain_pin_hash")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_hash TEXT");
@@ -495,7 +501,7 @@ function settlementRows(limit = 200) {
   const safeLimit = Number.isInteger(Number(limit)) ? Math.max(1, Math.min(Number(limit), 500)) : 200;
   return db.prepare(`SELECT
       s.id AS settlement_id,s.order_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,
-      s.captain_user_id AS settlement_captain_user_id,s.producer_user_id AS settlement_producer_user_id,
+      s.captain_user_id AS settlement_captain_user_id,s.producer_user_id AS settlement_producer_user_id,s.charged_user_id AS settlement_charged_user_id,
       s.price_cents AS settlement_price_cents,s.company_cents AS settlement_company_cents,
       s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,
       s.details_json AS settlement_details_json,s.created_at AS settlement_created_at,s.applied_at AS settlement_applied_at,
@@ -503,11 +509,13 @@ function settlementRows(limit = 200) {
       o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.accepted_message_id,
       o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,
-      c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone
+      c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
+      w.id AS charged_wallet_id,w.name AS charged_wallet_name,w.phone AS charged_wallet_phone,w.role AS charged_wallet_role
     FROM order_settlements s
     JOIN orders o ON o.id=s.order_id
     LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id)
     LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
+    LEFT JOIN users w ON w.id=COALESCE(s.charged_user_id,s.captain_user_id)
     WHERE s.status IN ('applied','reversed')
     ORDER BY COALESCE(s.applied_at,s.created_at) DESC,s.id DESC LIMIT ?`).all(safeLimit);
 }
@@ -537,6 +545,7 @@ function serializeSettlement(row, includeLedger = true) {
     createdAt: row.settlement_created_at,
     downloader: { id: row.producer_id || row.settlement_producer_user_id || null, name: row.producer_name || "غير مسجل", phone: row.producer_phone || null },
     executor: { id: row.captain_id || row.settlement_captain_user_id || null, name: row.captain_name || "غير مسجل", phone: row.captain_phone || null },
+    chargedWallet: { id: row.charged_wallet_id || row.settlement_charged_user_id || row.captain_id || null, name: row.charged_wallet_name || row.captain_name || "غير مسجل", phone: row.charged_wallet_phone || row.captain_phone || null, role: row.charged_wallet_role || "captain" },
     confirmation: { method: finance.confirmationMethod, confirmedByPhone: row.confirmed_by_phone || null, acceptedAt: row.accepted_at || null, messageId: row.accepted_message_id || null },
     route: { origin: row.origin || null, destination: row.destination || null, tripTime: row.trip_time || null },
     ledger,
@@ -922,6 +931,11 @@ function ensureSystemUsers() {
   }
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
+  const companyAccount = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
+  if (companyAccount) {
+    db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
+    db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
+  }
   // Normalize legacy deployments that still contain the former 15% settings.
   setSetting("company_rate_bps", COMPANY_RATE_BPS);
   setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
@@ -973,6 +987,34 @@ function upsertUser({ phone, name, role, allowSuspended = false }) {
   return db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
 }
 function companyUser() { return db.prepare("SELECT * FROM users WHERE role='company' ORDER BY id LIMIT 1").get(); }
+function companyWalletSummary() {
+  const company = companyUser();
+  if (!company) return null;
+  const bot = db.prepare("SELECT id,phone,name FROM users WHERE is_bot=1 ORDER BY id LIMIT 1").get() || null;
+  const credited = db.prepare("SELECT COALESCE(SUM(CASE WHEN amount_cents>0 THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN amount_cents>0 THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
+  const debited = db.prepare("SELECT COALESCE(SUM(CASE WHEN amount_cents<0 THEN -amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN amount_cents<0 THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
+  const settlements = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(company_cents),0) AS company_cents, COALESCE(SUM(CASE WHEN charged_user_id=? THEN captain_fee_cents ELSE 0 END),0) AS bot_debits_cents FROM order_settlements WHERE status='applied'").get(company.id);
+  const recentLedger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 50").all(company.id).map((entry) => ({ ...entry, amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents) }));
+  return {
+    id: company.id,
+    name: company.name,
+    role: company.role,
+    walletType: "company_internal",
+    balance: money(company.wallet_cents),
+    balanceCents: Number(company.wallet_cents || 0),
+    operationalBotPhone: displayPhone(BOT_PHONE_INTL || BOT_PHONE),
+    operationalBotUserId: bot ? bot.id : null,
+    operationalBotName: bot ? bot.name : "هوية البوت التشغيلية",
+    credited: money(credited.cents),
+    debited: money(debited.cents),
+    creditEntries: Number(credited.entries || 0),
+    debitEntries: Number(debited.entries || 0),
+    appliedSettlements: Number(settlements.count || 0),
+    companyShareFromSettlements: money(settlements.company_cents),
+    botWalletDebits: money(settlements.bot_debits_cents),
+    recentLedger,
+  };
+}
 async function suspendMemberForDebt(groupId, phone, balanceCents) {
   const normalized = phoneWithCountry(phone);
   if (!isValidJordanPhone(normalized) || balanceCents >= CAPTAIN_MIN_BALANCE_CENTS) return;
@@ -2220,6 +2262,17 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!pending) return;
   audit("order.candidate.pending_confirmation", "order_candidate", candidate.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
   // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
+  if (producer.is_bot === 1 || producer.role === "company") {
+    const reacted = await reactToCaptainAcceptance(msg, messageId);
+    if (!reacted) {
+      console.warn(`[Order] company approval reaction failed for candidate=${candidate.id}`);
+    } else {
+      const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
+      if (result.state === "accepted") {
+        await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
+      }
+    }
+  }
 }
 
 function reactionId(value) {
@@ -2291,8 +2344,9 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    const confirmer = findActiveRegisteredUser(confirmerPhone);
-    if (!producer || !confirmer || confirmer.is_bot === 1 || confirmer.role === "company") return { state: "unauthorized" };
+    const botCompanyConfirmation = isBotPhone(confirmerPhone) && BOT_FINANCIAL_MODE === "company";
+    const confirmer = botCompanyConfirmation ? companyUser() : findActiveRegisteredUser(confirmerPhone);
+    if (!producer || !confirmer || (!botCompanyConfirmation && (confirmer.is_bot === 1 || confirmer.role === "company"))) return { state: "unauthorized" };
     const captain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (!captain) return { state: "stale" };
     const settlement = calculateSettlement({
@@ -2303,23 +2357,26 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
       companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
       specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
     });
-    const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
+    const company = companyUser();
+    const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
+    if (!walletOwner) return { state: "stale" };
+    const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.candidate_debt_limit", "order_candidate", candidateId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+      audit("order.candidate_debt_limit", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
       return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
     }
     if (projectedCaptainBalance < 0) {
-      audit("order.candidate_debt_recorded", "order_candidate", candidateId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
+      audit("order.candidate_debt_recorded", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
-    const company = companyUser();
     const stamp = now();
+    const companyWalletCharge = walletOwner.role === "company";
     const botEmployeeProducer = producer.is_bot === 1;
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
     const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
     const orderInsert = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,captain_user_id,captain_phone_snapshot,captain_name_snapshot,accepted_message_id,accepted_at,confirmed_by_phone,company_cents,producer_cents,captain_cents,settlement_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, current.source_message_id, current.group_id, current.raw_text, current.price_cents, current.origin, current.destination, current.trip_time, current.order_kind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "accepted", captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, "settled", current.created_at || stamp, stamp);
     const orderId = orderInsert.lastInsertRowid;
     const settlementKey = `ORDER-${orderNo}-${orderId}`;
-    const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, ledgerDetails, stamp);
+    const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, ledgerDetails, stamp);
     if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
@@ -2327,9 +2384,9 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
-    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, captain.id);
-    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم", stamp, ledgerDetails);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, walletOwner.id);
+    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% و4% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, candidateId, expectedMessageId);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: confirmer.phone });
@@ -2338,6 +2395,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
       state: "accepted",
       order: { id: orderId, order_no: orderNo, price_cents: current.price_cents, status: "accepted", settlement_state: "settled" },
       captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id),
+      chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id),
       producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id),
     };
   })();
@@ -2346,7 +2404,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
 function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone }) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
-    const captain = db.prepare("SELECT * FROM users WHERE id=? AND role='captain' AND active=1 AND account_status='active'").get(captainId);
+    const captain = db.prepare("SELECT * FROM users WHERE id=? AND active=1 AND account_status='active' AND (role='captain' OR is_bot=1)").get(captainId);
     if (!current || !captain) return { state: "unlinked" };
     const existingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
     if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled", order: current, captain };
@@ -2360,16 +2418,18 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
       companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
       specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
     });
-    const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
+    const company = companyUser();
+    const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
+    if (!walletOwner) return { state: "unlinked" };
+    const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.history.captain_debt_limit", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+      audit("order.history.captain_debt_limit", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
       return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
     }
-    const company = companyUser();
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
-    const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
+    const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
     db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source='group_history_24h',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, now(), orderId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
@@ -2378,12 +2438,12 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, now(), producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
-    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), captain.id);
-    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن المنفذ", now(), details);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
+    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% و4% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن المنفذ", now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
-    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id) };
+    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id) };
   })();
 }
 
@@ -2416,9 +2476,11 @@ async function handleMessageReaction(reaction) {
   const pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
-  const approver = findActiveRegisteredUser(approverPhone);
-  if (!approverPhone || !producer || !approver || approver.is_bot === 1 || approver.role === "company" || isBlockedPhone(approverPhone) || isBotReactionSender(approverPhone, connectedBotPhone())) return;
-  if (phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+  const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
+  const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
+  if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) return;
+  const producerApproved = botCompanyApproval ? producer.role === "company" : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
+  if (!producerApproved) return;
   const result = settlePendingOrder(pending.id, messageId, approverPhone);
   if (result.state === "unauthorized" || result.state === "stale") return;
   if (result.state === "debt_limit") return;
@@ -2882,7 +2944,7 @@ app.post("/api/auth/logout", (req, res) => {
 app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username } }));
 app.get("/api/staff/overview", requireStaff, (req, res) => {
   const totals = db.prepare("SELECT COUNT(*) AS total, 0 AS open, SUM(CASE WHEN o.status='accepted' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled'").get();
-  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, role: req.staffSession.role });
+  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, companyWallet: req.staffSession.role === "accountant" ? companyWalletSummary() : null, role: req.staffSession.role });
 });
 app.get("/api/staff/orders", requireStaff, (req, res) => {
   const rows = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,
@@ -2902,7 +2964,7 @@ app.get("/api/staff/wallets", requireStaffRole("accountant"), (req, res) => {
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS executed_debit_cents,
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u WHERE u.role IN ('captain','producer') ORDER BY u.role,u.name`).all();
-  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })) });
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
 app.get("/api/admin/staff", requireAdmin, (req, res) => {
   const accounts = db.prepare("SELECT id,username,name,role,active,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all();
@@ -4667,7 +4729,8 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: "-2.00 JOD", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
+  const companyWallet = companyWalletSummary();
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: "-2.00 JOD", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
@@ -4763,13 +4826,21 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
     })),
   });
 });
+app.get("/api/admin/company-wallet", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, wallet: companyWalletSummary() });
+});
+app.get("/api/staff/company-wallet", requireStaffRole("accountant"), (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, wallet: companyWalletSummary() });
+});
 app.get("/api/admin/wallets", requireAdmin, (req, res) => {
   const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.updated_at,
     COALESCE((SELECT SUM(s.producer_cents) FROM order_settlements s JOIN orders p ON p.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND p.status IN ('accepted','completed')),0) AS posted_share_cents,
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS executed_debit_cents,
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u ORDER BY u.role,u.id`).all();
-  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })) });
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
 app.get("/api/admin/settlements", requireAdmin, (req, res) => {
   const query = String(req.query.q || "").trim().toLowerCase();
