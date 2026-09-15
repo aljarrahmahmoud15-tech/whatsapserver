@@ -1333,6 +1333,13 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
           model.__timestamp = Number(message.t || model.timestamp || 0) || null;
           model.fromMe = Boolean(message.id?.fromMe);
           model.__caption = String(message.caption || message.text || model.caption || "");
+          model.__quotedMessageId = String(message.quotedStanzaID || message.quotedMessageId || model.quotedMessageId || model.quotedStanzaID || "").trim() || null;
+          try {
+            const { toPn } = window.require("WAWebLidMigrationUtils");
+            const authorId = message.author || message.id?.participant || null;
+            const phoneId = authorId && toPn ? (toPn(authorId) || authorId) : authorId;
+            model.__authorPhone = phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0];
+          } catch (_) { model.__authorPhone = null; }
           try {
             const quoted = window.require("WAWebQuotedMsgModelUtils").getQuotedMsgObj(message);
             if (quoted) {
@@ -2554,7 +2561,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
   const quotedMessageIdHint = String(
-    acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
+    acceptance?.__quotedMessageId || acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
   ).trim();
   const indexedQuoted = quotedMessageIdHint
     ? (Array.isArray(messages) ? messages.find((message) => serializedMessageId(message) === quotedMessageIdHint) : null)
