@@ -2541,7 +2541,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
     : null);
-  const liveReactions = (!Array.isArray(archivedReactions) || !archivedReactions.length) && typeof liveAcceptance.getReactions === "function"
+  const liveReactions = !botProducer && (!Array.isArray(archivedReactions) || !archivedReactions.length) && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
   const reactions = Array.isArray(liveReactions) && liveReactions.length
@@ -2550,7 +2550,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
   const reactionPhones = [];
   let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
-  for (const reaction of thumbs) {
+  for (const reaction of botProducer ? [] : thumbs) {
     for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
       const senderPhone = directJordanPhoneFromWhatsappValue(sender?.__senderPhone) || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
       if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
@@ -2561,8 +2561,16 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
   const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
-  const acceptanceContact = typeof acceptance.getContact === "function" ? await withTimeout(acceptance.getContact(), 8000, null) : null;
-  const captainPhone = await resolveMessageSenderPhone(acceptance, acceptanceContact) || await resolveMessageSenderPhone(liveAcceptance);
+  const captainPhone = await resolveWhatsappUserPhone(
+    acceptance.__authorPhone,
+    acceptance.author,
+    acceptance?._data?.author,
+    acceptance?.id?.participant,
+    acceptance?._data?.id?.participant,
+  ) || await resolveMessageSenderPhone(acceptance, null);
+  const acceptanceContact = captainPhone || typeof acceptance.getContact !== "function"
+    ? null
+    : await withTimeout(acceptance.getContact(), 1500, null);
   const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
   const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0);

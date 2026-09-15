@@ -7,7 +7,7 @@ assert.match(source, /let liveQuoted = archivedQuoted/);
 assert.match(source, /const quotedMessageIdHint = String\(/);
 assert.match(source, /messages\.find\(\(message\) => serializedMessageId\(message\) === quotedMessageIdHint\)/);
 assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
-assert.match(source, /const liveReactions = \(!Array\.isArray\(archivedReactions\)/);
+assert.match(source, /const liveReactions = !botProducer && \(!Array\.isArray\(archivedReactions\)/);
 assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
 assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
 assert.match(source, /const reactionPresentOnAcceptance = Boolean\(acceptance\.hasReaction \|\| acceptance\.__hasReaction \|\| acceptance\._data\?\.hasReaction/);
