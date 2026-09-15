@@ -4739,6 +4739,46 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   }
   res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
 });
+app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
+  const verified = {
+    groupId: "120363426604560611@g.us",
+    sourceMessageId: "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid",
+    acceptanceMessageId: "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid",
+    downloaderPhone: "962779110123",
+    executorPhone: "962786856851",
+    price: 10,
+    origin: "اربد",
+    destination: "المنارة",
+    rawText: "السعر 10 دنانير\n\nبنت من اربد إلى المنارة",
+  };
+  const supplied = {
+    groupId: String(req.body?.groupId || "").trim(),
+    sourceMessageId: String(req.body?.sourceMessageId || "").trim(),
+    acceptanceMessageId: String(req.body?.acceptanceMessageId || "").trim(),
+    downloaderPhone: phoneWithCountry(String(req.body?.downloaderPhone || "")),
+    executorPhone: phoneWithCountry(String(req.body?.executorPhone || "")),
+    price: Number(req.body?.price),
+    origin: normalizeArabic(String(req.body?.origin || "")).trim(),
+    destination: normalizeArabic(String(req.body?.destination || "")).trim(),
+  };
+  const exact = supplied.groupId === verified.groupId && supplied.sourceMessageId === verified.sourceMessageId && supplied.acceptanceMessageId === verified.acceptanceMessageId && recoveryPhoneMatches(supplied.downloaderPhone, verified.downloaderPhone) && recoveryPhoneMatches(supplied.executorPhone, verified.executorPhone) && supplied.price === verified.price && supplied.origin === verified.origin && supplied.destination === verified.destination;
+  if (!exact) return res.status(409).json({ error: "Verified booking fields do not match the recorded evidence", mutation: "none" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(verified.sourceMessageId);
+  const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
+  if (existingSettlement?.status === "applied") return res.json({ success: true, state: "already_settled", order: existingOrder, mutation: "none", cardSent: false });
+  const producer = companyUser();
+  const captain = findCaptainByPhone(verified.executorPhone, { activeOnly: true });
+  const parsed = parseOrder(verified.rawText);
+  if (!producer || !captain || !parsed?.isOrder) return res.status(422).json({ error: "Verified company producer, active executor, or order data is unavailable", mutation: "none" });
+  const order = existingOrder || createOrderRecord({ messageId: verified.sourceMessageId, groupId: verified.groupId, body: verified.rawText, producer, parsed });
+  if (!order) return res.status(422).json({ error: "Unable to create verified order record", mutation: "none" });
+  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: verified.acceptanceMessageId, acceptedAt: now(), confirmedByPhone: verified.downloaderPhone, importSource: "admin_verified_bot_booking" });
+  if (result.state !== "accepted") return res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, mutation: "none" });
+  const card = await sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
+  audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: Boolean(card) });
+  res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, producer: result.producer, captain: result.captain, cardSent: Boolean(card), mutation: "applied_once" });
+});
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();

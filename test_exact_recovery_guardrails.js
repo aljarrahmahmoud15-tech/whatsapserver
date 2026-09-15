@@ -6,6 +6,10 @@ const admin = fs.readFileSync('./admin.html', 'utf8');
 
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirmed-preview", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin/);
+assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-verified-bot-booking", requireAdmin/);
+assert.match(server, /order\.verified_bot_booking\.completed/);
+assert.match(server, /admin_verified_bot_booking/);
+assert.match(server, /if \(existingSettlement\?\.status === "applied"\) return res\.json\(\{ success: true, state: "already_settled"/);
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
 assert.match(server, /collections\.Msg\.getMessagesById\(requestedIds\)/);
