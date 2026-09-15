@@ -1677,6 +1677,7 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
 }
 async function sendFinalBookingCard(groupId, producerName, captainName, priceCents) {
   try {
+    if (client.interface && typeof client.interface.openChatWindow === "function") await withTimeout(client.interface.openChatWindow(groupId), 8000, null);
     const media = await withTimeout(renderOperationsMessageMedia("تم تثبيت الطلب", [
       `اسم كابتن التنزيل: ${producerName || "غير محدد"}`,
       `اسم الكابتن المنفذ: ${captainName || "غير محدد"}`,
@@ -4800,12 +4801,22 @@ app.post("/api/admin/group/send-verified-bot-booking-card", requireAdmin, async 
   if (sourceMessageId !== source || acceptanceMessageId !== acceptance) return res.status(409).json({ error: "Verified booking message IDs do not match", mutation: "none" });
   const order = db.prepare("SELECT * FROM orders WHERE source_message_id=? AND accepted_message_id=? AND settlement_state='settled' LIMIT 1").get(source, acceptance);
   if (!order) return res.status(404).json({ error: "Verified booking is not settled", mutation: "none" });
-  const attempt = db.prepare("SELECT id FROM audit_logs WHERE action='order.verified_bot_booking.card_attempt' AND entity_type='order' AND entity_id=? LIMIT 1").get(String(order.id));
-  if (attempt) return res.json({ success: true, state: "already_attempted", cardSent: false, mutation: "none", orderId: order.id });
+  const sent = db.prepare("SELECT id FROM audit_logs WHERE action='order.verified_bot_booking.card' AND entity_type='order' AND entity_id=? AND details LIKE '%\"cardSent\":true%' LIMIT 1").get(String(order.id));
+  if (sent) return res.json({ success: true, state: "already_sent", cardSent: true, mutation: "none", orderId: order.id });
+  if (app.locals.verifiedBotBookingCardInProgress) return res.status(202).json({ success: true, state: "processing", cardSent: false, mutation: "queued", orderId: order.id });
+  app.locals.verifiedBotBookingCardInProgress = true;
   audit("order.verified_bot_booking.card_attempt", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance });
-  const card = await sendFinalBookingCard(order.group_id, order.producer_name_snapshot, order.captain_name_snapshot, order.price_cents);
-  audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance, cardSent: Boolean(card) });
-  res.json({ success: true, state: card ? "sent" : "send_failed", cardSent: Boolean(card), mutation: "none", orderId: order.id });
+  res.status(202).json({ success: true, state: "processing", cardSent: false, mutation: "queued", orderId: order.id });
+  setTimeout(async () => {
+    try {
+      const card = await sendFinalBookingCard(order.group_id, order.producer_name_snapshot, order.captain_name_snapshot, order.price_cents);
+      audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance, cardSent: Boolean(card) });
+    } catch (error) {
+      audit("order.verified_bot_booking.card_error", "order", order.id, { error: String(error?.message || error).slice(0, 200) });
+    } finally {
+      app.locals.verifiedBotBookingCardInProgress = false;
+    }
+  }, 1000);
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });

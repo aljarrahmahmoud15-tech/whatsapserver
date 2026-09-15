@@ -10,6 +10,8 @@ assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-verified-bot-book
 assert.match(server, /app\.post\("\/api\/admin\/group\/send-verified-bot-booking-card", requireAdmin/);
 assert.match(server, /order\.verified_bot_booking\.card_attempt/);
 assert.match(server, /order\.verified_bot_booking\.card/);
+assert.match(server, /app\.locals\.verifiedBotBookingCardInProgress/);
+assert.match(server, /state: "already_sent"/);
 assert.match(server, /order\.verified_bot_booking\.completed/);
 assert.match(server, /admin_verified_bot_booking/);
 assert.match(server, /app\.locals\.verifiedBotBookingRecoveryInProgress/);
