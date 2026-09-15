@@ -6,6 +6,9 @@ const admin = fs.readFileSync('./admin.html', 'utf8');
 
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirmed-preview", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin/);
+assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
+assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
+assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
 assert.match(server, /function recoveryExpectedMatches\(evidence, expected = \{\}\)/);
 assert.match(server, /sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required/);
 assert.match(server, /mutation: "none"/);

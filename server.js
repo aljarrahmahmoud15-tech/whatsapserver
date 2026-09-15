@@ -1313,6 +1313,12 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   }, groupId, limit, includeOutgoing), 20000, { chat: null, messages: [] });
   return messages;
 }
+async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
+  if (!client || typeof client.getMessageById !== "function") return [];
+  const ids = [...new Set([sourceMessageId, acceptanceMessageId].map((value) => String(value || "").trim()).filter(Boolean))];
+  const rows = await Promise.all(ids.map((messageId) => withTimeout(client.getMessageById(messageId), 15000, null)));
+  return rows.filter((message) => message && resolveGroupChatId(message) === groupId);
+}
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
@@ -4570,8 +4576,8 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   const requestedLimit = Number(req.body?.limit || 1000);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 2000)) : 1000;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
-  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
+  let chat;
+  let messages;
   const expected = {
     sourceMessageId: String(req.body?.sourceMessageId || "").trim(),
     acceptanceMessageId: String(req.body?.acceptanceMessageId || "").trim(),
@@ -4582,6 +4588,19 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     destination: String(req.body?.destination || "").trim(),
     tripTime: String(req.body?.tripTime || "").trim(),
   };
+  const exactEvidenceRequested = Boolean(expected.sourceMessageId && expected.acceptanceMessageId);
+  const exactMessages = exactEvidenceRequested
+    ? await fetchExactGroupEvidenceMessages(groupId, expected.sourceMessageId, expected.acceptanceMessageId)
+    : [];
+  if (exactEvidenceRequested) {
+    chat = exactMessages.length ? { id: groupId, isGroup: true } : null;
+    messages = exactMessages;
+  } else {
+    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+    chat = history.chat;
+    messages = history.messages;
+  }
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
