@@ -2830,6 +2830,10 @@ app.get("/status", (req, res) => {
   const activeGroupId = getSetting("active_group_id", null);
   const configuredGroupId = groupId || activeGroupId;
   const groupReceiverReady = Boolean(isReady || baileysReady);
+  const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
+  const activeCaptains = userRoles.filter((user) => user.role === "captain" && user.is_bot !== 1 && user.active === 1 && user.account_status === "active").length;
+  const nonCaptainHumans = userRoles.filter((user) => user.is_bot !== 1 && user.role !== "company" && user.role !== "captain" && !isProtectedOwnerIdentity(user.phone)).length;
+  const unlinkedOrders = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id IS NULL OR settlement_state='unlinked'").get().count;
   res.setHeader("Cache-Control", "no-store");
   res.json({
     ready: Boolean(isReady),
@@ -2851,6 +2855,13 @@ app.get("/status", (req, res) => {
     whatsappLastEvent,
     whatsappLastError,
     whatsappInitializing: Boolean(initializing),
+    captains: {
+      activeRegistered: activeCaptains,
+      nonCaptainHumanAccounts: nonCaptainHumans,
+      normalizationVersion: getSetting("captain_normalization_version", null),
+      normalizedAt: getSetting("captain_normalization_at", null),
+    },
+    orders: { unlinked: unlinkedOrders },
   });
 });
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {

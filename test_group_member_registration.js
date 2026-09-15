@@ -16,5 +16,8 @@ assert(source.includes('CAPTAIN_NORMALIZATION_VERSION = "all-group-members-capta
 assert(source.includes("sendLinks: false, reactivate: true"), "التطبيع الشامل صامت ويعيد تفعيل الحسابات الحالية");
 assert(source.includes("function reconcileCaptainLinksWithoutSettlement"), "يربط الطلبات القديمة بالحسابات بعد تثبيتها");
 assert(source.includes("financialSettlementsApplied: 0"), "لا ينفذ تسويات مالية أثناء إصلاح الهوية");
+assert(source.includes("activeRegistered: activeCaptains"), "يعرض عدد الكباتن النشطين للتحقق المباشر");
+assert(source.includes("nonCaptainHumanAccounts: nonCaptainHumans"), "يعرض أي حساب بشري خارج دور الكابتن");
+assert(source.includes("orders: { unlinked: unlinkedOrders }"), "يعرض عدد الطلبات غير المرتبطة دون كشف بيانات شخصية");
 assert(!source.includes("skipped_existing_role"), "لا يرفض المستخدم القديم بسبب مسماه السابق");
 console.log("group member registration guardrails verified");
