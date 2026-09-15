@@ -2500,15 +2500,26 @@ function recoveryEvidenceSummary(evidence) {
 async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const acceptanceMessageId = serializedMessageId(acceptance);
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
-  const liveAcceptance = client && typeof client.getMessageById === "function"
+  let liveAcceptance = client && typeof client.getMessageById === "function"
     ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance
     : acceptance;
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
-  const liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
+  let liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
     ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
     : null;
+  if (!liveQuoted && client?.interface && typeof client.interface.openChatWindowAt === "function") {
+    await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const hydratedAcceptance = typeof client.getMessageById === "function"
+      ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null)
+      : null;
+    if (hydratedAcceptance) liveAcceptance = hydratedAcceptance;
+    liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
+      ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
+      : null;
+  }
   const quoted = liveQuoted || liveAcceptance.__quoted || acceptance.__quoted || null;
   const parsed = quoted ? parseOrder(quoted.body) : null;
   const orderMessageId = serializedMessageId(quoted);
