@@ -2,10 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const source = fs.readFileSync('./server.js', 'utf8');
-assert.match(source, /let liveQuoted = typeof liveAcceptance\.getQuotedMessage === "function"/);
 assert.match(source, /const archivedQuoted = typeof acceptance\.getQuotedMessage === "function"/);
+assert.match(source, /let liveQuoted = archivedQuoted/);
 assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
-assert.match(source, /const liveReactions = typeof liveAcceptance\.getReactions === "function"/);
+assert.match(source, /const liveReactions = \(!Array\.isArray\(archivedReactions\)/);
 assert.match(source, /const archivedReactions = typeof acceptance\.getReactions === "function"/);
 assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
 assert.match(source, /client\.interface\.openChatWindowAt\(acceptanceMessageId\)/);

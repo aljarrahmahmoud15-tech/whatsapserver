@@ -2500,18 +2500,20 @@ function recoveryEvidenceSummary(evidence) {
 async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const acceptanceMessageId = serializedMessageId(acceptance);
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
-  let liveAcceptance = client && typeof client.getMessageById === "function"
-    ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance
-    : acceptance;
+  let liveAcceptance = acceptance;
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
   const archivedQuoted = typeof acceptance.getQuotedMessage === "function"
     ? await withTimeout(acceptance.getQuotedMessage(), 12000, null)
     : acceptance.__quoted || null;
-  let liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
-    ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
-    : null;
+  let liveQuoted = archivedQuoted;
+  if (!liveQuoted && client && typeof client.getMessageById === "function") {
+    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
+    liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
+      ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
+      : liveAcceptance.__quoted || null;
+  }
   if (!liveQuoted && client?.interface && typeof client.interface.openChatWindowAt === "function") {
     await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
     await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2532,7 +2534,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const archivedReactions = typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 12000, null)
     : acceptance.__reactions || null;
-  const liveReactions = typeof liveAcceptance.getReactions === "function"
+  const liveReactions = (!Array.isArray(archivedReactions) || !archivedReactions.length) && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
   const reactions = Array.isArray(liveReactions) && liveReactions.length
@@ -2551,8 +2553,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
   const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
-  const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
-  const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
+  const acceptanceContact = typeof acceptance.getContact === "function" ? await withTimeout(acceptance.getContact(), 8000, null) : null;
+  const captainPhone = await resolveMessageSenderPhone(acceptance, acceptanceContact) || await resolveMessageSenderPhone(liveAcceptance);
   const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
   const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
@@ -4570,9 +4572,12 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     return message && !message.fromMe && resolveGroupChatId(message) === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
   });
   const matches = [];
-  for (const acceptance of acceptanceMessages) {
-    const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
-    if (recoveryExpectedMatches(evidence, expected)) matches.push(recoveryEvidenceSummary(evidence));
+  for (let offset = 0; offset < acceptanceMessages.length; offset += 4) {
+    const batch = acceptanceMessages.slice(offset, offset + 4);
+    const evidenceRows = await Promise.all(batch.map((acceptance) => inspectConfirmedRecoveryMessage(acceptance, messages, groupId)));
+    for (const evidence of evidenceRows) {
+      if (recoveryExpectedMatches(evidence, expected)) matches.push(recoveryEvidenceSummary(evidence));
+    }
   }
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, mutation: "none" });
