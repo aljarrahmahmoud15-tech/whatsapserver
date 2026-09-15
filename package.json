@@ -16,7 +16,7 @@
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.7.0",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "jsonwebtoken": "^9.0.2",
     "pino": "8.21.0",
     "puppeteer": "^24.15.0",
