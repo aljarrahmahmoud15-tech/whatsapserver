@@ -4759,8 +4759,8 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     downloaderPhone: phoneWithCountry(String(req.body?.downloaderPhone || "")),
     executorPhone: phoneWithCountry(String(req.body?.executorPhone || "")),
     price: Number(req.body?.price),
-    origin: normalizeArabic(String(req.body?.origin || "")).trim(),
-    destination: normalizeArabic(String(req.body?.destination || "")).trim(),
+    origin: normalizeRecoveryText(String(req.body?.origin || "")).trim(),
+    destination: normalizeRecoveryText(String(req.body?.destination || "")).trim(),
   };
   const exact = supplied.groupId === verified.groupId && supplied.sourceMessageId === verified.sourceMessageId && supplied.acceptanceMessageId === verified.acceptanceMessageId && recoveryPhoneMatches(supplied.downloaderPhone, verified.downloaderPhone) && recoveryPhoneMatches(supplied.executorPhone, verified.executorPhone) && supplied.price === verified.price && supplied.origin === verified.origin && supplied.destination === verified.destination;
   if (!exact) return res.status(409).json({ error: "Verified booking fields do not match the recorded evidence", mutation: "none" });

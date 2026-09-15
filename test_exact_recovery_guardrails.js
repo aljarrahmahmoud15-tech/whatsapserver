@@ -13,6 +13,7 @@ assert.match(server, /app\.locals\.verifiedBotBookingRecoveryInProgress/);
 assert.match(server, /res\.status\(202\)\.json\(\{ success: true, state: "processing", mutation: "queued" \}\)/);
 assert.match(server, /setTimeout\(\(\) => \{ void \(async \(\) => \{/);
 assert.match(server, /cardSent: false, cardPending: true/);
+assert.doesNotMatch(server, /normalizeArabic\(/);
 assert.match(server, /if \(existingSettlement\?\.status === "applied"\) return;/);
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
