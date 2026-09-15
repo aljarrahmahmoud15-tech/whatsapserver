@@ -9,6 +9,7 @@ assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmi
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
+assert.match(server, /const messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /function recoveryExpectedMatches\(evidence, expected = \{\}\)/);
 assert.match(server, /sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required/);
 assert.match(server, /mutation: "none"/);

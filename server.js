@@ -4627,8 +4627,8 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!groupId || !isConfiguredGroup(groupId) || !sourceMessageId || !acceptanceMessageId || !downloaderPhone || !executorPhone) {
     return res.status(400).json({ error: "groupId, sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required" });
   }
-  const { chat, messages } = await fetchGroupHistory(groupId, 400, { includeOutgoing: true });
-  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
+  const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
+  if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
   const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
   const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   const expected = {
