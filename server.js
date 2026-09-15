@@ -4784,8 +4784,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
         return;
       }
-      const card = await withTimeout(sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents), 12000, null);
-      audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: Boolean(card) });
+      audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: false, cardPending: true });
     } catch (error) {
       audit("order.verified_bot_booking.error", "order", null, { error: String(error?.message || error).slice(0, 200), sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
     } finally {
