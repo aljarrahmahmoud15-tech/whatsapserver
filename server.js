@@ -4768,7 +4768,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
   if (app.locals.verifiedBotBookingRecoveryInProgress) return res.status(202).json({ success: true, state: "processing", mutation: "queued" });
   app.locals.verifiedBotBookingRecoveryInProgress = true;
   res.status(202).json({ success: true, state: "processing", mutation: "queued" });
-  void (async () => {
+  setImmediate(() => { void (async () => {
     try {
       const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(verified.sourceMessageId);
       const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
@@ -4790,7 +4790,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     } finally {
       app.locals.verifiedBotBookingRecoveryInProgress = false;
     }
-  })();
+  })(); });
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
