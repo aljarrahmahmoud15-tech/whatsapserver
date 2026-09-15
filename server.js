@@ -2270,6 +2270,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
       if (result.state === "accepted") {
         await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
+      } else {
+        console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
       }
     }
   }
@@ -2479,14 +2481,16 @@ async function handleMessageReaction(reaction) {
   const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
   const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
   if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) return;
-  const producerApproved = botCompanyApproval ? producer.role === "company" : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
+  const producerApproved = botCompanyApproval
+    ? (producer.role === "company" || producer.is_bot === 1)
+    : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
   if (!producerApproved) return;
   const result = settlePendingOrder(pending.id, messageId, approverPhone);
-  if (result.state === "unauthorized" || result.state === "stale") return;
-  if (result.state === "debt_limit") return;
-  if (result.state === "accepted") {
-    await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name, result.order?.price_cents);
+  if (result.state !== "accepted") {
+    console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
+    return;
   }
+  await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name, result.order?.price_cents);
 }
 
 function parseCookies(header = "") {
@@ -4915,7 +4919,7 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
   let order = null;
   if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
-    const producer = botEmployeeUser();
+    const producer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
     const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
     order = createOrderCandidate({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
   }
