@@ -2531,6 +2531,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (!quoted || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(quoted) !== groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
+  const botProducer = quoted.fromMe && BOT_FINANCIAL_MODE === "company";
   const archivedReactions = typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 12000, null)
     : acceptance.__reactions || null;
@@ -2551,6 +2552,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   }
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
+  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction);
+  if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
   const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
   const acceptanceContact = typeof acceptance.getContact === "function" ? await withTimeout(acceptance.getContact(), 8000, null) : null;
@@ -2561,7 +2564,6 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  const botProducer = quoted.fromMe && BOT_FINANCIAL_MODE === "company";
   const authorizedThumb = botProducer
     ? (reactedByBot || hasBotConfirmationCard)
     : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
