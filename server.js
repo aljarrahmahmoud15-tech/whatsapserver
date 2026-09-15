@@ -2492,6 +2492,7 @@ function recoveryEvidenceSummary(evidence) {
     destination: evidence.parsed?.destination || null,
     rawText: evidence.rawText || null,
     authorizedThumb: Boolean(evidence.authorizedThumb),
+    reactionPresent: Boolean(evidence.reactionPresentOnAcceptance),
     existingOrderNo: evidence.existingOrder?.order_no || null,
     existingSettlementStatus: evidence.existingSettlement?.status || null,
   };
@@ -2552,7 +2553,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   }
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
-  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction);
+  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
   const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
@@ -2586,6 +2587,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     producer,
     captain,
     authorizedThumb,
+    reactionPresentOnAcceptance,
     reactedByBot,
     hasBotConfirmationCard,
     reactionPhones: [...new Set(reactionPhones)],
