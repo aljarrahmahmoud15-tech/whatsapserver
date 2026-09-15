@@ -1317,6 +1317,16 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
   if (!client) return [];
   const ids = [...new Set([sourceMessageId, acceptanceMessageId].map((value) => String(value || "").trim()).filter(Boolean))];
   if (!ids.length) return [];
+  const linkSourceToAcceptance = (rows) => {
+    const filtered = (Array.isArray(rows) ? rows : []).filter((message) => message && resolveGroupChatId(message) === groupId);
+    const source = filtered.find((message) => serializedMessageId(message) === sourceMessageId) || filtered.find((message) => message.fromMe && parseOrder(message.body).isOrder);
+    const acceptance = filtered.find((message) => serializedMessageId(message) === acceptanceMessageId);
+    if (source && acceptance) {
+      acceptance.__quoted = source;
+      acceptance.__quotedMessageId = sourceMessageId;
+    }
+    return filtered;
+  };
   if (client.pupPage) {
     const rows = await withTimeout(client.pupPage.evaluate(async (requestedIds) => {
       try {
@@ -1362,11 +1372,11 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
         return [];
       }
     }, ids), 20000, []);
-    if (Array.isArray(rows) && rows.length) return rows.filter((message) => message && resolveGroupChatId(message) === groupId);
+    if (Array.isArray(rows) && rows.length) return linkSourceToAcceptance(rows);
   }
   if (typeof client.getMessageById !== "function") return [];
   const rows = await Promise.all(ids.map((messageId) => withTimeout(client.getMessageById(messageId), 15000, null)));
-  return rows.filter((message) => message && resolveGroupChatId(message) === groupId);
+  return linkSourceToAcceptance(rows);
 }
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
