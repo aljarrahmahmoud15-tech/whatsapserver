@@ -2744,23 +2744,27 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.captain_cents,o.created_at,o.updated_at,
-    COALESCE((SELECT -SUM(w.amount_cents) FROM wallet_ledger w WHERE w.user_id=o.captain_user_id AND w.order_id=o.id AND w.type='captain_fee'),0) AS captain_fee_cents
-    FROM orders o WHERE o.captain_user_id=? ORDER BY o.id DESC LIMIT 100`).all(user.id).map((trip) => {
-      const grossCents = Number(trip.captain_cents || 0);
-      const feeCents = Number(trip.captain_fee_cents || 0);
-      return { ...trip, price: money(trip.price_cents), grossEarnings: money(grossCents), walletFee: money(feeCents), netEarnings: money(grossCents - feeCents) };
+  const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.created_at,o.updated_at,p.name AS producer_name,c.name AS captain_name
+    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id
+    WHERE o.producer_user_id=? OR o.captain_user_id=? ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id).map((trip) => {
+      const finalized = ['accepted', 'completed'].includes(trip.status) && trip.settlement_state === 'settled';
+      const postedShareCents = finalized && Number(trip.producer_user_id) === Number(user.id) ? Number(trip.producer_cents || 0) : 0;
+      const executedDebitCents = finalized && Number(trip.captain_user_id) === Number(user.id) ? Number(trip.producer_cents || 0) + Number(trip.company_cents || 0) : 0;
+      const role = postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant';
+      return { ...trip, price: money(trip.price_cents), grossEarnings: money(postedShareCents), walletFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role, roleLabel: role === 'downloader' ? 'كابتن تنزيل الطلب' : role === 'executor' ? 'كابتن التنفيذ' : 'مشارك' };
     });
-  const totals = db.prepare(`SELECT COALESCE(SUM(captain_cents),0) AS gross_cents,
-    COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN captain_cents ELSE 0 END),0) AS settled_gross_cents
-    FROM orders WHERE captain_user_id=?`).get(user.id);
-  const fees = db.prepare("SELECT COALESCE(SUM(-amount_cents),0) AS cents FROM wallet_ledger WHERE user_id=? AND type='captain_fee'").get(user.id);
+  const totals = db.prepare(`SELECT
+    COALESCE(SUM(CASE WHEN producer_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN producer_cents ELSE 0 END),0) AS posted_share_cents,
+    COALESCE(SUM(CASE WHEN captain_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN producer_cents + company_cents ELSE 0 END),0) AS executed_debit_cents,
+    COALESCE(SUM(CASE WHEN producer_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN 1 ELSE 0 END),0) AS posted_orders,
+    COALESCE(SUM(CASE WHEN captain_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN 1 ELSE 0 END),0) AS executed_orders
+    FROM orders`).get(user.id, user.id, user.id, user.id);
   const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
   res.setHeader("Cache-Control", "no-store");
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
-    earnings: { gross: money(totals?.settled_gross_cents || 0), fees: money(fees?.cents || 0), net: money((totals?.settled_gross_cents || 0) - (fees?.cents || 0)) },
+    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } },
     entries,
     trips,
     topupCards,
@@ -2795,16 +2799,20 @@ app.get("/api/staff/overview", requireStaff, (req, res) => {
   res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, role: req.staffSession.role });
 });
 app.get("/api/staff/orders", requireStaff, (req, res) => {
-  const rows = db.prepare("SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.created_at,p.name AS producer_name,c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.status IN ('accepted','completed') ORDER BY o.id DESC LIMIT 200").all();
-  res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents) })) });
+  const rows = db.prepare("SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.created_at,p.name AS producer_name,c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.id DESC LIMIT 200").all();
+  res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents), postedShare: money(row.producer_cents), executorDebit: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)), companyShare: money(row.company_cents), settlement: row.settlement_state })) });
 });
 app.get("/api/staff/captains", requireStaffRole("operations"), (req, res) => {
   const captains = db.prepare("SELECT id,phone,name,active,account_status,created_at,captain_last_login_at FROM users WHERE role='captain' AND account_status<>'merged' ORDER BY active DESC,name").all().map((row) => ({ ...row, lastLoginAt: row.captain_last_login_at }));
   res.json({ captains });
 });
 app.get("/api/staff/wallets", requireStaffRole("accountant"), (req, res) => {
-  const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,updated_at FROM users WHERE role IN ('captain','producer') ORDER BY role,name").all();
-  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents) })) });
+  const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.updated_at,
+    COALESCE((SELECT SUM(CASE WHEN p.status IN ('accepted','completed') AND p.settlement_state='settled' THEN p.producer_cents ELSE 0 END) FROM orders p WHERE p.producer_user_id=u.id),0) AS posted_share_cents,
+    COALESCE((SELECT SUM(CASE WHEN e.status IN ('accepted','completed') AND e.settlement_state='settled' THEN e.producer_cents + e.company_cents ELSE 0 END) FROM orders e WHERE e.captain_user_id=u.id),0) AS executed_debit_cents,
+    COALESCE((SELECT SUM(CASE WHEN e.status IN ('accepted','completed') AND e.settlement_state='settled' THEN e.company_cents ELSE 0 END) FROM orders e WHERE e.captain_user_id=u.id),0) AS company_share_cents
+    FROM users u WHERE u.role IN ('captain','producer') ORDER BY u.role,u.name`).all();
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })) });
 });
 app.get("/api/admin/staff", requireAdmin, (req, res) => {
   const accounts = db.prepare("SELECT id,username,name,role,active,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all();
@@ -3760,11 +3768,15 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
-    COUNT(CASE WHEN o.status IN ('accepted','completed') THEN 1 END) AS confirmed_orders,
-    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.price_cents ELSE 0 END),0) AS gross_fares_cents,
-    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.producer_cents + o.company_cents ELSE 0 END),0) AS captain_fee_cents,
-    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.company_cents ELSE 0 END),0) AS company_commission_cents,
-    MAX(CASE WHEN o.status IN ('accepted','completed') THEN o.accepted_at END) AS last_confirmed_at
+    COUNT(CASE WHEN o.status IN ('accepted','completed') AND o.settlement_state='settled' THEN 1 END) AS confirmed_orders,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') AND o.settlement_state='settled' THEN o.price_cents ELSE 0 END),0) AS gross_fares_cents,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') AND o.settlement_state='settled' THEN o.producer_cents + o.company_cents ELSE 0 END),0) AS captain_fee_cents,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') AND o.settlement_state='settled' THEN o.company_cents ELSE 0 END),0) AS company_commission_cents,
+    COALESCE((SELECT SUM(CASE WHEN p.status IN ('accepted','completed') AND p.settlement_state='settled' THEN p.producer_cents ELSE 0 END) FROM orders p WHERE p.producer_user_id=u.id),0) AS posted_share_cents,
+    COALESCE((SELECT SUM(CASE WHEN e.status IN ('accepted','completed') AND e.settlement_state='settled' THEN e.producer_cents + e.company_cents ELSE 0 END) FROM orders e WHERE e.captain_user_id=u.id),0) AS executed_debit_cents,
+    COALESCE((SELECT COUNT(*) FROM orders p WHERE p.producer_user_id=u.id AND p.status IN ('accepted','completed') AND p.settlement_state='settled'),0) AS posted_orders,
+    COALESCE((SELECT COUNT(*) FROM orders e WHERE e.captain_user_id=u.id AND e.status IN ('accepted','completed') AND e.settlement_state='settled'),0) AS executed_orders,
+    MAX(CASE WHEN o.status IN ('accepted','completed') AND o.settlement_state='settled' THEN o.accepted_at END) AS last_confirmed_at
     FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id
     WHERE u.role='captain' AND u.account_status<>'merged'
     GROUP BY u.id ORDER BY u.active DESC,u.id DESC`).all();
@@ -3775,7 +3787,11 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     grossFares: money(row.gross_fares_cents),
     captainFees: money(row.captain_fee_cents),
     companyCommission: money(row.company_commission_cents),
-    netEarnings: money(Number(row.gross_fares_cents || 0) - Number(row.captain_fee_cents || 0)),
+    postedShare: money(row.posted_share_cents),
+    executedDebit: money(row.executed_debit_cents),
+    postedOrders: Number(row.posted_orders || 0),
+    executedOrders: Number(row.executed_orders || 0),
+    netEarnings: money(Number(row.posted_share_cents || 0) - Number(row.executed_debit_cents || 0)),
   })) });
 });
 app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
@@ -3836,11 +3852,24 @@ app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
   const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,captain_auth_method,captain_whatsapp_verified_at,captain_last_login_at,is_bot,created_at,updated_at FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
-  const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.accepted_at,o.settlement_state,o.created_at,o.updated_at,p.name AS producer_name
-    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id);
+  const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.producer_user_id,o.captain_user_id,o.accepted_at,o.settlement_state,o.created_at,o.updated_at,p.name AS producer_name,c.name AS captain_name
+    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.producer_user_id=? OR o.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id, id);
   const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN price_cents ELSE 0 END),0) AS gross_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN producer_cents + company_cents ELSE 0 END),0) AS fee_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN company_cents ELSE 0 END),0) AS company_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
-  res.json({ captain: { ...captain, authMethod: normalizeCaptainAuthMethod(captain.captain_auth_method), balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, grossEarnings: money(totals.gross_cents), captainFees: money(totals.fee_cents), companyCommission: money(totals.company_cents), netEarnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)), earnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), captainFee: money(Number(order.producer_cents || 0) + Number(order.company_cents || 0)), netEarnings: money(Number(order.price_cents || 0) - Number(order.producer_cents || 0) - Number(order.company_cents || 0)), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
+  const totals = db.prepare(`SELECT COUNT(*) AS trips,
+    COALESCE(SUM(CASE WHEN producer_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN producer_cents ELSE 0 END),0) AS posted_share_cents,
+    COALESCE(SUM(CASE WHEN captain_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN producer_cents + company_cents ELSE 0 END),0) AS executed_debit_cents,
+    COALESCE(SUM(CASE WHEN producer_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN 1 ELSE 0 END),0) AS posted_orders,
+    COALESCE(SUM(CASE WHEN captain_user_id=? AND status IN ('accepted','completed') AND settlement_state='settled' THEN 1 ELSE 0 END),0) AS executed_orders,
+    COALESCE(SUM(CASE WHEN status='completed' AND captain_user_id=? THEN 1 ELSE 0 END),0) AS completed,
+    COALESCE(SUM(CASE WHEN status='accepted' AND captain_user_id=? THEN 1 ELSE 0 END),0) AS accepted
+    FROM orders`).get(id, id, id, id, id, id);
+  const companyCommissionCents = orders.filter((order) => Number(order.captain_user_id) === id && ['accepted','completed'].includes(order.status) && order.settlement_state === 'settled').reduce((sum, order) => sum + Number(order.company_cents || 0), 0);
+  res.json({ captain: { ...captain, authMethod: normalizeCaptainAuthMethod(captain.captain_auth_method), balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, postedOrders: Number(totals.posted_orders || 0), executedOrders: Number(totals.executed_orders || 0), postedShare: money(totals.posted_share_cents), executedDebit: money(totals.executed_debit_cents), grossEarnings: money(totals.posted_share_cents), captainFees: money(totals.executed_debit_cents), companyCommission: money(companyCommissionCents), netEarnings: money(Number(totals.posted_share_cents || 0) - Number(totals.executed_debit_cents || 0)), earnings: money(Number(totals.posted_share_cents || 0) - Number(totals.executed_debit_cents || 0)) }, orders: orders.map((order) => {
+    const finalized = ['accepted','completed'].includes(order.status) && order.settlement_state === 'settled';
+    const postedShareCents = finalized && Number(order.producer_user_id) === id ? Number(order.producer_cents || 0) : 0;
+    const executedDebitCents = finalized && Number(order.captain_user_id) === id ? Number(order.producer_cents || 0) + Number(order.company_cents || 0) : 0;
+    return { ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(postedShareCents), captainFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role: postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant', orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" };
+  }), ledger });
 });
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
@@ -4549,8 +4578,8 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
   res.json({ leads: rows });
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.status IN ('accepted','completed') ORDER BY o.id DESC LIMIT 200`).all();
-  res.json({ orders: rows.map((row) => ({ ...row, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)), captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0) - Number(row.company_cents || 0)), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone, s.status AS settlement_status FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id LEFT JOIN order_settlements s ON s.order_id=o.id WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.id DESC LIMIT 200`).all();
+  res.json({ orders: rows.map((row) => ({ ...row, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents), captain: money(row.captain_cents), captainFee: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)), captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0) - Number(row.company_cents || 0)), settlementState: row.settlement_state, settlementStatus: row.settlement_status || "applied", orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
 app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status IN ('accepted','completed') AND (o.captain_user_id IS NULL OR o.settlement_state='unlinked') ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
@@ -4610,12 +4639,12 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const groupId = String(req.query.groupId || "").trim();
   const rows = groupId
-    ? db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone
-        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id
-        WHERE o.status IN ('accepted','completed') AND o.group_id=? ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(groupId, limit)
-    : db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone
-        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id
-        WHERE o.status IN ('accepted','completed') ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(limit);
+    ? db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone, s.status AS settlement_status
+        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id LEFT JOIN order_settlements s ON s.order_id=o.id
+        WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' AND o.group_id=? ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(groupId, limit)
+    : db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone, s.status AS settlement_status
+        FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id LEFT JOIN order_settlements s ON s.order_id=o.id
+        WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(limit);
   res.setHeader("Cache-Control", "no-store");
   res.json({
     success: true,
@@ -4634,14 +4663,20 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
       captain: money(row.captain_cents),
       captainFee: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)),
       captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0) - Number(row.company_cents || 0)),
+      settlementState: row.settlement_state,
+      settlementStatus: row.settlement_status || "applied",
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
       confirmationMethod: row.accepted_message_id ? "group_reaction" : "recorded_confirmation",
     })),
   });
 });
 app.get("/api/admin/wallets", requireAdmin, (req, res) => {
-  const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,updated_at FROM users ORDER BY role,id").all();
-  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents) })) });
+  const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.updated_at,
+    COALESCE((SELECT SUM(CASE WHEN p.status IN ('accepted','completed') AND p.settlement_state='settled' THEN p.producer_cents ELSE 0 END) FROM orders p WHERE p.producer_user_id=u.id),0) AS posted_share_cents,
+    COALESCE((SELECT SUM(CASE WHEN e.status IN ('accepted','completed') AND e.settlement_state='settled' THEN e.producer_cents + e.company_cents ELSE 0 END) FROM orders e WHERE e.captain_user_id=u.id),0) AS executed_debit_cents,
+    COALESCE((SELECT SUM(CASE WHEN e.status IN ('accepted','completed') AND e.settlement_state='settled' THEN e.company_cents ELSE 0 END) FROM orders e WHERE e.captain_user_id=u.id),0) AS company_share_cents
+    FROM users u ORDER BY u.role,u.id`).all();
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })) });
 });
 app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   try {

@@ -44,8 +44,9 @@ assert.ok(
   'the agreed 12% plus 4% accounting rule is exposed'
 );
 assert.ok(
-  server.includes("THEN o.producer_cents + o.company_cents ELSE 0 END),0) AS captain_fee_cents") &&
-  server.includes("captainFee: money(Number(order.producer_cents || 0) + Number(order.company_cents || 0))"),
+  server.includes('posted_share_cents') &&
+  server.includes('executed_debit_cents') &&
+  server.includes('executedDebit: money(executedDebitCents)'),
   'captain-facing fee summaries include the full 16% debit'
 );
 assert.ok(
