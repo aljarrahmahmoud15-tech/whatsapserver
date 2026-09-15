@@ -4765,18 +4765,18 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
   const exact = supplied.groupId === verified.groupId && supplied.sourceMessageId === verified.sourceMessageId && supplied.acceptanceMessageId === verified.acceptanceMessageId && recoveryPhoneMatches(supplied.downloaderPhone, verified.downloaderPhone) && recoveryPhoneMatches(supplied.executorPhone, verified.executorPhone) && supplied.price === verified.price && supplied.origin === verified.origin && supplied.destination === verified.destination;
   if (!exact) return res.status(409).json({ error: "Verified booking fields do not match the recorded evidence", mutation: "none" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
-  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(verified.sourceMessageId);
-  const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
-  if (existingSettlement?.status === "applied") return res.json({ success: true, state: "already_settled", order: existingOrder, mutation: "none", cardSent: false });
-  const producer = companyUser();
-  const captain = findCaptainByPhone(verified.executorPhone, { activeOnly: true });
-  const parsed = parseOrder(verified.rawText);
-  if (!producer || !captain || !parsed?.isOrder) return res.status(422).json({ error: "Verified company producer, active executor, or order data is unavailable", mutation: "none" });
   if (app.locals.verifiedBotBookingRecoveryInProgress) return res.status(202).json({ success: true, state: "processing", mutation: "queued" });
   app.locals.verifiedBotBookingRecoveryInProgress = true;
   res.status(202).json({ success: true, state: "processing", mutation: "queued" });
   void (async () => {
     try {
+      const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(verified.sourceMessageId);
+      const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
+      if (existingSettlement?.status === "applied") return;
+      const producer = companyUser();
+      const captain = findCaptainByPhone(verified.executorPhone, { activeOnly: true });
+      const parsed = parseOrder(verified.rawText);
+      if (!producer || !captain || !parsed?.isOrder) throw new Error("Verified company producer, active executor, or order data is unavailable");
       const order = existingOrder || createOrderRecord({ messageId: verified.sourceMessageId, groupId: verified.groupId, body: verified.rawText, producer, parsed });
       if (!order) throw new Error("Unable to create verified order record");
       const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: verified.acceptanceMessageId, acceptedAt: now(), confirmedByPhone: verified.downloaderPhone, importSource: "admin_verified_bot_booking" });
