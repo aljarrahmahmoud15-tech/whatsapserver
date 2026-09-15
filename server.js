@@ -4790,7 +4790,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     } finally {
       app.locals.verifiedBotBookingRecoveryInProgress = false;
     }
-  })(); }, 1000);
+  })(); }, 10000);
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
