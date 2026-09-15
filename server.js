@@ -4775,9 +4775,11 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
   if (!order) return res.status(422).json({ error: "Unable to create verified order record", mutation: "none" });
   const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: verified.acceptanceMessageId, acceptedAt: now(), confirmedByPhone: verified.downloaderPhone, importSource: "admin_verified_bot_booking" });
   if (result.state !== "accepted") return res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, mutation: "none" });
-  const card = await withTimeout(sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents), 12000, null);
-  audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: Boolean(card) });
-  res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, producer: result.producer, captain: result.captain, cardSent: Boolean(card), mutation: "applied_once" });
+  void withTimeout(sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents), 12000, null)
+    .then((card) => audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, cardSent: Boolean(card) }))
+    .catch((error) => audit("order.verified_bot_booking.card_error", "order", order.id, { error: String(error?.message || error).slice(0, 200) }));
+  audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: "pending" });
+  res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, producer: result.producer, captain: result.captain, cardSent: "pending", mutation: "applied_once" });
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
