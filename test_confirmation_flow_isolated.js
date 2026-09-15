@@ -139,5 +139,6 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% من قيمة الطلب لمحفظة المنتج");
   assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% من قيمة الطلب لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التوثيق");
+  assert.match(messages[0].text, /تم تثبيت الطلب: المنتج - الكابتن/);
   console.log("isolated confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

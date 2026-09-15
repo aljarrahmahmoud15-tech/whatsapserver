@@ -1960,6 +1960,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!order) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
+  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
+  if (!producer || captain.id === producer.id) return;
   const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
@@ -1970,7 +1972,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   })();
   if (!pending) return;
   audit("order.pending_shared_captain_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
-  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
   // لا يعتمد «تم» وحده: يجب أن يضع كابتن تنزيل الطلب 👍 على رسالة «تم».
   await sendGroupBrandedMessage(groupId, "بانتظار اعتماد كابتن تنزيل الطلب", [
     `🆔 رقم الطلب: #${order.order_no}`,
@@ -1994,6 +1995,41 @@ async function resolveReactionSenderPhone(reaction) {
   if (!client || !isReady || !serialized) return "";
   const contact = await withTimeout(client.getContactById(serialized), 8000, null);
   return resolveWhatsappUserPhone(contact, serialized);
+}
+
+function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone) {
+  return db.transaction(() => {
+    const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+    if (!current) return { state: "stale" };
+    const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
+    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    const stamp = now();
+    const pendingCaptain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
+    if (current.status === "open" && current.pending_message_id === expectedMessageId) {
+      const changed = db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(stamp, orderId, expectedMessageId);
+      if (!changed.changes) return { state: "stale" };
+      audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, pendingCaptainId: pendingCaptain?.id || null, messageId: expectedMessageId });
+      return { state: "cancelled", order: current, producer, captain: pendingCaptain, reversed: false };
+    }
+    if (current.status !== "accepted" || current.accepted_message_id !== expectedMessageId || current.settlement_state !== "settled") return { state: "stale" };
+    const settlement = db.prepare("SELECT * FROM order_settlements WHERE order_id=? AND status='applied' LIMIT 1").get(orderId);
+    const captain = current.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.captain_user_id) : null;
+    const company = companyUser();
+    if (!settlement || !captain || !company) return { state: "stale" };
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
+    const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة الشركة بعد إزالة 👍", stamp, settlement.details_json);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.producer_cents, stamp, producer.id);
+    const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة كابتن تنزيل الطلب بعد إزالة 👍", stamp, settlement.details_json);
+    db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.captain_fee_cents, stamp, captain.id);
+    const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "reversal_captain_fee", settlement.captain_fee_cents, captainBalance, `ORDER-${current.order_no}-CANCEL`, "إعادة خصم الكابتن بعد إزالة 👍", stamp, settlement.details_json);
+    db.prepare("UPDATE order_settlements SET status='reversed' WHERE order_id=? AND status='applied'").run(orderId);
+    db.prepare("UPDATE orders SET status='cancelled',settlement_state='reversed',updated_at=? WHERE id=? AND status='accepted' AND accepted_message_id=?").run(stamp, orderId, expectedMessageId);
+    audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, captainId: captain.id, reversed: true, messageId: expectedMessageId });
+    return { state: "cancelled", order: current, producer, captain, reversed: true };
+  })();
 }
 
 async function hasVisibleThumbReaction(messageId) {
@@ -2105,13 +2141,27 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
 }
 
 async function handleMessageReaction(reaction) {
-  if (!reaction || reaction.reaction !== "👍") return;
+  const reactionValue = String(reaction?.reaction || "").trim();
+  const removedThumb = reactionValue === "";
+  if (!reaction || (!removedThumb && reactionValue !== "👍")) return;
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
   const approverPhone = await resolveReactionSenderPhone(reaction);
+  if (removedThumb) {
+    const candidate = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('open','accepted') AND (pending_message_id=? OR accepted_message_id=?) ORDER BY id DESC LIMIT 1").get(target.from, messageId, messageId);
+    if (!candidate) return;
+    const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+    if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+    const result = cancelOrderForReactionRemoval(candidate.id, messageId, approverPhone);
+    if (result.state === "cancelled") {
+      const names = `${result.producer?.name || "غير محدد"} - ${result.captain?.name || "غير محدد"}`;
+      await client.sendMessage(target.from, `تم إلغاء الطلب: ${names}`).catch((error) => console.error("[WhatsApp] cancellation send:", error.message));
+    }
+    return;
+  }
   const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
@@ -2125,7 +2175,8 @@ async function handleMessageReaction(reaction) {
     return;
   }
   if (result.state === "accepted") {
-    await sendGroupBrandedMessage(target.from, "تم توثيق الرحلة", [`🆔 رقم الطلب: #${result.order.order_no}`, `👤 المنتج المعتمد: ${result.producer ? result.producer.name : "غير محدد"}`, `🚕 الكابتن المنفّذ: ${result.captain.name}`, `💰 القيمة الكاملة للرحلة: ${money(result.order.price_cents)} JOD`, `🧾 نوع الطلب: ${result.order.order_kind === "order" ? "أوردر محدد · خصم 20%" : "طلب عادي · خصم 15%"}`, `💼 المخصوم من رصيد المنفّذ: ${money(result.order.producer_cents)} JOD`, `📊 صافي حصة المنتج: ${money(result.order.producer_cents - result.order.company_cents)} JOD | حصة الشركة: ${money(result.order.company_cents)} JOD`, result.captain.wallet_cents < 0 ? `⚠️ مديونية الكابتن بعد التسوية: ${money(result.captain.wallet_cents)} JOD` : "✅ لا توجد مديونية على الكابتن بعد التسوية.", "✅ تم التوثيق بلايك المنتج، وتم تسجيل التسوية."]).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
+    const names = `${result.producer ? result.producer.name : "غير محدد"} - ${result.captain.name}`;
+    await client.sendMessage(target.from, `تم تثبيت الطلب: ${names}`).catch((error) => console.error("[WhatsApp] acceptance send:", error.message));
   }
 }
 

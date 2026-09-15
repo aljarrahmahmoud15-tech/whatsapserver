@@ -6,7 +6,10 @@ const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 
 assert.match(server, /function formatPendingConfirmation\(order, captain\)/);
 assert.match(server, /لا توجد تسوية مالية قبل اعتماد كابتن تنزيل الطلب/);
-assert.match(server, /if \(!reaction \|\| reaction\.reaction !== "👍"\) return;/);
+assert.match(server, /const removedThumb = reactionValue === ""/);
+assert.match(server, /cancelOrderForReactionRemoval\(candidate\.id, messageId, approverPhone\)/);
+assert.match(server, /تم تثبيت الطلب: \$\{names\}/);
+assert.match(server, /تم إلغاء الطلب: \$\{names\}/);
 assert.match(server, /const requestKindMatch = normalized\.match\(\/\(\?:راكب/);
 assert.match(server, /استقبال\\s\+مطار/);
 assert.match(server, /ضع 👍 على رسالة «تم» نفسها/);
