@@ -3762,7 +3762,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
     COUNT(CASE WHEN o.status IN ('accepted','completed') THEN 1 END) AS confirmed_orders,
     COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.price_cents ELSE 0 END),0) AS gross_fares_cents,
-    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.producer_cents ELSE 0 END),0) AS captain_fee_cents,
+    COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.producer_cents + o.company_cents ELSE 0 END),0) AS captain_fee_cents,
     COALESCE(SUM(CASE WHEN o.status IN ('accepted','completed') THEN o.company_cents ELSE 0 END),0) AS company_commission_cents,
     MAX(CASE WHEN o.status IN ('accepted','completed') THEN o.accepted_at END) AS last_confirmed_at
     FROM users u LEFT JOIN orders o ON o.captain_user_id=u.id
@@ -3839,8 +3839,8 @@ app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
   const orders = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.company_cents,o.producer_cents,o.captain_cents,o.accepted_at,o.settlement_state,o.created_at,o.updated_at,p.name AS producer_name
     FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id);
   const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN price_cents ELSE 0 END),0) AS gross_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN producer_cents ELSE 0 END),0) AS fee_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN company_cents ELSE 0 END),0) AS company_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
-  res.json({ captain: { ...captain, authMethod: normalizeCaptainAuthMethod(captain.captain_auth_method), balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, grossEarnings: money(totals.gross_cents), captainFees: money(totals.fee_cents), companyCommission: money(totals.company_cents), netEarnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)), earnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), captainFee: money(order.producer_cents), netEarnings: money(Number(order.price_cents || 0) - Number(order.producer_cents || 0)), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
+  const totals = db.prepare(`SELECT COUNT(*) AS trips, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN price_cents ELSE 0 END),0) AS gross_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN producer_cents + company_cents ELSE 0 END),0) AS fee_cents, COALESCE(SUM(CASE WHEN status IN ('accepted','completed') THEN company_cents ELSE 0 END),0) AS company_cents, COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) AS completed, COALESCE(SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END),0) AS accepted, COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),0) AS open FROM orders WHERE captain_user_id=?`).get(id);
+  res.json({ captain: { ...captain, authMethod: normalizeCaptainAuthMethod(captain.captain_auth_method), balance: money(captain.wallet_cents) }, summary: { trips: totals.trips, completed: totals.completed, accepted: totals.accepted, open: totals.open, grossEarnings: money(totals.gross_cents), captainFees: money(totals.fee_cents), companyCommission: money(totals.company_cents), netEarnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)), earnings: money(Number(totals.gross_cents || 0) - Number(totals.fee_cents || 0)) }, orders: orders.map((order) => ({ ...order, price: money(order.price_cents), company: money(order.company_cents), producer: money(order.producer_cents), earnings: money(order.captain_cents), captainFee: money(Number(order.producer_cents || 0) + Number(order.company_cents || 0)), netEarnings: money(Number(order.price_cents || 0) - Number(order.producer_cents || 0) - Number(order.company_cents || 0)), orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })), ledger });
 });
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
@@ -4632,8 +4632,8 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
       producerGross: money(row.producer_cents),
       producer: money(row.producer_cents - row.company_cents),
       captain: money(row.captain_cents),
-      captainFee: money(row.producer_cents),
-      captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0)),
+      captainFee: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)),
+      captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0) - Number(row.company_cents || 0)),
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
       confirmationMethod: row.accepted_message_id ? "group_reaction" : "recorded_confirmation",
     })),

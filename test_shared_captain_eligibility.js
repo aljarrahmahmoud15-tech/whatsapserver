@@ -44,6 +44,11 @@ assert.ok(
   'the agreed 12% plus 4% accounting rule is exposed'
 );
 assert.ok(
+  server.includes("THEN o.producer_cents + o.company_cents ELSE 0 END),0) AS captain_fee_cents") &&
+  server.includes("captainFee: money(Number(order.producer_cents || 0) + Number(order.company_cents || 0))"),
+  'captain-facing fee summaries include the full 16% debit'
+);
+assert.ok(
   server.includes('const PRODUCER_RATE_BPS = 1200;') &&
   server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
   server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 400;'),
