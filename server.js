@@ -1327,6 +1327,25 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
     }
     return filtered;
   };
+  const logged = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE message_id IN (?,?) AND group_id=?").all(sourceMessageId, acceptanceMessageId, groupId);
+  const loggedById = new Map(logged.map((row) => [row.message_id, row]));
+  if (loggedById.has(sourceMessageId) && loggedById.has(acceptanceMessageId)) {
+    const sourceRow = loggedById.get(sourceMessageId);
+    const acceptanceRow = loggedById.get(acceptanceMessageId);
+    const source = { id: { _serialized: sourceRow.message_id }, __serializedId: sourceRow.message_id, from: groupId, to: groupId, fromMe: sourceRow.message_id.startsWith("true_"), body: sourceRow.body, __authorPhone: sourceRow.sender_phone, timestamp: Math.floor(new Date(sourceRow.sent_at).getTime() / 1000) };
+    const acceptance = { id: { _serialized: acceptanceRow.message_id }, __serializedId: acceptanceRow.message_id, from: groupId, fromMe: false, body: acceptanceRow.body, author: { _serialized: `${acceptanceRow.sender_phone || ""}@c.us` }, __authorPhone: acceptanceRow.sender_phone, timestamp: Math.floor(new Date(acceptanceRow.sent_at).getTime() / 1000) };
+    if (client.pupPage) {
+      acceptance.__hasReaction = await withTimeout(client.pupPage.evaluate(async (messageId) => {
+        try {
+          const row = await window.require("WAWebCollections").Reactions.find(messageId);
+          return Boolean(row?.reactions?.length);
+        } catch (_) { return false; }
+      }, acceptanceMessageId), 4000, false);
+    }
+    acceptance.__quoted = source;
+    acceptance.__quotedMessageId = sourceMessageId;
+    return [source, acceptance];
+  }
   if (client.pupPage) {
     const rows = await withTimeout(client.pupPage.evaluate(async (requestedIds) => {
       try {
@@ -1371,12 +1390,11 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
       } catch (_) {
         return [];
       }
-    }, ids), 20000, []);
+    }, ids), 5000, []);
     if (Array.isArray(rows) && rows.length) return linkSourceToAcceptance(rows);
   }
-  if (typeof client.getMessageById !== "function") return [];
-  const rows = await Promise.all(ids.map((messageId) => withTimeout(client.getMessageById(messageId), 15000, null)));
-  return linkSourceToAcceptance(rows);
+  const history = await fetchGroupHistory(groupId, 200, { includeOutgoing: true });
+  return linkSourceToAcceptance(history.messages);
 }
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
