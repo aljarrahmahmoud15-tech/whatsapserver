@@ -2264,15 +2264,15 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
   if (producer.is_bot === 1 || producer.role === "company") {
     const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) {
-      console.warn(`[Order] company approval reaction failed for candidate=${candidate.id}`);
+    if (!reacted) console.warn(`[Order] company approval reaction failed; continuing financial approval candidate=${candidate.id}`);
+    // Bot/company ownership is already the approval authority. The visual reaction is
+    // best-effort only; a WhatsApp UI reaction failure must not leave a valid booking
+    // pending after a different captain replied «تم» to the quoted price.
+    const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
+    if (result.state === "accepted") {
+      await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
     } else {
-      const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
-      if (result.state === "accepted") {
-        await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
-      } else {
-        console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
-      }
+      console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
     }
   }
 }
