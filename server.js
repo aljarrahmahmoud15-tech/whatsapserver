@@ -2564,9 +2564,12 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     acceptance?.__quotedMessageId || acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
   ).trim();
   const indexedQuoted = quotedMessageIdHint
-    ? (Array.isArray(messages) ? messages.find((message) => serializedMessageId(message) === quotedMessageIdHint) : null)
+    ? (Array.isArray(messages) ? messages.find((message) => {
+      const messageId = serializedMessageId(message) || "";
+      return messageId === quotedMessageIdHint || messageId.endsWith(`_${quotedMessageIdHint}`) || messageId.split("_")[2] === quotedMessageIdHint;
+    }) : null)
     : null;
-  const archivedQuoted = acceptance.__quoted || indexedQuoted || null;
+  const archivedQuoted = indexedQuoted || acceptance.__quoted || null;
   let liveQuoted = archivedQuoted;
   if (!liveQuoted && client && typeof client.getMessageById === "function") {
     liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
@@ -2591,7 +2594,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (!quoted || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(quoted) !== groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
-  const botProducer = quoted.fromMe && BOT_FINANCIAL_MODE === "company";
+  const botProducer = (indexedQuoted?.fromMe || quoted.fromMe) && BOT_FINANCIAL_MODE === "company";
   const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
   const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
@@ -2615,7 +2618,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
-  const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
+  const producerPhone = (indexedQuoted?.fromMe || quoted.fromMe) ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
   const captainPhone = await resolveWhatsappUserPhone(
     acceptance.__authorPhone,
     acceptance.author,

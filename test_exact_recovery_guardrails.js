@@ -10,6 +10,7 @@ assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, s
 assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
 assert.match(server, /collections\.Msg\.getMessagesById\(requestedIds\)/);
 assert.match(server, /acceptance\?\.__quotedMessageId \|\| acceptance\?\.quotedMessageId/);
+assert.match(server, /messageId\.endsWith\(`_\$\{quotedMessageIdHint\}`\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
 assert.match(server, /const messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);

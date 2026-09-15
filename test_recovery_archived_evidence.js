@@ -2,10 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const source = fs.readFileSync('./server.js', 'utf8');
-assert.match(source, /const archivedQuoted = acceptance\.__quoted \|\| indexedQuoted \|\| null/);
+assert.match(source, /const archivedQuoted = indexedQuoted \|\| acceptance\.__quoted \|\| null/);
 assert.match(source, /let liveQuoted = archivedQuoted/);
 assert.match(source, /const quotedMessageIdHint = String\(/);
-assert.match(source, /messages\.find\(\(message\) => serializedMessageId\(message\) === quotedMessageIdHint\)/);
+assert.match(source, /messageId === quotedMessageIdHint \|\| messageId\.endsWith/);
 assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
 assert.match(source, /const liveReactions = !botProducer && \(!Array\.isArray\(archivedReactions\)/);
 assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
