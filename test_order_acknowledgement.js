@@ -4,6 +4,7 @@ const fs = require("fs");
 const source = fs.readFileSync("./server.js", "utf8");
 assert(source.includes("function sendFinalBookingCard"), "يوجد مسار مستقل لبطاقة التثبيت النهائية");
 assert(source.includes('client.sendMessage(groupId, media);'), "البطاقة النهائية ترسل دون caption أو شرح أسفلها");
+assert(source.includes('const cardBlue = "#4da3ff"'), "نص البطاقة النهائي باللون الأزرق داخل الصورة");
 assert(source.includes('"تم تثبيت الطلب"'), "بطاقة التثبيت تحمل عنوان التثبيت");
 assert(source.includes("اسم كابتن التنزيل:"), "البطاقة تعرض اسم كابتن تنزيل الطلب فقط");
 assert(source.includes("اسم الكابتن المنفذ:"), "البطاقة تعرض اسم كابتن التنفيذ فقط");

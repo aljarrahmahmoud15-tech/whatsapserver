@@ -1639,8 +1639,9 @@ async function renderOperationsMessageMedia(title, lines = []) {
   try { portalData = fs.readFileSync(portalPath).toString("base64"); } catch (_) {}
   const safeTitle = escapeXml(title);
   const visibleLines = lines.map((line) => String(line || "")).filter(Boolean).slice(0, 8);
+  const cardBlue = "#4da3ff";
   const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="424" y="288" width="232" height="232" preserveAspectRatio="xMidYMid meet" opacity=".48"/>` : `<text x="540" y="430" text-anchor="middle" fill="#ffe493" font-size="64" font-weight="700" opacity=".28">ج</text>`;
-  const lineMarkup = visibleLines.map((line, index) => `<text x="86" y="${276 + index * 40}" fill="${index === visibleLines.length - 1 ? "#ffcf72" : "#f5f8ff"}" font-size="${index === visibleLines.length - 1 ? 20 : 23}" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="${index === visibleLines.length - 1 ? 700 : 500}">${escapeXml(line).slice(0, 88)}</text>`).join("");
+  const lineMarkup = visibleLines.map((line, index) => `<text x="86" y="${276 + index * 40}" fill="${cardBlue}" font-size="${index === visibleLines.length - 1 ? 20 : 23}" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="${index === visibleLines.length - 1 ? 700 : 500}">${escapeXml(line).slice(0, 88)}</text>`).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760">
     <defs><linearGradient id="ops-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1722"/><stop offset=".58" stop-color="#162d42"/><stop offset="1" stop-color="#070f18"/></linearGradient><radialGradient id="glow"><stop offset="0" stop-color="#48d9d1" stop-opacity=".45"/><stop offset=".52" stop-color="#48d9d1" stop-opacity=".12"/><stop offset="1" stop-color="#48d9d1" stop-opacity="0"/></radialGradient><linearGradient id="ops-gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff0b1"/><stop offset=".5" stop-color="#f2c34f"/><stop offset="1" stop-color="#9c6816"/></linearGradient></defs>
     ${portalData ? `<image href="data:image/png;base64,${portalData}" x="0" y="0" width="1080" height="760" preserveAspectRatio="xMidYMid slice" opacity=".30"/>` : ""}
@@ -1651,10 +1652,10 @@ async function renderOperationsMessageMedia(title, lines = []) {
     <circle cx="540" cy="404" r="252" fill="url(#glow)" opacity=".50"/><circle cx="540" cy="404" r="178" fill="none" stroke="#48d9d1" stroke-opacity=".36" stroke-width="2"/><circle cx="540" cy="404" r="157" fill="none" stroke="#f6c84c" stroke-opacity=".40" stroke-width="2"/><circle cx="540" cy="404" r="128" fill="#071522" fill-opacity=".84" stroke="#8fe9df" stroke-opacity=".32" stroke-width="2"/>
     ${logo}<circle cx="540" cy="226" r="9" fill="#62df99"/><circle cx="540" cy="226" r="22" fill="none" stroke="#62df99" stroke-opacity=".45" stroke-width="3"/><circle cx="540" cy="582" r="6" fill="#f6c84c"/><circle cx="358" cy="404" r="6" fill="#48d9d1"/><circle cx="722" cy="404" r="6" fill="#48d9d1"/>
     <text x="1000" y="83" text-anchor="end" fill="#f6c84c" font-size="25" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">AL-JARAH OPERATIONS NETWORK</text>
-    <text x="352" y="122" fill="#ffffff" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
+    <text x="352" y="122" fill="${cardBlue}" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
     <rect x="80" y="64" width="238" height="48" rx="20" fill="#5b3e12" fill-opacity=".88" stroke="#ffcf72" stroke-width="2"/><text x="199" y="96" text-anchor="middle" fill="#ffe493" font-size="21" font-family="Arial, sans-serif" font-weight="700">OFFICIAL / VERIFIED</text>
     <rect x="64" y="164" width="952" height="474" rx="30" fill="#07131f" fill-opacity=".74" stroke="#8fe9df" stroke-opacity=".30" stroke-width="2"/>
-    <text x="86" y="218" fill="#ffe493" font-size="30" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${safeTitle}</text>
+    <text x="86" y="218" fill="${cardBlue}" font-size="30" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${safeTitle}</text>
     <path d="M80 238 H1000" stroke="#f6c84c" stroke-opacity=".35" stroke-width="2"/>
     ${lineMarkup}
     <path d="M80 666 H1000" stroke="#48d9d1" stroke-opacity=".34" stroke-width="2"/>
