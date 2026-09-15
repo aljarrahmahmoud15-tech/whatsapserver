@@ -1199,15 +1199,11 @@ function reconcileCaptainLinksWithoutSettlement() {
   }
   return { linked, skipped };
 }
-async function normalizeAllCaptainsWithBackup({ force = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+async function normalizeAllCaptains({ force = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
   if (!force && getSetting("captain_normalization_version", "") === CAPTAIN_NORMALIZATION_VERSION) return { status: "already_completed" };
   if (captainNormalizationInFlight) return { status: "already_running" };
   captainNormalizationInFlight = true;
   try {
-    const backupDir = path.join(DATA_DIR, "backups");
-    fs.mkdirSync(backupDir, { recursive: true });
-    const backupName = `pre-captain-normalization-${Date.now()}.sqlite`;
-    await db.backup(path.join(backupDir, backupName));
     const existingUsers = normalizeExistingHumanUsersAsCaptains({ reactivate: true });
     const groupMembers = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl });
     if (groupMembers.status !== "completed") throw new Error(`Group captain synchronization did not complete: ${groupMembers.status}`);
@@ -1222,7 +1218,6 @@ async function normalizeAllCaptainsWithBackup({ force = false, baseUrl = process
     setSetting("captain_normalization_at", completedAt);
     const summary = {
       status: "completed",
-      backupName,
       completedAt,
       existingUsers,
       groupMembers,
@@ -1234,9 +1229,8 @@ async function normalizeAllCaptainsWithBackup({ force = false, baseUrl = process
       groupMembers: { totalMembers: groupMembers.totalMembers || 0, resolvedMembers: groupMembers.resolvedMembers || 0, registered: (groupMembers.results || []).filter((item) => item.status === "registered").length, activated: (groupMembers.results || []).filter((item) => item.status === "activated_captain").length },
       reconciliation: { linked: reconciliation.linked.length, skipped: reconciliation.skipped.length, financialSettlementsApplied: 0 },
       totals,
-      backupName,
     });
-    console.log(`[CaptainNormalize] completed activeCaptains=${totals.active_captains || 0} groupMembers=${groupMembers.totalMembers || 0} resolvedMembers=${groupMembers.resolvedMembers || 0} linkedOrders=${reconciliation.linked.length} skippedOrders=${reconciliation.skipped.length} backup=${backupName}`);
+    console.log(`[CaptainNormalize] completed activeCaptains=${totals.active_captains || 0} groupMembers=${groupMembers.totalMembers || 0} resolvedMembers=${groupMembers.resolvedMembers || 0} linkedOrders=${reconciliation.linked.length} skippedOrders=${reconciliation.skipped.length}`);
     return summary;
   } finally {
     captainNormalizationInFlight = false;
@@ -1748,7 +1742,7 @@ function createClient() {
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
     setTimeout(() => {
       if (generation !== connectionGeneration || !isReady) return;
-      void normalizeAllCaptainsWithBackup()
+      void normalizeAllCaptains()
         .then(async (normalization) => {
           if (normalization.status !== "already_completed") return normalization;
           const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: false });
@@ -2833,7 +2827,11 @@ app.get("/status", (req, res) => {
   const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
   const activeCaptains = userRoles.filter((user) => user.role === "captain" && user.is_bot !== 1 && user.active === 1 && user.account_status === "active").length;
   const nonCaptainHumans = userRoles.filter((user) => user.is_bot !== 1 && user.role !== "company" && user.role !== "captain" && !isProtectedOwnerIdentity(user.phone)).length;
-  const unlinkedOrders = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id IS NULL OR settlement_state='unlinked'").get().count;
+  const orderLinkStats = db.prepare(`SELECT
+    SUM(CASE WHEN status='open' AND captain_user_id IS NULL THEN 1 ELSE 0 END) AS open_unassigned,
+    SUM(CASE WHEN status='open' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
+    SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS accepted_unlinked
+    FROM orders`).get();
   res.setHeader("Cache-Control", "no-store");
   res.json({
     ready: Boolean(isReady),
@@ -2861,7 +2859,11 @@ app.get("/status", (req, res) => {
       normalizationVersion: getSetting("captain_normalization_version", null),
       normalizedAt: getSetting("captain_normalization_at", null),
     },
-    orders: { unlinked: unlinkedOrders },
+    orders: {
+      openUnassigned: Number(orderLinkStats.open_unassigned || 0),
+      pendingConfirmation: Number(orderLinkStats.pending_confirmation || 0),
+      acceptedUnlinked: Number(orderLinkStats.accepted_unlinked || 0),
+    },
   });
 });
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
@@ -3724,7 +3726,7 @@ app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
 });
 app.post("/api/admin/captains/normalize-all", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const result = await normalizeAllCaptainsWithBackup({ force: true, baseUrl: captainInviteBaseUrl(req) });
+  const result = await normalizeAllCaptains({ force: true, baseUrl: captainInviteBaseUrl(req) });
   res.json({ success: true, ...result });
 });
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
