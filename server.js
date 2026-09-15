@@ -4771,15 +4771,26 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
   const captain = findCaptainByPhone(verified.executorPhone, { activeOnly: true });
   const parsed = parseOrder(verified.rawText);
   if (!producer || !captain || !parsed?.isOrder) return res.status(422).json({ error: "Verified company producer, active executor, or order data is unavailable", mutation: "none" });
-  const order = existingOrder || createOrderRecord({ messageId: verified.sourceMessageId, groupId: verified.groupId, body: verified.rawText, producer, parsed });
-  if (!order) return res.status(422).json({ error: "Unable to create verified order record", mutation: "none" });
-  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: verified.acceptanceMessageId, acceptedAt: now(), confirmedByPhone: verified.downloaderPhone, importSource: "admin_verified_bot_booking" });
-  if (result.state !== "accepted") return res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, mutation: "none" });
-  void withTimeout(sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents), 12000, null)
-    .then((card) => audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, cardSent: Boolean(card) }))
-    .catch((error) => audit("order.verified_bot_booking.card_error", "order", order.id, { error: String(error?.message || error).slice(0, 200) }));
-  audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: "pending" });
-  res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, producer: result.producer, captain: result.captain, cardSent: "pending", mutation: "applied_once" });
+  if (app.locals.verifiedBotBookingRecoveryInProgress) return res.status(202).json({ success: true, state: "processing", mutation: "queued" });
+  app.locals.verifiedBotBookingRecoveryInProgress = true;
+  res.status(202).json({ success: true, state: "processing", mutation: "queued" });
+  void (async () => {
+    try {
+      const order = existingOrder || createOrderRecord({ messageId: verified.sourceMessageId, groupId: verified.groupId, body: verified.rawText, producer, parsed });
+      if (!order) throw new Error("Unable to create verified order record");
+      const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: verified.acceptanceMessageId, acceptedAt: now(), confirmedByPhone: verified.downloaderPhone, importSource: "admin_verified_bot_booking" });
+      if (result.state !== "accepted") {
+        audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
+        return;
+      }
+      const card = await withTimeout(sendFinalBookingCard(verified.groupId, result.producer?.name, result.captain?.name, result.order?.price_cents), 12000, null);
+      audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: Boolean(card) });
+    } catch (error) {
+      audit("order.verified_bot_booking.error", "order", null, { error: String(error?.message || error).slice(0, 200), sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
+    } finally {
+      app.locals.verifiedBotBookingRecoveryInProgress = false;
+    }
+  })();
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });

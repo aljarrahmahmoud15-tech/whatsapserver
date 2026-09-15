@@ -9,8 +9,8 @@ assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmi
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-verified-bot-booking", requireAdmin/);
 assert.match(server, /order\.verified_bot_booking\.completed/);
 assert.match(server, /admin_verified_bot_booking/);
-assert.match(server, /void withTimeout\(sendFinalBookingCard\(verified\.groupId/);
-assert.match(server, /cardSent: "pending"/);
+assert.match(server, /app\.locals\.verifiedBotBookingRecoveryInProgress/);
+assert.match(server, /res\.status\(202\)\.json\(\{ success: true, state: "processing", mutation: "queued" \}\)/);
 assert.match(server, /if \(existingSettlement\?\.status === "applied"\) return res\.json\(\{ success: true, state: "already_settled"/);
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
