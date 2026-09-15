@@ -1683,7 +1683,7 @@ async function sendFinalBookingCard(groupId, producerName, captainName, priceCen
       `القيمة: ${money(priceCents)} JOD`,
     ]), 30000, null);
     if (!media) throw new Error("final booking card render returned no media");
-    return client.sendMessage(groupId, media);
+    return withTimeout(client.sendMessage(groupId, media), 15000, null);
   } catch (error) {
     console.error("[WhatsApp] final booking card not sent:", error.message);
     return null;
@@ -4791,6 +4791,21 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
       app.locals.verifiedBotBookingRecoveryInProgress = false;
     }
   })(); }, 10000);
+});
+app.post("/api/admin/group/send-verified-bot-booking-card", requireAdmin, async (req, res) => {
+  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
+  const source = "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid";
+  const acceptance = "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid";
+  if (sourceMessageId !== source || acceptanceMessageId !== acceptance) return res.status(409).json({ error: "Verified booking message IDs do not match", mutation: "none" });
+  const order = db.prepare("SELECT * FROM orders WHERE source_message_id=? AND accepted_message_id=? AND settlement_state='settled' LIMIT 1").get(source, acceptance);
+  if (!order) return res.status(404).json({ error: "Verified booking is not settled", mutation: "none" });
+  const attempt = db.prepare("SELECT id FROM audit_logs WHERE action='order.verified_bot_booking.card_attempt' AND entity_type='order' AND entity_id=? LIMIT 1").get(String(order.id));
+  if (attempt) return res.json({ success: true, state: "already_attempted", cardSent: false, mutation: "none", orderId: order.id });
+  audit("order.verified_bot_booking.card_attempt", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance });
+  const card = await sendFinalBookingCard(order.group_id, order.producer_name_snapshot, order.captain_name_snapshot, order.price_cents);
+  audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance, cardSent: Boolean(card) });
+  res.json({ success: true, state: card ? "sent" : "send_failed", cardSent: Boolean(card), mutation: "none", orderId: order.id });
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
