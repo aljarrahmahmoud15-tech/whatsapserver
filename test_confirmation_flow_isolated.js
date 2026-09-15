@@ -14,18 +14,19 @@ function between(start, end) {
 }
 
 const reactionIdSource = between("function reactionId(", "async function resolveReactionSenderPhone");
-const settleSource = between("function settlePendingOrder(", "async function handleMessageReaction");
+const settleSource = between("function settlePendingOrder(", "function settleHistoricalConfirmedOrder(");
 const reactionHandlerSource = between("async function handleMessageReaction(", "function parseCookies");
 
-const order = {
-  id: 1, order_no: 1, group_id: "test-group@g.us", source_message_id: "request-1",
-  status: "open", pending_message_id: "captain-done-1", pending_captain_user_id: 3,
-  producer_user_id: 2, captain_user_id: null, price_cents: 2000, order_kind: "normal",
-  company_cents: 0, producer_cents: 0, captain_cents: 0,
+const candidate = {
+  id: 10, source_message_id: "request-1", group_id: "test-group@g.us", raw_text: "السعر 2",
+  status: "pending", pending_message_id: "captain-done-1", pending_captain_user_id: 3,
+  producer_user_id: 2, price_cents: 2000, order_kind: "normal", created_at: "2026-01-01T00:00:00.000Z",
+  origin: "إربد", destination: "عمّان", trip_time: null,
 };
+const order = { id: 19, order_no: 7, status: "accepted" };
 const users = {
   1: { id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 },
-  2: { id: 2, phone: "962771111111", name: "المنتج", role: "producer", wallet_cents: 0, active: 1, account_status: "active" },
+  2: { id: 2, phone: "962771111111", name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active" },
   3: { id: 3, phone: "962772222222", name: "الكابتن", role: "captain", wallet_cents: 400, active: 1, account_status: "active" },
 };
 const ledgers = [];
@@ -38,25 +39,19 @@ const db = {
     const normalized = sql.replace(/\s+/g, " ");
     return {
       get(...args) {
-        if (normalized.startsWith("SELECT * FROM orders WHERE id=?")) return args[0] === order.id ? { ...order } : null;
+        if (normalized.startsWith("SELECT * FROM order_candidates WHERE group_id=?")) return candidate.group_id === args[0] && candidate.status === "pending" && candidate.pending_message_id === args[1] ? { ...candidate } : null;
+        if (normalized.startsWith("SELECT * FROM order_candidates WHERE id=?")) return args[0] === candidate.id ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM users WHERE id=?")) return users[args[0]] ? { ...users[args[0]] } : null;
         if (normalized.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return settlementRecord;
+        if (normalized.startsWith("SELECT COALESCE(MAX(order_no),0)+1")) return { next: 7 };
         if (normalized.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return users[args[0]] ? { wallet_cents: users[args[0]].wallet_cents } : null;
-        if (normalized.startsWith("SELECT * FROM orders WHERE group_id=?")) {
-          return order.group_id === args[0] && order.status === "open" && order.pending_message_id === args[1] ? { ...order } : null;
-        }
         throw new Error(`Unexpected get query: ${normalized}`);
       },
       run(...args) {
+        if (normalized.startsWith("INSERT INTO orders")) return { changes: 1, lastInsertRowid: order.id };
         if (normalized.startsWith("INSERT OR IGNORE INTO order_settlements")) {
           if (settlementRecord) return { changes: 0 };
           settlementRecord = { id: 1, status: "pending" };
-          return { changes: 1 };
-        }
-        if (normalized.startsWith("UPDATE orders SET status='accepted'")) {
-          const [captainId, captainPhone, captainName, acceptedMessageId, acceptedAt, confirmedByPhone, companyCents, producerCents, captainCents, updatedAt, orderId, expectedMessageId] = args;
-          if (order.id !== orderId || order.status !== "open" || order.pending_message_id !== expectedMessageId) return { changes: 0 };
-          Object.assign(order, { status: "accepted", captain_user_id: captainId, captain_phone_snapshot: captainPhone, captain_name_snapshot: captainName, accepted_message_id: acceptedMessageId, accepted_at: acceptedAt, confirmed_by_phone: confirmedByPhone, company_cents: companyCents, producer_cents: producerCents, captain_cents: captainCents, pending_message_id: null, pending_captain_user_id: null, updated_at: updatedAt });
           return { changes: 1 };
         }
         if (normalized.startsWith("UPDATE users SET wallet_cents=wallet_cents+?")) {
@@ -77,6 +72,13 @@ const db = {
           settlementRecord.status = "applied";
           return { changes: 1 };
         }
+        if (normalized.startsWith("UPDATE order_candidates SET status='finalized'")) {
+          candidate.status = "finalized";
+          candidate.final_order_id = order.id;
+          candidate.pending_message_id = null;
+          candidate.pending_captain_user_id = null;
+          return { changes: 1 };
+        }
         throw new Error(`Unexpected run query: ${normalized}`);
       },
     };
@@ -85,10 +87,7 @@ const db = {
 
 const context = {
   db,
-  client: {
-    async getMessageById() { return { from: "test-group@g.us" }; },
-    async sendMessage(groupId, text) { messages.push({ groupId, text }); },
-  },
+  client: { async getMessageById() { return { from: "test-group@g.us" }; } },
   isReady: true,
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
@@ -108,40 +107,38 @@ const context = {
   now: () => "2026-01-01T00:00:00.000Z",
   audit: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
-  formatAcceptance: () => "confirmed",
-  brandedMessage: () => "rejected",
-  sendGroupBrandedMessage: async (groupId, title, lines) => { messages.push({ groupId, text: `${title}\n${lines.join("\n")}` }); },
-  sendFinalBookingCard: async (groupId, producerName, captainName) => { messages.push({ groupId, mediaCard: true, text: `${producerName} - ${captainName}`, caption: undefined }); },
+  isBotPhone: () => false,
+  sendFinalBookingCard: async (groupId, producerName, captainName, priceCents) => { messages.push({ groupId, mediaCard: true, text: `${producerName} - ${captainName} - ${priceCents}`, caption: undefined }); },
   console,
 };
 
 vm.runInNewContext(`${reactionIdSource}\n${settleSource}\n${reactionHandlerSource}\nthis.handleMessageReaction = handleMessageReaction;`, context);
 
-assert.strictEqual(order.status, "open");
+assert.strictEqual(candidate.status, "pending");
 assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لايك");
 
 (async () => {
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
-  assert.strictEqual(order.status, "open", "لايك البوت نفسه لا يوثق الطلب");
+  assert.strictEqual(candidate.status, "pending", "لايك البوت نفسه لا يوثق المرشح");
   assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك الصادر من البوت");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "other-message", senderPhone: users[2].phone });
-  assert.strictEqual(order.status, "open", "لايك على رسالة مختلفة لا يوثق الطلب");
+  assert.strictEqual(candidate.status, "pending", "لايك على رسالة مختلفة لا يوثق المرشح");
   assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك على رسالة مختلفة");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779999999" });
-  assert.strictEqual(order.status, "open", "لايك من مستخدم غير مسجل لا يوثق الطلب");
+  assert.strictEqual(candidate.status, "pending", "لايك من مستخدم غير مسجل لا يوثق المرشح");
   assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك من غير المنتج");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
-  assert.strictEqual(order.status, "accepted", "لايك مستخدم مسجل على رسالة تم يوثق الطلب");
-  assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد اعتماد المنتج");
-  assert.strictEqual(users[3].wallet_cents, 80, "يُخصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي نفذ تم");
-  assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% من قيمة الطلب لمحفظة المنتج");
-  assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% من قيمة الطلب لمحفظة الشركة");
-  assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التوثيق");
+  assert.strictEqual(candidate.status, "finalized", "لايك صاحب التنزيل ينشئ الطلب النهائي");
+  assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
+  assert.strictEqual(users[3].wallet_cents, 80, "يُخصم 16% من محفظة الكابتن المنفذ");
+  assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
+  assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
+  assert.strictEqual(messages.length, 1, "ترسل بطاقة تأكيد واحدة بعد التثبيت");
   assert.strictEqual(messages[0].mediaCard, true, "التأكيد النهائي بطاقة شعار فقط");
   assert.strictEqual(messages[0].caption, undefined, "لا يوجد شرح أو caption أسفل البطاقة");
-  assert.match(messages[0].text, /المنتج - الكابتن/);
-  console.log("isolated confirmation flow verified");
+  assert.match(messages[0].text, /المنتج - الكابتن - 2000/);
+  console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

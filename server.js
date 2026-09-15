@@ -209,6 +209,31 @@ CREATE TABLE IF NOT EXISTS orders (
   FOREIGN KEY(producer_user_id) REFERENCES users(id),
   FOREIGN KEY(captain_user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS order_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_message_id TEXT NOT NULL UNIQUE,
+  group_id TEXT NOT NULL,
+  raw_text TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  origin TEXT,
+  destination TEXT,
+  trip_time TEXT,
+  order_kind TEXT NOT NULL DEFAULT 'normal' CHECK(order_kind IN ('normal','order')),
+  producer_user_id INTEGER NOT NULL,
+  producer_phone_snapshot TEXT,
+  producer_name_snapshot TEXT,
+  status TEXT NOT NULL CHECK(status IN ('candidate','pending','finalized','cancelled')) DEFAULT 'candidate',
+  pending_captain_user_id INTEGER,
+  pending_message_id TEXT,
+  pending_at TEXT,
+  final_order_id INTEGER,
+  finalized_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(producer_user_id) REFERENCES users(id),
+  FOREIGN KEY(pending_captain_user_id) REFERENCES users(id),
+  FOREIGN KEY(final_order_id) REFERENCES orders(id)
+);
 CREATE TABLE IF NOT EXISTS wallet_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -395,6 +420,8 @@ if (!existingOrderColumns.includes("confirmed_by_phone")) db.exec("ALTER TABLE o
 if (!existingOrderColumns.includes("settlement_state")) db.exec("ALTER TABLE orders ADD COLUMN settlement_state TEXT NOT NULL DEFAULT 'pending'");
 if (!existingOrderColumns.includes("import_source")) db.exec("ALTER TABLE orders ADD COLUMN import_source TEXT NOT NULL DEFAULT 'live'");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_pending_message ON order_candidates(pending_message_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order_candidates(source_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
@@ -1303,6 +1330,19 @@ function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
   console.log(`[Order] #${orderNo} created from ${groupId}`);
   return db.prepare("SELECT * FROM orders WHERE id=?").get(result.lastInsertRowid);
 }
+function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
+  if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
+  const existing = db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
+  if (existing) return existing;
+  const recentCutoff = new Date(Date.now() - 120000).toISOString();
+  const recentDuplicate = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND producer_user_id=? AND raw_text=? AND created_at>=? ORDER BY id DESC LIMIT 1").get(groupId, producer.id, body, recentCutoff);
+  if (recentDuplicate) return recentDuplicate;
+  const stamp = now();
+  const result = db.prepare("INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)").run(messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, stamp, stamp);
+  audit("order.candidate.created", "order_candidate", result.lastInsertRowid, { groupId, producerPhone: producer.phone });
+  console.log(`[OrderCandidate] candidate created from ${groupId}`);
+  return db.prepare("SELECT * FROM order_candidates WHERE id=?").get(result.lastInsertRowid);
+}
 function latestEligibleGroupOrderMessage(messages, groupId) {
   return (Array.isArray(messages) ? messages : [])
     .filter((message) => message && !message.fromMe && String(message.from || "") === groupId && parseOrder(message.body).isOrder)
@@ -1323,14 +1363,14 @@ function latestOpenOrder(groupId) {
 }
 function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
-  return db.prepare("SELECT * FROM orders WHERE source_message_id=? AND status='open' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
+  return db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? AND status='candidate' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
 }
 function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(serializedMessageId(quoted));
   if (byId) return byId;
   const body = String(quoted && quoted.body || "");
   if (!body || !parseOrder(body).isOrder) return null;
-  return db.prepare("SELECT * FROM orders WHERE group_id=? AND raw_text=? AND status='open' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId, body);
+  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND raw_text=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId, body);
 }
 function brandedMessage(title, lines = []) {
   return [
@@ -1425,11 +1465,12 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-async function sendFinalBookingCard(groupId, producerName, captainName) {
+async function sendFinalBookingCard(groupId, producerName, captainName, priceCents) {
   try {
-    const media = await withTimeout(renderOperationsMessageMedia("تم تثبيت الحجز", [
-      `الطلب باسم: ${producerName || "غير محدد"}`,
-      `التنفيذ باسم: ${captainName || "غير محدد"}`,
+    const media = await withTimeout(renderOperationsMessageMedia("تم تثبيت الطلب", [
+      `اسم كابتن التنزيل: ${producerName || "غير محدد"}`,
+      `اسم الكابتن المنفذ: ${captainName || "غير محدد"}`,
+      `القيمة: ${money(priceCents)} JOD`,
     ]), 30000, null);
     if (!media) throw new Error("final booking card render returned no media");
     return client.sendMessage(groupId, media);
@@ -2050,9 +2091,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       return;
     }
     await handleIncomingMessage(quotedForRecovery, { allowSelf: true });
-    const recovered = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
+    const recovered = db.prepare("SELECT id,status FROM order_candidates WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
     if (recovered) {
-      audit("order.recovered_from_quoted_message", "order", recovered.id, { groupId, sourceMessageId });
+      audit("order.candidate.recovered_from_quoted_message", "order_candidate", recovered.id, { groupId, sourceMessageId });
     }
     return;
   }
@@ -2070,36 +2111,31 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
       : ensureProducerUser(senderPhone, senderName);
     if (!producer || producer.active === 0) return;
-    const orderCreator = typeof createOrderRecord === "function" ? createOrderRecord : ({ messageId: sourceId, groupId: sourceGroupId, body: rawText, producer: sourceProducer, parsed: sourceParsed }) => {
-      const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-      const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, sourceId, sourceGroupId, rawText, cents(sourceParsed.price), sourceParsed.origin, sourceParsed.destination, sourceParsed.tripTime, sourceParsed.orderKind, sourceProducer.id, "open", now(), now());
-      return { id: result.lastInsertRowid, order_no: orderNo, price_cents: cents(sourceParsed.price) };
-    };
-    const order = orderCreator({ messageId, groupId, body, producer, parsed });
-    if (!order) return;
+    const candidate = createOrderCandidate({ messageId, groupId, body, producer, parsed });
+    if (!candidate) return;
     return;
   }
   if (!captainAcceptance) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
   if (!quoted) return;
-  const order = findOrderByQuotedMessage(groupId, quoted);
-  if (!order) return;
+  const candidate = findOrderByQuotedMessage(groupId, quoted);
+  if (!candidate) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
-  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id);
+  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return;
-  const settlement = calculateSettlement({ priceCents: order.price_cents, orderKind: order.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+  const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
-    const current = db.prepare("SELECT * FROM orders WHERE id=?").get(order.id);
-    if (!current || current.status !== "open" || current.pending_message_id) return false;
+    const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
+    if (!current || current.status !== "candidate" || current.pending_message_id) return false;
     const stampNow = now();
-    const result = db.prepare("UPDATE orders SET pending_captain_user_id=?, pending_message_id=?, pending_at=?, updated_at=? WHERE id=? AND status='open' AND pending_message_id IS NULL").run(captain.id, messageId, stampNow, stampNow, order.id);
+    const result = db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,updated_at=? WHERE id=? AND status='candidate' AND pending_message_id IS NULL").run(captain.id, messageId, stampNow, stampNow, candidate.id);
     return result.changes === 1;
   })();
   if (!pending) return;
-  audit("order.pending_shared_captain_confirmation", "order", order.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
-  // لا يرسل البوت ردًا هنا؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
+  audit("order.candidate.pending_confirmation", "order_candidate", candidate.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
+  // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
 }
 
 function reactionId(value) {
@@ -2166,12 +2202,10 @@ async function hasVisibleThumbReaction(messageId) {
   }, messageId), 8000, false));
 }
 
-function settlePendingOrder(orderId, expectedMessageId, confirmerPhone) {
+function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
   return db.transaction(() => {
-    const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
-    if (!current || current.status !== "open" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
-    const existingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
-    if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled" };
+    const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
+    if (!current || current.status !== "pending" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     const confirmer = findActiveRegisteredUser(confirmerPhone);
     if (!producer || !confirmer || confirmer.is_bot === 1 || confirmer.role === "company") return { state: "unauthorized" };
@@ -2187,33 +2221,41 @@ function settlePendingOrder(orderId, expectedMessageId, confirmerPhone) {
     });
     const projectedCaptainBalance = Number(captain.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.captain_debt_limit", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
+      audit("order.candidate_debt_limit", "order_candidate", candidateId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
       return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
     }
     if (projectedCaptainBalance < 0) {
-      audit("order.captain_debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
+      audit("order.candidate_debt_recorded", "order_candidate", candidateId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: captain.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
     const company = companyUser();
     const stamp = now();
     const botEmployeeProducer = producer.is_bot === 1;
-    const ledgerDetails = JSON.stringify({ orderNo: current.order_no, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
-    const settlementKey = `ORDER-${current.order_no}-${orderId}`;
+    const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
+    const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
+    const orderInsert = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,captain_user_id,captain_phone_snapshot,captain_name_snapshot,accepted_message_id,accepted_at,confirmed_by_phone,company_cents,producer_cents,captain_cents,settlement_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, current.source_message_id, current.group_id, current.raw_text, current.price_cents, current.origin, current.destination, current.trip_time, current.order_kind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "accepted", captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, "settled", current.created_at || stamp, stamp);
+    const orderId = orderInsert.lastInsertRowid;
+    const settlementKey = `ORDER-${orderNo}-${orderId}`;
     const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, ledgerDetails, stamp);
-    if (!settlementInsert.changes) return { state: "already_settled" };
-    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, stamp, orderId, expectedMessageId);
+    if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "4% من قيمة الطلب من محفظة الكابتن المؤكد", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, "4% من قيمة الطلب من محفظة الكابتن المؤكد", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, captain.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
+    db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, candidateId, expectedMessageId);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: confirmer.phone });
-    console.log(`[Order] accepted #${current.order_no} group=${current.group_id} captain=${captain.phone} confirmedBy=${confirmer.phone}`);
-    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id) };
+    console.log(`[Order] accepted #${orderNo} group=${current.group_id} captain=${captain.phone} confirmedBy=${confirmer.phone}`);
+    return {
+      state: "accepted",
+      order: { id: orderId, order_no: orderNo, price_cents: current.price_cents, status: "accepted", settlement_state: "settled" },
+      captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id),
+      producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id),
+    };
   })();
 }
 
@@ -2272,15 +2314,22 @@ async function handleMessageReaction(reaction) {
   if (!isConfiguredGroup(target.from)) return;
   const approverPhone = await resolveReactionSenderPhone(reaction);
   if (removedThumb) {
-    const candidate = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('open','accepted') AND (pending_message_id=? OR accepted_message_id=?) ORDER BY id DESC LIMIT 1").get(target.from, messageId, messageId);
-    if (!candidate) return;
-    const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+    const candidate = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+    if (candidate) {
+      const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+      if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+      db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(now(), candidate.id, messageId);
+      audit("order.candidate.cancelled_downloader_removed_thumb", "order_candidate", candidate.id, { producerId: producer.id, messageId });
+      return;
+    }
+    const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
+    if (!order) return;
+    const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
     if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
-    const result = cancelOrderForReactionRemoval(candidate.id, messageId, approverPhone);
-    // إزالة 👍 تلغي الطلب بصمت؛ لا يرسل البوت ردًا خارج بطاقة التثبيت النهائية.
+    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
     return;
   }
-  const pending = db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+  const pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
   const approver = findActiveRegisteredUser(approverPhone);
@@ -2290,7 +2339,7 @@ async function handleMessageReaction(reaction) {
   if (result.state === "unauthorized" || result.state === "stale") return;
   if (result.state === "debt_limit") return;
   if (result.state === "accepted") {
-    await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name);
+    await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name, result.order?.price_cents);
   }
 }
 
@@ -2742,11 +2791,11 @@ app.post("/api/auth/logout", (req, res) => {
 });
 app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username } }));
 app.get("/api/staff/overview", requireStaff, (req, res) => {
-  const totals = db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open, SUM(CASE WHEN status='accepted' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed FROM orders").get();
+  const totals = db.prepare("SELECT COUNT(*) AS total, 0 AS open, SUM(CASE WHEN status='accepted' AND settlement_state='settled' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN status='completed' AND settlement_state='settled' THEN 1 ELSE 0 END) AS completed FROM orders WHERE status IN ('accepted','completed') AND settlement_state='settled'").get();
   res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, role: req.staffSession.role });
 });
 app.get("/api/staff/orders", requireStaff, (req, res) => {
-  const rows = db.prepare("SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.created_at,p.name AS producer_name,c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200").all();
+  const rows = db.prepare("SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.created_at,p.name AS producer_name,c.name AS captain_name FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.status IN ('accepted','completed') ORDER BY o.id DESC LIMIT 200").all();
   res.json({ orders: rows.map((row) => ({ ...row, price: money(row.price_cents) })) });
 });
 app.get("/api/staff/captains", requireStaffRole("operations"), (req, res) => {
@@ -2811,7 +2860,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     text: redact(row.message),
     time: row.created_at,
   }));
-  const recentSettlements = db.prepare("SELECT o.order_no,o.status,o.settlement_state,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.updated_at FROM orders o WHERE o.settlement_state IN ('settled','unlinked','pending') ORDER BY o.updated_at DESC LIMIT 10").all().map((row) => ({
+  const recentSettlements = db.prepare("SELECT o.order_no,o.status,o.settlement_state,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.updated_at FROM orders o WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.updated_at DESC LIMIT 10").all().map((row) => ({
     orderNo: row.order_no,
     status: row.status,
     settlementState: row.settlement_state,
@@ -4264,13 +4313,15 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidate = latestEligibleGroupOrderMessage(messages, groupId);
   if (!candidate || !candidate.id || !candidate.id._serialized) return res.status(404).json({ error: "No eligible order message found in recent group messages" });
-  const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
-  if (existing) return res.json({ success: true, recovered: false, alreadyRegistered: true, orderNo: existing.order_no, status: existing.status });
+  const existingOrder = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
+  if (existingOrder) return res.json({ success: true, recovered: false, alreadyRegistered: true, orderNo: existingOrder.order_no, status: existingOrder.status });
+  const existingCandidate = db.prepare("SELECT id,status FROM order_candidates WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
+  if (existingCandidate) return res.json({ success: true, recovered: false, alreadyStaged: true, candidateId: existingCandidate.id, status: existingCandidate.status });
   await handleIncomingMessage(candidate, { allowSelf: true });
-  const order = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
-  if (!order) return res.status(502).json({ error: "Eligible message was not recorded as an order" });
-  audit("order.recovered_from_group_history", "order", order.id, { groupId, sourceMessageId: candidate.id._serialized });
-  res.status(201).json({ success: true, recovered: true, orderNo: order.order_no, status: order.status });
+  const staged = db.prepare("SELECT id,status FROM order_candidates WHERE source_message_id=? LIMIT 1").get(candidate.id._serialized);
+  if (!staged) return res.status(502).json({ error: "Eligible message was not staged as a private candidate" });
+  audit("order.candidate.recovered_from_group_history", "order_candidate", staged.id, { groupId, sourceMessageId: candidate.id._serialized });
+  res.status(201).json({ success: true, recovered: true, candidateId: staged.id, status: staged.status });
 });
 app.get("/api/admin/cards", requireAdmin, (req, res) => {
   const requestedLimit = Number(req.query.limit || 50);
@@ -4479,9 +4530,10 @@ app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
   res.json({ success: true, status });
 });
 app.get("/api/admin/overview", requireAdmin, (req, res) => {
-  const orders = db.prepare("SELECT COUNT(*) AS count FROM orders").get().count;
-  const accepted = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='accepted'").get().count;
-  const pendingConfirmation = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='open' AND pending_message_id IS NOT NULL").get().count;
+  const orders = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status IN ('accepted','completed') AND settlement_state='settled'").get().count;
+  const accepted = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE status='accepted' AND settlement_state='settled'").get().count;
+  // الأسعار و«تم» محفوظة داخليًا في order_candidates ولا تظهر كطلبات منتظرة في لوحة الإدارة.
+  const pendingConfirmation = 0;
   const company = companyUser();
   const wallets = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role!='company'").get().count;
   const ledgerMoves = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger").get().count;
@@ -4497,11 +4549,11 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
   res.json({ leads: rows });
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id ORDER BY o.id DESC LIMIT 200`).all();
-  res.json({ orders: rows.map((row) => ({ ...row, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(row.producer_cents), captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0)), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
+  const rows = db.prepare(`SELECT o.*, p.name AS producer_name, p.phone AS producer_phone, c.name AS captain_name, c.phone AS captain_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.status IN ('accepted','completed') ORDER BY o.id DESC LIMIT 200`).all();
+  res.json({ orders: rows.map((row) => ({ ...row, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, price: money(row.price_cents), company: money(row.company_cents), producerGross: money(row.producer_cents), producer: money(row.producer_cents - row.company_cents), captain: money(row.captain_cents), captainFee: money(Number(row.producer_cents || 0) + Number(row.company_cents || 0)), captainNet: money(Number(row.price_cents || 0) - Number(row.producer_cents || 0) - Number(row.company_cents || 0)), orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
 app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.captain_user_id IS NULL OR o.settlement_state='unlinked' ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
+  const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status IN ('accepted','completed') AND (o.captain_user_id IS NULL OR o.settlement_state='unlinked') ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
 });
 app.post("/api/admin/orders/:id/link-captain", requireAdmin, (req, res) => {
@@ -4646,9 +4698,9 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
     const producer = botEmployeeUser();
     const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
-    order = createOrderRecord({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
+    order = createOrderCandidate({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
   }
-  res.json({ success: true, messageId, order: order ? { id: order.id, orderNo: order.order_no, status: order.status } : null });
+  res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;

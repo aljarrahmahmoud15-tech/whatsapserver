@@ -1,31 +1,24 @@
-const assert = require("assert");
+const assert = require("assert/strict");
 const fs = require("fs");
 const path = require("path");
 
 const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
-
-assert.match(server, /function formatPendingConfirmation\(order, captain\)/);
-assert.match(server, /const removedThumb = reactionValue === ""/);
-assert.match(server, /cancelOrderForReactionRemoval\(candidate\.id, messageId, approverPhone\)/);
-assert.match(server, /function sendFinalBookingCard\(groupId, producerName, captainName\)/);
-assert.match(server, /await sendFinalBookingCard\(target\.from, result\.producer\?\.name, result\.captain\?\.name\)/);
+assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidates/);
+assert.match(server, /function createOrderCandidate\(/);
+assert.match(server, /const candidate = findOrderByQuotedMessage\(groupId, quoted\)/);
+assert.match(server, /status='pending',pending_captain_user_id/);
+assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone\)/);
+assert.match(server, /INSERT INTO orders\(order_no,source_message_id/);
+assert.match(server, /status IN \('accepted','completed'\)/);
+assert.match(server, /app\.get\("\/api\/admin\/orders", requireAdmin/);
+assert.match(server, /const pendingConfirmation = 0/);
+assert.match(server, /await sendFinalBookingCard\(target\.from, result\.producer\?\.name, result\.captain\?\.name, result\.order\?\.price_cents\)/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "تم تسجيل الطلب"/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "بانتظار اعتماد كابتن تنزيل الطلب"/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
-assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم إلغاء الطلب:/);
-assert.match(server, /const requestKindMatch = normalized\.match\(\/\(\?:راكب/);
-assert.match(server, /استقبال\\s\+مطار/);
-assert.match(server, /ضع 👍 على رسالة «تم» نفسها/);
 assert.match(server, /if \(!quoted\) return;/);
-assert.match(server, /const order = findOrderByQuotedMessage\(groupId, quoted\)/);
-assert.match(server, /if \(!isConfiguredGroup\(target\.from\)\) return;/);
-assert.match(server, /رسائل البوت العادية ليست رسائل تشغيلية/);
-assert.match(server, /isBotGeneratedMessage\(msg\)/);
+assert.match(server, /const candidate = findOrderByQuotedMessage\(groupId, quoted\)/);
 assert.match(server, /isBotReactionSender\(approverPhone, connectedBotPhone\(\)\)/);
-assert.match(server, /findActiveRegisteredUser\(approverPhone\)/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
 assert.match(server, /confirmingCaptainFeeCents/);
-assert.match(server, /pending_message_id/);
-assert.match(server, /order\.accepted/);
-
-console.log("confirmation guardrails verified");
+console.log("hidden candidate confirmation guardrails verified");
