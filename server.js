@@ -2403,7 +2403,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
   })();
 }
 
-function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone }) {
+function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone, importSource = "group_history_24h" }) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     const captain = db.prepare("SELECT * FROM users WHERE id=? AND active=1 AND account_status='active' AND (role='captain' OR is_bot=1)").get(captainId);
@@ -2433,7 +2433,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
     const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
-    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source='group_history_24h',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, now(), orderId);
+    db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.captainGrossCents, importSource, now(), orderId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "تسوية طلب مؤكد مستورد من سجل القروب", now(), details);
@@ -2447,6 +2447,126 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id) };
   })();
+}
+
+function normalizeRecoveryText(value) {
+  return String(value || "")
+    .replace(/[إأآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ـ/g, "")
+    .replace(/[\u200e\u200f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function recoveryPhoneMatches(actual, expected) {
+  return Boolean(actual && expected && phoneWithCountry(actual) === phoneWithCountry(expected));
+}
+
+function recoveryExpectedMatches(evidence, expected = {}) {
+  if (!evidence) return false;
+  if (expected.sourceMessageId && evidence.orderMessageId !== String(expected.sourceMessageId).trim()) return false;
+  if (expected.acceptanceMessageId && evidence.acceptanceMessageId !== String(expected.acceptanceMessageId).trim()) return false;
+  if (expected.downloaderPhone && !recoveryPhoneMatches(evidence.producerPhone, expected.downloaderPhone)) return false;
+  if (expected.executorPhone && !recoveryPhoneMatches(evidence.captainPhone, expected.executorPhone)) return false;
+  if (expected.price !== undefined && expected.price !== null && expected.price !== "" && evidence.parsed?.price !== Number(expected.price)) return false;
+  if (expected.origin && normalizeRecoveryText(evidence.parsed?.origin) !== normalizeRecoveryText(expected.origin)) return false;
+  if (expected.destination && normalizeRecoveryText(evidence.parsed?.destination) !== normalizeRecoveryText(expected.destination)) return false;
+  if (expected.tripTime && !normalizeRecoveryText(evidence.rawText).includes(normalizeRecoveryText(expected.tripTime))) return false;
+  return true;
+}
+
+function recoveryEvidenceSummary(evidence) {
+  if (!evidence) return null;
+  return {
+    match: Boolean(evidence.match),
+    reason: evidence.reason || null,
+    sourceMessageId: evidence.orderMessageId || null,
+    acceptanceMessageId: evidence.acceptanceMessageId || null,
+    downloaderPhone: evidence.producerPhone || null,
+    executorPhone: evidence.captainPhone || null,
+    executorName: evidence.captain?.name || evidence.captainName || null,
+    price: evidence.parsed?.price ?? null,
+    origin: evidence.parsed?.origin || null,
+    destination: evidence.parsed?.destination || null,
+    rawText: evidence.rawText || null,
+    authorizedThumb: Boolean(evidence.authorizedThumb),
+    existingOrderNo: evidence.existingOrder?.order_no || null,
+    existingSettlementStatus: evidence.existingSettlement?.status || null,
+  };
+}
+
+async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
+  const acceptanceMessageId = serializedMessageId(acceptance);
+  if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
+  const liveAcceptance = client && typeof client.getMessageById === "function"
+    ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance
+    : acceptance;
+  if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
+    return { match: false, reason: "acceptance_not_in_configured_group" };
+  }
+  const quoted = typeof liveAcceptance.getQuotedMessage === "function"
+    ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || liveAcceptance.__quoted || null
+    : liveAcceptance.__quoted || null;
+  const parsed = quoted ? parseOrder(quoted.body) : null;
+  const orderMessageId = serializedMessageId(quoted);
+  if (!quoted || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(quoted) !== groupId) {
+    return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
+  }
+  const reactions = typeof liveAcceptance.getReactions === "function"
+    ? await withTimeout(liveAcceptance.getReactions(), 12000, liveAcceptance.__reactions || [])
+    : (liveAcceptance.__reactions || []);
+  const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
+  const reactionPhones = [];
+  let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
+  for (const reaction of thumbs) {
+    for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
+      const senderPhone = directJordanPhoneFromWhatsappValue(sender?.__senderPhone) || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
+      if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
+    }
+  }
+  const botPhone = connectedBotPhone();
+  if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
+  const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
+  const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
+  const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
+  const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
+  const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
+  const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
+    const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
+    const body = String(message?.__caption || message?.body || "");
+    return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
+  });
+  const botProducer = quoted.fromMe && BOT_FINANCIAL_MODE === "company";
+  const authorizedThumb = botProducer
+    ? (reactedByBot || hasBotConfirmationCard)
+    : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
+  const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
+  const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
+  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
+  const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
+  const match = Boolean(producerPhone && captainPhone && producer && captain && authorizedThumb);
+  return {
+    match,
+    reason: match ? "confirmed" : (!authorizedThumb ? "missing_authorized_thumb_reaction" : (!captain ? "captain_not_registered" : (!producer ? "producer_not_registered" : "identity_unresolved"))),
+    acceptanceMessageId,
+    orderMessageId,
+    acceptedAt: new Date(acceptanceTimestamp * 1000 || Date.now()).toISOString(),
+    rawText: String(quoted.body || ""),
+    parsed,
+    producerPhone,
+    captainPhone,
+    captainName: String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100),
+    producer,
+    captain,
+    authorizedThumb,
+    reactedByBot,
+    hasBotConfirmationCard,
+    reactionPhones: [...new Set(reactionPhones)],
+    existingOrder,
+    existingSettlement,
+  };
 }
 
 async function handleMessageReaction(reaction) {
@@ -4404,6 +4524,80 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
   }
   res.status(201).json({ success: true, groupId, scanned: messages.length, candidates: candidates.length, imported, skipped });
 });
+app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const hours = Math.max(1, Math.min(Number(req.body?.hours || 168), 168));
+  const requestedLimit = Number(req.body?.limit || 1000);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 2000)) : 1000;
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
+  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
+  const expected = {
+    sourceMessageId: String(req.body?.sourceMessageId || "").trim(),
+    acceptanceMessageId: String(req.body?.acceptanceMessageId || "").trim(),
+    downloaderPhone: String(req.body?.downloaderPhone || "").trim(),
+    executorPhone: String(req.body?.executorPhone || "").trim(),
+    price: req.body?.price === undefined || req.body?.price === "" ? "" : Number(req.body.price),
+    origin: String(req.body?.origin || "").trim(),
+    destination: String(req.body?.destination || "").trim(),
+    tripTime: String(req.body?.tripTime || "").trim(),
+  };
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
+    const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
+    return message && !message.fromMe && resolveGroupChatId(message) === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
+  });
+  const matches = [];
+  for (const acceptance of acceptanceMessages) {
+    const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
+    if (recoveryExpectedMatches(evidence, expected)) matches.push(recoveryEvidenceSummary(evidence));
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, mutation: "none" });
+});
+app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
+  const downloaderPhone = String(req.body?.downloaderPhone || "").trim();
+  const executorPhone = String(req.body?.executorPhone || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !sourceMessageId || !acceptanceMessageId || !downloaderPhone || !executorPhone) {
+    return res.status(400).json({ error: "groupId, sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required" });
+  }
+  const { chat, messages } = await fetchGroupHistory(groupId, 400, { includeOutgoing: true });
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
+  const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
+  const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
+  const expected = {
+    sourceMessageId,
+    acceptanceMessageId,
+    downloaderPhone,
+    executorPhone,
+    price: req.body?.price === undefined || req.body?.price === "" ? "" : Number(req.body.price),
+    origin: String(req.body?.origin || "").trim(),
+    destination: String(req.body?.destination || "").trim(),
+    tripTime: String(req.body?.tripTime || "").trim(),
+  };
+  if (!recoveryExpectedMatches(evidence, expected)) {
+    return res.status(409).json({ error: "Group evidence does not match the requested booking", evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
+  }
+  if (evidence.existingSettlement?.status === "applied") {
+    return res.json({ success: true, state: "already_settled", evidence: recoveryEvidenceSummary(evidence), cardSent: false, mutation: "none" });
+  }
+  let order = evidence.existingOrder;
+  if (!order) order = createOrderRecord({ messageId: sourceMessageId, groupId, body: evidence.rawText, producer: evidence.producer, parsed: evidence.parsed });
+  if (!order) return res.status(409).json({ error: "Unable to create the matched order record", mutation: "none" });
+  const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
+  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
+  if (result.state === "accepted") {
+    const card = await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
+    audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, cardSent: Boolean(card) });
+    return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), cardSent: Boolean(card), mutation: "applied_once" });
+  }
+  res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
+});
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
@@ -4470,7 +4664,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
     const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
-    const producer = quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone);
+    const producer = quoted.fromMe && BOT_FINANCIAL_MODE === "company" ? companyUser() : (quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone));
     let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
     if (!order) {
       if (producer) order = createOrderRecord({ messageId: orderMessageId, groupId, body: String(quoted.body || ""), producer, parsed });
