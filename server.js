@@ -1393,7 +1393,8 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
     }, ids), 15000, []);
     if (Array.isArray(rows) && rows.length) return linkSourceToAcceptance(rows);
   }
-  return [];
+  const history = await fetchGroupHistory(groupId, 200, { includeOutgoing: true });
+  return linkSourceToAcceptance(history.messages);
 }
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));

@@ -15,7 +15,7 @@ assert.match(server, /acceptance\.__quotedMessageId = sourceMessageId/);
 assert.match(server, /SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages/);
 assert.match(server, /client\.pupPage\.evaluate\(async \(messageId\)/);
 assert.match(server, /await withTimeout\(client\.pupPage\.evaluate\(async \(messageId\)/);
-assert.match(server, /return \[\];\n}\nfunction createCaptainPin/);
+assert.match(server, /const history = await fetchGroupHistory\(groupId, 200, \{ includeOutgoing: true \}\)/);
 assert.match(server, /messageId\.endsWith\(`_\$\{quotedMessageIdHint\}`\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
