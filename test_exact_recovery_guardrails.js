@@ -11,7 +11,7 @@ assert.match(server, /order\.verified_bot_booking\.completed/);
 assert.match(server, /admin_verified_bot_booking/);
 assert.match(server, /app\.locals\.verifiedBotBookingRecoveryInProgress/);
 assert.match(server, /res\.status\(202\)\.json\(\{ success: true, state: "processing", mutation: "queued" \}\)/);
-assert.match(server, /setImmediate\(\(\) => \{ void \(async \(\) => \{/);
+assert.match(server, /setTimeout\(\(\) => \{ void \(async \(\) => \{/);
 assert.match(server, /cardSent: false, cardPending: true/);
 assert.match(server, /if \(existingSettlement\?\.status === "applied"\) return;/);
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
