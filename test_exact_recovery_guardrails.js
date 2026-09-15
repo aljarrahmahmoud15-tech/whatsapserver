@@ -7,7 +7,7 @@ const admin = fs.readFileSync('./admin.html', 'utf8');
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirmed-preview", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-verified-bot-booking", requireAdmin/);
-assert.match(server, /app\.post\("\/api\/admin\/group\/send-verified-bot-booking-card", requireAdmin/);
+assert.match(server, /app\.post\(\["\/api\/admin\/group\/send-verified-bot-booking-card", "\/api\/admin\/group\/send-verified-bot-booking-card-v2"\], requireAdmin/);
 assert.match(server, /order\.verified_bot_booking\.card_attempt/);
 assert.match(server, /order\.verified_bot_booking\.card/);
 assert.match(server, /app\.locals\.verifiedBotBookingCardInProgress/);

@@ -4793,7 +4793,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     }
   })(); }, 10000);
 });
-app.post("/api/admin/group/send-verified-bot-booking-card", requireAdmin, async (req, res) => {
+app.post(["/api/admin/group/send-verified-bot-booking-card", "/api/admin/group/send-verified-bot-booking-card-v2"], requireAdmin, async (req, res) => {
   const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
   const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
   const source = "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid";
