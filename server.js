@@ -1675,18 +1675,24 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-async function sendFinalBookingCard(groupId, producerName, captainName, priceCents) {
+function finalBookingConfirmationText({ orderNo, executorName, consumerName, priceCents }) {
+  const prefix = `✓ تم تثبيت الطلب #${String(orderNo || "")}`;
+  const price = `${money(priceCents)}د`;
+  const separator = " | ";
+  const labels = ["م:", "س:"];
+  const fixedLength = prefix.length + separator.length * 3 + labels[0].length + labels[1].length + price.length;
+  const available = Math.max(0, 40 - fixedLength);
+  const executorBudget = Math.ceil(available / 2);
+  const consumerBudget = Math.max(0, available - executorBudget);
+  const executor = String(executorName || "").trim().slice(0, executorBudget);
+  const consumer = String(consumerName || "").trim().slice(0, consumerBudget);
+  return `${prefix}${separator}${labels[0]}${executor}${separator}${labels[1]}${consumer}${separator}${price}`.slice(0, 40);
+}
+async function sendFinalBookingConfirmation(groupId, details) {
   try {
-    if (client.interface && typeof client.interface.openChatWindow === "function") await withTimeout(client.interface.openChatWindow(groupId), 8000, null);
-    const media = await withTimeout(renderOperationsMessageMedia("تم تثبيت الطلب", [
-      `اسم كابتن التنزيل: ${producerName || "غير محدد"}`,
-      `اسم الكابتن المنفذ: ${captainName || "غير محدد"}`,
-      `القيمة: ${money(priceCents)} JOD`,
-    ]), 30000, null);
-    if (!media) throw new Error("final booking card render returned no media");
-    return withTimeout(client.sendMessage(groupId, media), 15000, null);
+    return withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
   } catch (error) {
-    console.error("[WhatsApp] final booking card not sent:", error.message);
+    console.error("[WhatsApp] final booking confirmation not sent:", error.message);
     return null;
   }
 }
@@ -2355,7 +2361,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     // pending after a different captain replied «تم» to the quoted price.
     const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
     if (result.state === "accepted") {
-      await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
+      void sendFinalBookingConfirmation(groupId, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
     } else {
       console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
     }
@@ -2737,7 +2743,7 @@ async function handleMessageReaction(reaction) {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
   }
-  await sendFinalBookingCard(target.from, result.producer?.name, result.captain?.name, result.order?.price_cents);
+  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
 }
 
 function parseCookies(header = "") {
@@ -4727,7 +4733,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
     return res.status(409).json({ error: "Group evidence does not match the requested booking", evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
   }
   if (evidence.existingSettlement?.status === "applied") {
-    return res.json({ success: true, state: "already_settled", evidence: recoveryEvidenceSummary(evidence), cardSent: false, mutation: "none" });
+    return res.json({ success: true, state: "already_settled", evidence: recoveryEvidenceSummary(evidence), confirmationText: null, mutation: "none" });
   }
   let order = evidence.existingOrder;
   if (!order) order = createOrderRecord({ messageId: sourceMessageId, groupId, body: evidence.rawText, producer: evidence.producer, parsed: evidence.parsed });
@@ -4735,9 +4741,10 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
   const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
-    const card = await sendFinalBookingCard(groupId, result.producer?.name, result.captain?.name, result.order?.price_cents);
-    audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, cardSent: Boolean(card) });
-    return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), cardSent: Boolean(card), mutation: "applied_once" });
+    const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents };
+    void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
+    audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
+    return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
   }
   res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
 });
@@ -4785,7 +4792,9 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
         return;
       }
-      audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, cardSent: false, cardPending: true });
+      const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents };
+      void sendFinalBookingConfirmation(verified.groupId, confirmationDetails).catch(() => null);
+      audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     } catch (error) {
       audit("order.verified_bot_booking.error", "order", null, { error: String(error?.message || error).slice(0, 200), sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
     } finally {
@@ -4793,30 +4802,8 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     }
   })(); }, 10000);
 });
-app.post(["/api/admin/group/send-verified-bot-booking-card", "/api/admin/group/send-verified-bot-booking-card-v2"], requireAdmin, async (req, res) => {
-  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
-  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
-  const source = "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid";
-  const acceptance = "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid";
-  if (sourceMessageId !== source || acceptanceMessageId !== acceptance) return res.status(409).json({ error: "Verified booking message IDs do not match", mutation: "none" });
-  const order = db.prepare("SELECT * FROM orders WHERE source_message_id=? AND accepted_message_id=? AND settlement_state='settled' LIMIT 1").get(source, acceptance);
-  if (!order) return res.status(404).json({ error: "Verified booking is not settled", mutation: "none" });
-  const sent = db.prepare("SELECT id FROM audit_logs WHERE action='order.verified_bot_booking.card' AND entity_type='order' AND entity_id=? AND details LIKE '%\"cardSent\":true%' LIMIT 1").get(String(order.id));
-  if (sent) return res.json({ success: true, state: "already_sent", cardSent: true, mutation: "none", orderId: order.id });
-  if (app.locals.verifiedBotBookingCardInProgress) return res.status(202).json({ success: true, state: "processing", cardSent: false, mutation: "queued", orderId: order.id });
-  app.locals.verifiedBotBookingCardInProgress = true;
-  audit("order.verified_bot_booking.card_attempt", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance });
-  res.status(202).json({ success: true, state: "processing", cardSent: false, mutation: "queued", orderId: order.id });
-  setTimeout(async () => {
-    try {
-      const card = await sendFinalBookingCard(order.group_id, order.producer_name_snapshot, order.captain_name_snapshot, order.price_cents);
-      audit("order.verified_bot_booking.card", "order", order.id, { sourceMessageId: source, acceptanceMessageId: acceptance, cardSent: Boolean(card) });
-    } catch (error) {
-      audit("order.verified_bot_booking.card_error", "order", order.id, { error: String(error?.message || error).slice(0, 200) });
-    } finally {
-      app.locals.verifiedBotBookingCardInProgress = false;
-    }
-  }, 1000);
+app.post(["/api/admin/group/send-verified-bot-booking-card", "/api/admin/group/send-verified-bot-booking-card-v2"], requireAdmin, (req, res) => {
+  res.status(410).json({ error: "Image booking cards are disabled; use the short text confirmation", mutation: "none" });
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });

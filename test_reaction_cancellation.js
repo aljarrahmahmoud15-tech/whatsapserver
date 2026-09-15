@@ -12,7 +12,7 @@ assert.match(server, /UPDATE order_settlements SET status='reversed'/);
 assert.match(server, /reversal_company/);
 assert.match(server, /reversal_producer/);
 assert.match(server, /reversal_captain_fee/);
-assert.match(server, /sendFinalBookingCard\(target\.from, result\.producer\?\.name, result\.captain\?\.name, result\.order\?\.price_cents\)/);
+assert.match(server, /sendFinalBookingConfirmation\(target\.from, \{ orderNo: result\.order\?\.order_no/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم إلغاء الطلب:/);
 console.log("candidate cancellation and final-card reversal guardrails verified");

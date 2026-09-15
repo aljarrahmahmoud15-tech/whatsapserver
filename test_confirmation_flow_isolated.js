@@ -109,7 +109,7 @@ const context = {
   audit: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
-  sendFinalBookingCard: async (groupId, producerName, captainName, priceCents) => { messages.push({ groupId, mediaCard: true, text: `${producerName} - ${captainName} - ${priceCents}`, caption: undefined }); },
+  sendFinalBookingConfirmation: async (groupId, orderNo) => { messages.push({ groupId, text: `تم تثبيت الطلب #${orderNo}` }); },
   console,
 };
 
@@ -137,9 +137,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[3].wallet_cents, 80, "يُخصم 16% من محفظة الكابتن المنفذ");
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
-  assert.strictEqual(messages.length, 1, "ترسل بطاقة تأكيد واحدة بعد التثبيت");
-  assert.strictEqual(messages[0].mediaCard, true, "التأكيد النهائي بطاقة شعار فقط");
-  assert.strictEqual(messages[0].caption, undefined, "لا يوجد شرح أو caption أسفل البطاقة");
-  assert.match(messages[0].text, /المنتج - الكابتن - 2000/);
+  assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
+  assert.match(messages[0].text, /تم تثبيت الطلب/);
+  assert.ok(messages[0].text.length <= 40, "التأكيد لا يتجاوز 40 حرفًا");
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
