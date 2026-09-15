@@ -3,6 +3,10 @@ const fs = require("fs");
 const vm = require("vm");
 
 const source = fs.readFileSync("server.js", "utf8");
+assert.match(source, /reaction\?\._data\?\.senderUserJid/);
+assert.match(source, /client\.getContactLidAndPhone\(lidIds\)/);
+assert.match(source, /for \(const delay of \[1500, 5000\]\)/);
+assert.match(source, /reconcileStoredThumbReaction\(messageId\)/);
 const start = source.indexOf("const whatsappLidPhoneCache = new Map();");
 const end = source.indexOf("function recordGroupMessageTelemetry(", start);
 assert.ok(start >= 0 && end > start, "LID phone resolver exists");

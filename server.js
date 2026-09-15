@@ -2069,6 +2069,14 @@ function createClient() {
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
+    if (String(reaction?.reaction || "").trim() === "👍") {
+      for (const delay of [1500, 5000]) {
+        setTimeout(() => {
+          if (generation !== connectionGeneration || !isReady) return;
+          void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
+        }, delay);
+      }
+    }
   });
   return instance;
 }
@@ -2366,6 +2374,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
     }
   }
+  if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
+    void reconcileStoredThumbReaction(messageId);
+  }
 }
 
 function reactionId(value) {
@@ -2375,13 +2386,31 @@ function reactionId(value) {
 }
 
 async function resolveReactionSenderPhone(reaction) {
-  const rawId = reaction && reaction.senderId;
-  const serialized = reactionId(rawId) || String(rawId || "");
-  const direct = directJordanPhoneFromWhatsappValue(serialized);
-  if (direct) return direct;
-  if (!client || !isReady || !serialized) return "";
-  const contact = await withTimeout(client.getContactById(serialized), 8000, null);
-  return resolveWhatsappUserPhone(contact, serialized);
+  const rawValues = [
+    reaction?.senderId,
+    reaction?._data?.senderId,
+    reaction?._data?.senderUserJid,
+    reaction?.senderUserJid,
+    reaction?.author,
+  ].filter(Boolean);
+  for (const value of rawValues) {
+    const direct = directJordanPhoneFromWhatsappValue(value);
+    if (direct) return direct;
+  }
+  const serializedIds = [...new Set(rawValues.map((value) => reactionId(value) || serializedWhatsappUserId(value)).filter(Boolean))];
+  if (!client || !isReady || !serializedIds.length) return "";
+  const mapped = await resolveWhatsappUserPhone(...serializedIds);
+  if (mapped) return mapped;
+  for (const serialized of serializedIds) {
+    try {
+      const contact = await withTimeout(client.getContactById(serialized), 8000, null);
+      const resolved = await resolveWhatsappUserPhone(contact, serialized);
+      if (resolved) return resolved;
+    } catch (error) {
+      console.warn(`[WhatsApp] reaction contact lookup failed: ${String(error?.message || error)}`);
+    }
+  }
+  return "";
 }
 
 function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone) {
@@ -2744,6 +2773,19 @@ async function handleMessageReaction(reaction) {
     return;
   }
   void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+}
+
+async function reconcileStoredThumbReaction(messageId) {
+  if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
+  const target = await withTimeout(client.getMessageById(messageId), 12000, null);
+  if (!target || !target.hasReaction || typeof target.getReactions !== "function") return;
+  const reactions = await withTimeout(target.getReactions(), 12000, []);
+  for (const reaction of Array.isArray(reactions) ? reactions : []) {
+    if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
+    for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
+      await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender });
+    }
+  }
 }
 
 function parseCookies(header = "") {
