@@ -20,5 +20,7 @@ assert.match(admin, /\/api\/admin\/group\/confirmed-preview/);
 assert.match(admin, /\/api\/admin\/group\/confirm-one/);
 assert.match(admin, /اعتماد وتسوية/);
 assert.match(admin, /لا تُطبق العملية أكثر من مرة/);
+assert.match(admin, /const text=await r\.text\(\);let data;try\{data=text\?JSON\.parse\(text\):\{\}\}/);
+assert.doesNotMatch(admin, /catch\{data=\{error:await r\.text\(\)\}\}/);
 
 console.log('exact group recovery preview, owner approval, company wallet routing, and UI guardrails verified');
