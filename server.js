@@ -803,8 +803,12 @@ function ensureSystemUsers() {
   const stamp = now();
   normalizeBotIdentity(stamp);
   // Every human subscriber is a captain. Only the internal company and bot
-  // identities retain their operational roles.
-  db.prepare("UPDATE users SET role='captain',account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,updated_at=? WHERE is_bot=0 AND role='producer'").run(stamp);
+  // identities and the protected owner retain their operational roles.
+  const legacyHumanProducers = db.prepare("SELECT id,phone,active FROM users WHERE is_bot=0 AND role='producer'").all();
+  const promote = db.prepare("UPDATE users SET role='captain',account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,updated_at=? WHERE id=?");
+  for (const user of legacyHumanProducers) {
+    if (!isProtectedOwnerIdentity(user.phone)) promote.run(stamp, user.id);
+  }
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
   // Normalize legacy deployments that still contain the former 15% settings.
@@ -973,6 +977,52 @@ function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
   return phoneWithCountry(String(raw || "").replace(/@c\.us$/, "").split(":")[0]);
 }
+function isProtectedOwnerIdentity(phone) {
+  const normalized = phoneWithCountry(phone);
+  return Boolean(normalized && (isBotPhone(normalized) || GROUP_SETUP_OWNER_PHONES.has(normalized)));
+}
+async function resolveGroupParticipantPhone(participant) {
+  const rawId = participant?.id || participant;
+  const direct = directJordanPhoneFromWhatsappValue(rawId) || (isValidJordanPhone(groupParticipantPhone(participant)) ? groupParticipantPhone(participant) : "");
+  if (direct) return direct;
+  const serialized = serializedWhatsappUserId(rawId);
+  const contact = serialized && client && isReady
+    ? await withTimeout(client.getContactById(serialized), 8000, null)
+    : null;
+  return resolveWhatsappUserPhone(contact, contact?.id, contact?._data?.id, contact?.number, serialized);
+}
+function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
+  const normalized = phoneWithCountry(phone);
+  if (!isValidJordanPhone(normalized) || isBlockedPhone(normalized)) return { status: "skipped_invalid_or_blocked", phone: normalized || String(phone || "") };
+  if (isProtectedOwnerIdentity(normalized)) return { status: "skipped_owner", phone: normalized };
+  const stamp = now();
+  const displayName = String(name || displayPhone(normalized)).trim().slice(0, 100) || displayPhone(normalized);
+  const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(normalized) || findCaptainByPhone(normalized);
+  if (existing && (existing.is_bot === 1 || existing.role === "company")) return { status: "skipped_system", phone: normalized, userId: existing.id };
+  if (existing) {
+    if (existing.account_status === "merged") return { status: "skipped_merged", phone: normalized, userId: existing.id };
+    if (!reactivate && (existing.active !== 1 || existing.account_status === "suspended")) return { status: "skipped_suspended", phone: normalized, userId: existing.id };
+    const resolvedName = existing.name && !/^\+?\d+$/.test(String(existing.name).trim()) ? existing.name : displayName;
+    db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=COALESCE(NULLIF(captain_auth_method,''),'whatsapp'),approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?")
+      .run(resolvedName, stamp, stamp, stamp, existing.id);
+    return { status: existing.role === "captain" && existing.active === 1 && existing.account_status === "active" ? "existing_captain" : "activated_captain", phone: normalized, userId: existing.id, name: resolvedName };
+  }
+  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,NULL,NULL,'whatsapp','active',?,?,?,?)")
+    .run(normalized, displayName, stamp, stamp, stamp, stamp);
+  return { status: "registered", phone: normalized, userId: result.lastInsertRowid, name: displayName };
+}
+function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
+  const rows = db.prepare("SELECT id,phone,name,role,active,account_status,is_bot FROM users WHERE is_bot=0 AND role<>'company' ORDER BY id").all();
+  const results = rows.map((row) => activateHumanCaptainAccount({ phone: row.phone, name: row.name, reactivate }));
+  return {
+    total: rows.length,
+    captains: results.filter((item) => ["registered", "activated_captain", "existing_captain"].includes(item.status)).length,
+    activated: results.filter((item) => item.status === "activated_captain").length,
+    skippedOwners: results.filter((item) => item.status === "skipped_owner").length,
+    skipped: results.filter((item) => item.status.startsWith("skipped_")).length,
+    results,
+  };
+}
 async function resolveGroupChat(groupId, inviteCode = "") {
   if (!groupId || !client || !isReady) return null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -1098,48 +1148,38 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
-async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = true, baseUrl = process.env.PUBLIC_BASE_URL || "", inviteCode = "" } = {}) {
+async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "", inviteCode = "", reactivate = false } = {}) {
   if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null, results: [] };
   if (!client || !isReady) return { status: "bot_not_ready", groupId, results: [] };
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId, inviteCode);
   if (!chat || !Array.isArray(chat.participants)) return { status: "group_unavailable", groupId, results: [] };
-  const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone()]);
-  const participants = [...new Map(chat.participants.map((participant) => [groupParticipantPhone(participant), participant])).values()];
   const results = [];
-  for (const participant of participants) {
-    const phone = groupParticipantPhone(participant);
-    if (!phone || botPhones.has(phone)) continue;
-    if (!isValidJordanPhone(phone)) {
-      results.push({ phone, status: "skipped_invalid_phone" });
+  const resolvedParticipants = new Map();
+  for (const participant of chat.participants) {
+    const phone = await resolveGroupParticipantPhone(participant);
+    if (!phone) {
+      results.push({ phone: null, status: "skipped_unresolved_identity" });
       continue;
     }
-    if (isBlockedPhone(phone)) {
-      results.push({ phone, status: "skipped_blocked" });
-      continue;
-    }
-    const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 8000, null);
-    const name = String(contact && (contact.pushname || contact.name || contact.shortName) || displayPhone(phone)).trim().slice(0, 100);
-    const existing = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE phone=? LIMIT 1").get(phone);
-    if (existing && existing.role !== "captain") {
-      results.push({ phone, name, status: "skipped_existing_role", role: existing.role });
-      continue;
-    }
-    let captain = existing;
-    let temporaryPin = null;
-    if (!captain) {
-      temporaryPin = createCaptainPin();
-      const stamp = now();
-      const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?,?,?)").run(phone, name, bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, stamp, stamp);
-      captain = db.prepare("SELECT id,phone,name,role,active,captain_pin_hash FROM users WHERE id=?").get(result.lastInsertRowid);
-      audit("captain.registered_from_group", "user", captain.id, { phone, groupId });
-    } else if (!captain.captain_pin_hash && captain.active) {
-      temporaryPin = createCaptainPin();
-      db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=?,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, now(), captain.id);
-    }
-    const notified = sendLinks ? await sendCaptainAppLink({ ...captain, temporaryPin }, baseUrl) : false;
-    results.push({ captainId: captain.id, phone, name, status: existing ? "existing_captain" : "registered", notified, temporaryPinSent: Boolean(temporaryPin) });
+    if (!resolvedParticipants.has(phone)) resolvedParticipants.set(phone, participant);
   }
-  return { status: "completed", groupId, totalMembers: participants.length, results };
+  for (const [phone, participant] of resolvedParticipants) {
+    if (isProtectedOwnerIdentity(phone)) {
+      results.push({ phone, status: "skipped_owner" });
+      continue;
+    }
+    const participantId = serializedWhatsappUserId(participant?.id);
+    const contact = await withTimeout(client.getContactById(participantId || `${phone}@c.us`), 8000, null)
+      || await withTimeout(client.getContactById(`${phone}@c.us`), 8000, null);
+    const name = String(contact && (contact.pushname || contact.name || contact.shortName) || displayPhone(phone)).trim().slice(0, 100);
+    const normalized = activateHumanCaptainAccount({ phone, name, reactivate });
+    const captain = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(normalized.userId) : null;
+    if (normalized.status === "registered") audit("captain.registered_from_group", "user", normalized.userId, { phone, groupId });
+    else if (normalized.status === "activated_captain") audit("captain.activated_from_group", "user", normalized.userId, { phone, groupId });
+    const notified = sendLinks && captain ? await sendCaptainAppLink(captain, baseUrl) : false;
+    results.push({ captainId: captain?.id || null, phone, name: captain?.name || name, status: normalized.status, notified, temporaryPinSent: false });
+  }
+  return { status: "completed", groupId, totalMembers: chat.participants.length, resolvedMembers: resolvedParticipants.size, results };
 }
 async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
   const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND active=1 ORDER BY id").all();
@@ -1645,6 +1685,12 @@ function createClient() {
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
+    setTimeout(() => {
+      if (generation !== connectionGeneration || !isReady) return;
+      void registerGroupMembersAsCaptains({ sendLinks: false, reactivate: false })
+        .then((result) => console.log(`[Captains] configured group sync completed: members=${result.resolvedMembers || 0} registered=${(result.results || []).filter((item) => item.status === "registered").length} activated=${(result.results || []).filter((item) => item.status === "activated_captain").length}`))
+        .catch((error) => console.error("[Captains] configured group sync failed:", error.message));
+    }, 3000);
   });
   instance.on("auth_failure", (message) => {
     whatsappState = "auth_failure";
@@ -2407,14 +2453,17 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
   if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
-  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
-  if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
-  if (existing && existing.role === "captain" && existing.id !== invite.approved_user_id) return res.status(409).json({ error: "يوجد حساب كابتن بهذا الرقم مسبقًا" });
+  let existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
+  if (existing && (existing.is_bot === 1 || existing.role === "company" || isProtectedOwnerIdentity(phone))) return res.status(409).json({ error: "هذا الرقم مخصص لحساب المالك أو النظام" });
+  if (existing && existing.role !== "captain") {
+    const normalized = activateHumanCaptainAccount({ phone, name, reactivate: true });
+    existing = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(normalized.userId) : null;
+  }
   const stamp = now();
   const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
   let captainId = existing?.id || null;
   if (existing) {
-    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=? AND role='captain'")
+    db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?")
       .run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
   } else {
     captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,NULL,?,'active',?,?,?,?)")
@@ -2466,11 +2515,15 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   }
   const authMethod = normalizeCaptainAuthMethod(invite.auth_method);
   if ((authMethod === "pin" && !invite.pin_hash) || !invite.phone || !invite.name) return res.status(409).json({ error: "بيانات طلب الكابتن غير مكتملة" });
-  const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(invite.phone) || findCaptainByPhone(invite.phone);
-  if (existing && existing.role !== "captain") return res.status(409).json({ error: "رقم الهاتف مستخدم لدور آخر" });
+  let existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(invite.phone) || findCaptainByPhone(invite.phone);
+  if (existing && (existing.is_bot === 1 || existing.role === "company" || isProtectedOwnerIdentity(invite.phone))) return res.status(409).json({ error: "هذا الرقم مخصص لحساب المالك أو النظام" });
+  if (existing && existing.role !== "captain") {
+    const normalized = activateHumanCaptainAccount({ phone: invite.phone, name: invite.name, reactivate: true });
+    existing = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(normalized.userId) : null;
+  }
   let captainId;
   if (existing) {
-    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=? AND role='captain'").run(invite.name, authMethod, authMethod === "pin" ? invite.pin_hash : null, stamp, stamp, stamp, existing.id);
+    db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?").run(invite.name, authMethod, authMethod === "pin" ? invite.pin_hash : null, stamp, stamp, stamp, existing.id);
     captainId = existing.id;
   } else {
     captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,\'captain\',0,1,0,?,NULL,?,'active',?,?,?,?)").run(invite.phone, invite.name, authMethod === "pin" ? invite.pin_hash : null, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
@@ -3586,18 +3639,38 @@ app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const sendLinks = req.body?.sendLinks !== false;
+  const sendLinks = req.body?.sendLinks === true;
   const results = await syncActiveCaptainsToConfiguredGroup({ sendLinks, baseUrl: captainInviteBaseUrl(req) });
   audit("captains.group_membership.bulk_sync", "group", groupId, { count: results.length, sendLinks });
   void notifyOperations({ event: "captains.group_membership.bulk_sync", title: "تأكيد مزامنة الكباتن", lines: [`عدد الحسابات التي تمت مزامنتها: ${results.length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`, "تم تسجيل نتيجة المزامنة في النظام."], ownersOnly: true });
   res.json({ success: true, groupId, sendLinks, results });
 });
+app.post("/api/admin/captains/normalize-all", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-captain-normalization-${Date.now()}.sqlite`;
+  await db.backup(path.join(backupDir, backupName));
+  const existingUsers = normalizeExistingHumanUsersAsCaptains({ reactivate: true });
+  const groupMembers = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl: captainInviteBaseUrl(req) });
+  const totals = db.prepare(`SELECT
+    COUNT(*) AS all_users,
+    SUM(CASE WHEN role='captain' AND is_bot=0 AND active=1 AND account_status='active' THEN 1 ELSE 0 END) AS active_captains,
+    SUM(CASE WHEN role='company' OR is_bot=1 THEN 1 ELSE 0 END) AS protected_accounts
+    FROM users`).get();
+  audit("captains.normalized_all_registered_users", "group", getSetting("group_id", null), {
+    existingUsers: { total: existingUsers.total, captains: existingUsers.captains, activated: existingUsers.activated, skippedOwners: existingUsers.skippedOwners },
+    groupMembers: { totalMembers: groupMembers.totalMembers || 0, resolvedMembers: groupMembers.resolvedMembers || 0, registered: (groupMembers.results || []).filter((item) => item.status === "registered").length, activated: (groupMembers.results || []).filter((item) => item.status === "activated_captain").length },
+    totals,
+  });
+  res.json({ success: true, backupName, existingUsers, groupMembers, totals });
+});
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const sendLinks = req.body?.sendLinks !== false;
-  const result = await registerGroupMembersAsCaptains({ groupId, sendLinks, baseUrl: captainInviteBaseUrl(req) });
+  const sendLinks = req.body?.sendLinks === true;
+  const result = await registerGroupMembersAsCaptains({ groupId, sendLinks, reactivate: req.body?.reactivate === true, baseUrl: captainInviteBaseUrl(req) });
   audit("group.members.registered_as_captains", "group", groupId, { totalMembers: result.totalMembers || 0, registered: (result.results || []).filter((item) => item.status === "registered").length, sendLinks });
   void notifyOperations({ event: "group.members.registered_as_captains", title: "تأكيد تسجيل أعضاء القروب", lines: [`إجمالي الأعضاء: ${result.totalMembers || 0}`, `الحسابات المسجلة: ${(result.results || []).filter((item) => item.status === "registered").length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`], ownersOnly: true });
   res.json({ success: true, ...result, sendLinks });
@@ -3609,12 +3682,16 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   const pin = String(req.body?.pin || "").trim();
   if (!/^\d{8,15}$/.test(phone) || !name || name.length > 100) return res.status(400).json({ error: "Captain name and a valid phone are required" });
   if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "PIN must contain exactly 5 digits" });
-  const existing = db.prepare("SELECT id,role FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
-  if (existing && existing.role !== "captain") return res.status(409).json({ error: "Phone is already assigned to another role" });
+  let existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
+  if (existing && (existing.is_bot === 1 || existing.role === "company" || isProtectedOwnerIdentity(phone))) return res.status(409).json({ error: "Owner and system identities cannot be registered as captains" });
+  if (existing && existing.role !== "captain") {
+    const normalized = activateHumanCaptainAccount({ phone, name, reactivate: true });
+    existing = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(normalized.userId) : null;
+  }
   const stamp = now();
   const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
   if (existing) {
-    db.prepare("UPDATE users SET name=?,active=1,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?").run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
+    db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?").run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
     audit("captain.reactivated", "user", existing.id, { phone, name, authMethod });
     void addCaptainToConfiguredGroup({ phone, name });
     void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
