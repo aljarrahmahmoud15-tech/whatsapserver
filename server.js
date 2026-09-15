@@ -2505,9 +2505,13 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
-  const archivedQuoted = typeof acceptance.getQuotedMessage === "function"
-    ? await withTimeout(acceptance.getQuotedMessage(), 12000, null)
-    : acceptance.__quoted || null;
+  const quotedMessageIdHint = String(
+    acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
+  ).trim();
+  const indexedQuoted = quotedMessageIdHint
+    ? (Array.isArray(messages) ? messages.find((message) => serializedMessageId(message) === quotedMessageIdHint) : null)
+    : null;
+  const archivedQuoted = acceptance.__quoted || indexedQuoted || null;
   let liveQuoted = archivedQuoted;
   if (!liveQuoted && client && typeof client.getMessageById === "function") {
     liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
@@ -2533,9 +2537,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
   const botProducer = quoted.fromMe && BOT_FINANCIAL_MODE === "company";
-  const archivedReactions = typeof acceptance.getReactions === "function"
-    ? await withTimeout(acceptance.getReactions(), 12000, null)
-    : acceptance.__reactions || null;
+  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
+  const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
+    ? await withTimeout(acceptance.getReactions(), 1500, null)
+    : null);
   const liveReactions = (!Array.isArray(archivedReactions) || !archivedReactions.length) && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
@@ -2553,7 +2558,6 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   }
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
-  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
   const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
   const producerPhone = quoted.fromMe ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
