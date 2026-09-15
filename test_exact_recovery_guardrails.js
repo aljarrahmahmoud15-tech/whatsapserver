@@ -7,6 +7,8 @@ const admin = fs.readFileSync('./admin.html', 'utf8');
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirmed-preview", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin/);
 assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
+assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
+assert.match(server, /collections\.Msg\.getMessagesById\(requestedIds\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
 assert.match(server, /const messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);

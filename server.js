@@ -1314,8 +1314,50 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   return messages;
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
-  if (!client || typeof client.getMessageById !== "function") return [];
+  if (!client) return [];
   const ids = [...new Set([sourceMessageId, acceptanceMessageId].map((value) => String(value || "").trim()).filter(Boolean))];
+  if (!ids.length) return [];
+  if (client.pupPage) {
+    const rows = await withTimeout(client.pupPage.evaluate(async (requestedIds) => {
+      try {
+        const collections = window.require("WAWebCollections");
+        let models = requestedIds.map((id) => collections.Msg.get(id)).filter(Boolean);
+        if (models.length < requestedIds.length && collections.Msg.getMessagesById) {
+          const loaded = await collections.Msg.getMessagesById(requestedIds);
+          models = [...models, ...(Array.isArray(loaded?.messages) ? loaded.messages : [])];
+        }
+        const unique = new Map();
+        for (const message of models) {
+          const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(message) : message.serialize();
+          model.__serializedId = message.id?._serialized || (typeof message.id?.toString === "function" ? message.id.toString() : null);
+          model.__timestamp = Number(message.t || model.timestamp || 0) || null;
+          model.fromMe = Boolean(message.id?.fromMe);
+          model.__caption = String(message.caption || message.text || model.caption || "");
+          try {
+            const quoted = window.require("WAWebQuotedMsgModelUtils").getQuotedMsgObj(message);
+            if (quoted) {
+              model.__quoted = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(quoted) : quoted.serialize();
+              model.__quoted.__serializedId = quoted.id?._serialized || null;
+              model.__quoted.__timestamp = Number(quoted.t || model.__quoted.timestamp || 0) || null;
+            }
+          } catch (_) { model.__quoted = null; }
+          try {
+            const reactionCollection = await collections.Reactions.find(model.__serializedId);
+            const directReactions = message.reactions?.serialize ? message.reactions.serialize() : (Array.isArray(message.reactions) ? message.reactions : []);
+            const reactionRows = reactionCollection?.reactions?.serialize ? reactionCollection.reactions.serialize() : directReactions;
+            model.__hasReaction = Boolean(message.hasReaction || model.hasReaction || reactionRows.length);
+            model.__reactions = Array.isArray(reactionRows) ? reactionRows : [];
+          } catch (_) { model.__reactions = []; model.__hasReaction = Boolean(message.hasReaction || model.hasReaction); }
+          if (model.__serializedId) unique.set(model.__serializedId, model);
+        }
+        return [...unique.values()];
+      } catch (_) {
+        return [];
+      }
+    }, ids), 20000, []);
+    if (Array.isArray(rows) && rows.length) return rows.filter((message) => message && resolveGroupChatId(message) === groupId);
+  }
+  if (typeof client.getMessageById !== "function") return [];
   const rows = await Promise.all(ids.map((messageId) => withTimeout(client.getMessageById(messageId), 15000, null)));
   return rows.filter((message) => message && resolveGroupChatId(message) === groupId);
 }
