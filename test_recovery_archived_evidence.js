@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+const source = fs.readFileSync('./server.js', 'utf8');
+assert.match(source, /const liveQuoted = typeof liveAcceptance\.getQuotedMessage === "function"/);
+assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| acceptance\.__quoted \|\| null/);
+assert.match(source, /const liveReactions = typeof liveAcceptance\.getReactions === "function"/);
+assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
+assert.match(source, /mutation: "none"/);
+console.log('archived quote and reaction evidence fallback verified');

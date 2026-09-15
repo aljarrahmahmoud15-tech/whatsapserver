@@ -2506,17 +2506,21 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
-  const quoted = typeof liveAcceptance.getQuotedMessage === "function"
-    ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || liveAcceptance.__quoted || null
-    : liveAcceptance.__quoted || null;
+  const liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
+    ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
+    : null;
+  const quoted = liveQuoted || liveAcceptance.__quoted || acceptance.__quoted || null;
   const parsed = quoted ? parseOrder(quoted.body) : null;
   const orderMessageId = serializedMessageId(quoted);
   if (!quoted || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(quoted) !== groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
-  const reactions = typeof liveAcceptance.getReactions === "function"
-    ? await withTimeout(liveAcceptance.getReactions(), 12000, liveAcceptance.__reactions || [])
-    : (liveAcceptance.__reactions || []);
+  const liveReactions = typeof liveAcceptance.getReactions === "function"
+    ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
+    : null;
+  const reactions = Array.isArray(liveReactions) && liveReactions.length
+    ? liveReactions
+    : (liveAcceptance.__reactions || acceptance.__reactions || []);
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
   const reactionPhones = [];
   let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
