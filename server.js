@@ -1181,6 +1181,67 @@ async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id",
   }
   return { status: "completed", groupId, totalMembers: chat.participants.length, resolvedMembers: resolvedParticipants.size, results };
 }
+const CAPTAIN_NORMALIZATION_VERSION = "all-group-members-captains-v1";
+let captainNormalizationInFlight = false;
+function reconcileCaptainLinksWithoutSettlement() {
+  const rows = db.prepare("SELECT * FROM orders WHERE captain_phone_snapshot IS NOT NULL AND (captain_user_id IS NULL OR settlement_state='unlinked') ORDER BY id").all();
+  const linked = [];
+  const skipped = [];
+  for (const order of rows) {
+    const captain = findCaptainByPhone(order.captain_phone_snapshot, { activeOnly: true });
+    if (!captain) {
+      skipped.push({ orderNo: order.order_no, reason: "captain_not_registered" });
+      continue;
+    }
+    db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,settlement_state=CASE WHEN settlement_state='unlinked' THEN 'pending' ELSE settlement_state END,updated_at=? WHERE id=?")
+      .run(captain.id, captain.phone, captain.name, now(), order.id);
+    linked.push({ orderNo: order.order_no, captainId: captain.id });
+  }
+  return { linked, skipped };
+}
+async function normalizeAllCaptainsWithBackup({ force = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+  if (!force && getSetting("captain_normalization_version", "") === CAPTAIN_NORMALIZATION_VERSION) return { status: "already_completed" };
+  if (captainNormalizationInFlight) return { status: "already_running" };
+  captainNormalizationInFlight = true;
+  try {
+    const backupDir = path.join(DATA_DIR, "backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupName = `pre-captain-normalization-${Date.now()}.sqlite`;
+    await db.backup(path.join(backupDir, backupName));
+    const existingUsers = normalizeExistingHumanUsersAsCaptains({ reactivate: true });
+    const groupMembers = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl });
+    if (groupMembers.status !== "completed") throw new Error(`Group captain synchronization did not complete: ${groupMembers.status}`);
+    const reconciliation = reconcileCaptainLinksWithoutSettlement();
+    const totals = db.prepare(`SELECT
+      COUNT(*) AS all_users,
+      SUM(CASE WHEN role='captain' AND is_bot=0 AND active=1 AND account_status='active' THEN 1 ELSE 0 END) AS active_captains,
+      SUM(CASE WHEN role='company' OR is_bot=1 THEN 1 ELSE 0 END) AS protected_accounts
+      FROM users`).get();
+    const completedAt = now();
+    setSetting("captain_normalization_version", CAPTAIN_NORMALIZATION_VERSION);
+    setSetting("captain_normalization_at", completedAt);
+    const summary = {
+      status: "completed",
+      backupName,
+      completedAt,
+      existingUsers,
+      groupMembers,
+      reconciliation,
+      totals,
+    };
+    audit("captains.normalized_all_registered_users", "group", getSetting("group_id", null), {
+      existingUsers: { total: existingUsers.total, captains: existingUsers.captains, activated: existingUsers.activated, skippedOwners: existingUsers.skippedOwners },
+      groupMembers: { totalMembers: groupMembers.totalMembers || 0, resolvedMembers: groupMembers.resolvedMembers || 0, registered: (groupMembers.results || []).filter((item) => item.status === "registered").length, activated: (groupMembers.results || []).filter((item) => item.status === "activated_captain").length },
+      reconciliation: { linked: reconciliation.linked.length, skipped: reconciliation.skipped.length, financialSettlementsApplied: 0 },
+      totals,
+      backupName,
+    });
+    console.log(`[CaptainNormalize] completed activeCaptains=${totals.active_captains || 0} groupMembers=${groupMembers.totalMembers || 0} resolvedMembers=${groupMembers.resolvedMembers || 0} linkedOrders=${reconciliation.linked.length} skippedOrders=${reconciliation.skipped.length} backup=${backupName}`);
+    return summary;
+  } finally {
+    captainNormalizationInFlight = false;
+  }
+}
 async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
   const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND active=1 ORDER BY id").all();
   const results = [];
@@ -1687,8 +1748,13 @@ function createClient() {
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
     setTimeout(() => {
       if (generation !== connectionGeneration || !isReady) return;
-      void registerGroupMembersAsCaptains({ sendLinks: false, reactivate: false })
-        .then((result) => console.log(`[Captains] configured group sync completed: members=${result.resolvedMembers || 0} registered=${(result.results || []).filter((item) => item.status === "registered").length} activated=${(result.results || []).filter((item) => item.status === "activated_captain").length}`))
+      void normalizeAllCaptainsWithBackup()
+        .then(async (normalization) => {
+          if (normalization.status !== "already_completed") return normalization;
+          const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: false });
+          console.log(`[Captains] configured group sync completed: members=${result.resolvedMembers || 0} registered=${(result.results || []).filter((item) => item.status === "registered").length} activated=${(result.results || []).filter((item) => item.status === "activated_captain").length}`);
+          return result;
+        })
         .catch((error) => console.error("[Captains] configured group sync failed:", error.message));
     }, 3000);
   });
@@ -3647,23 +3713,8 @@ app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
 });
 app.post("/api/admin/captains/normalize-all", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const backupDir = path.join(DATA_DIR, "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  const backupName = `pre-captain-normalization-${Date.now()}.sqlite`;
-  await db.backup(path.join(backupDir, backupName));
-  const existingUsers = normalizeExistingHumanUsersAsCaptains({ reactivate: true });
-  const groupMembers = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl: captainInviteBaseUrl(req) });
-  const totals = db.prepare(`SELECT
-    COUNT(*) AS all_users,
-    SUM(CASE WHEN role='captain' AND is_bot=0 AND active=1 AND account_status='active' THEN 1 ELSE 0 END) AS active_captains,
-    SUM(CASE WHEN role='company' OR is_bot=1 THEN 1 ELSE 0 END) AS protected_accounts
-    FROM users`).get();
-  audit("captains.normalized_all_registered_users", "group", getSetting("group_id", null), {
-    existingUsers: { total: existingUsers.total, captains: existingUsers.captains, activated: existingUsers.activated, skippedOwners: existingUsers.skippedOwners },
-    groupMembers: { totalMembers: groupMembers.totalMembers || 0, resolvedMembers: groupMembers.resolvedMembers || 0, registered: (groupMembers.results || []).filter((item) => item.status === "registered").length, activated: (groupMembers.results || []).filter((item) => item.status === "activated_captain").length },
-    totals,
-  });
-  res.json({ success: true, backupName, existingUsers, groupMembers, totals });
+  const result = await normalizeAllCaptainsWithBackup({ force: true, baseUrl: captainInviteBaseUrl(req) });
+  res.json({ success: true, ...result });
 });
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);

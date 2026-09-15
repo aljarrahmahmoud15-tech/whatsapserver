@@ -12,6 +12,9 @@ assert(source.includes("isProtectedOwnerIdentity"), "يستثني حساب ال�
 assert(source.includes('app.post("/api/admin/group/register-members", requireAdmin'), "مسار التسجيل محمي إداريًا");
 assert(source.includes('app.post("/api/admin/captains/normalize-all", requireAdmin'), "يوجد مسار محمي لتثبيت جميع الحسابات الحالية");
 assert(source.includes("pre-captain-normalization-"), "تؤخذ نسخة احتياطية قبل التطبيع الشامل");
+assert(source.includes('CAPTAIN_NORMALIZATION_VERSION = "all-group-members-captains-v1"'), "التطبيع التلقائي إصدار واحد ولا يتكرر بعد النجاح");
 assert(source.includes("sendLinks: false, reactivate: true"), "التطبيع الشامل صامت ويعيد تفعيل الحسابات الحالية");
+assert(source.includes("function reconcileCaptainLinksWithoutSettlement"), "يربط الطلبات القديمة بالحسابات بعد تثبيتها");
+assert(source.includes("financialSettlementsApplied: 0"), "لا ينفذ تسويات مالية أثناء إصلاح الهوية");
 assert(!source.includes("skipped_existing_role"), "لا يرفض المستخدم القديم بسبب مسماه السابق");
 console.log("group member registration guardrails verified");
