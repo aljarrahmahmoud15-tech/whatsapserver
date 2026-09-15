@@ -13,6 +13,8 @@ assert.match(server, /LEFT JOIN order_settlements s ON s.order_id=o.id/);
 assert.ok(server.includes('app.get("/api/admin/wallets"'));
 assert.ok(server.includes('app.get("/api/staff/wallets"'));
 assert.match(admin, /openCaptainProfile/);
+assert.match(admin, /captainSearch/);
+assert.match(admin, /renderCaptains/);
 assert.match(admin, /خصم التنفيذ/);
 assert.match(staff, /executorDebit/);
 assert.match(staff, /companyShare/);
