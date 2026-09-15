@@ -8,6 +8,9 @@ assert(source.includes("async function resolveGroupParticipantPhone"), "يحل �
 assert(source.includes("resolveWhatsappUserPhone(contact"), "يستخدم محول هوية واتساب الموثوق");
 assert(source.includes("function activateHumanCaptainAccount"), "يوحد تسجيل وتفعيل حساب الكابتن");
 assert(source.includes("role='captain',active=1,is_bot=0,account_status='active'"), "يحوّل المستخدم البشري المؤهل إلى كابتن نشط");
+assert(source.includes('const REQUESTED_CAPTAIN_NAME = "محمود الجراح"'), "يفعّل حساب محمود الجراح المطلوب ككابتن");
+assert(source.includes("reactivate: true });"), "يتم تفعيل الحساب المطلوب حتى لو كان غير نشط");
+assert(source.includes("requested_captain_activation_version"), "التفعيل المطلوب يُنفّذ مرة واحدة فقط");
 assert(source.includes("isProtectedOwnerIdentity"), "يستثني حساب المالك والنظام من التحويل");
 assert(source.includes('app.post("/api/admin/group/register-members", requireAdmin'), "مسار التسجيل محمي إداريًا");
 assert(source.includes('app.post("/api/admin/captains/normalize-all", requireAdmin'), "يوجد مسار محمي لتثبيت جميع الحسابات الحالية");

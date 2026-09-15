@@ -1011,6 +1011,21 @@ function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
     .run(normalized, displayName, stamp, stamp, stamp, stamp);
   return { status: "registered", phone: normalized, userId: result.lastInsertRowid, name: displayName };
 }
+const REQUESTED_CAPTAIN_NAME = "محمود الجراح";
+const REQUESTED_CAPTAIN_ACTIVATION_VERSION = "activate-mahmoud-aljarrah-captain-v1";
+function activateRequestedCaptain() {
+  if (getSetting("requested_captain_activation_version", "") === REQUESTED_CAPTAIN_ACTIVATION_VERSION) return { status: "already_completed" };
+  const existing = db.prepare("SELECT phone,name FROM users WHERE name=? AND is_bot=0 AND role<>'company' ORDER BY id LIMIT 1").get(REQUESTED_CAPTAIN_NAME);
+  if (!existing) return { status: "not_found", name: REQUESTED_CAPTAIN_NAME };
+  const result = activateHumanCaptainAccount({ phone: existing.phone, name: existing.name, reactivate: true });
+  if (["registered", "activated_captain", "existing_captain"].includes(result.status)) {
+    setSetting("requested_captain_activation_version", REQUESTED_CAPTAIN_ACTIVATION_VERSION);
+    audit("captain.requested_account_activated", "user", result.userId, { name: REQUESTED_CAPTAIN_NAME });
+  }
+  console.log(`[CaptainActivation] ${REQUESTED_CAPTAIN_NAME}: ${result.status}`);
+  return result;
+}
+activateRequestedCaptain();
 function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
   const rows = db.prepare("SELECT id,phone,name,role,active,account_status,is_bot FROM users WHERE is_bot=0 AND role<>'company' ORDER BY id").all();
   const results = rows.map((row) => activateHumanCaptainAccount({ phone: row.phone, name: row.name, reactivate }));
