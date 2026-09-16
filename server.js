@@ -72,6 +72,7 @@ const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREAT
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
+const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
 const GROUP_BRAND_NAME = "شركة الجراح | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لشركة الجراح للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق نظام الشركة.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -1646,6 +1647,9 @@ function findOrderByQuotedMessage(groupId, quoted) {
   if (!body || !parseOrder(body).isOrder) return null;
   return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND raw_text=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId, body);
 }
+function findLatestStandaloneAcceptanceCandidate(groupId) {
+  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
+}
 function brandedMessage(title, lines = []) {
   return [
     "╭━━━ ✦ AL-JARAH OPERATIONS NETWORK ✦ ━━━╮",
@@ -1801,6 +1805,7 @@ let lastQrTime = null;
 let temporaryQrGrant = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let whatsappWatchdogTimer = null;
 let lastReconnectReason = null;
 let lastReconnectAt = null;
 let lastReadyAt = null;
@@ -2033,6 +2038,19 @@ function scheduleReconnect() {
   }, delay);
 }
 
+function startWhatsAppWatchdog() {
+  if (whatsappWatchdogTimer || WHATSAPP_WATCHDOG_INTERVAL_MS <= 0) return;
+  whatsappWatchdogTimer = setInterval(() => {
+    if (isReady || initializing || reconnectTimer) return;
+    if (qrCodeData || whatsappState === "qr" || whatsappState === "wrong_account") {
+      console.warn(`[WhatsApp] watchdog waiting for operator action: state=${whatsappState}`);
+      return;
+    }
+    console.warn(`[WhatsApp] watchdog restarting stalled connection: state=${whatsappState || "unknown"}`);
+    void restartWhatsApp("automatic watchdog restart").catch((error) => console.error("[WhatsApp] watchdog restart:", error.message));
+  }, WHATSAPP_WATCHDOG_INTERVAL_MS);
+  whatsappWatchdogTimer.unref?.();
+}
 function createClient() {
   const generation = ++connectionGeneration;
   const instance = new Client({
@@ -2419,9 +2437,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (!captainAcceptance) return;
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
-  if (!quoted) return;
-  const candidate = findOrderByQuotedMessage(groupId, quoted);
+  const candidate = quoted
+    ? findOrderByQuotedMessage(groupId, quoted)
+    : findLatestStandaloneAcceptanceCandidate(groupId);
   if (!candidate) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
@@ -5460,6 +5478,7 @@ app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   initializeWhatsApp();
+  startWhatsAppWatchdog();
   if (BAILEYS_ENABLED) initializeBaileys();
 });
 

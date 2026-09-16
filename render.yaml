@@ -42,3 +42,5 @@ services:
         value: "120000"
       - key: WHATSAPP_RECONNECT_MAX_ATTEMPTS
         value: "20"
+      - key: WHATSAPP_WATCHDOG_INTERVAL_MS
+        value: "300000"
