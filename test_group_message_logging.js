@@ -12,4 +12,7 @@ assert(logPosition >= 0, "رسائل القروب تُحفظ في جدول messa
 assert(botFilterPosition >= 0 && botFilterPosition < logPosition, "رسائل البوت العادية تُستبعد قبل الحفظ");
 assert(handler.includes("if (!insertedMessage.changes) return;"), "الرسائل المكررة لا تعاد معالجتها تشغيليًا");
 assert(source.includes('app.get("/api/admin/group-messages", requireAdmin'), "واجهة قراءة السجل محمية إداريًا");
+const sendRoute = source.slice(source.indexOf('app.post("/api/admin/send"'), source.indexOf("function reconcileConfiguredGroupFromEnvironment"));
+assert(sendRoute.includes('isConfiguredGroup(chatId) && messageId'), "لا يُنشأ مرشح إداري دون معرّف WhatsApp حقيقي");
+assert(!sendRoute.includes("admin-send-${Date.now()}"), "لا تُستخدم معرّفات مؤقتة تفصل المرشح عن رسالة WhatsApp");
 console.log("group message logging guardrails verified");

@@ -5438,10 +5438,9 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   audit("message.sent", "chat", chatId, { messageId, responseObject: Boolean(sent) });
   const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
   let order = null;
-  if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
+  if (parsed && parsed.isOrder && isConfiguredGroup(chatId) && messageId) {
     const producer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
-    const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
-    order = createOrderCandidate({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
+    order = createOrderCandidate({ messageId, groupId: chatId, body: message, producer, parsed });
   }
   res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
 });
