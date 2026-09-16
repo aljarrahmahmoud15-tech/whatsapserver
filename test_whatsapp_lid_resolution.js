@@ -3,6 +3,11 @@ const fs = require("fs");
 const vm = require("vm");
 
 const source = fs.readFileSync("server.js", "utf8");
+assert.match(source, /CREATE TABLE IF NOT EXISTS whatsapp_identities/);
+assert.match(source, /CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_identities_phone/);
+assert.match(source, /function persistWhatsappIdentity\(/);
+assert.match(source, /function findPersistedWhatsappPhone\(/);
+assert.match(source, /refusing conflicting identity mapping/);
 assert.match(source, /reaction\?\._data\?\.senderUserJid/);
 assert.match(source, /client\.getContactLidAndPhone\(lidIds\)/);
 assert.match(source, /for \(const delay of \[1500, 5000\]\)/);

@@ -349,6 +349,20 @@ CREATE TABLE IF NOT EXISTS captain_phone_aliases (
   created_at TEXT NOT NULL,
   FOREIGN KEY(captain_user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS whatsapp_identities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  phone TEXT NOT NULL,
+  whatsapp_lid TEXT NOT NULL UNIQUE,
+  whatsapp_pn TEXT,
+  source TEXT NOT NULL,
+  verified_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_identities_phone ON whatsapp_identities(phone);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_identities_user ON whatsapp_identities(user_id);
 CREATE TABLE IF NOT EXISTS captain_auth_challenges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   captain_user_id INTEGER NOT NULL,
@@ -584,6 +598,34 @@ function findCaptainByPhone(value, { activeOnly = false } = {}) {
   const activeClause = activeOnly ? " AND u.active=1 AND u.account_status='active'" : "";
   return db.prepare(`SELECT u.* FROM users u WHERE u.phone=? AND u.role='captain'${activeClause} LIMIT 1`).get(phone)
     || db.prepare(`SELECT u.* FROM captain_phone_aliases a JOIN users u ON u.id=a.captain_user_id WHERE a.phone=? AND u.role='captain'${activeClause} LIMIT 1`).get(phone);
+}
+function persistWhatsappIdentity(lidValue, phoneValue, source = "whatsapp_event") {
+  if (typeof db === "undefined") return null;
+  const lid = serializedWhatsappUserId(lidValue);
+  const phone = phoneWithCountry(phoneValue);
+  if (!/@lid$/i.test(lid) || !isValidJordanPhone(phone)) return null;
+  const user = db.prepare("SELECT id,phone,active FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (!user) return null;
+  const existingByLid = db.prepare("SELECT * FROM whatsapp_identities WHERE whatsapp_lid=? LIMIT 1").get(lid);
+  const existingByPhone = db.prepare("SELECT * FROM whatsapp_identities WHERE phone=? LIMIT 1").get(phone);
+  if ((existingByLid && existingByLid.user_id !== user.id) || (existingByPhone && existingByPhone.user_id !== user.id)) {
+    console.warn(`[WhatsApp] refusing conflicting identity mapping for ${lid}`);
+    return null;
+  }
+  const stamp = now();
+  db.prepare(`INSERT INTO whatsapp_identities(user_id,phone,whatsapp_lid,whatsapp_pn,source,verified_at,last_seen_at,active)
+    VALUES(?,?,?,?,?,?,?,1)
+    ON CONFLICT(whatsapp_lid) DO UPDATE SET phone=excluded.phone,whatsapp_pn=excluded.whatsapp_pn,source=excluded.source,last_seen_at=excluded.last_seen_at,active=1`).run(
+    user.id, phone, lid, `${phone}@c.us`, String(source || "whatsapp_event"), stamp, stamp,
+  );
+  return user;
+}
+function findPersistedWhatsappPhone(lidValue) {
+  if (typeof db === "undefined") return "";
+  const lid = serializedWhatsappUserId(lidValue);
+  if (!/@lid$/i.test(lid)) return "";
+  const row = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? AND active=1 LIMIT 1").get(lid);
+  return row && isValidJordanPhone(row.phone) ? row.phone : "";
 }
 function captainAuthCodeHash(phone, code) {
   return crypto.createHmac("sha256", CAPTAIN_SESSION_SECRET).update(`${phone}:${String(code)}`).digest("hex");
@@ -2161,6 +2203,11 @@ async function resolveWhatsappUserPhone(...values) {
   }
   const lidIds = [...new Set(values.map(serializedWhatsappUserId).filter((id) => /@lid$/i.test(id)))];
   for (const lid of lidIds) {
+    const persisted = typeof findPersistedWhatsappPhone === "function" ? findPersistedWhatsappPhone(lid) : "";
+    if (persisted) {
+      whatsappLidPhoneCache.set(lid, persisted);
+      return persisted;
+    }
     const cached = whatsappLidPhoneCache.get(lid);
     if (cached && isValidJordanPhone(cached)) return cached;
   }
@@ -2174,6 +2221,7 @@ async function resolveWhatsappUserPhone(...values) {
       const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
       whatsappLidPhoneCache.set(lid, phone);
       whatsappLidPhoneCache.set(lidIds[index], phone);
+      if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "getContactLidAndPhone");
       return phone;
     }
   } catch (error) {
@@ -2187,7 +2235,7 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
   if (!contact && typeof message?.getContact === "function") {
     contact = await withTimeout(message.getContact(), 8000, null);
   }
-  return resolveWhatsappUserPhone(
+  const resolved = await resolveWhatsappUserPhone(
     contact,
     contact?.number,
     contact?.id,
@@ -2200,6 +2248,12 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
     message?._data?.id?.participant,
     message?._data?.participant,
   );
+  if (resolved) {
+    for (const value of [contact?.id, contact?._data?.id, message?.author, message?._data?.author, message?.id?.participant]) {
+      if (/@lid$/i.test(serializedWhatsappUserId(value)) && typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(value, resolved, "message_sender");
+    }
+  }
+  return resolved;
 }
 
 function recordGroupMessageTelemetry(event, msg) {
