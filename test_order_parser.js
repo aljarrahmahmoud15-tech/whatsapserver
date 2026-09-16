@@ -30,5 +30,8 @@ assert.strictEqual(compactJordanianFare.destination, "عمان", "تُستخرج
 assert.strictEqual(context.parseOrder("السعر 5").isOrder, true, "السعر مع الرقم وحده يشكل طلبًا");
 assert.strictEqual(context.parseOrder("هل السعر ٥ مناسب من إربد إلى عمّان؟").isOrder, true, "أي رسالة تحتوي على السعر ورقم تُسجل كطلب");
 assert.strictEqual(context.parseOrder("السعر ٥٫٥").price, 5.5, "تُحوّل الأرقام العربية والفاصلة العشرية إلى قيمة رقمية");
+assert.strictEqual(context.parseOrder("السعر 15 دنانير").price, 15, "تُحتسب قيمة 15 من صيغة دنانير");
+assert.strictEqual(context.parseOrder("السعر 5دنانير").price, 5, "تُحتسب قيمة 5 من الصيغة المتصلة دنانير");
+assert.strictEqual(context.parseOrder("السعر: 15 دينار").price, 15, "تُقبل النقطتان بعد كلمة السعر");
 
 console.log("order parser verified");
