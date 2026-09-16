@@ -62,11 +62,9 @@
       <form id="login-form" class="login-card">
         <div class="eyebrow">CAPTAIN ACCESS</div>
         <h1>دخول الكابتن</h1>
-        <p class="muted">بعد موافقة الشركة، استخدم طريقة المصادقة التي اخترتها لعرض الرصيد والأرباح الفعلية.</p>
+        <p class="muted">بعد موافقة الشركة، أدخل نفس رقم الهاتف الذي سجلت به والرقم السري لعرض الرصيد والأرباح الفعلية.</p>
         <label class="label">رقم هاتف الكابتن<input class="input" id="phone" inputmode="tel" autocomplete="tel" required></label>
-        <label class="label">طريقة الدخول<select class="input" id="login-auth-method"><option value="pin">الرمز السري من 5 أرقام</option><option value="whatsapp">رمز تحقق عبر WhatsApp</option></select></label>
-        <div id="login-pin-field"><label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label></div>
-        <div id="login-whatsapp-field" class="hidden"><button class="ghost" style="width:100%;margin-top:17px" id="request-whatsapp-code" type="button">إرسال رمز التحقق إلى WhatsApp</button><label class="label">رمز التحقق من 6 أرقام<input class="input" id="whatsapp-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code"></label><div id="whatsapp-code-status" class="hint"></div></div>
+        <label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
         <div class="hint" id="invite-hint">للتسجيل لأول مرة، افتح بطاقة الدعوة التي أرسلتها الشركة.</div>
@@ -113,11 +111,7 @@
       $('#reg-pin-fields')?.classList.toggle('hidden', registrationMethod !== 'pin');
       if ($('#reg-pin')) $('#reg-pin').required = registrationMethod === 'pin';
       if ($('#reg-pin-confirm')) $('#reg-pin-confirm').required = registrationMethod === 'pin';
-      const loginMethod = $('#login-auth-method')?.value || 'pin';
-      $('#login-pin-field')?.classList.toggle('hidden', loginMethod !== 'pin');
-      $('#login-whatsapp-field')?.classList.toggle('hidden', loginMethod !== 'whatsapp');
-      if ($('#pin')) $('#pin').required = loginMethod === 'pin';
-      if ($('#whatsapp-code')) $('#whatsapp-code').required = loginMethod === 'whatsapp';
+      if ($('#pin')) $('#pin').required = true;
     }
     async function api(url, options = {}) {
       const headers = {...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})};
@@ -159,18 +153,13 @@
     }
     async function pollInvite() {
       if (!inviteToken) return;
-      try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'approved' || data.invite.status === 'rejected') { clearInterval(invitePoll); if (data.invite.status === 'approved' && submittedCaptain) { if (submittedCaptain.authMethod === 'pin') await loginCaptain(submittedCaptain.phone, submittedCaptain.pin); else { $('#phone').value = submittedCaptain.phone; $('#login-auth-method').value = 'whatsapp'; syncAuthFields(); showSection('login'); $('#login-error').textContent = 'تمت الموافقة. اطلب رمز WhatsApp للدخول.'; } } } } catch (error) { clearInterval(invitePoll); $('#register-error').textContent = error.message; }
+      try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'approved' || data.invite.status === 'rejected') { clearInterval(invitePoll); if (data.invite.status === 'approved' && submittedCaptain) await loginCaptain(submittedCaptain.phone, submittedCaptain.pin); } } catch (error) { clearInterval(invitePoll); $('#register-error').textContent = error.message; }
     }
     async function loginCaptain(phone, pin) {
       await api('/api/captain/login', {method:'POST', body:JSON.stringify({phone, pin})});
       await loadOverview(); showSection('app');
     }
-    async function loginCaptainWhatsapp(phone, code) {
-      await api('/api/captain/whatsapp/verify', {method:'POST', body:JSON.stringify({phone, code})});
-      await loadOverview(); showSection('app');
-    }
     $('#reg-auth-method')?.addEventListener('change', syncAuthFields);
-    $('#login-auth-method')?.addEventListener('change', syncAuthFields);
     syncAuthFields();
     $('#registration-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const button = $('#register-btn'); button.disabled = true; $('#register-error').textContent = '';
@@ -181,8 +170,7 @@
     $('#entry-register')?.addEventListener('click', () => showSection('registration'));
     $('#entry-login')?.addEventListener('click', () => showSection('login'));
     $('#approved-login')?.addEventListener('click', () => { if (submittedCaptain) loginCaptain(submittedCaptain.phone, submittedCaptain.pin); });
-    $('#request-whatsapp-code')?.addEventListener('click', async () => { const button=$('#request-whatsapp-code'),phone=$('#phone').value.trim(); button.disabled=true; $('#whatsapp-code-status').textContent=''; try{const data=await api('/api/captain/whatsapp/request-code',{method:'POST',body:JSON.stringify({phone})}); $('#whatsapp-code-status').textContent=data.message||'تم إرسال الرمز';}catch(error){$('#whatsapp-code-status').textContent=error.message}finally{button.disabled=false} });
-    $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { const phone=$('#phone').value.trim(),method=$('#login-auth-method').value; if(method==='whatsapp') await loginCaptainWhatsapp(phone,$('#whatsapp-code').value.trim()); else await loginCaptain(phone,$('#pin').value); $('#pin').value = ''; $('#whatsapp-code').value=''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
+    $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { await loginCaptain($('#phone').value.trim(), $('#pin').value); $('#pin').value = ''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
     $('#topup-request-btn').addEventListener('click', async () => { const button=$('#topup-request-btn'), value=Number($('#topup-request-value').value), message=$('#topup-request-note').value.trim(); $('#topup-request-status').textContent=''; if(!value||value<1){ $('#topup-request-status').textContent='أدخل قيمة الشحن أولًا'; return; } button.disabled=true; button.textContent='جاري الإرسال…'; try { const data=await api('/api/captain/topup-request',{method:'POST',body:JSON.stringify({requestedValue:value,message})}); $('#topup-request-status').textContent=`تم إرسال الطلب رقم ${data.ticketCode} إلى الشركة.`; $('#topup-request-value').value=''; $('#topup-request-note').value=''; } catch(error) { $('#topup-request-status').textContent=error.message; } finally { button.disabled=false; button.textContent='إرسال طلب شحن الرصيد'; } });
     $('#topup-redeem-form').addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#topup-redeem-form button'), code=$('#topup-redeem-code').value.trim().toUpperCase(); const status=$('#topup-redeem-status'); if(!code){status.textContent='أدخل رمز البطاقة أولًا';return} button.disabled=true;button.textContent='جاري التفعيل…';status.textContent='';const idempotencyKey=button.dataset.idempotencyKey||(button.dataset.idempotencyKey=crypto.randomUUID());try{const data=await api('/api/captain/redeem-card',{method:'POST',body:JSON.stringify({code,idempotencyKey})});status.textContent=data.alreadyRedeemed?`تم تسجيل هذه البطاقة سابقًا. رصيدك الحالي ${data.balance} JOD.`:`تمت إضافة ${data.credited} JOD مباشرة إلى حسابك. رصيدك الحالي ${data.balance} JOD.`;$('#topup-redeem-code').value='';button.dataset.idempotencyKey='';await loadOverview()}catch(error){status.textContent=error.message}finally{button.disabled=false;button.textContent='تفعيل وإضافة الرصيد'}});
     $('#logout').addEventListener('click', async () => { await api('/api/captain/logout', {method:'POST'}).catch(() => {}); showSection('entry'); });
