@@ -33,5 +33,15 @@ assert.strictEqual(context.parseOrder("السعر ٥٫٥").price, 5.5, "تُحو
 assert.strictEqual(context.parseOrder("السعر 15 دنانير").price, 15, "تُحتسب قيمة 15 من صيغة دنانير");
 assert.strictEqual(context.parseOrder("السعر 5دنانير").price, 5, "تُحتسب قيمة 5 من الصيغة المتصلة دنانير");
 assert.strictEqual(context.parseOrder("السعر: 15 دينار").price, 15, "تُقبل النقطتان بعد كلمة السعر");
+const westernRange = context.parseOrder("السعر من 10 إلى 15");
+assert.strictEqual(westernRange.isOrder, true, "يُقبل نطاق السعر الغربي");
+assert.strictEqual(westernRange.priceMin, 10, "يُحفظ الحد الأدنى للنطاق");
+assert.strictEqual(westernRange.priceMax, 15, "يُحفظ الحد الأعلى للنطاق");
+assert.strictEqual(westernRange.price, 12.5, "يُستخدم متوسط النطاق كسعر محاسبي");
+const arabicRange = context.parseOrder("السعر ١٠ إلى ١٥ دنانير");
+assert.strictEqual(arabicRange.price, 12.5, "يُحسب متوسط النطاق بالأرقام العربية");
+assert.strictEqual(context.parseOrder("السعر 10-15").price, 12.5, "يُقبل النطاق بالشرطة");
+assert.strictEqual(context.parseOrder("السعر 10.5 إلى 15.5").price, 13, "يُحسب متوسط النطاق العشري");
+assert.strictEqual(context.parseOrder("السعر من 15 إلى 10").isOrder, false, "يُرفض النطاق المعكوس");
 
 console.log("order parser verified");

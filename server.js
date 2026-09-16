@@ -1549,8 +1549,29 @@ function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
-  const priceMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(" + digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?)", "i"));
-  const price = priceMatch ? Number(normalizeDigits(priceMatch[1]).replace(/[٫,]/g, ".")) : null;
+  const numberPattern = digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?";
+  const numberValue = (value) => Number(normalizeDigits(value).replace(/[٫,]/g, "."));
+  const rangeMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i"));
+  const singleMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(" + numberPattern + ")", "i"));
+  let priceMin = null;
+  let priceMax = null;
+  let price = null;
+  if (rangeMatch) {
+    const minimum = numberValue(rangeMatch[1]);
+    const maximum = numberValue(rangeMatch[2]);
+    if (Number.isFinite(minimum) && Number.isFinite(maximum) && minimum > 0 && maximum >= minimum) {
+      priceMin = minimum;
+      priceMax = maximum;
+      price = (minimum + maximum) / 2;
+    }
+  } else if (singleMatch) {
+    const single = numberValue(singleMatch[1]);
+    if (Number.isFinite(single) && single > 0) {
+      priceMin = single;
+      priceMax = single;
+      price = single;
+    }
+  }
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+(?:إلى|الى)\s+|من\s+.+\s+ل(?:ـ)?\s*/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+ل(?:ـ)?\s*(.+)/i);
@@ -1560,6 +1581,8 @@ function parseOrder(text) {
     // الصيغة التشغيلية المعتمدة: كلمة «السعر» يتبعها الرقم فقط؛ المسار/نوع الرحلة اختياري وغير معتمد للتمييز.
     isOrder: price !== null,
     price,
+    priceMin,
+    priceMax,
     requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
