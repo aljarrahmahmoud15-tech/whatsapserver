@@ -2386,6 +2386,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const isGroup = Boolean(groupId);
   if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
   const body = String(msg.body || "").trim();
+  const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === "string" ? WHATSAPP_GROUP_ID : "";
+  if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = msg.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(msg, contact);
