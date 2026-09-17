@@ -5316,6 +5316,9 @@ app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
 });
 app.get("/api/admin/orders/open", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status='open' AND o.captain_user_id IS NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 500`).all();
+  if (String(req.query.summary || "") === "1") {
+    return res.json({ orders: rows.map((row) => ({ orderNo: row.order_no, price: money(row.price_cents), origin: row.origin || null, destination: row.destination || null, tripTime: row.trip_time || null, orderKind: row.order_kind, producerName: row.producer_name || row.producer_name_snapshot || "غير مسجل", status: row.status, settlementState: row.settlement_state, createdAt: row.created_at, importSource: row.import_source || null })) });
+  }
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
 });
 app.post("/api/admin/orders/:id/link-captain", requireAdmin, (req, res) => {
