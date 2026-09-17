@@ -24,6 +24,8 @@ services:
         value: /usr/bin/chromium
       - key: DATA_DIR
         value: /app/data
+      - key: WHATSAPP_GROUP_ID
+        value: 120363405355767837@g.us
       - key: AUTH_PATH
         value: /app/data/.wwebjs_auth
       - key: BAILEYS_AUTH_PATH
