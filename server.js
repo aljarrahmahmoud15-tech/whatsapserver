@@ -2448,10 +2448,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!captainAcceptance) return;
+  // «تم» لا يُربط بآخر طلب بشكل تخميني؛ يجب أن يقتبس رسالة السعر نفسها.
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
-  const candidate = quoted
-    ? findOrderByQuotedMessage(groupId, quoted)
-    : findLatestStandaloneAcceptanceCandidate(groupId);
+  const candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
   if (!candidate) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
