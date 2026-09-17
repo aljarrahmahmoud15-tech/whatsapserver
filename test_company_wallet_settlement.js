@@ -33,10 +33,9 @@ assert.match(server, /app\.get\("\/api\/staff\/company-wallet"/);
 assert.match(server, /companyWallet: companyWalletSummary\(\)/);
 assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);
 assert.match(server, /producer\.role === "company" \|\| producer\.is_bot === 1/);
-assert.match(server, /if \(producer\.is_bot === 1 \|\| producer\.role === "company"\)/);
-assert.match(server, /const reacted = await reactToCaptainAcceptance\(msg, messageId\)/);
-assert.match(server, /const result = settlePendingOrder\(candidate\.id, messageId, BOT_PHONE_INTL \|\| BOT_PHONE\)/);
-assert.match(server, /company approval blocked candidate=\$\{candidate\.id\} state=\$\{result\.state\}/);
+assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidate_acceptances/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, approverPhone\)/);
+assert.match(server, /company_bot_fee/);
 assert.match(server, /reaction approval blocked candidate=\$\{pending\.id\} state=\$\{result\.state\}/);
 
 assert.match(admin, /id="companyWalletCard"/);

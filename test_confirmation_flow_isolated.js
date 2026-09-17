@@ -23,6 +23,7 @@ const candidate = {
   producer_user_id: 2, price_cents: 2000, order_kind: "normal", created_at: "2026-01-01T00:00:00.000Z",
   origin: "إربد", destination: "عمّان", trip_time: null,
 };
+const acceptance = { id: 21, candidate_id: 10, captain_user_id: 3, acceptance_message_id: "captain-done-1", status: "pending", ...candidate };
 const order = { id: 19, order_no: 7, status: "accepted" };
 const users = {
   1: { id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 },
@@ -39,6 +40,8 @@ const db = {
     const normalized = sql.replace(/\s+/g, " ");
     return {
       get(...args) {
+        if (normalized.startsWith("SELECT a.*,c.* FROM order_candidate_acceptances")) return args[1] === "captain-done-1" && candidate.status === "pending" ? { ...acceptance } : null;
+        if (normalized.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return acceptance.status === "pending" ? { ...acceptance } : null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE group_id=?")) return candidate.group_id === args[0] && candidate.status === "pending" && candidate.pending_message_id === args[1] ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE id=?")) return args[0] === candidate.id ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM users WHERE id=?")) return users[args[0]] ? { ...users[args[0]] } : null;
@@ -48,6 +51,10 @@ const db = {
         throw new Error(`Unexpected get query: ${normalized}`);
       },
       run(...args) {
+        if (normalized.startsWith("INSERT OR IGNORE INTO order_candidate_acceptances")) return { changes: 1 };
+        if (normalized.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { candidate.pending_captain_user_id = args[0]; candidate.pending_message_id = args[1]; return { changes: 1 }; }
+        if (normalized.startsWith("UPDATE order_candidate_acceptances SET status='selected'")) { acceptance.status = "selected"; return { changes: 1 }; }
+        if (normalized.startsWith("UPDATE order_candidate_acceptances SET status='rejected'")) return { changes: 1 };
         if (normalized.startsWith("INSERT INTO orders")) return { changes: 1, lastInsertRowid: order.id };
         if (normalized.startsWith("INSERT OR IGNORE INTO order_settlements")) {
           if (settlementRecord) return { changes: 0 };

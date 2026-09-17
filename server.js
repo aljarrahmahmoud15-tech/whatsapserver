@@ -236,6 +236,18 @@ CREATE TABLE IF NOT EXISTS order_candidates (
   FOREIGN KEY(pending_captain_user_id) REFERENCES users(id),
   FOREIGN KEY(final_order_id) REFERENCES orders(id)
 );
+CREATE TABLE IF NOT EXISTS order_candidate_acceptances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id INTEGER NOT NULL,
+  captain_user_id INTEGER NOT NULL,
+  acceptance_message_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK(status IN ('pending','selected','rejected','cancelled')) DEFAULT 'pending',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(candidate_id) REFERENCES order_candidates(id),
+  FOREIGN KEY(captain_user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_acceptances_candidate_status ON order_candidate_acceptances(candidate_id,status);
 CREATE TABLE IF NOT EXISTS wallet_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -1638,14 +1650,14 @@ function latestOpenOrder(groupId) {
 }
 function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
-  return db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? AND status='candidate' AND pending_message_id IS NULL LIMIT 1").get(quotedId);
+  return db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? AND status IN ('candidate','pending') LIMIT 1").get(quotedId);
 }
 function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(serializedMessageId(quoted));
   if (byId) return byId;
   const body = String(quoted && quoted.body || "");
   if (!body || !parseOrder(body).isOrder) return null;
-  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND raw_text=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId, body);
+  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND raw_text=? AND status IN ('candidate','pending') ORDER BY id DESC LIMIT 1").get(groupId, body);
 }
 function findLatestStandaloneAcceptanceCandidate(groupId) {
   return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -2445,30 +2457,23 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return;
-  const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+  const acceptanceMessageId = messageId;
+  const stampNow = now();
+  const acceptanceInsert = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, acceptanceMessageId, stampNow, stampNow);
+  if (!acceptanceInsert.changes) return;
+  const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_PRODUCER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
-    if (!current || current.status !== "candidate" || current.pending_message_id) return false;
-    const stampNow = now();
-    const result = db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,updated_at=? WHERE id=? AND status='candidate' AND pending_message_id IS NULL").run(captain.id, messageId, stampNow, stampNow, candidate.id);
-    return result.changes === 1;
+    if (!current || !['candidate','pending'].includes(current.status)) return false;
+    if (current.status === 'candidate') {
+      const result = db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,updated_at=? WHERE id=? AND status='candidate'").run(captain.id, acceptanceMessageId, stampNow, stampNow, candidate.id);
+      return result.changes === 1;
+    }
+    return true;
   })();
   if (!pending) return;
-  audit("order.candidate.pending_confirmation", "order_candidate", candidate.id, { captainId: captain.id, pendingMessageId: messageId, requiredCents: settlement.confirmingCaptainFeeCents });
-  // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
-  if (producer.is_bot === 1 || producer.role === "company") {
-    const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) console.warn(`[Order] company approval reaction failed; continuing financial approval candidate=${candidate.id}`);
-    // Bot/company ownership is already the approval authority. The visual reaction is
-    // best-effort only; a WhatsApp UI reaction failure must not leave a valid booking
-    // pending after a different captain replied «تم» to the quoted price.
-    const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
-    if (result.state === "accepted") {
-      void sendFinalBookingConfirmation(groupId, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
-    } else {
-      console.warn(`[Order] company approval blocked candidate=${candidate.id} state=${result.state}`);
-    }
-  }
+  audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId, requiredCents: settlement.confirmingCaptainFeeCents });
+  // لا تسوية عند «تم» فقط؛ صاحب الطلب يختار أحد الردود بوضع 👍 عليه.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
   }
@@ -2837,12 +2842,12 @@ async function handleMessageReaction(reaction) {
   if (!isConfiguredGroup(target.from)) return;
   const approverPhone = await resolveReactionSenderPhone(reaction);
   if (removedThumb) {
-    const candidate = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
-    if (candidate) {
-      const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+    const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
+    if (acceptance) {
+      const producer = acceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.producer_user_id) : null;
       if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
-      db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(now(), candidate.id, messageId);
-      audit("order.candidate.cancelled_downloader_removed_thumb", "order_candidate", candidate.id, { producerId: producer.id, messageId });
+      db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE id=? AND status='pending'").run(now(), acceptance.id);
+      audit("order.candidate.acceptance_cancelled_downloader_removed_thumb", "order_candidate", acceptance.candidate_id, { producerId: producer.id, messageId, captainId: acceptance.captain_user_id });
       return;
     }
     const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
@@ -2852,8 +2857,17 @@ async function handleMessageReaction(reaction) {
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
     return;
   }
-  const pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
-  if (!pending) return;
+  let acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
+  if (!acceptance) {
+    const legacy = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+    if (legacy?.pending_captain_user_id) {
+      const stamp = now();
+      db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(legacy.id, legacy.pending_captain_user_id, messageId, stamp, stamp);
+      acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.id=? AND a.acceptance_message_id=? AND a.status='pending'").get(legacy.id, messageId);
+    }
+  }
+  if (!acceptance) return;
+  const pending = acceptance;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
   const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
   const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
@@ -2862,7 +2876,17 @@ async function handleMessageReaction(reaction) {
     ? (producer.role === "company" || producer.is_bot === 1)
     : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
   if (!producerApproved) return;
-  const result = settlePendingOrder(pending.id, messageId, approverPhone);
+  const selected = db.transaction(() => {
+    const current = db.prepare("SELECT * FROM order_candidates WHERE id=? AND status='pending'").get(pending.candidate_id);
+    const row = db.prepare("SELECT * FROM order_candidate_acceptances WHERE id=? AND status='pending'").get(pending.id);
+    if (!current || !row) return false;
+    db.prepare("UPDATE order_candidates SET pending_captain_user_id=?,pending_message_id=?,updated_at=? WHERE id=? AND status='pending'").run(row.captain_user_id, row.acceptance_message_id, now(), current.id);
+    db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status='pending'").run(now(), row.id);
+    db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(now(), current.id, row.id);
+    return true;
+  })();
+  if (!selected) return;
+  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, approverPhone);
   if (result.state !== "accepted") {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
