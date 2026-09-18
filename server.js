@@ -90,6 +90,7 @@ const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
+const balanceNotificationBroadcasts = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -803,6 +804,45 @@ async function notifyOperations({ event, title, lines, captainPhone = null, owne
     results.push({ id: row.lastInsertRowid, phone, recipientRole, deliveryStatus });
   }
   return results;
+}
+function balanceSnapshotMessage({ name, balance }) {
+  return brandedMessage("كشف رصيد المحفظة", [
+    `الكابتن: ${name || "حسابك"}`,
+    `الرصيد الحالي في حسابك: ${money(balance)} JOD`,
+    "هذه رسالة اطلاع فقط، ولا تغيّر الرصيد أو تنشئ بطاقة.",
+  ]);
+}
+async function runBalanceNotificationBroadcast({ runKey, members }) {
+  const run = balanceNotificationBroadcasts.get(runKey);
+  if (!run) return;
+  for (const member of members) {
+    if (run.cancelled) break;
+    const phone = phoneWithCountry(member.phone);
+    const event = `captain.balance.snapshot.${runKey}`;
+    const message = balanceSnapshotMessage({ name: member.name, balance: member.balanceCents });
+    const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? LIMIT 1").get(phone, event);
+    if (existing) {
+      run.skipped += 1;
+      if (existing.delivery_status === "sent") run.sent += 1;
+      else if (existing.delivery_status === "failed") run.failed += 1;
+      continue;
+    }
+    const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain',?,?,?,'pending',?)").run(phone, event, "كشف رصيد المحفظة", message, now());
+    let deliveryStatus = "failed";
+    let messageId = null;
+    try {
+      const recipient = await resolveWhatsAppRecipientId(phone);
+      const sent = recipient && client && isReady ? await withTimeout(client.sendMessage(recipient, message), 15000, null) : null;
+      if (sent) { deliveryStatus = "sent"; messageId = sent.id?._serialized || null; }
+    } catch (_) {}
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
+    run.processed += 1;
+    if (deliveryStatus === "sent") run.sent += 1;
+    else run.failed += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  run.status = run.cancelled ? "cancelled" : "completed";
+  run.completedAt = now();
 }
 async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
@@ -5121,6 +5161,34 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
     members.push({ phone, name: String((contact && (contact.name || contact.pushname)) || phone).trim(), id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
   }
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
+});
+app.post("/api/admin/group/send-balance-notifications", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  const expectedCount = Number(req.body?.expectedCount);
+  if (confirmation !== "SEND_PRIVATE_BALANCE_NOTICES_TO_GROUP_MEMBERS" || !/^[A-Z0-9-]{16,100}$/.test(runKey) || !Number.isInteger(expectedCount)) return res.status(400).json({ error: "تأكيد الإرسال ومفتاح العملية والعدد المتوقع مطلوبة" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  if (balanceNotificationBroadcasts.has(runKey)) return res.json({ success: true, started: true, runKey, ...balanceNotificationBroadcasts.get(runKey) });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "القروب الرسمي غير مضبوط" });
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup) return res.status(404).json({ error: "القروب الرسمي غير متاح" });
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const memberPhones = [...new Set((chat.participants || []).map(groupParticipantPhone).map(normalize).filter((phone) => phone && !isBotPhone(phone)))];
+  const captains = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND account_status<>'merged' AND is_bot=0").all();
+  const byPhone = new Map(captains.map((captain) => [normalize(captain.phone), captain]));
+  const members = memberPhones.map((phone) => byPhone.get(phone)).filter(Boolean).map((captain) => ({ phone: captain.phone, name: captain.name, balanceCents: Number(captain.wallet_cents || 0) }));
+  if (members.length !== expectedCount) return res.status(409).json({ error: "تغير عدد الأعضاء أو الحسابات منذ المعاينة؛ أعد المعاينة", expectedCount, matchedCount: members.length, memberCount: memberPhones.length });
+  const run = { runKey, status: "running", total: members.length, processed: 0, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: null, cancelled: false };
+  balanceNotificationBroadcasts.set(runKey, run);
+  void runBalanceNotificationBroadcast({ runKey, members }).catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/group/balance-notifications/:runKey", requireAdmin, (req, res) => {
+  const runKey = String(req.params.runKey || "").trim();
+  const run = balanceNotificationBroadcasts.get(runKey);
+  if (!run) return res.status(404).json({ error: "عملية البث غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run, cancelled: undefined });
 });
 app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).type("text/plain").send(Buffer.from(JSON.stringify({ error: "Bot not ready" }), "utf8").toString("base64"));

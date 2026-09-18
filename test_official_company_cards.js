@@ -23,6 +23,11 @@ assert(server.includes('تمت إضافة: ${money(valueCents)} JOD إلى مح�
 assert(server.includes('cardId: card.id, alreadyRedeemed: false'), 'wallet redemption carries the card id to the notification');
 assert(server.includes('group.configured'), 'group configuration notifies the owner');
 assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchronization notifies the owner');
+assert(server.includes('app.post("/api/admin/group/send-balance-notifications", requireAdmin'), 'balance broadcast is admin protected');
+assert(server.includes('SEND_PRIVATE_BALANCE_NOTICES_TO_GROUP_MEMBERS'), 'balance broadcast requires explicit confirmation');
+assert(server.includes('captain.balance.snapshot.'), 'balance broadcast is idempotent per run key');
+assert(server.includes('هذه رسالة اطلاع فقط، ولا تغيّر الرصيد أو تنشئ بطاقة.'), 'balance broadcast is informational and non-financial');
+assert(server.includes('app.get("/api/admin/group/balance-notifications/:runKey", requireAdmin'), 'balance broadcast status is admin protected');
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');
 assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
 assert(server.includes('function notifyCaptainCreditSent'), 'captain credit notification helper exists');
