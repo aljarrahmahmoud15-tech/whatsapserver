@@ -17,6 +17,10 @@ assert(server.includes('async function notifyOperations'), 'owner and captain no
 assert(server.includes('app.get("/api/admin/notifications", requireAdmin'), 'owner can read notification history');
 assert(server.includes('system.settings.updated'), 'system settings changes notify the owner');
 assert(server.includes('topup_card.redeemed'), 'wallet redemption notifies captain and owner');
+assert(server.includes('async function notifyCaptainCreditRedeemed'), 'wallet redemption has a direct captain notification helper');
+assert(server.includes('captain.wallet.credit_redeemed'), 'wallet redemption notification is persisted with a distinct event');
+assert(server.includes('تمت إضافة: ${money(valueCents)} JOD إلى محفظتك.'), 'wallet redemption notification includes the credited amount');
+assert(server.includes('cardId: card.id, alreadyRedeemed: false'), 'wallet redemption carries the card id to the notification');
 assert(server.includes('group.configured'), 'group configuration notifies the owner');
 assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchronization notifies the owner');
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');

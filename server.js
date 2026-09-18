@@ -846,6 +846,30 @@ function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
   }
   void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines });
 }
+async function notifyCaptainCreditRedeemed({ captain, valueCents, balanceCents, cardId }) {
+  if (!captain?.phone || !cardId) return { status: "skipped" };
+  const title = "تمت إضافة الرصيد إلى محفظتك";
+  const message = brandedMessage(title, [
+    `عزيزي الكابتن ${captain.name || ""}`.trim(),
+    `تمت إضافة: ${money(valueCents)} JOD إلى محفظتك.`,
+    `الرصيد الحالي: ${money(balanceCents)} JOD`,
+    `رقم البطاقة: #${cardId}`,
+    "تمت العملية بنجاح بعد استرداد البطاقة.",
+  ]);
+  const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.credit_redeemed' AND message LIKE ? LIMIT 1").get(phoneWithCountry(captain.phone), `%رقم البطاقة: #${cardId}%`);
+  if (existing) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
+  const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.credit_redeemed',?,?,'pending',?)").run(phoneWithCountry(captain.phone), title, message, now());
+  let deliveryStatus = "failed";
+  let messageId = null;
+  try {
+    const recipient = await resolveWhatsAppRecipientId(captain.phone);
+    const sent = recipient && client && isReady ? await withTimeout(client.sendMessage(recipient, message), 30000, null) : null;
+    if (sent) { deliveryStatus = "sent"; messageId = sent.id?._serialized || null; }
+  } catch (_) {}
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
+  audit("captain.wallet.credit_redeemed_notified", "user", captain.id, { cardId, valueCents: Number(valueCents), balanceCents: Number(balanceCents), deliveryStatus });
+  return { status: deliveryStatus, notificationId: row.lastInsertRowid };
+}
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
   db.prepare(`UPDATE customer_leads SET direction=?,travel_mode=?,travel_date=?,travelers_count=?,state=?,last_message_id=?,last_text=?,updated_at=? WHERE id=?`).run(next.direction || null, next.travel_mode || null, next.travel_date || null, next.travelers_count || null, next.state, next.last_message_id || null, next.last_text || null, next.updated_at, lead.id);
@@ -5701,9 +5725,14 @@ app.post("/api/redeem", (req, res) => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(newBalance, stamp, user.id);
     db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, "topup", card.value_cents, newBalance, `CARD-${card.id}`, "شحن بطاقة", stamp);
     audit("topup_card.redeemed", "topup_card", card.id, { userId: user.id, valueCents: card.value_cents }, user.id);
-    return { userId: user.id, balanceCents: newBalance, valueCents: card.value_cents };
+    return { userId: user.id, balanceCents: newBalance, valueCents: card.value_cents, cardId: card.id, alreadyRedeemed: false };
   })();
-  try { res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" }); } catch (error) { res.status(400).json({ error: error.message }); }
+  try {
+    const captain = db.prepare("SELECT id,name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(result.userId);
+    void notifyCaptainCreditRedeemed({ captain, valueCents: result.valueCents, balanceCents: result.balanceCents, cardId: result.cardId });
+    void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+    res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول بعد قليل" });
@@ -5716,7 +5745,7 @@ app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
       if (existingKey) {
         if (Number(existingKey.redeemed_by) !== Number(req.captainSession.userId)) throw new Error("مفتاح العملية مرتبط بحساب آخر");
         const user = db.prepare("SELECT wallet_cents FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
-        return { balanceCents: Number(user?.wallet_cents || 0), valueCents: existingKey.value_cents, alreadyRedeemed: true };
+        return { balanceCents: Number(user?.wallet_cents || 0), valueCents: existingKey.value_cents, cardId: existingKey.id, alreadyRedeemed: true };
       }
       const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? LIMIT 1").get(hashCode(code));
       if (!card) throw new Error("رمز البطاقة غير صحيح");
@@ -5731,10 +5760,11 @@ app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
       db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(newBalance, stamp, user.id);
       db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, "topup", card.value_cents, newBalance, `CARD-${card.id}`, "شحن بطاقة من بوابة التشغيل", stamp);
       audit("topup_card.redeemed", "topup_card", card.id, { userId: user.id, valueCents: card.value_cents, source: "captain_portal" }, user.id);
-      return { balanceCents: newBalance, valueCents: card.value_cents, alreadyRedeemed: false };
+      return { balanceCents: newBalance, valueCents: card.value_cents, cardId: card.id, alreadyRedeemed: false };
     })();
     if (!result.alreadyRedeemed) {
-      const captain = db.prepare("SELECT name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+      const captain = db.prepare("SELECT id,name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+      void notifyCaptainCreditRedeemed({ captain, valueCents: result.valueCents, balanceCents: result.balanceCents, cardId: result.cardId });
       void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
     }
     res.json({ success: true, credited: money(result.valueCents), balance: money(result.balanceCents), currency: "JOD", alreadyRedeemed: result.alreadyRedeemed });
