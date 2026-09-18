@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phone TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  registration_name TEXT,
   role TEXT NOT NULL CHECK(role IN ('company','producer','captain')),
   wallet_cents INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
@@ -451,6 +452,8 @@ const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlement
 if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
+if (!existingUserColumns.includes("registration_name")) db.exec("ALTER TABLE users ADD COLUMN registration_name TEXT");
+db.prepare("UPDATE users SET registration_name=name WHERE registration_name IS NULL OR TRIM(registration_name)='' ").run();
 if (!existingUserColumns.includes("is_bot")) db.exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0");
 if (!existingUserColumns.includes("captain_pin_hash")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_hash TEXT");
 if (!existingUserColumns.includes("captain_pin_ciphertext")) db.exec("ALTER TABLE users ADD COLUMN captain_pin_ciphertext TEXT");
@@ -1241,8 +1244,8 @@ function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
       .run(resolvedName, stamp, stamp, stamp, existing.id);
     return { status: existing.role === "captain" && existing.active === 1 && existing.account_status === "active" ? "existing_captain" : "activated_captain", phone: normalized, userId: existing.id, name: resolvedName };
   }
-  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,NULL,NULL,'whatsapp','active',?,?,?,?)")
-    .run(normalized, displayName, stamp, stamp, stamp, stamp);
+  const result = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,?, 'captain',0,1,0,NULL,NULL,'whatsapp','active',?,?,?,?)")
+    .run(normalized, displayName, displayName, stamp, stamp, stamp, stamp);
   return { status: "registered", phone: normalized, userId: result.lastInsertRowid, name: displayName };
 }
 const REQUESTED_CAPTAIN_NAME = "محمود الجراح";
@@ -3293,8 +3296,8 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
     db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?")
       .run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
   } else {
-    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,NULL,?,'active',?,?,?,?)")
-      .run(phone, name, pinHash, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
+    captainId = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,?, 'captain',0,1,0,?,NULL,?,'active',?,?,?,?)")
+      .run(phone, name, name, pinHash, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
   }
   db.prepare("UPDATE captain_invites SET status='approved',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,approved_user_id=?,submitted_at=COALESCE(submitted_at,?),decided_at=?,decision_note=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
     .run(name, phone, pinHash, authMethod, captainId, stamp, stamp, "تم الاعتماد والتفعيل تلقائيًا عند التسجيل", stamp, invite.id);
@@ -3353,7 +3356,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?").run(invite.name, authMethod, authMethod === "pin" ? invite.pin_hash : null, stamp, stamp, stamp, existing.id);
     captainId = existing.id;
   } else {
-    captainId = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,\'captain\',0,1,0,?,NULL,?,'active',?,?,?,?)").run(invite.phone, invite.name, authMethod === "pin" ? invite.pin_hash : null, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
+    captainId = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,?,\'captain\',0,1,0,?,NULL,?,'active',?,?,?,?)").run(invite.phone, invite.name, invite.name, authMethod === "pin" ? invite.pin_hash : null, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
   }
   db.prepare("UPDATE captain_invites SET status='approved',approved_user_id=?,decision_note=?,decided_at=?,updated_at=? WHERE id=? AND status='pending'").run(captainId, note || "تمت الموافقة", stamp, stamp, id);
   audit("captain.join.approved", "captain_invite", id, { captainId, phone: invite.phone });
@@ -4512,7 +4515,7 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
 });
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
-  const rows = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
+  const rows = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_orders,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_orders,
     COALESCE((SELECT SUM(s.price_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS gross_fares_cents,
@@ -4525,7 +4528,8 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     ORDER BY u.active DESC,u.id DESC`).all();
   res.json({ captains: rows.map((row) => ({
     ...row,
-    displayName: captainDisplayName(row.name),
+    registrationName: row.registration_name || row.name,
+    displayName: captainDisplayName(row.registration_name || row.name),
     authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
     balance: money(row.wallet_cents),
     grossFares: money(row.gross_fares_cents),
@@ -4598,7 +4602,7 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
     void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
     return res.json({ success: true, id: existing.id, reactivated: true, accountLinkSent: true });
   }
-  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?,'active',?,?,?,?)").run(phone, name, pinHash, authMethod, stamp, stamp, stamp, stamp);
+  const result = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,?, 'captain',0,1,0,?,?,'active',?,?,?,?)").run(phone, name, name, pinHash, authMethod, stamp, stamp, stamp, stamp);
   audit("captain.created", "user", result.lastInsertRowid, { phone, name, authMethod });
   void addCaptainToConfiguredGroup({ phone, name });
   void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
@@ -5644,31 +5648,34 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
   const periodStart = requestedPeriod || currentPeriod?.start || null;
   if (!periodStart) return res.json({ success: true, periodStart: null, count: 0, userCount: 0, totalCents: 0, charges: [], users: [] });
   const rows = db.prepare(`SELECT c.id,c.user_id,c.period_start,c.period_end,c.amount_cents,c.status,c.reference,c.applied_at,
-      u.name,u.phone,u.wallet_cents,l.balance_after_cents
+      u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.phone,u.wallet_cents,l.balance_after_cents
     FROM captain_subscription_charges c
     JOIN users u ON u.id=c.user_id
     LEFT JOIN wallet_ledger l ON l.id=c.ledger_id
     WHERE c.period_start=?
     ORDER BY c.status='applied' DESC,u.name,u.id`).all(periodStart);
-  const users = db.prepare(`SELECT u.id,u.phone,u.name,u.wallet_cents,u.active,u.account_status,u.created_at,u.updated_at,
+  const users = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.wallet_cents,u.active,u.account_status,u.created_at,u.updated_at,
       (SELECT c.status FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_status,
       (SELECT c.amount_cents FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_amount_cents,
       (SELECT c.reference FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_reference,
-      (SELECT c.applied_at FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_applied_at
+      (SELECT c.applied_at FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_applied_at,
+      (SELECT l.balance_after_cents FROM captain_subscription_charges c LEFT JOIN wallet_ledger l ON l.id=c.ledger_id WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_balance_after_cents
     FROM users u
     WHERE u.role='captain' AND u.is_bot=0 AND u.account_status<>'merged'
-    ORDER BY u.active DESC,u.name,u.id`).all(periodStart, periodStart, periodStart, periodStart);
+    ORDER BY u.active DESC,u.name,u.id`).all(periodStart, periodStart, periodStart, periodStart, periodStart);
   const totalCents = rows.filter((row) => row.status === "applied").reduce((sum, row) => sum + Number(row.amount_cents || 0), 0);
   const serializeUser = (row) => {
     const amountCents = Number(row.subscription_amount_cents || 0);
     const applied = row.subscription_status === "applied";
-    const balanceAfterCents = Number(row.wallet_cents || 0);
-    const balanceBeforeCents = applied ? balanceAfterCents + amountCents : balanceAfterCents;
+    const currentBalanceCents = Number(row.wallet_cents || 0);
+    const balanceAfterCents = applied && row.subscription_applied_at ? Number(row.subscription_balance_after_cents ?? currentBalanceCents) : currentBalanceCents;
+    const balanceBeforeCents = applied ? balanceAfterCents + amountCents : currentBalanceCents;
     return {
       id: row.id,
       name: row.name,
-      originalName: row.name,
-      displayName: captainDisplayName(row.name),
+      registrationName: row.registration_name || row.name,
+      originalName: row.registration_name || row.name,
+      displayName: captainDisplayName(row.registration_name || row.name),
       phone: row.phone,
       active: Boolean(row.active),
       accountStatus: row.account_status,
@@ -5679,8 +5686,10 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
       balanceBeforeSubscription: money(balanceBeforeCents),
       balanceAfterSubscriptionCents: balanceAfterCents,
       balanceAfterSubscription: money(balanceAfterCents),
-      balanceCents: balanceAfterCents,
-      balance: money(balanceAfterCents),
+      balanceCents: currentBalanceCents,
+      balance: money(currentBalanceCents),
+      currentBalanceCents,
+      currentBalance: money(currentBalanceCents),
       reference: row.subscription_reference || null,
       appliedAt: row.subscription_applied_at || null,
       createdAt: row.created_at,
@@ -5699,7 +5708,7 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
       appliedCount: rows.filter((row) => row.status === "applied").length,
       total: money(totalCents),
       users: serializedUsers,
-      charges: rows.map((row) => ({ name: row.name, displayName: captainDisplayName(row.name), phone: row.phone, balance: money(row.wallet_cents), reference: row.reference })),
+      charges: rows.map((row) => ({ name: row.registration_name || row.name, displayName: captainDisplayName(row.registration_name || row.name), phone: row.phone, balance: row.balance_after_cents == null ? money(row.wallet_cents) : money(row.balance_after_cents), reference: row.reference })),
     });
   }
   res.json({
@@ -5715,8 +5724,8 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
     charges: rows.map((row) => ({
       id: row.id,
       captainId: row.user_id,
-      name: row.name,
-      displayName: captainDisplayName(row.name),
+      name: row.registration_name || row.name,
+      displayName: captainDisplayName(row.registration_name || row.name),
       phone: row.phone,
       status: row.status,
       amountCents: row.amount_cents,
