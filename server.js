@@ -4988,6 +4988,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
   const ledgerRefs = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?");
   const settlementRefs = db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?");
   const cardRefs = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?");
+  const subscriptionRefs = db.prepare("SELECT COUNT(*) AS count FROM captain_subscription_charges WHERE user_id=?");
   const candidates = captains.map((user) => {
     const phone = normalize(user.phone);
     const refs = {
@@ -4995,10 +4996,12 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
       ledger: Number(ledgerRefs.get(user.id).count || 0),
       settlements: Number(settlementRefs.get(user.id, user.id).count || 0),
       cards: Number(cardRefs.get(user.id, user.id).count || 0),
+      subscriptions: Number(subscriptionRefs.get(user.id).count || 0),
       balance: money(user.wallet_cents),
     };
     const inGroup = memberPhones.has(phone);
-    const deletable = !inGroup && refs.orders === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && Number(user.wallet_cents || 0) === 0;
+    const protectedIdentity = isProtectedOwnerIdentity(phone);
+    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && Number(user.wallet_cents || 0) === 0;
     return {
       id: user.id,
       phone: user.phone,
@@ -5007,8 +5010,9 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
       active: Boolean(user.active),
       accountStatus: user.account_status,
       inConfiguredGroup: inGroup,
+      protectedIdentity,
       refs,
-      safeDisposition: inGroup ? "keep" : (deletable ? "delete_empty_account" : "suspend_preserve_history"),
+      safeDisposition: inGroup ? "keep" : (protectedIdentity ? "protected_keep" : (deletable ? "delete_empty_account" : "suspend_preserve_history")),
     };
   });
   const keep = candidates.filter((candidate) => candidate.inConfiguredGroup);
@@ -5029,6 +5033,78 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
   };
   res.set("Cache-Control", "no-store");
   res.type("text/plain").send(Buffer.from(JSON.stringify(payload), "utf8").toString("base64"));
+});
+app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const expectedConfirmation = "DELETE_EMPTY_OUTSIDE_GROUP_AND_SUSPEND_LINKED";
+  if (confirmation !== expectedConfirmation) return res.status(400).json({ error: "Explicit cleanup confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
+  const expected = {
+    keepCount: Number(req.body?.expectedKeepCount),
+    removeCount: Number(req.body?.expectedRemoveCount),
+    deletableEmptyCount: Number(req.body?.expectedDeletableEmptyCount),
+    preserveHistoryCount: Number(req.body?.expectedPreserveHistoryCount),
+  };
+  if (![expected.keepCount, expected.removeCount, expected.deletableEmptyCount, expected.preserveHistoryCount].every(Number.isInteger)) return res.status(400).json({ error: "Expected preview counts are required" });
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const memberPhones = new Set((chat.participants || []).map(groupParticipantPhone).map(normalize).filter(Boolean));
+  const captains = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND account_status<>'merged' AND is_bot=0 ORDER BY id").all();
+  const orderRefs = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?");
+  const ledgerRefs = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?");
+  const settlementRefs = db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?");
+  const cardRefs = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?");
+  const subscriptionRefs = db.prepare("SELECT COUNT(*) AS count FROM captain_subscription_charges WHERE user_id=?");
+  const candidates = captains.map((user) => {
+    const phone = normalize(user.phone);
+    const refs = {
+      orders: Number(orderRefs.get(user.id, user.id, user.id).count || 0),
+      ledger: Number(ledgerRefs.get(user.id).count || 0),
+      settlements: Number(settlementRefs.get(user.id, user.id).count || 0),
+      cards: Number(cardRefs.get(user.id, user.id).count || 0),
+      subscriptions: Number(subscriptionRefs.get(user.id).count || 0),
+      balance: Number(user.wallet_cents || 0),
+    };
+    const inGroup = memberPhones.has(phone);
+    const protectedIdentity = isProtectedOwnerIdentity(phone);
+    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && refs.balance === 0;
+    return { user, phone, refs, inGroup, protectedIdentity, deletable };
+  });
+  const keep = candidates.filter((candidate) => candidate.inGroup);
+  const remove = candidates.filter((candidate) => !candidate.inGroup && !candidate.protectedIdentity);
+  const deletable = remove.filter((candidate) => candidate.deletable);
+  const preserveHistory = remove.filter((candidate) => !candidate.deletable);
+  const currentCounts = { keepCount: keep.length, removeCount: remove.length, deletableEmptyCount: deletable.length, preserveHistoryCount: preserveHistory.length };
+  if (JSON.stringify(currentCounts) !== JSON.stringify(expected)) return res.status(409).json({ error: "Live group/account data changed since preview; generate a new preview", currentCounts, expected });
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-captain-cleanup-${Date.now()}.sqlite`;
+  const backupPath = path.join(backupDir, backupName);
+  await db.backup(backupPath);
+  const stamp = now();
+  const deleted = [];
+  const suspended = [];
+  db.transaction(() => {
+    for (const candidate of deletable) {
+      const id = candidate.user.id;
+      db.prepare("DELETE FROM captain_phone_aliases WHERE captain_user_id=?").run(id);
+      db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(id);
+      db.prepare("UPDATE captain_invites SET approved_user_id=NULL WHERE approved_user_id=?").run(id);
+      const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND account_status<>'merged' AND is_bot=0").run(id);
+      if (result.changes === 1) deleted.push({ id, phone: candidate.user.phone, name: candidate.user.registration_name || candidate.user.name });
+    }
+    for (const candidate of preserveHistory) {
+      const id = candidate.user.id;
+      const result = db.prepare("UPDATE users SET active=0,account_status='suspended',updated_at=? WHERE id=? AND role='captain' AND account_status<>'merged' AND is_bot=0").run(stamp, id);
+      if (result.changes === 1) suspended.push({ id, phone: candidate.user.phone, name: candidate.user.registration_name || candidate.user.name });
+    }
+  })();
+  audit("captains.cleanup.applied", "group", groupId, { backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, expected });
+  void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تم حذف حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
+  res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
