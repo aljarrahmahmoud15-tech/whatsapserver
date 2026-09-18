@@ -5,6 +5,11 @@ const server = fs.readFileSync('./server.js', 'utf8');
 const index = fs.readFileSync('./public/index.html', 'utf8');
 
 assert.ok(server.includes('app.get("/api/admin/cards", requireAdmin'), 'admin card history API is protected');
+assert.ok(server.includes('app.get("/api/admin/bulk-topup/preview", requireAdmin'), 'bulk top-up preview API is protected');
+assert.ok(server.includes('readOnly: true'), 'bulk top-up preview is explicitly read-only');
+assert.ok(server.includes('policy: "abs_current_balance"'), 'bulk top-up preview uses absolute current balance policy');
+assert.ok(server.includes('wallet_cents<>0'), 'bulk top-up preview excludes zero balances');
+assert.ok(server.includes("active=1 AND account_status='active'"), 'bulk top-up preview targets active captains only');
 assert.ok(server.includes('app.post("/api/admin/cards", requireAdmin'), 'admin card issuance API is protected');
 assert.ok(server.includes('issue_idempotency_key'), 'card issuance persists an idempotency key');
 assert.ok(server.includes('delivery_idempotency_key'), 'card delivery persists an idempotency key');

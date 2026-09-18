@@ -5528,6 +5528,41 @@ app.get("/api/admin/cards", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, cards: cards.map((card) => ({ ...card, value: money(card.value_cents), deliveryStatus: card.sent_at ? "sent" : "pending" })) });
 });
+app.get("/api/admin/bulk-topup/preview", requireAdmin, (req, res) => {
+  const rows = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND active=1 AND account_status='active' AND is_bot=0 AND wallet_cents<>0 ORDER BY id").all();
+  const maskPhone = (phone) => {
+    const value = phoneWithCountry(phone) || String(phone || "");
+    return value.length > 6 ? `${value.slice(0, 5)}${"*".repeat(Math.max(3, value.length - 8))}${value.slice(-3)}` : "***";
+  };
+  const captains = rows.map((row) => {
+    const balanceCents = Number(row.wallet_cents || 0);
+    const cardValueCents = Math.abs(balanceCents);
+    return {
+      captainId: row.id,
+      name: captainDisplayName(row.registration_name || row.name),
+      phoneMasked: maskPhone(row.phone),
+      currentBalance: money(balanceCents),
+      cardValue: money(cardValueCents),
+      direction: balanceCents < 0 ? "negative_coverage" : "positive_copy",
+      active: true,
+      eligible: true,
+    };
+  });
+  const sum = (predicate) => captains.filter(predicate).reduce((total, row) => total + Math.round(Number(row.cardValue) * 100), 0);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    readOnly: true,
+    policy: "abs_current_balance",
+    eligibleCount: captains.length,
+    positiveCount: captains.filter((row) => row.direction === "positive_copy").length,
+    negativeCount: captains.filter((row) => row.direction === "negative_coverage").length,
+    totalValue: money(captains.reduce((total, row) => total + Math.round(Number(row.cardValue) * 100), 0)),
+    positiveTotal: money(sum((row) => row.direction === "positive_copy")),
+    negativeCoverageTotal: money(sum((row) => row.direction === "negative_coverage")),
+    captains,
+  });
+});
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "محاولات إصدار كثيرة؛ حاول لاحقًا" });
