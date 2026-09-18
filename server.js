@@ -4526,6 +4526,13 @@ app.post("/api/admin/captains/sync-names", requireAdmin, async (req, res) => {
   audit("captains.names.synced_from_configured_group", "group", result.groupId, { updated: result.updated.length, skipped: result.skipped.length });
   res.json({ success: true, ...result });
 });
+app.get("/api/admin/captains/sync-names/run", requireAdmin, async (req, res) => {
+  if (String(req.query.run || "") !== "1") return res.status(400).json({ error: "Add ?run=1 to execute the name sync" });
+  const result = await syncRegisteredCaptainNamesFromConfiguredGroup();
+  if (result.status !== "completed") return res.status(503).json(result);
+  audit("captains.names.synced_from_configured_group", "group", result.groupId, { updated: result.updated.length, skipped: result.skipped.length, via: "admin_run_link" });
+  res.json({ success: true, ...result });
+});
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });

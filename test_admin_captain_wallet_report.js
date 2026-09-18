@@ -15,6 +15,7 @@ assert.match(html, /c\.displayName\|\|c\.name/);
 assert.match(server, /displayName: captainDisplayName\(row\.name\)/);
 assert.match(server, /app\.get\("\/api\/admin\/subscriptions", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/captains\/sync-names", requireAdmin/);
+assert.match(server, /app\.get\("\/api\/admin\/captains\/sync-names\/run", requireAdmin/);
 assert.match(server, /syncRegisteredCaptainNamesFromConfiguredGroup/);
 assert.match(server, /كابتن بدون اسم/);
 assert.match(server, /const contactName = String\(contact/);
