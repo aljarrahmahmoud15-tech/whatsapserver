@@ -21,6 +21,12 @@ assert(server.includes('group.configured'), 'group configuration notifies the ow
 assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchronization notifies the owner');
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');
 assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
+assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative captain wallet notification service exists');
+assert(server.includes("event='captain.wallet.negative'"), 'negative wallet notifications use a dedicated event');
+assert(server.includes('if (existing) return { status: existing.delivery_status, duplicate: true'), 'negative wallet notifications are idempotent');
+assert(server.includes('if (Number(result.balanceAfterCents) < 0) void notifyCaptainNegativeBalance'), 'subscription debit triggers negative wallet notification');
+assert(server.includes('if (nextBalance < 0) void notifyCaptainNegativeBalance'), 'administrative debit triggers negative wallet notification');
+assert(server.includes('if (result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance'), 'order settlement triggers negative wallet notification');
 assert(server.includes('operations card not sent because branded media failed'), 'plain-text fallback is disabled for individual company messages');
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.id'), 'top-up request fulfillment renders a card image');

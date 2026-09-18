@@ -756,8 +756,8 @@ function ensureCustomerLead(phone, chatId, name, messageId, body) {
 async function sendBotTextRaw(to, text) {
   if (!client || !isReady) return false;
   try {
-    await withTimeout(client.sendMessage(to, text), 20000, null);
-    return true;
+    const sent = await withTimeout(client.sendMessage(to, text), 20000, null);
+    return Boolean(sent);
   } catch (error) {
     console.error("[WhatsApp] raw message fallback:", error.message);
     return false;
@@ -795,11 +795,47 @@ async function notifyOperations({ event, title, lines, captainPhone = null, owne
     const message = lines.filter(Boolean).join("\n");
     const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,?,?,?,'pending',?)").run(phone, recipientRole, event, title, message, now());
     let deliveryStatus = "failed";
-    try { if (await sendCompanyOperationsCard(`${phone}@c.us`, title, lines.filter(Boolean))) deliveryStatus = "sent"; } catch (_) {}
+    try {
+      const recipient = await resolveWhatsAppRecipientId(phone);
+      if (recipient && await sendCompanyOperationsCard(recipient, title, lines.filter(Boolean))) deliveryStatus = "sent";
+    } catch (_) {}
     db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(deliveryStatus, row.lastInsertRowid);
     results.push({ id: row.lastInsertRowid, phone, recipientRole, deliveryStatus });
   }
   return results;
+}
+async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference }) {
+  if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
+  const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active") return { status: "ineligible" };
+  const title = "تنبيه رصيد المحفظة السالب";
+  const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
+  const lines = [
+    `الكابتن: ${captain.name}`,
+    `رصيدك الحالي: ${money(balanceCents)} JOD`,
+    `المبلغ المطلوب لتصفير الرصيد: ${money(Math.abs(Number(balanceCents)))} JOD`,
+    `سبب آخر حركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
+    `المرجع: ${safeReference}`,
+    "يرجى شحن المحفظة من خلال الشركة حتى تتمكن من تنفيذ الطلبات دون توقف.",
+    `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
+  ];
+  const message = brandedMessage(title, lines);
+  const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phoneWithCountry(captain.phone), title, message);
+  if (existing) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
+  const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.negative',?,?,'pending',?)").run(phoneWithCountry(captain.phone), title, message, now());
+  let deliveryStatus = "failed";
+  let messageId = null;
+  try {
+    const recipient = await resolveWhatsAppRecipientId(captain.phone);
+    const sent = recipient ? await withTimeout(client.sendMessage(recipient, message), 30000, null) : null;
+    if (sent) {
+      deliveryStatus = "sent";
+      messageId = sent.id?._serialized || null;
+    }
+  } catch (_) {}
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
+  audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus });
+  return { status: deliveryStatus, notificationId: row.lastInsertRowid };
 }
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
@@ -1696,7 +1732,10 @@ function applyCaptainSubscriptionCharges(stamp = now()) {
         audit("captain.subscription.charged", "user", captain.id, { phone: captain.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference }, null);
         return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceAfterCents: nextBalance };
       })();
-      if (result.state === "applied") applied.push({ ...captain, ...result, reference });
+      if (result.state === "applied") {
+        applied.push({ ...captain, ...result, reference });
+        if (Number(result.balanceAfterCents) < 0) void notifyCaptainNegativeBalance({ captainId: captain.id, balanceCents: result.balanceAfterCents, reason: "خصم الاشتراك الأسبوعي", reference });
+      }
       else if (result.state === "skipped_debt_limit") skipped.push({ ...captain, ...result, reference });
     } catch (error) {
       console.error(`[Subscription] failed for captain ${captain.id}:`, error.message);
@@ -3004,6 +3043,10 @@ async function handleMessageReaction(reaction) {
     const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
     if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
+    if (result.state === "cancelled" && result.reversed && result.producer) {
+      const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
+      if (Number(producerBalance) < 0) void notifyCaptainNegativeBalance({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
+    }
     return;
   }
   let acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
@@ -3041,6 +3084,7 @@ async function handleMessageReaction(reaction) {
     return;
   }
   void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+  if (result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
 }
 
 async function reconcileStoredThumbReaction(messageId) {
@@ -3994,6 +4038,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
     audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
     return result.lastInsertRowid;
   })();
+  if (direction === "debit" && nextBalance < 0) void notifyCaptainNegativeBalance({ captainId: id, balanceCents: nextBalance, reason, reference });
   void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
@@ -4804,6 +4849,7 @@ async function handleAdminWalletAdjustment(req, res) {
     return result.lastInsertRowid;
   });
   const ledgerId = apply();
+  if (nextBalance < 0) void notifyCaptainNegativeBalance({ captainId: id, balanceCents: nextBalance, reason, reference });
   void notifyOperations({ event: "captain.wallet.debited", title: "تأكيد خصم من محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `تم خصم: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 }
@@ -5743,8 +5789,10 @@ app.post("/api/admin/orders/reconcile-captains", requireAdmin, (req, res) => {
     if (!captain) { skipped.push({ orderNo: order.order_no, reason: "captain_not_registered", phone: order.captain_phone_snapshot }); continue; }
     if (applySettlement && order.status === "accepted" && order.accepted_message_id && order.producer_user_id) {
       const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: order.accepted_message_id, acceptedAt: order.accepted_at || now(), confirmedByPhone: order.confirmed_by_phone || order.producer_phone_snapshot || "" });
-      if (["accepted", "already_settled"].includes(result.state)) settled.push({ orderNo: order.order_no, captainId: captain.id, state: result.state });
-      else skipped.push({ orderNo: order.order_no, reason: result.state });
+      if (["accepted", "already_settled"].includes(result.state)) {
+        settled.push({ orderNo: order.order_no, captainId: captain.id, state: result.state });
+        if (result.state === "accepted" && result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance({ captainId: captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية طلب تاريخي", reference: `ORDER-${order.order_no}` });
+      } else skipped.push({ orderNo: order.order_no, reason: result.state });
     } else {
       db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,settlement_state=CASE WHEN settlement_state='unlinked' THEN 'pending' ELSE settlement_state END,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, now(), order.id);
       linked.push({ orderNo: order.order_no, captainId: captain.id });
