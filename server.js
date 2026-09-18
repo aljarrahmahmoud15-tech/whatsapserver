@@ -1509,6 +1509,45 @@ async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id",
   }
   return { status: "completed", groupId, totalMembers: chat.participants.length, resolvedMembers: resolvedParticipants.size, results };
 }
+async function syncRegisteredCaptainNamesFromConfiguredGroup() {
+  const groupId = getSetting("group_id", null);
+  if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", updated: [], skipped: [] };
+  if (!client || !isReady) return { status: "bot_not_ready", updated: [], skipped: [] };
+  const chat = await readGroupSnapshot(groupId);
+  if (!chat || !Array.isArray(chat.participants)) return { status: "group_unavailable", updated: [], skipped: [] };
+  const participants = new Map();
+  for (const participant of chat.participants) {
+    const phone = await resolveGroupParticipantPhone(participant);
+    if (phone && !participants.has(phone)) participants.set(phone, participant);
+  }
+  const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged'").all();
+  const updated = [];
+  const skipped = [];
+  for (const captain of captains) {
+    const phone = phoneWithCountry(captain.phone);
+    const participant = participants.get(phone);
+    if (!participant) {
+      skipped.push({ id: captain.id, phone, reason: "not_in_configured_group" });
+      continue;
+    }
+    const participantId = serializedWhatsappUserId(participant?.id);
+    const contact = await withTimeout(client.getContactById(participantId || `${phone}@c.us`), 8000, null)
+      || await withTimeout(client.getContactById(`${phone}@c.us`), 8000, null);
+    const rawName = String(contact && (contact.pushname || contact.name || contact.shortName) || "").trim();
+    const displayName = captainDisplayName(rawName).slice(0, 100);
+    if (!rawName || displayName === "كابتن بدون اسم") {
+      skipped.push({ id: captain.id, phone, reason: "whatsapp_name_unavailable" });
+      continue;
+    }
+    if (captain.name === displayName) {
+      skipped.push({ id: captain.id, phone, reason: "already_current", name: displayName });
+      continue;
+    }
+    db.prepare("UPDATE users SET name=?,updated_at=? WHERE id=? AND role='captain'").run(displayName, now(), captain.id);
+    updated.push({ id: captain.id, phone, previousName: captain.name, name: displayName });
+  }
+  return { status: "completed", groupId, totalRegistered: captains.length, updated, skipped };
+}
 const CAPTAIN_NORMALIZATION_VERSION = "all-group-members-captains-v1";
 let captainNormalizationInFlight = false;
 function reconcileCaptainLinksWithoutSettlement() {
@@ -4479,6 +4518,12 @@ app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
 app.post("/api/admin/captains/normalize-all", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const result = await normalizeAllCaptains({ force: true, baseUrl: captainInviteBaseUrl(req) });
+  res.json({ success: true, ...result });
+});
+app.post("/api/admin/captains/sync-names", requireAdmin, async (req, res) => {
+  const result = await syncRegisteredCaptainNamesFromConfiguredGroup();
+  if (result.status !== "completed") return res.status(503).json(result);
+  audit("captains.names.synced_from_configured_group", "group", result.groupId, { updated: result.updated.length, skipped: result.skipped.length });
   res.json({ success: true, ...result });
 });
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
