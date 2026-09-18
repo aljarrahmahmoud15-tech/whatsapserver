@@ -3368,7 +3368,9 @@ app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
 });
 async function issueApprovalTopupCard({ captain, approvalId, req }) {
   const amountCents = Number.parseInt(process.env.AUTO_APPROVAL_TOPUP_CENTS || "0", 10);
-  if (!Number.isInteger(amountCents) || amountCents < 1) return { status: "disabled" };
+  const allowedAmounts = new Set([500, 1000, 1500, 2000]);
+  if (amountCents === 0) return { status: "disabled" };
+  if (!allowedAmounts.has(amountCents)) return { status: "disabled_invalid_value" };
   if (!captain || captain.role !== "captain" || captain.active !== 1 || captain.account_status !== "active" || captain.is_bot === 1) return { status: "ineligible" };
   const issueIdempotencyKey = `APPROVAL-TOPUP-${approvalId}`.slice(0, 100);
   let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
