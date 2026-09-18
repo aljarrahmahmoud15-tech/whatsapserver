@@ -92,6 +92,7 @@ const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
 const bulkTopupRuns = new Map();
+const bulkPinRuns = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -5897,6 +5898,54 @@ app.post("/api/admin/bulk-topup/negative-one-3", requireAdmin, async (req, res) 
 app.get("/api/admin/bulk-topup/negative-one-3/:runKey", requireAdmin, (req, res) => {
   const run = bulkTopupRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية البطاقات غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run });
+});
+app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  if (confirmation !== "RESET_ACTIVE_GROUP_CAPTAIN_PINS_TO_00000" || !/^PIN5-[A-Z0-9-]{12,80}$/.test(runKey)) return res.status(400).json({ error: "تأكيد العملية ومفتاحها مطلوبان" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  if (bulkPinRuns.has(runKey)) return res.json({ success: true, started: true, ...bulkPinRuns.get(runKey) });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "القروب الرسمي غير متاح" });
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const entries = (chat.participants || []).map((participant) => ({ phone: normalize(groupParticipantPhone(participant)), recipientId: participant?.id?._serialized || String(participant?.id || "") })).filter((entry) => entry.phone && !isBotPhone(entry.phone));
+  const recipients = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND account_status='active' AND active=1 AND is_bot=0").all().map((captain) => ({ ...captain, recipientId: entries.find((entry) => entry.phone === normalize(captain.phone))?.recipientId || null })).filter((captain) => captain.recipientId);
+  if (recipients.length !== 173) return res.status(409).json({ error: "تغير عدد الكباتن المفعّلين أو أعضاء القروب؛ أعد المعاينة", matchedCount: recipients.length, expectedCount: 173 });
+  const appUrl = captainLoginUrl(captainInviteBaseUrl(req));
+  const run = { runKey, status: "running", total: recipients.length, updated: 0, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: null };
+  bulkPinRuns.set(runKey, run);
+  void (async () => {
+    for (const captain of recipients) {
+      try {
+        const prior = db.prepare("SELECT id FROM audit_logs WHERE action='captain.pin_reset.bulk' AND entity_type='user' AND entity_id=? AND details LIKE ? LIMIT 1").get(String(captain.id), `%${runKey}%`);
+        if (prior) { run.skipped += 1; run.sent += 1; continue; }
+        db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync("00000", 10), now(), captain.id);
+        run.updated += 1;
+        const text = brandedMessage("تحديث دخول الكابتن", [
+          `الكابتن: ${captain.name || "حسابك"}`,
+          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          `رقم الهاتف: ${captain.phone}`,
+          "الرقم السري: 00000",
+          `رابط الدخول الفوري: ${appUrl}`,
+          "يرجى تغيير الرقم السري بعد أول دخول وعدم مشاركته مع أي شخص.",
+        ]);
+        const sent = await withTimeout(client.sendMessage(captain.recipientId, text), 30000, null);
+        if (!sent) throw new Error("delivery_failed");
+        audit("captain.pin_reset.bulk", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
+        run.sent += 1;
+      } catch (_) { run.failed += 1; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    run.status = "completed";
+    run.completedAt = now();
+  })().catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/group/reset-active-captain-pins/:runKey", requireAdmin, (req, res) => {
+  const run = bulkPinRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية PIN غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run });
 });
 app.post("/api/redeem", (req, res) => {

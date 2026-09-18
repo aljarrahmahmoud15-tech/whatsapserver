@@ -42,6 +42,12 @@ assert.match(server, /issueIdempotencyKey = `ADMIN-WALLET-/);
 assert.match(server, /topup_card\.issued/);
 assert.match(server, /topup_card\.sent/);
 assert.match(server, /يُضاف الرصيد عند استرداد البطاقة/);
+assert.match(server, /app\.post\("\/api\/admin\/group\/reset-active-captain-pins", requireAdmin/);
+assert.match(server, /RESET_ACTIVE_GROUP_CAPTAIN_PINS_TO_00000/);
+assert.match(server, /bcrypt\.hashSync\("00000", 10\)/);
+assert.match(server, /captain\.pin_reset\.bulk/);
+assert.match(server, /captainLoginUrl\(captainInviteBaseUrl\(req\)\)/);
+assert.doesNotMatch(server.slice(server.indexOf('app.post("/api/admin/group/reset-active-captain-pins"'), server.indexOf('app.post("/api/redeem"')), /console\.(?:log|error)[^\n]*00000/);
 
 assert.match(admin, /id="captainApprovalCard"/);
 assert.match(admin, /موافقة وإنشاء الحساب/);
