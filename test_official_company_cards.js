@@ -7,7 +7,7 @@ const index = fs.readFileSync('./public/index.html', 'utf8');
 assert(server.includes('async function sendCompanyOperationsCard'), 'company card sender exists');
 assert(server.includes('renderOperationsMessageMedia(title, lines)'), 'individual company replies render branded media');
 assert(server.includes('async function sendBotText(to, text)'), 'text API is preserved as a compatibility wrapper');
-assert(server.includes('return sendCompanyOperationsCard(to, "رسالة رسمية من شركة الجراح", lines)'), 'ordinary company messages use the official card');
+assert(server.includes('return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines)'), 'ordinary company messages use the official card');
 assert(server.includes('sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن"'), 'captain approval is sent as a branded card');
 assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
 assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');

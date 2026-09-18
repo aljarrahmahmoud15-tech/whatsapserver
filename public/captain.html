@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>بوابة الكابتن | الجراح</title>
+  <title>بوابة الكابتن | وصلني الآن</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -19,7 +19,7 @@
 <body>
   <div class="shell">
     <header class="bar">
-      <div class="brand"><span class="mark">ج</span><div><strong>الجراح</strong><small>بوابة الكابتن</small></div></div>
+      <div class="brand"><span class="mark">ج</span><div><strong>وصلني الآن</strong><small>بوابة الكابتن</small></div></div>
       <div class="status"><span class="dot"></span><span>بيانات مباشرة من النظام</span></div>
     </header>
 
@@ -79,7 +79,7 @@
       </div>
 
       <section class="topup-request panel" aria-label="طلب شحن الرصيد"><div class="panel-head"><div><h2>طلب شحن الرصيد</h2><p>أرسل طلبك للشركة مباشرة من تطبيق الكابتن.</p></div><span class="count">خدمة العملاء</span></div><div class="topup-form"><label class="label">القيمة المطلوبة (JOD)<input class="input" id="topup-request-value" type="number" min="1" max="1000" placeholder="مثال: 20" required></label><label class="label">ملاحظة (اختياري)<input class="input" id="topup-request-note" placeholder="أحتاج شحن المحفظة"></label><button class="primary" id="topup-request-btn" type="button">إرسال طلب شحن الرصيد</button></div><div id="topup-request-status" class="hint" role="status"></div></section>
-      <section class="topup-cards panel" aria-label="بطاقات الشحن والإشعارات"><div class="panel-head"><div><h2>بطاقات الشحن والإشعارات</h2><p>تظهر هنا البطاقات الرسمية المرسلة إلى حسابك. أدخل الرمز ثم اضغط Enter لإضافة الرصيد مباشرة.</p></div><span class="count">AL-JARAH WALLET</span></div><div id="topup-card-notifications"><div class="empty"><strong>لا توجد بطاقة جديدة</strong>ستظهر البطاقة هنا بعد إصدارها وإرسالها من الشركة.</div></div><form id="topup-redeem-form" class="redeem-form"><label class="label">رمز بطاقة الشحن<input class="input" id="topup-redeem-code" autocomplete="one-time-code" inputmode="text" placeholder="FD-5JD-XXXX" required></label><button class="primary" type="submit">تفعيل وإضافة الرصيد</button></form><div id="topup-redeem-status" class="hint" role="status"></div></section>
+      <section class="topup-cards panel" aria-label="بطاقات الشحن والإشعارات"><div class="panel-head"><div><h2>بطاقات الشحن والإشعارات</h2><p>تظهر هنا البطاقات الرسمية المرسلة إلى حسابك. أدخل الرمز ثم اضغط Enter لإضافة الرصيد مباشرة.</p></div><span class="count">WASLNI NOW WALLET</span></div><div id="topup-card-notifications"><div class="empty"><strong>لا توجد بطاقة جديدة</strong>ستظهر البطاقة هنا بعد إصدارها وإرسالها من الشركة.</div></div><form id="topup-redeem-form" class="redeem-form"><label class="label">رمز بطاقة الشحن<input class="input" id="topup-redeem-code" autocomplete="one-time-code" inputmode="text" placeholder="FD-5JD-XXXX" required></label><button class="primary" type="submit">تفعيل وإضافة الرصيد</button></form><div id="topup-redeem-status" class="hint" role="status"></div></section>
       <section class="metrics" aria-label="الملخص المالي">
         <div class="metric balance"><span>الرصيد الحالي</span><strong id="balance">—</strong><small>دينار أردني <span class="currency">JOD</span></small></div>
         <div class="metric net"><span>صافي الأرباح</span><strong id="net-earnings">—</strong><small>من الطلبات المثبتة</small></div>
@@ -176,7 +176,7 @@
     $('#logout').addEventListener('click', async () => { await api('/api/captain/logout', {method:'POST'}).catch(() => {}); showSection('entry'); });
     const demoMode = new URLSearchParams(location.search).get('demo') === '1';
     const demoData = {user:{name:'كابتن تجريبي',phone:'0790000000'},wallet:{balance:'125.00'},earnings:{net:'210.00',fees:'15.00'},trips:[{order_no:'DEMO-1024',trip_time:'اليوم 10:30',origin:'عمّان',destination:'العقبة',status:'completed',price:'300.00',grossEarnings:'45.00',netEarnings:'38.25',walletFee:'6.75'},{order_no:'DEMO-1023',trip_time:'أمس 18:15',origin:'الزرقاء',destination:'عمّان',status:'accepted',price:'180.00',grossEarnings:'27.00',netEarnings:'22.95',walletFee:'4.05'}],entries:[{note:'رصيد افتتاحي تجريبي',type:'demo_credit',reference:'DEMO-OPEN',amount_cents:12500,amount:'125.00',balanceAfter:'125.00',created_at:'بيانات توضيحية'},{note:'خصم رسوم رحلة تجريبية',type:'demo_fee',reference:'DEMO-1024',amount_cents:-675,amount:'-6.75',balanceAfter:'125.00',created_at:'بيانات توضيحية'}]};
-    (async () => { if (demoMode) { document.title = 'معاينة واجهة الكابتن | الجراح'; $('#demo-banner').classList.remove('hidden'); render(demoData); showSection('app'); return; } try { await loadOverview(); showSection('app'); } catch (error) { if (inviteToken) { try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'pending') invitePoll = setInterval(pollInvite, 10000); } catch (inviteError) { showSection('registration'); $('#register-error').textContent = inviteError.message; } } else { const initialSection = new URLSearchParams(location.search).get('mode') === 'login' ? 'login' : 'registration'; showSection(initialSection === 'registration' ? 'entry' : initialSection); if (error.status !== 401) $('#login-error').textContent = error.message; } } })();
+    (async () => { if (demoMode) { document.title = 'معاينة واجهة الكابتن | وصلني الآن'; $('#demo-banner').classList.remove('hidden'); render(demoData); showSection('app'); return; } try { await loadOverview(); showSection('app'); } catch (error) { if (inviteToken) { try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'pending') invitePoll = setInterval(pollInvite, 10000); } catch (inviteError) { showSection('registration'); $('#register-error').textContent = inviteError.message; } } else { const initialSection = new URLSearchParams(location.search).get('mode') === 'login' ? 'login' : 'registration'; showSection(initialSection === 'registration' ? 'entry' : initialSection); if (error.status !== 401) $('#login-error').textContent = error.message; } } })();
   </script>
 </body>
 </html>

@@ -59,6 +59,8 @@ const CAPTAIN_SUBSCRIPTION_CENTS = 100;
 const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
 const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const COMPANY_BRAND_NAME = "وصلني الآن";
+const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
@@ -77,10 +79,10 @@ const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_B
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
-const GROUP_BRAND_NAME = "شركة الجراح | شبكة التشغيل اللوجستي";
-const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لشركة الجراح للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق نظام الشركة.";
+const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
+const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
-const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لشركة الجراح.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
+const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لوصلني الآن.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
@@ -766,7 +768,7 @@ async function sendCompanyOperationsCard(to, title, lines) {
 }
 async function sendBotText(to, text) {
   const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 10);
-  return sendCompanyOperationsCard(to, "رسالة رسمية من شركة الجراح", lines);
+  return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines);
 }
 async function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
@@ -865,7 +867,7 @@ async function handleCustomerMessage(msg) {
     audit("customer.lead.completed", "customer_lead", lead.id, { phone, direction: lead.direction, travelMode: lead.travel_mode, travelersCount: count });
     const directionLabel = { jo_to_syria: "الأردن ← سوريا", syria_to_jo: "سوريا ← الأردن", inside_jo: "داخل الأردن" }[lead.direction] || "غير محدد";
     const modeLabel = lead.travel_mode === "road" ? "سفر بري" : "عبر المطار";
-    await sendBotText(chatId, `تم استلام طلبك بنجاح.\n\nالمسار: ${directionLabel}\nالطريقة: ${modeLabel}\nالتاريخ والوقت: ${lead.travel_date}\nعدد المسافرين: ${count}\n\nسيتم التواصل معك من خدمة عملاء شركة الجراح لتأكيد التفاصيل والسعر.`);
+    await sendBotText(chatId, `تم استلام طلبك بنجاح.\n\nالمسار: ${directionLabel}\nالطريقة: ${modeLabel}\nالتاريخ والوقت: ${lead.travel_date}\nعدد المسافرين: ${count}\n\nسيتم التواصل معك من خدمة عملاء وصلني الآن لتأكيد التفاصيل والسعر.`);
   }
 }
 function ensureBlockedPhones() {
@@ -1006,9 +1008,12 @@ function ensureSystemUsers() {
     if (!isProtectedOwnerIdentity(user.phone)) promote.run(stamp, user.id);
   }
   const company = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
-  if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", "شركة الجراح", "company", stamp, stamp);
+  if (!company) db.prepare("INSERT INTO users(phone,name,role,created_at,updated_at) VALUES(?,?,?,?,?)").run("system-company", COMPANY_BRAND_NAME, "company", stamp, stamp);
   const companyAccount = db.prepare("SELECT id FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
   if (companyAccount) {
+    db.prepare("UPDATE users SET name=?,updated_at=? WHERE id=?").run(COMPANY_BRAND_NAME, stamp, companyAccount.id);
+    db.prepare("UPDATE orders SET producer_name_snapshot=?,updated_at=? WHERE producer_user_id=?").run(COMPANY_BRAND_NAME, stamp, companyAccount.id);
+    db.prepare("UPDATE order_candidates SET producer_name_snapshot=?,updated_at=? WHERE producer_user_id=?").run(COMPANY_BRAND_NAME, stamp, companyAccount.id);
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
@@ -1027,7 +1032,7 @@ function normalizeBotIdentity(stamp = now()) {
   const rows = db.prepare("SELECT id,phone FROM users").all();
   const ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
   const update = db.prepare("UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE id=?");
-  for (const row of ownerRows) update.run("شركة الجراح — مالك القروب والبوت", stamp, row.id);
+  for (const row of ownerRows) update.run(`${COMPANY_BRAND_NAME} — مالك القروب والبوت`, stamp, row.id);
   const ownerIds = ownerRows.map((row) => row.id);
   if (ownerIds.length) db.prepare(`UPDATE users SET is_bot=0 WHERE id NOT IN (${ownerIds.map(() => "?").join(",")}) AND is_bot=1`).run(...ownerIds);
   return ownerRows.length;
@@ -1044,7 +1049,7 @@ function botEmployeeUser() {
   const existing = db.prepare("SELECT * FROM users WHERE is_bot=1 LIMIT 1").get();
   if (existing) return existing;
   const stamp = now();
-  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?,?,0,1,1,?,?)").run(phoneWithCountry(BOT_PHONE), "منتج موظف — بوت شركة الجراح", "producer", stamp, stamp);
+  const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?,?,0,1,1,?,?)").run(phoneWithCountry(BOT_PHONE), `منتج موظف — بوت ${COMPANY_BRAND_NAME}`, "producer", stamp, stamp);
   return db.prepare("SELECT * FROM users WHERE id=?").get(result.lastInsertRowid);
 }
 function upsertUser({ phone, name, role, allowSuspended = false }) {
@@ -1800,8 +1805,8 @@ function findLatestStandaloneAcceptanceCandidate(groupId) {
 }
 function brandedMessage(title, lines = []) {
   return [
-    "╭━━━ ✦ AL-JARAH OPERATIONS NETWORK ✦ ━━━╮",
-    "┃ شركة الجراح | بوابة التشغيل الرسمية",
+    `╭━━━ ✦ ${COMPANY_BRAND_ENGLISH} OPERATIONS NETWORK ✦ ━━━╮`,
+    `┃ ${COMPANY_BRAND_NAME} | بوابة التشغيل الرسمية`,
     "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫",
     `┃ ${title}`,
     "┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫",
@@ -1818,7 +1823,7 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
-  const safeName = escapeXml(captainName || "كابتن شبكة الجراح");
+  const safeName = escapeXml(captainName || `كابتن شبكة ${COMPANY_BRAND_NAME}`);
   const safeCode = escapeXml(code);
   const safeValue = escapeXml(`${money(valueCents)} JOD`);
   const safeUrl = escapeXml(appUrl || "https://whatsapserver-2.onrender.com/join.html");
@@ -1830,8 +1835,8 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
     <path d="M30 470 C260 335 390 590 650 430 S900 350 1050 250 L1050 650 L30 650 Z" fill="#f6c84c" opacity=".08"/>
     <path d="M35 125 H1045 M35 548 H1045" stroke="#f6c84c" stroke-opacity=".3" stroke-width="2"/>
     ${logoFrame}${logo}
-    <text x="245" y="101" fill="#f6c84c" font-size="28" font-family="Arial, sans-serif" font-weight="700">AL-JARAH LOGISTICS</text>
-    <text x="245" y="139" fill="#ffffff" font-size="23" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح للنقل والخدمات اللوجستية</text>
+    <text x="245" y="101" fill="#f6c84c" font-size="28" font-family="Arial, sans-serif" font-weight="700">${COMPANY_BRAND_ENGLISH} LOGISTICS</text>
+    <text x="245" y="139" fill="#ffffff" font-size="23" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${COMPANY_BRAND_NAME} للنقل والخدمات اللوجستية</text>
     <text x="245" y="202" fill="#8fe9df" font-size="22" font-family="Arial, sans-serif" letter-spacing="3">OFFICIAL OPERATIONS CARD</text>
     <text x="76" y="270" fill="#9fb2c6" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">بطاقة شحن تشغيلية</text>
     <text x="76" y="335" fill="#ffffff" font-size="38" font-family="Arial, sans-serif" font-weight="700">${safeValue}</text>
@@ -1868,8 +1873,8 @@ async function renderOperationsMessageMedia(title, lines = []) {
     <path d="M25 505 C240 380 400 650 675 480 S920 390 1055 300 L1055 740 L25 740 Z" fill="#f6c84c" opacity=".08"/>
     <circle cx="540" cy="404" r="252" fill="url(#glow)" opacity=".50"/><circle cx="540" cy="404" r="178" fill="none" stroke="#48d9d1" stroke-opacity=".36" stroke-width="2"/><circle cx="540" cy="404" r="157" fill="none" stroke="#f6c84c" stroke-opacity=".40" stroke-width="2"/><circle cx="540" cy="404" r="128" fill="#071522" fill-opacity=".84" stroke="#8fe9df" stroke-opacity=".32" stroke-width="2"/>
     ${logo}<circle cx="540" cy="226" r="9" fill="#62df99"/><circle cx="540" cy="226" r="22" fill="none" stroke="#62df99" stroke-opacity=".45" stroke-width="3"/><circle cx="540" cy="582" r="6" fill="#f6c84c"/><circle cx="358" cy="404" r="6" fill="#48d9d1"/><circle cx="722" cy="404" r="6" fill="#48d9d1"/>
-    <text x="1000" y="83" text-anchor="end" fill="#f6c84c" font-size="25" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">AL-JARAH OPERATIONS NETWORK</text>
-    <text x="352" y="122" fill="${cardBlue}" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">شركة الجراح | بوابة التشغيل الرسمية</text>
+    <text x="1000" y="83" text-anchor="end" fill="#f6c84c" font-size="25" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">${COMPANY_BRAND_ENGLISH} OPERATIONS NETWORK</text>
+    <text x="352" y="122" fill="${cardBlue}" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${COMPANY_BRAND_NAME} | بوابة التشغيل الرسمية</text>
     <rect x="80" y="64" width="238" height="48" rx="20" fill="#5b3e12" fill-opacity=".88" stroke="#ffcf72" stroke-width="2"/><text x="199" y="96" text-anchor="middle" fill="#ffe493" font-size="21" font-family="Arial, sans-serif" font-weight="700">OFFICIAL / VERIFIED</text>
     <rect x="64" y="164" width="952" height="474" rx="30" fill="#07131f" fill-opacity=".74" stroke="#8fe9df" stroke-opacity=".30" stroke-width="2"/>
     <text x="86" y="218" fill="${cardBlue}" font-size="30" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">${safeTitle}</text>
@@ -1877,7 +1882,7 @@ async function renderOperationsMessageMedia(title, lines = []) {
     ${lineMarkup}
     <path d="M80 666 H1000" stroke="#48d9d1" stroke-opacity=".34" stroke-width="2"/>
     <text x="1000" y="708" text-anchor="end" fill="#8fe9df" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نقل أسرع • تنظيم أدق • سجل موثّق</text>
-    <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">AL-JARAH / OFFICIAL</text>
+    <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">${COMPANY_BRAND_ENGLISH} / OFFICIAL</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
@@ -2532,7 +2537,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     const selfSetup = primarySender || senderPhone === phoneWithCountry(BOT_PHONE);
     if (setupCommand && (selfSetup || isGroupSetupOwner(senderPhone))) {
-      configureGroupId(groupId, "الجراح | شبكة التشغيل الرسمية");
+      configureGroupId(groupId, `${COMPANY_BRAND_NAME} | شبكة التشغيل الرسمية`);
       console.log(`[GroupSetup] configured group from ${selfSetup ? "primary bot command" : "owner command"}: ${groupId}`);
     }
     return;
@@ -2541,7 +2546,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
   if (botGenerated && !parseOrder(body).isOrder) return;
   const captainAcceptance = String(body || "").trim() === "تم";
-  const senderName = msg.fromMe ? "شركة الجراح — المنتج الأساسي" : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
+  const senderName = msg.fromMe ? `${COMPANY_BRAND_NAME} — المنتج الأساسي` : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
@@ -3207,7 +3212,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في شركة الجراح\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في وصلني الآن\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -3300,7 +3305,7 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
   const notified = captain.phone ? await sendCaptainOperationsCard(`${phone}@c.us`, "تم تسجيل وتفعيل الكابتن", [
     `الكابتن: ${name}`,
-    "تم تسجيل حسابك واعتماده وتفعيله مباشرة داخل شبكة الجراح.",
+    "تم تسجيل حسابك واعتماده وتفعيله مباشرة داخل شبكة وصلني الآن.",
     `رقم الهاتف: ${phone}`,
     authText,
     `رابط الدخول المباشر: ${captainAppLink}`
@@ -3331,7 +3336,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (decision === "reject") {
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
-    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى شركة الجراح.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى وصلني الآن.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
@@ -3358,7 +3363,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
     notified = await sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن", [
       `الكابتن: ${invite.name}`,
-      "تمت الموافقة على طلبك داخل شبكة الجراح.",
+      "تمت الموافقة على طلبك داخل شبكة وصلني الآن.",
       `رقم الهاتف: ${invite.phone}`,
       authText,
       `رابط دخول الكابتن المباشر: ${captainAppLink}`,
@@ -3408,7 +3413,7 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في شركة الجراح: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
   if (!sent) {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
@@ -4277,7 +4282,7 @@ app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = "pre-group-reset-" + Date.now() + ".sqlite";
   const backupPath = path.join(backupDir, backupName);
-  const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "RESET-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_current_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: [], reset: true, oldGroupId, backupName };
@@ -4297,7 +4302,7 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   const phones = [...new Set((groupCreateState.participants || []).map((participant) => phoneWithCountry(participant && participant.phone)).filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone)))];
   if (!phones.length) return res.status(409).json({ error: "No eligible members are available for recovery" });
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
-  const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   groupCreateInFlight = true;
   groupCreateState = { ...groupCreateState, status: "recovering", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: phones.map((phone) => ({ phone, status: "pending" })), recoverable: true };
   void finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
@@ -4343,7 +4348,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
-      "تم تسجيل رقمك ضمن أعضاء شبكة الجراح التشغيلية.",
+      "تم تسجيل رقمك ضمن أعضاء شبكة وصلني الآن التشغيلية.",
       "هذا ليس تسجيل كابتن جديدًا.",
       "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
       `البوابة الرسمية: ${gateway}`,
@@ -4395,7 +4400,7 @@ app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "120363413760988742@g.us")).trim();
   if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupInviteInFlight = true;
   groupInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, inviteUrl: null, participants: [] };
@@ -4409,7 +4414,7 @@ app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const sourceGroupId = String(req.body?.sourceGroupId || "120363426604560611@g.us").trim();
   const groupId = String(req.body?.groupId || "120363413760988742@g.us").trim();
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.body?.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -4424,7 +4429,7 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const sourceGroupId = String(req.query.sourceGroupId || "120363426604560611@g.us").trim();
   const groupId = String(req.query.groupId || "120363413760988742@g.us").trim();
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "شركة الجراح — شبكة التشغيل الرسمية").trim().slice(0, 100) || "شركة الجراح — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -4436,7 +4441,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
   if (groupCreateState.status === "failed" && groupCreateState.groupId) return res.status(409).json({ error: "A group was created but participant addition did not finish; verify the group before retrying", groupId: groupCreateState.groupId, operationId: groupCreateState.operationId });
-  const groupName = String(req.body.groupName || "الجراح للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
+  const groupName = String(req.body.groupName || "وصلني الآن للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
   if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
@@ -4725,7 +4730,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
       const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
       const previous = [...messages].reverse().find((message) => {
         const body = String(message?.body || "");
-        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة الجراح)/.test(body);
+        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة وصلني الآن)/.test(body);
       });
       if (previous && typeof previous.delete === "function") {
         const removed = await withTimeout(previous.delete(true), 20000, null);
@@ -4813,7 +4818,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
 
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
-  const groupName = String(req.body.groupName || "قروب الجراح").trim();
+  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   configureGroupId(groupId, groupName);
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
@@ -4865,7 +4870,7 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
   const groupId = String(req.query.groupId || "").trim();
   const newGroupId = "120363413760988742@g.us";
   const originalGroupId = "120363426604560611@g.us";
-  const expectedName = "شركة الجراح — شبكة التشغيل الرسمية";
+  const expectedName = "وصلني الآن — شبكة التشغيل الرسمية";
   if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -4892,7 +4897,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
-  const groupName = String(req.body.groupName || "قروب الجراح").trim();
+  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
@@ -4935,7 +4940,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
-  const groupName = String(chat.name || "قروب الجراح").trim().slice(0, 160) || "قروب الجراح";
+  const groupName = String(chat.name || "قروب وصلني الآن").trim().slice(0, 160) || "قروب وصلني الآن";
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
