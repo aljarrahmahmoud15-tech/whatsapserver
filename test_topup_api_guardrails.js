@@ -17,6 +17,9 @@ assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(ca
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(captain.phone);'), 'new captain card delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'support top-up delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('app.post("/api/admin/cards/:id/send-text", requireAdmin'), 'admin card text fallback is protected');
+assert.ok(server.includes('app.post("/api/admin/cards/:id/void", requireAdmin, handleVoidTopupCard)'), 'admin card cancellation is protected');
+assert.ok(server.includes('if (card.sent_at) return res.status(409)'), 'recovery cancellation rejects delivered cards');
+assert.ok(server.includes("WHERE id=? AND status='issued' AND sent_at IS NULL"), 'recovery cancellation mutates only unsent issued cards');
 assert.ok(server.includes('function topupCardTextMessage'), 'card text fallback has a dedicated formatter');
 assert.ok(server.includes('topup_card.sent_text_fallback'), 'text fallback delivery is audited without exposing the code');
 assert.ok(server.includes('res.json({ success: true, status: "sent", deliveryMode });'), 'delivery response does not expose the card code');

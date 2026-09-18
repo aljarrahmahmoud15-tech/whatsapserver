@@ -3869,22 +3869,25 @@ app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) 
     cardDeliveryInFlight.delete(cardId);
   }
 });
-app.post("/api/dashboard/cards/:id/void", requireDashboardApi, (req, res) => {
+function handleVoidTopupCard(req, res) {
   const cardId = Number(req.params.id);
   const reason = String(req.body?.reason || "").trim();
   const voidIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!Number.isInteger(cardId) || cardId < 1 || reason.length < 3 || reason.length > 240 || voidIdempotencyKey.length < 16 || voidIdempotencyKey.length > 100) return res.status(400).json({ error: "Valid card id, reason, and idempotencyKey are required" });
-  const card = db.prepare("SELECT id,status,void_idempotency_key FROM topup_cards WHERE id=? LIMIT 1").get(cardId);
+  const card = db.prepare("SELECT id,status,sent_at,void_idempotency_key FROM topup_cards WHERE id=? LIMIT 1").get(cardId);
   if (!card) return res.status(404).json({ error: "Card not found" });
   if (card.void_idempotency_key && card.void_idempotency_key !== voidIdempotencyKey) return res.status(409).json({ error: "Card cancellation is already recorded with another idempotency key" });
   if (card.status === "void") return res.json({ success: true, cardId, status: "void", alreadyVoided: true });
   if (card.status !== "issued") return res.status(409).json({ error: `Card cannot be cancelled while status is ${card.status}` });
+  if (card.sent_at) return res.status(409).json({ error: "A delivered card cannot be cancelled from this recovery action" });
   const stamp = now();
-  const update = db.prepare("UPDATE topup_cards SET status='void',void_idempotency_key=? WHERE id=? AND status='issued'").run(voidIdempotencyKey, cardId);
+  const update = db.prepare("UPDATE topup_cards SET status='void',void_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(voidIdempotencyKey, cardId);
   if (!update.changes) return res.json({ success: true, cardId, status: "void", alreadyVoided: true });
   audit("topup_card.voided", "topup_card", cardId, { reason, voidIdempotencyKey });
   res.json({ success: true, cardId, status: "void", cancelledAt: stamp });
-});
+}
+app.post("/api/dashboard/cards/:id/void", requireDashboardApi, handleVoidTopupCard);
+app.post("/api/admin/cards/:id/void", requireAdmin, handleVoidTopupCard);
 
 app.get("/api/dashboard/captains/portal/:phone", requireDashboardApi, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
