@@ -3942,7 +3942,7 @@ app.post("/api/dashboard/captains/redeem", requireDashboardApi, (req, res) => {
   }
 });
 
-app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (req, res) => {
+app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, async (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
@@ -3952,6 +3952,37 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, (
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
   const amountCents = Math.round(amount * 100);
+  if (direction === "credit") {
+    if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
+    if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
+    const issueIdempotencyKey = `WALLET-${idempotencyKey}`.slice(0, 100);
+    let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+    if (card && (Number(card.assigned_captain_id) !== captain.id || Number(card.value_cents) !== amountCents)) return res.status(409).json({ error: "مفتاح العملية مستخدم لبطاقة مختلفة" });
+    if (card && card.status !== "issued") return res.status(409).json({ error: `البطاقة حالتها ${card.status} ولا يمكن إصدارها مجددًا` });
+    if (!card) {
+      let code = randomCode();
+      while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+      const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), amountCents, captain.id, issueIdempotencyKey, encryptCardCode(code), now());
+      card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(result.lastInsertRowid);
+      audit("topup_card.issued", "topup_card", card.id, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey, source: "company_direct_transfer" });
+    }
+    if (!client || !isReady) return res.status(503).json({ error: "تم إصدار بطاقة الرصيد لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.id, status: "issued" });
+    try {
+      const code = decryptCardCode(card.code_ciphertext);
+      const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+      const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
+      const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
+      const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(captain.phone)}@c.us`, media, { caption }), 30000, null);
+      if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
+      db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
+      audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
+      void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
+      return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
+    } catch (error) {
+      audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", error: String(error?.message || error) });
+      return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
+    }
+  }
   const signedAmount = direction === "credit" ? amountCents : -amountCents;
   const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
@@ -4713,7 +4744,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
   audit("captain.access_card.resent", "user", captain.id, { phone, deletedPreviousPlain, deletedMessageId });
   res.json({ success: true, captain: { id: captain.id, name: captain.name, phone: captain.phone }, deletedPreviousPlain, cardSent: true });
 });
-app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) => {
+app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
@@ -4726,6 +4757,37 @@ app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, (req, res) =
   }
   const amountCents = Math.round(amount * 100);
   if (amountCents < 1) return res.status(400).json({ error: "Amount is too small" });
+  if (direction === "credit") {
+    if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
+    if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
+    const issueIdempotencyKey = `ADMIN-WALLET-${idempotencyKey}`.slice(0, 100);
+    let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+    if (card && (Number(card.assigned_captain_id) !== captain.id || Number(card.value_cents) !== amountCents)) return res.status(409).json({ error: "مفتاح العملية مستخدم لبطاقة مختلفة" });
+    if (card && card.status !== "issued") return res.status(409).json({ error: `البطاقة حالتها ${card.status} ولا يمكن إصدارها مجددًا` });
+    if (!card) {
+      let code = randomCode();
+      while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+      const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), amountCents, captain.id, issueIdempotencyKey, encryptCardCode(code), now());
+      card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(result.lastInsertRowid);
+      audit("topup_card.issued", "topup_card", card.id, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey, source: "company_direct_transfer" });
+    }
+    if (!client || !isReady) return res.status(503).json({ error: "تم إصدار بطاقة الرصيد لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.id, status: "issued" });
+    try {
+      const code = decryptCardCode(card.code_ciphertext);
+      const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+      const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
+      const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
+      const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(captain.phone)}@c.us`, media, { caption }), 30000, null);
+      if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
+      db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
+      audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
+      void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
+      return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
+    } catch (error) {
+      audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", error: String(error?.message || error) });
+      return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
+    }
+  }
   const signedAmount = direction === "credit" ? amountCents : -amountCents;
   const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
@@ -5398,28 +5460,36 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
   const valueCents = Number(ticket.requested_value_cents || 0);
   if (valueCents <= 0) return res.status(400).json({ error: "قيمة الشحن غير صالحة" });
   if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
-  let code = randomCode();
-  while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
-  const encryptedCode = encryptCardCode(code);
-  const card = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?)").run(hashCode(code), code.slice(-4), valueCents, captain.id, encryptedCode, now());
+  const issueIdempotencyKey = `SUPPORT-TICKET-${ticketId}`;
+  let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+  if (card && (Number(card.assigned_captain_id) !== captain.id || Number(card.value_cents) !== valueCents)) return res.status(409).json({ error: "طلب الشحن مرتبط ببطاقة مختلفة" });
+  if (card && card.status !== "issued") return res.status(409).json({ error: `البطاقة حالتها ${card.status} ولا يمكن إعادة تنفيذ الطلب` });
+  if (!card) {
+    let code = randomCode();
+    while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+    const encryptedCode = encryptCardCode(code);
+    const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), valueCents, captain.id, issueIdempotencyKey, encryptedCode, now());
+    card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(result.lastInsertRowid);
+  }
   if (!client || !isReady) {
-    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.lastInsertRowid}، وتنتظر اتصال WhatsApp للإرسال.`, now(), ticketId);
-    return res.status(503).json({ error: "تم إصدار البطاقة لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.lastInsertRowid });
+    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.id}، وتنتظر اتصال WhatsApp للإرسال.`, now(), ticketId);
+    return res.status(503).json({ error: "تم إصدار البطاقة لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.id });
   }
   try {
+    const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
-    const media = await renderTopupCardMedia({ cardId: card.lastInsertRowid, code, valueCents, captainName: captain.name, appUrl });
+    const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
     const sent = await withTimeout(client.sendMessage(`${phone}@c.us`, media, { caption }), 30000, null);
     if (!sent) throw new Error("send timeout");
-    db.prepare("UPDATE topup_cards SET sent_at=? WHERE id=?").run(now(), card.lastInsertRowid);
-    db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.lastInsertRowid} إلى WhatsApp.`, now(), ticketId);
-    audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.lastInsertRowid, captainId: captain.id });
-    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.lastInsertRowid}`, "تم توليد البطاقة وإرسالها عبر WhatsApp.", "يُضاف الرصيد عند إدخال الرمز في بوابة الكابتن."], ownersOnly: true });
-    res.json({ success: true, status: "resolved", cardId: card.lastInsertRowid });
+    db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
+    db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
+    audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.id, captainId: captain.id });
+    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم توليد البطاقة وإرسالها عبر WhatsApp.", "يُضاف الرصيد عند إدخال رمز البطاقة."], ownersOnly: true });
+    res.json({ success: true, status: "resolved", cardId: card.id });
   } catch (error) {
-    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.lastInsertRowid} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);
-    res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.lastInsertRowid });
+    db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.id} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);
+    res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id });
   }
 });
 app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
