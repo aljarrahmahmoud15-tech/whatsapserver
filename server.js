@@ -1892,22 +1892,19 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-function finalBookingConfirmationText({ orderNo, executorName, consumerName, priceCents }) {
-  const prefix = `✓ تثبيت #${String(orderNo || "")}`;
-  const price = `${money(priceCents)}د`;
-  const separator = "|";
-  const labels = ["م:", "س:"];
-  const fixedLength = prefix.length + separator.length * 3 + labels[0].length + labels[1].length + price.length;
-  const available = Math.max(0, 40 - fixedLength);
-  const executorBudget = Math.ceil(available / 2);
-  const consumerBudget = Math.max(0, available - executorBudget);
-  const executor = String(executorName || "").trim().slice(0, executorBudget);
-  const consumer = String(consumerName || "").trim().slice(0, consumerBudget);
-  return `${prefix}${separator}${labels[0]}${executor}${separator}${labels[1]}${consumer}${separator}${price}`.slice(0, 40);
+function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName }) {
+  const firstCaptain = String(downloaderName ?? consumerName ?? "غير محدد").trim() || "غير محدد";
+  const secondCaptain = String(executorName || "غير محدد").trim() || "غير محدد";
+  return [
+    "وصلني الآن — تم تثبيت الحجز",
+    `رقم الرحلة: #${String(orderNo || "غير محدد")}`,
+    `الكابتن الأول: ${firstCaptain}`,
+    `الكابتن الثاني المنفّذ: ${secondCaptain}`,
+  ].join("\n");
 }
 async function sendFinalBookingConfirmation(groupId, details) {
   try {
-    return withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
+    return await withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
   } catch (error) {
     console.error("[WhatsApp] final booking confirmation not sent:", error.message);
     return null;
@@ -3028,7 +3025,7 @@ async function handleMessageReaction(reaction) {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
   }
-  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
 }
 
 async function reconcileStoredThumbReaction(messageId) {
@@ -5115,7 +5112,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
   const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
-    const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents };
+    const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
     audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
@@ -5166,7 +5163,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
         return;
       }
-      const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents };
+      const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
       void sendFinalBookingConfirmation(verified.groupId, confirmationDetails).catch(() => null);
       audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     } catch (error) {
