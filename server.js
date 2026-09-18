@@ -5549,8 +5549,7 @@ app.get("/api/admin/bulk-topup/preview", requireAdmin, (req, res) => {
     };
   });
   const sum = (predicate) => captains.filter(predicate).reduce((total, row) => total + Math.round(Number(row.cardValue) * 100), 0);
-  res.setHeader("Cache-Control", "no-store");
-  res.json({
+  const summary = {
     success: true,
     readOnly: true,
     policy: "abs_current_balance",
@@ -5560,8 +5559,10 @@ app.get("/api/admin/bulk-topup/preview", requireAdmin, (req, res) => {
     totalValue: money(captains.reduce((total, row) => total + Math.round(Number(row.cardValue) * 100), 0)),
     positiveTotal: money(sum((row) => row.direction === "positive_copy")),
     negativeCoverageTotal: money(sum((row) => row.direction === "negative_coverage")),
-    captains,
-  });
+  };
+  if (String(req.query.compact || "") === "1") return res.json(summary);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ...summary, captains });
 });
 app.post("/api/admin/cards", requireAdmin, (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
