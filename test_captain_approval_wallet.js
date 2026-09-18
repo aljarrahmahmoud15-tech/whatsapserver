@@ -22,6 +22,10 @@ assert.match(server, /invite\.status !== "pending"/);
 assert.match(server, /decision === "reject"/);
 assert.match(server, /captain\.join\.approved/);
 assert.match(server, /INSERT INTO users/);
+assert.match(server, /app\.post\("\/api\/admin\/captains\/\:id\/approval-notification-test", requireAdmin/);
+assert.match(server, /captain\.approval_notification\.test/);
+assert.match(server, /ولا تغيّر حالة حسابك أو رصيدك/);
+assert.match(server, /X-Idempotency-Key/);
 
 assert.match(server, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment\)/);
 assert.match(server, /account_status<>'merged'/);
@@ -37,6 +41,9 @@ assert.match(admin, /decideCaptainInvite/);
 assert.match(admin, /id="captainInvites"/);
 assert.match(admin, /adjustUserWallet/);
 assert.match(admin, /إضافة رصيد/);
+assert.match(admin, /إرسال اختبار الموافقة/);
+assert.match(admin, /approvalTestModal/);
+assert.match(admin, /approval-notification-test/);
 assert.match(admin, /\/api\/admin\/users\/\'\+id\+\'\/wallet-adjustment/);
 assert.match(captain, /لا يمكن إنشاء الحساب أو الدخول أو استخدام النظام قبل موافقة المالك/);
 
