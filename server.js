@@ -6437,6 +6437,47 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
     })),
   });
 });
+app.get("/api/admin/daily-charges", requireAdmin, (req, res) => {
+  const requestedDate = String(req.query.chargeDate || "").trim();
+  const chargeDate = requestedDate || now().slice(0, 10);
+  const rows = db.prepare(`SELECT c.id,c.user_id,c.charge_date,c.amount_cents,c.reference,c.created_at,c.details_json,
+      u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.phone,u.active,u.account_status,
+      l.balance_after_cents
+    FROM captain_daily_charges c
+    JOIN users u ON u.id=c.user_id
+    LEFT JOIN wallet_ledger l ON l.id=c.ledger_id
+    WHERE c.charge_date=?
+    ORDER BY u.active DESC,u.name,u.id`).all(chargeDate);
+  const totalCents = rows.reduce((sum, row) => sum + Number(row.amount_cents || 0), 0);
+  const serialize = (row) => ({
+    id: row.id,
+    captainId: row.user_id,
+    name: row.registration_name || row.name,
+    displayName: captainDisplayName(row.registration_name || row.name),
+    phone: row.phone,
+    active: Boolean(row.active),
+    accountStatus: row.account_status,
+    amountCents: row.amount_cents,
+    amount: money(row.amount_cents),
+    balanceAfterCents: row.balance_after_cents,
+    balanceAfter: row.balance_after_cents == null ? null : money(row.balance_after_cents),
+    reference: row.reference,
+    createdAt: row.created_at,
+  });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    chargeDate,
+    chargeAmountCents: CAPTAIN_DAILY_CHARGE_CENTS,
+    chargeAmount: money(CAPTAIN_DAILY_CHARGE_CENTS),
+    count: rows.length,
+    totalCents,
+    total: money(totalCents),
+    activeCount: rows.filter((row) => Boolean(row.active)).length,
+    suspendedCount: rows.filter((row) => !Boolean(row.active)).length,
+    charges: rows.map(serialize),
+  });
+});
 app.get("/api/admin/settlements", requireAdmin, (req, res) => {
   const query = String(req.query.q || "").trim().toLowerCase();
   const rows = settlementRows(req.query.limit || 300).map((row) => serializeSettlement(row, true)).filter((row) => {

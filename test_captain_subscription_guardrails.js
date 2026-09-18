@@ -26,5 +26,8 @@ assert.match(source, /DAILY-CAPTAIN-\$\{chargeDate\}-\$\{captain\.id\}/);
 assert.match(source, /setInterval\(\(\) => applyCaptainDailyCharges\(\), CAPTAIN_DAILY_CHARGE_INTERVAL_MS\)/);
 const dailyBlock = source.slice(source.indexOf('function applyCaptainDailyCharges'), source.indexOf('function startCaptainSubscriptionScheduler'));
 assert.equal(dailyBlock.includes('notifyCaptain'), false, 'daily charge must not notify captains');
+assert.match(source, /app\.get\("\/api\/admin\/daily-charges", requireAdmin/);
+assert.match(source, /chargeAmountCents: CAPTAIN_DAILY_CHARGE_CENTS/);
+assert.match(source, /activeCount: rows\.filter\(\(row\) => Boolean\(row\.active\)\)\.length/);
 
 console.log('captain subscription approval, activity window, idempotency, and scheduler guardrails verified');
