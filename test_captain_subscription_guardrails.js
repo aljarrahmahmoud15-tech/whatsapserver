@@ -17,5 +17,14 @@ assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);
 assert.match(source, /startCaptainSubscriptionScheduler\(\);/);
 assert.match(source, /app\.get\("\/api\/admin\/subscriptions", requireAdmin/);
 assert.match(source, /currentBalance: money\(row\.wallet_cents\)/);
+assert.match(source, /const CAPTAIN_DAILY_CHARGE_CENTS = 10/);
+assert.match(source, /CREATE TABLE IF NOT EXISTS captain_daily_charges/);
+assert.match(source, /UNIQUE\(user_id, charge_date\)/);
+assert.match(source, /function applyCaptainDailyCharges\(stamp = now\(\)\)/);
+assert.match(source, /"daily_captain_charge"/);
+assert.match(source, /DAILY-CAPTAIN-\$\{chargeDate\}-\$\{captain\.id\}/);
+assert.match(source, /setInterval\(\(\) => applyCaptainDailyCharges\(\), CAPTAIN_DAILY_CHARGE_INTERVAL_MS\)/);
+const dailyBlock = source.slice(source.indexOf('function applyCaptainDailyCharges'), source.indexOf('function startCaptainSubscriptionScheduler'));
+assert.equal(dailyBlock.includes('notifyCaptain'), false, 'daily charge must not notify captains');
 
 console.log('captain subscription approval, activity window, idempotency, and scheduler guardrails verified');

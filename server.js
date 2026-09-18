@@ -59,6 +59,8 @@ const CAPTAIN_SUBSCRIPTION_CENTS = 100;
 const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
 const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const CAPTAIN_DAILY_CHARGE_CENTS = 10;
+const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
@@ -444,6 +446,20 @@ CREATE TABLE IF NOT EXISTS captain_subscription_charges (
   FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)
 );
 CREATE INDEX IF NOT EXISTS idx_subscription_charges_period ON captain_subscription_charges(period_start,status);
+CREATE TABLE IF NOT EXISTS captain_daily_charges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  charge_date TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  ledger_id INTEGER,
+  reference TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  details_json TEXT,
+  UNIQUE(user_id, charge_date),
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)
+);
+CREATE INDEX IF NOT EXISTS idx_captain_daily_charges_date ON captain_daily_charges(charge_date);
 `);
 
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
@@ -1820,9 +1836,42 @@ function applyCaptainSubscriptionCharges(stamp = now()) {
   if (applied.length || skipped.length) console.log(`[Subscription] period=${period.start} applied=${applied.length} skipped=${skipped.length}`);
   return { status: "completed", period, applied, skipped, eligibleCount: captains.length };
 }
+function applyCaptainDailyCharges(stamp = now()) {
+  const chargeDate = String(stamp).slice(0, 10);
+  const captains = db.prepare(`SELECT id,phone,name,wallet_cents,active,account_status FROM users
+    WHERE role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged'
+    ORDER BY id`).all();
+  const applied = [];
+  for (const captain of captains) {
+    const reference = `DAILY-CAPTAIN-${chargeDate}-${captain.id}`;
+    try {
+      const result = db.transaction(() => {
+        const existing = db.prepare("SELECT id,ledger_id FROM captain_daily_charges WHERE user_id=? AND charge_date=? LIMIT 1").get(captain.id, chargeDate);
+        if (existing) return { state: "already_recorded", chargeId: existing.id, ledgerId: existing.ledger_id };
+        const current = db.prepare("SELECT id,wallet_cents,role,is_bot,account_status FROM users WHERE id=? AND role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged'").get(captain.id);
+        if (!current) return { state: "ineligible" };
+        const nextBalance = Number(current.wallet_cents || 0) - CAPTAIN_DAILY_CHARGE_CENTS;
+        const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
+          .run(captain.id, "daily_captain_charge", -CAPTAIN_DAILY_CHARGE_CENTS, nextBalance, reference, "خصم يومي ثابت من محفظة الكابتن", stamp, JSON.stringify({ chargeDate, amountCents: CAPTAIN_DAILY_CHARGE_CENTS }), reference);
+        const charge = db.prepare("INSERT INTO captain_daily_charges(user_id,charge_date,amount_cents,ledger_id,reference,created_at,details_json) VALUES(?,?,?,?,?,?,?)")
+          .run(captain.id, chargeDate, CAPTAIN_DAILY_CHARGE_CENTS, ledger.lastInsertRowid, reference, stamp, JSON.stringify({ balanceAfterCents: nextBalance }));
+        db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, captain.id);
+        audit("captain.daily_charge.applied", "user", captain.id, { amountCents: CAPTAIN_DAILY_CHARGE_CENTS, chargeDate, balanceAfterCents: nextBalance, reference }, null);
+        return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceAfterCents: nextBalance };
+      })();
+      if (result.state === "applied") applied.push({ ...captain, ...result, reference });
+    } catch (error) {
+      console.error(`[DailyCharge] failed for captain ${captain.id}:`, error.message);
+    }
+  }
+  if (applied.length) console.log(`[DailyCharge] date=${chargeDate} applied=${applied.length} amountCents=${CAPTAIN_DAILY_CHARGE_CENTS}`);
+  return { status: "completed", chargeDate, applied, eligibleCount: captains.length };
+}
 function startCaptainSubscriptionScheduler() {
   applyCaptainSubscriptionCharges();
   setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
+  applyCaptainDailyCharges();
+  setInterval(() => applyCaptainDailyCharges(), CAPTAIN_DAILY_CHARGE_INTERVAL_MS).unref();
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
