@@ -55,6 +55,10 @@ const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSW
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
+const CAPTAIN_SUBSCRIPTION_CENTS = 100;
+const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
+const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
+const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
@@ -416,6 +420,23 @@ CREATE TABLE IF NOT EXISTS order_settlements (
   FOREIGN KEY(producer_user_id) REFERENCES users(id),
   FOREIGN KEY(charged_user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS captain_subscription_charges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('applied','skipped_debt_limit','ineligible')),
+  ledger_id INTEGER,
+  reference TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  applied_at TEXT,
+  details_json TEXT,
+  UNIQUE(user_id, period_start),
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_charges_period ON captain_subscription_charges(period_start,status);
 `);
 
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
@@ -1557,6 +1578,60 @@ async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl 
 }
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
+}
+function currentCaptainSubscriptionPeriod(stamp = now()) {
+  const startMs = Date.parse(CAPTAIN_SUBSCRIPTION_START);
+  const stampMs = Date.parse(stamp);
+  if (!Number.isFinite(startMs) || !Number.isFinite(stampMs) || stampMs < startMs) return null;
+  const periodMs = CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000;
+  const periodStartMs = startMs + Math.floor((stampMs - startMs) / periodMs) * periodMs;
+  return { start: new Date(periodStartMs).toISOString(), end: new Date(periodStartMs + periodMs).toISOString() };
+}
+function applyCaptainSubscriptionCharges(stamp = now()) {
+  const period = currentCaptainSubscriptionPeriod(stamp);
+  if (!period) return { status: "before_start", applied: [], skipped: [] };
+  const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const captains = db.prepare(`SELECT id,phone,name,wallet_cents FROM users
+    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active'
+    AND (EXISTS (SELECT 1 FROM orders o WHERE (o.producer_user_id=users.id OR o.captain_user_id=users.id) AND o.created_at>=? AND o.created_at<=?)
+      OR EXISTS (SELECT 1 FROM order_candidates oc WHERE oc.producer_user_id=users.id AND oc.created_at>=? AND oc.created_at<=?))
+    ORDER BY id`).all(cutoff, stamp, cutoff, stamp);
+  const applied = [];
+  const skipped = [];
+  for (const captain of captains) {
+    const reference = `SUB-${period.start.slice(0, 10)}-${captain.id}`;
+    try {
+      const result = db.transaction(() => {
+        const existing = db.prepare("SELECT id,status,ledger_id FROM captain_subscription_charges WHERE user_id=? AND period_start=? LIMIT 1").get(captain.id, period.start);
+        if (existing) return { state: "already_recorded", chargeId: existing.id, status: existing.status };
+        const current = db.prepare("SELECT wallet_cents FROM users WHERE id=? AND role='captain' AND active=1 AND account_status='active'").get(captain.id);
+        if (!current) return { state: "ineligible" };
+        const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
+        if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) {
+          const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,reference,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)")
+            .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "skipped_debt_limit", reference, stamp, JSON.stringify({ reason: "debt_limit", balanceCents: current.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS }));
+          return { state: "skipped_debt_limit", chargeId: charge.lastInsertRowid };
+        }
+        db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, captain.id);
+        const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
+          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, "اشتراك أسبوعي للكابتن عن وجود حركة خلال آخر 7 أيام", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, activityWindowStart: cutoff, activityWindowEnd: stamp }), reference);
+        const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,ledger_id,reference,created_at,applied_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)")
+          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ activityWindowStart: cutoff, activityWindowEnd: stamp }));
+        audit("captain.subscription.charged", "user", captain.id, { phone: captain.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference }, null);
+        return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceAfterCents: nextBalance };
+      })();
+      if (result.state === "applied") applied.push({ ...captain, ...result, reference });
+      else if (result.state === "skipped_debt_limit") skipped.push({ ...captain, ...result, reference });
+    } catch (error) {
+      console.error(`[Subscription] failed for captain ${captain.id}:`, error.message);
+    }
+  }
+  if (applied.length || skipped.length) console.log(`[Subscription] period=${period.start} applied=${applied.length} skipped=${skipped.length}`);
+  return { status: "completed", period, applied, skipped, eligibleCount: captains.length };
+}
+function startCaptainSubscriptionScheduler() {
+  applyCaptainSubscriptionCharges();
+  setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
@@ -5509,6 +5584,7 @@ reconcileConfiguredGroupFromEnvironment();
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
+  startCaptainSubscriptionScheduler();
   initializeWhatsApp();
   startWhatsAppWatchdog();
   if (BAILEYS_ENABLED) initializeBaileys();
