@@ -46,3 +46,5 @@ services:
         value: "20"
       - key: WHATSAPP_WATCHDOG_INTERVAL_MS
         value: "300000"
+      - key: AUTO_APPROVAL_TOPUP_CENTS
+        value: "500"
