@@ -8,7 +8,7 @@ assert(server.includes('async function sendCompanyOperationsCard'), 'company car
 assert(server.includes('renderOperationsMessageMedia(title, lines)'), 'individual company replies render branded media');
 assert(server.includes('async function sendBotText(to, text)'), 'text API is preserved as a compatibility wrapper');
 assert(server.includes('return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines)'), 'ordinary company messages use the official card');
-assert(server.includes('sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن"'), 'captain approval is sent as a branded card');
+assert(server.includes('sendCaptainOperationsCard(recipient, "تمت الموافقة"'), 'captain approval is sent as a branded card');
 assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
 assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');
 assert(server.includes('previous.delete(true)'), 'previous plain reply may be deleted for everyone when WhatsApp permits it');
@@ -21,6 +21,13 @@ assert(server.includes('group.configured'), 'group configuration notifies the ow
 assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchronization notifies the owner');
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');
 assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
+assert(server.includes('function notifyCaptainCreditSent'), 'captain credit notification helper exists');
+assert(server.includes('event: "captain.wallet.credit_sent"'), 'captain credit notification uses a dedicated event');
+assert(server.includes("event='captain.wallet.credit_sent' AND message LIKE ?"), 'captain credit notification is idempotent per card');
+assert(server.includes('تم إرسال رصيد بالقيمة المطلوبة'), 'captain credit notification includes the requested value');
+assert(server.includes('const recipient = await resolveWhatsAppRecipientId(invite.phone);'), 'captain approval resolves the current WhatsApp recipient');
+assert(server.includes('sendCaptainOperationsCard(recipient, "تمت الموافقة"'), 'captain approval sends the approved notification');
+assert(server.includes('تمت الموافقة على تسجيلك من الشركة.'), 'captain approval notification uses the approved wording');
 assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative captain wallet notification service exists');
 assert(server.includes('const title = "تنبيه من وصلني الآن"'), 'negative wallet alert uses the approved Waslni title');
 assert(server.includes('عزيزي الكابتن ${captain.name}،'), 'negative wallet alert addresses the captain politely');

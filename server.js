@@ -836,6 +836,16 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus });
   return { status: deliveryStatus, notificationId: row.lastInsertRowid };
 }
+function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
+  if (!captain?.phone) return;
+  const lines = [`الكابتن: ${captain.name}`, `تم إرسال رصيد بالقيمة المطلوبة: ${money(valueCents)} JOD`, "تم إرسال بطاقة الرصيد إلى WhatsApp الخاص بك.", "يُضاف الرصيد إلى محفظتك بعد استرداد البطاقة من بوابة الكابتن."];
+  if (cardId) lines.push(`رقم البطاقة الداخلي: #${cardId}`);
+  if (cardId) {
+    const duplicate = db.prepare("SELECT id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.credit_sent' AND message LIKE ? LIMIT 1").get(phoneWithCountry(captain.phone), `%رقم البطاقة الداخلي: #${cardId}%`);
+    if (duplicate) return;
+  }
+  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines });
+}
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
   db.prepare(`UPDATE customer_leads SET direction=?,travel_mode=?,travel_date=?,travelers_count=?,state=?,last_message_id=?,last_text=?,updated_at=? WHERE id=?`).run(next.direction || null, next.travel_mode || null, next.travel_date || null, next.travelers_count || null, next.state, next.last_message_id || null, next.last_text || null, next.updated_at, lead.id);
@@ -3394,14 +3404,15 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (invite.phone) {
     const authText = authMethod === "whatsapp" ? "طريقة الدخول: رمز تحقق يُرسل إلى رقم WhatsApp نفسه." : "طريقة الدخول: رقم الهاتف والرمز السري من 5 أرقام الذي اخترته.";
     const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
-    notified = await sendCaptainOperationsCard(`${phoneWithCountry(invite.phone)}@c.us`, "تم اعتماد تسجيل الكابتن", [
-      `الكابتن: ${invite.name}`,
-      "تمت الموافقة على طلبك داخل شبكة وصلني الآن.",
+    const recipient = await resolveWhatsAppRecipientId(invite.phone);
+    notified = Boolean(recipient && await sendCaptainOperationsCard(recipient, "تمت الموافقة", [
+      `عزيزي الكابتن ${invite.name}،`,
+      "تمت الموافقة على تسجيلك من الشركة.",
       `رقم الهاتف: ${invite.phone}`,
       authText,
       `رابط دخول الكابتن المباشر: ${captainAppLink}`,
       "افتح رابط دخول الكابتن المرفق، ثم أدخل رقم هاتفك والرقم السري. هذا الرابط مخصص للدخول بعد الموافقة، وليس لتسجيل كابتن جديد."
-    ]);
+    ]));
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
@@ -4017,6 +4028,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
+      notifyCaptainCreditSent({ captain, valueCents: amountCents, cardId: card.id });
       void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
       return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
     } catch (error) {
@@ -4826,6 +4838,7 @@ async function handleAdminWalletAdjustment(req, res) {
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
+      notifyCaptainCreditSent({ captain, valueCents: amountCents, cardId: card.id });
       void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
       return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
     } catch (error) {
@@ -5703,6 +5716,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
     audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.id, captainId: captain.id });
+    notifyCaptainCreditSent({ captain, valueCents, cardId: card.id });
     void notifyOperations({ event: "topup_card.sent", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم توليد البطاقة وإرسالها عبر WhatsApp.", "يُضاف الرصيد عند إدخال رمز البطاقة."], ownersOnly: true });
     res.json({ success: true, status: "resolved", cardId: card.id });
   } catch (error) {
