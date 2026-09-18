@@ -817,7 +817,6 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
     "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
-    `المرجع الداخلي: ${safeReference}`,
   ];
   const message = brandedMessage(title, lines);
   const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phoneWithCountry(captain.phone), title, message);
