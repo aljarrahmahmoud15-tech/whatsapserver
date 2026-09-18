@@ -46,6 +46,12 @@ assert(server.includes('لتصفير الرصيد ومتابعة تنفيذ ال
 assert(server.includes('شكرًا لتعاونك مع وصلني الآن – Waslni Now.'), 'negative wallet alert uses the approved closing');
 assert(server.includes("event='captain.wallet.negative'"), 'negative wallet notifications use a dedicated event');
 assert(server.includes('if (existing) return { status: existing.delivery_status, duplicate: true'), 'negative wallet notifications are idempotent');
+assert(server.includes('app.post("/api/admin/notifications/negative-balance-warning", requireAdmin'), 'negative balance warning broadcast is admin protected');
+assert(server.includes('SEND_NEGATIVE_BALANCE_WARNING_TO_ALL'), 'negative balance warning requires explicit confirmation');
+assert(server.includes("wallet_cents<0 ORDER BY id"), 'negative balance warning targets all negative captains');
+assert(server.includes('captain.negative_balance_warning.sent'), 'negative balance warning is audited per captain');
+assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.'), 'negative balance warning uses the approved wording');
+assert(server.includes('negativeBalanceWarningRuns'), 'negative balance warning broadcast is idempotent by run');
 assert(server.includes('if (Number(result.balanceAfterCents) < 0) void notifyCaptainNegativeBalance'), 'subscription debit triggers negative wallet notification');
 assert(server.includes('if (nextBalance < 0) void notifyCaptainNegativeBalance'), 'administrative debit triggers negative wallet notification');
 assert(server.includes('if (result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance'), 'order settlement triggers negative wallet notification');

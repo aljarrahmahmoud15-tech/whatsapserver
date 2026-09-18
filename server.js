@@ -93,6 +93,7 @@ const cardDeliveryInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
 const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
+const negativeBalanceWarningRuns = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -5946,6 +5947,45 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
 app.get("/api/admin/group/reset-active-captain-pins/:runKey", requireAdmin, (req, res) => {
   const run = bulkPinRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية PIN غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run });
+});
+app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  if (confirmation !== "SEND_NEGATIVE_BALANCE_WARNING_TO_ALL" || !/^NEG-WARN-[A-Z0-9-]{12,80}$/.test(runKey)) return res.status(400).json({ error: "تأكيد العملية ومفتاحها مطلوبان" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  if (negativeBalanceWarningRuns.has(runKey)) return res.json({ success: true, started: true, ...negativeBalanceWarningRuns.get(runKey) });
+  const captains = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND wallet_cents<0 ORDER BY id").all();
+  const run = { runKey, status: "running", total: captains.length, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: null };
+  negativeBalanceWarningRuns.set(runKey, run);
+  void (async () => {
+    for (const captain of captains) {
+      try {
+        const prior = db.prepare("SELECT id FROM audit_logs WHERE action='captain.negative_balance_warning.sent' AND entity_type='user' AND entity_id=? AND details LIKE ? LIMIT 1").get(String(captain.id), `%${runKey}%`);
+        if (prior) { run.skipped += 1; run.sent += 1; continue; }
+        const recipient = await resolveWhatsAppRecipientId(captain.phone);
+        if (!recipient) throw new Error("recipient_unresolved");
+        const text = brandedMessage("تنبيه رصيد المحفظة", [
+          `الكابتن: ${captain.name || "حساب الكابتن"}`,
+          `رصيدك الحالي: ${money(captain.wallet_cents)} JOD`,
+          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.",
+          "يرجى التواصل مع الإدارة لشحن الرصيد.",
+        ]);
+        const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+        if (!sent) throw new Error("delivery_failed");
+        audit("captain.negative_balance_warning.sent", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
+        run.sent += 1;
+      } catch (_) { run.failed += 1; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    run.status = "completed";
+    run.completedAt = now();
+  })().catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmin, (req, res) => {
+  const run = negativeBalanceWarningRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية التحذير غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run });
 });
 app.post("/api/redeem", (req, res) => {
