@@ -6,6 +6,11 @@ const index = fs.readFileSync('./public/index.html', 'utf8');
 
 assert.ok(server.includes('app.get("/api/admin/cards", requireAdmin'), 'admin card history API is protected');
 assert.ok(server.includes('app.get("/api/admin/bulk-topup/preview", requireAdmin'), 'bulk top-up preview API is protected');
+assert.ok(server.includes('app.post("/api/admin/bulk-topup/zero-balance-5", requireAdmin'), 'zero-balance five JOD bulk issue API is protected');
+assert.ok(server.includes('ISSUE_ZERO_BALANCE_5_JOD_ACTIVE_GROUP_CAPTAINS'), 'zero-balance bulk issue requires explicit confirmation');
+assert.ok(server.includes('wallet_cents=0'), 'zero-balance bulk issue targets exact zero balances');
+assert.ok(server.includes('active=1 AND is_bot=0 AND wallet_cents=0'), 'zero-balance bulk issue excludes inactive and bot accounts');
+assert.ok(server.includes('const issueKey = `ZERO5-JOD-${captain.id}`'), 'zero-balance bulk issue is idempotent per captain');
 assert.ok(server.includes('readOnly: true'), 'bulk top-up preview is explicitly read-only');
 assert.ok(server.includes('policy: "abs_current_balance"'), 'bulk top-up preview uses absolute current balance policy');
 assert.ok(server.includes('wallet_cents<>0'), 'bulk top-up preview excludes zero balances');

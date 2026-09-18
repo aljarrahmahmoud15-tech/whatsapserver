@@ -91,6 +91,7 @@ const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
+const bulkTopupRuns = new Map();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -5782,6 +5783,65 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
 }
 app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => handleStoredTopupCardDelivery(req, res, "media"));
 app.post("/api/admin/cards/:id/send-text", requireAdmin, async (req, res) => handleStoredTopupCardDelivery(req, res, "text"));
+app.post("/api/admin/bulk-topup/zero-balance-5", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  const expectedCount = Number(req.body?.expectedCount);
+  if (confirmation !== "ISSUE_ZERO_BALANCE_5_JOD_ACTIVE_GROUP_CAPTAINS" || !/^ZERO5-[A-Z0-9-]{12,80}$/.test(runKey) || expectedCount !== 49) return res.status(400).json({ error: "تأكيد العملية ومفتاحها والعدد المتوقع 49 مطلوبة" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
+  if (bulkTopupRuns.has(runKey)) return res.json({ success: true, started: true, ...bulkTopupRuns.get(runKey) });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "القروب الرسمي غير متاح" });
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const entries = (chat.participants || []).map((participant) => ({ phone: normalize(groupParticipantPhone(participant)), recipientId: participant?.id?._serialized || String(participant?.id || "") })).filter((entry) => entry.phone && !isBotPhone(entry.phone));
+  const captains = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND account_status='active' AND active=1 AND is_bot=0 AND wallet_cents=0").all();
+  const memberPhones = new Set(entries.map((entry) => entry.phone));
+  const recipients = captains.map((captain) => ({ ...captain, recipientId: entries.find((entry) => entry.phone === normalize(captain.phone))?.recipientId || null })).filter((captain) => memberPhones.has(normalize(captain.phone)));
+  if (recipients.length !== expectedCount) return res.status(409).json({ error: "تغيرت قائمة القروب أو الأرصدة؛ أعد المعاينة", matchedCount: recipients.length, expectedCount });
+  const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+  const run = { runKey, status: "running", total: recipients.length, issued: 0, reused: 0, sent: 0, failed: 0, startedAt: now(), completedAt: null };
+  bulkTopupRuns.set(runKey, run);
+  void (async () => {
+    for (const captain of recipients) {
+      const issueKey = `ZERO5-JOD-${captain.id}`;
+      try {
+        let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueKey);
+        if (!card) {
+          let code = randomCode();
+          while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+          const created = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,500,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), captain.id, issueKey, encryptCardCode(code), now());
+          card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(created.lastInsertRowid);
+          run.issued += 1;
+          audit("topup_card.issued", "topup_card", card.id, { valueCents: 500, captainId: captain.id, issueIdempotencyKey: issueKey, bulkRunKey: runKey });
+        } else run.reused += 1;
+        if (card.sent_at) { run.sent += 1; continue; }
+        if (cardDeliveryInFlight.has(card.id)) { run.failed += 1; continue; }
+        cardDeliveryInFlight.add(card.id);
+        try {
+          const code = decryptCardCode(card.code_ciphertext);
+          const recipient = captain.recipientId && /@(c\.us|lid)$/.test(captain.recipientId) ? captain.recipientId : await resolveWhatsAppRecipientId(captain.phone);
+          const text = topupCardTextMessage({ cardId: card.id, code, valueCents: 500, captainName: captain.name, appUrl });
+          const sent = recipient ? await withTimeout(client.sendMessage(recipient, text), 30000, null) : null;
+          if (!sent) throw new Error("delivery_failed");
+          db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `BULK-${runKey}-${captain.id}`, card.id);
+          run.sent += 1;
+          void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد إرسال بطاقة شحن جماعية", lines: [`الكابتن: ${captain.name}`, "القيمة: 5.00 JOD", `رقم البطاقة الداخلي: #${card.id}`, "تم إرسال بطاقة الرصيد نصيًا.", "يُضاف الرصيد عند استرداد البطاقة."], ownersOnly: true });
+        } finally { cardDeliveryInFlight.delete(card.id); }
+      } catch (_) { run.failed += 1; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    run.status = "completed";
+    run.completedAt = now();
+  })().catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/bulk-topup/zero-balance-5/:runKey", requireAdmin, (req, res) => {
+  const run = bulkTopupRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية البطاقات غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run });
+});
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
   const phone = phoneWithCountry(req.body.phone || "");
