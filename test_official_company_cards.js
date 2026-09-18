@@ -24,7 +24,8 @@ assert(server.includes('captain.activated'), 'captain status changes notify capt
 assert(server.includes('operations card not sent because branded media failed'), 'plain-text fallback is disabled for individual company messages');
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.id'), 'top-up request fulfillment renders a card image');
-assert(server.includes('client.sendMessage(`${phone}@c.us`, media, { caption })'), 'top-up request sends the generated card in the same action');
+assert(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'top-up request resolves the captain WhatsApp identity');
+assert(server.includes('client.sendMessage(recipient, media, { caption })'), 'top-up request sends the generated card in the same action');
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
 assert(index.includes('id="topup-requests-open"'), 'top-up requests remain accessible from the compact console');
 assert(index.includes('data-topup-fulfill'), 'top-up approval remains a single fulfill-and-send action');

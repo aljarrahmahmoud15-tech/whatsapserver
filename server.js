@@ -515,6 +515,13 @@ const phoneWithCountry = (value = "") => {
   if (raw.startsWith("0")) return "962" + raw.slice(1);
   return raw;
 };
+async function resolveWhatsAppRecipientId(phoneValue) {
+  const phone = phoneWithCountry(phoneValue);
+  if (!phone || !client || !isReady || typeof client.getNumberId !== "function") return null;
+  const resolved = await withTimeout(client.getNumberId(phone), 20000, null);
+  const serialized = String(resolved?._serialized || "").trim();
+  return /@(c\.us|lid)$/.test(serialized) ? serialized : null;
+}
 const cents = (value) => Math.round(Number(value || 0) * 100);
 const money = (value) => (Number(value || 0) / 100).toFixed(2);
 
@@ -3845,7 +3852,8 @@ app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) 
   cardDeliveryInFlight.add(cardId);
   try {
     const code = decryptCardCode(card.code_ciphertext);
-    const chatId = `${phoneWithCountry(card.captain_phone)}@c.us`;
+    const chatId = await resolveWhatsAppRecipientId(card.captain_phone);
+    if (!chatId) return res.status(409).json({ error: "Captain WhatsApp account could not be resolved; card remains unsent" });
     const message = brandedMessage("بطاقة شحن مخصصة", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "هذه البطاقة مخصصة لهذا الرقم فقط وتُستخدم مرة واحدة.", "للاسترداد أرسل الرمز عبر قناة البوت المعتمدة."]);
     const sent = await withTimeout(client.sendMessage(chatId, message), 20000, null);
     if (!sent) return res.status(504).json({ error: "WhatsApp delivery timed out; card remains unsent" });
@@ -3957,7 +3965,9 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
       const appUrl = captainAppUrl(captainInviteBaseUrl(req));
       const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
       const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
-      const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(captain.phone)}@c.us`, media, { caption }), 30000, null);
+      const recipient = await resolveWhatsAppRecipientId(captain.phone);
+      if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
+      const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
@@ -4763,7 +4773,9 @@ async function handleAdminWalletAdjustment(req, res) {
       const appUrl = captainAppUrl(captainInviteBaseUrl(req));
       const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
       const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
-      const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(captain.phone)}@c.us`, media, { caption }), 30000, null);
+      const recipient = await resolveWhatsAppRecipientId(captain.phone);
+      if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
+      const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
@@ -5483,7 +5495,8 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة."]);
-    const recipient = `${phoneWithCountry(card.captain_phone)}@c.us`;
+    const recipient = await resolveWhatsAppRecipientId(card.captain_phone);
+    if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل" });
     let sent = null;
     if (deliveryMode === "text") {
       const text = topupCardTextMessage({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
@@ -5635,7 +5648,9 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
     const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
-    const sent = await withTimeout(client.sendMessage(`${phone}@c.us`, media, { caption }), 30000, null);
+    const recipient = await resolveWhatsAppRecipientId(phone);
+    if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
+    const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
     if (!sent) throw new Error("send timeout");
     db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
