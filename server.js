@@ -5642,7 +5642,7 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
   const requestedPeriod = String(req.query.periodStart || "").trim();
   const currentPeriod = currentCaptainSubscriptionPeriod();
   const periodStart = requestedPeriod || currentPeriod?.start || null;
-  if (!periodStart) return res.json({ success: true, periodStart: null, count: 0, totalCents: 0, charges: [] });
+  if (!periodStart) return res.json({ success: true, periodStart: null, count: 0, userCount: 0, totalCents: 0, charges: [], users: [] });
   const rows = db.prepare(`SELECT c.id,c.user_id,c.period_start,c.period_end,c.amount_cents,c.status,c.reference,c.applied_at,
       u.name,u.phone,u.wallet_cents,l.balance_after_cents
     FROM captain_subscription_charges c
@@ -5650,7 +5650,44 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
     LEFT JOIN wallet_ledger l ON l.id=c.ledger_id
     WHERE c.period_start=?
     ORDER BY c.status='applied' DESC,u.name,u.id`).all(periodStart);
+  const users = db.prepare(`SELECT u.id,u.phone,u.name,u.wallet_cents,u.active,u.account_status,u.created_at,u.updated_at,
+      (SELECT c.status FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_status,
+      (SELECT c.amount_cents FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_amount_cents,
+      (SELECT c.reference FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_reference,
+      (SELECT c.applied_at FROM captain_subscription_charges c WHERE c.user_id=u.id AND c.period_start=? ORDER BY c.id DESC LIMIT 1) AS subscription_applied_at
+    FROM users u
+    WHERE u.role='captain' AND u.is_bot=0 AND u.account_status<>'merged'
+    ORDER BY u.active DESC,u.name,u.id`).all(periodStart, periodStart, periodStart, periodStart);
   const totalCents = rows.filter((row) => row.status === "applied").reduce((sum, row) => sum + Number(row.amount_cents || 0), 0);
+  const serializeUser = (row) => {
+    const amountCents = Number(row.subscription_amount_cents || 0);
+    const applied = row.subscription_status === "applied";
+    const balanceAfterCents = Number(row.wallet_cents || 0);
+    const balanceBeforeCents = applied ? balanceAfterCents + amountCents : balanceAfterCents;
+    return {
+      id: row.id,
+      name: row.name,
+      originalName: row.name,
+      displayName: captainDisplayName(row.name),
+      phone: row.phone,
+      active: Boolean(row.active),
+      accountStatus: row.account_status,
+      subscriptionStatus: row.subscription_status || "not_charged",
+      subscriptionAmountCents: amountCents,
+      subscriptionAmount: money(amountCents),
+      balanceBeforeSubscriptionCents: balanceBeforeCents,
+      balanceBeforeSubscription: money(balanceBeforeCents),
+      balanceAfterSubscriptionCents: balanceAfterCents,
+      balanceAfterSubscription: money(balanceAfterCents),
+      balanceCents: balanceAfterCents,
+      balance: money(balanceAfterCents),
+      reference: row.subscription_reference || null,
+      appliedAt: row.subscription_applied_at || null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  };
+  const serializedUsers = users.map(serializeUser);
   res.setHeader("Cache-Control", "no-store");
   if (req.query.compact === "1") {
     return res.json({
@@ -5658,8 +5695,10 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
       periodStart,
       periodEnd: rows[0]?.period_end || currentPeriod?.end || null,
       count: rows.length,
+      userCount: serializedUsers.length,
       appliedCount: rows.filter((row) => row.status === "applied").length,
       total: money(totalCents),
+      users: serializedUsers,
       charges: rows.map((row) => ({ name: row.name, displayName: captainDisplayName(row.name), phone: row.phone, balance: money(row.wallet_cents), reference: row.reference })),
     });
   }
@@ -5668,9 +5707,11 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
     periodStart,
     periodEnd: rows[0]?.period_end || currentPeriod?.end || null,
     count: rows.length,
+    userCount: serializedUsers.length,
     appliedCount: rows.filter((row) => row.status === "applied").length,
     totalCents,
     total: money(totalCents),
+    users: serializedUsers,
     charges: rows.map((row) => ({
       id: row.id,
       captainId: row.user_id,
