@@ -5491,6 +5491,45 @@ app.get("/api/admin/wallets", requireAdmin, (req, res) => {
     FROM users u ORDER BY u.role,u.id`).all();
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
+app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
+  const requestedPeriod = String(req.query.periodStart || "").trim();
+  const currentPeriod = currentCaptainSubscriptionPeriod();
+  const periodStart = requestedPeriod || currentPeriod?.start || null;
+  if (!periodStart) return res.json({ success: true, periodStart: null, count: 0, totalCents: 0, charges: [] });
+  const rows = db.prepare(`SELECT c.id,c.user_id,c.period_start,c.period_end,c.amount_cents,c.status,c.reference,c.applied_at,
+      u.name,u.phone,u.wallet_cents,l.balance_after_cents
+    FROM captain_subscription_charges c
+    JOIN users u ON u.id=c.user_id
+    LEFT JOIN wallet_ledger l ON l.id=c.ledger_id
+    WHERE c.period_start=?
+    ORDER BY c.status='applied' DESC,u.name,u.id`).all(periodStart);
+  const totalCents = rows.filter((row) => row.status === "applied").reduce((sum, row) => sum + Number(row.amount_cents || 0), 0);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    periodStart,
+    periodEnd: rows[0]?.period_end || currentPeriod?.end || null,
+    count: rows.length,
+    appliedCount: rows.filter((row) => row.status === "applied").length,
+    totalCents,
+    total: money(totalCents),
+    charges: rows.map((row) => ({
+      id: row.id,
+      captainId: row.user_id,
+      name: row.name,
+      phone: row.phone,
+      status: row.status,
+      amountCents: row.amount_cents,
+      amount: money(row.amount_cents),
+      balanceAfterChargeCents: row.balance_after_cents,
+      balanceAfterCharge: row.balance_after_cents == null ? null : money(row.balance_after_cents),
+      currentBalanceCents: row.wallet_cents,
+      currentBalance: money(row.wallet_cents),
+      reference: row.reference,
+      appliedAt: row.applied_at,
+    })),
+  });
+});
 app.get("/api/admin/settlements", requireAdmin, (req, res) => {
   const query = String(req.query.q || "").trim().toLowerCase();
   const rows = settlementRows(req.query.limit || 300).map((row) => serializeSettlement(row, true)).filter((row) => {

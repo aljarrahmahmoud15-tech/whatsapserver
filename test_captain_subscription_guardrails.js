@@ -15,5 +15,7 @@ assert.match(source, /"skipped_debt_limit"/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);
 assert.match(source, /startCaptainSubscriptionScheduler\(\);/);
+assert.match(source, /app\.get\("\/api\/admin\/subscriptions", requireAdmin/);
+assert.match(source, /currentBalance: money\(row\.wallet_cents\)/);
 
 console.log('captain subscription approval, activity window, idempotency, and scheduler guardrails verified');
