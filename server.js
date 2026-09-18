@@ -4974,6 +4974,62 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   }
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
+app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).type("text/plain").send(Buffer.from(JSON.stringify({ error: "Bot not ready" }), "utf8").toString("base64"));
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).type("text/plain").send(Buffer.from(JSON.stringify({ error: "No configured production group" }), "utf8").toString("base64"));
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup) return res.status(404).type("text/plain").send(Buffer.from(JSON.stringify({ error: "Configured chat is not a group" }), "utf8").toString("base64"));
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const memberPhones = new Set((chat.participants || []).map(groupParticipantPhone).map(normalize).filter(Boolean));
+  const memberCount = memberPhones.size;
+  const captains = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND account_status<>'merged' AND is_bot=0 ORDER BY id").all();
+  const orderRefs = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?");
+  const ledgerRefs = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?");
+  const settlementRefs = db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?");
+  const cardRefs = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?");
+  const candidates = captains.map((user) => {
+    const phone = normalize(user.phone);
+    const refs = {
+      orders: Number(orderRefs.get(user.id, user.id, user.id).count || 0),
+      ledger: Number(ledgerRefs.get(user.id).count || 0),
+      settlements: Number(settlementRefs.get(user.id, user.id).count || 0),
+      cards: Number(cardRefs.get(user.id, user.id).count || 0),
+      balance: money(user.wallet_cents),
+    };
+    const inGroup = memberPhones.has(phone);
+    const deletable = !inGroup && refs.orders === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && Number(user.wallet_cents || 0) === 0;
+    return {
+      id: user.id,
+      phone: user.phone,
+      name: user.name,
+      registrationName: user.registration_name || user.name,
+      active: Boolean(user.active),
+      accountStatus: user.account_status,
+      inConfiguredGroup: inGroup,
+      refs,
+      safeDisposition: inGroup ? "keep" : (deletable ? "delete_empty_account" : "suspend_preserve_history"),
+    };
+  });
+  const keep = candidates.filter((candidate) => candidate.inConfiguredGroup);
+  const remove = candidates.filter((candidate) => !candidate.inConfiguredGroup);
+  const payload = {
+    mutation: "none",
+    generatedAt: now(),
+    groupId,
+    groupName: chat.name || null,
+    memberCount,
+    registeredCaptainCount: candidates.length,
+    keepCount: keep.length,
+    removeCount: remove.length,
+    deletableEmptyCount: remove.filter((candidate) => candidate.safeDisposition === "delete_empty_account").length,
+    preserveHistoryCount: remove.filter((candidate) => candidate.safeDisposition === "suspend_preserve_history").length,
+    keep,
+    remove,
+  };
+  res.set("Cache-Control", "no-store");
+  res.type("text/plain").send(Buffer.from(JSON.stringify(payload), "utf8").toString("base64"));
+});
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
