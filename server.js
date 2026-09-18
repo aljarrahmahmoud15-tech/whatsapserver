@@ -808,16 +808,16 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active") return { status: "ineligible" };
-  const title = "تنبيه رصيد المحفظة السالب";
+  const title = "تنبيه من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const lines = [
-    `الكابتن: ${captain.name}`,
-    `رصيدك الحالي: ${money(balanceCents)} JOD`,
-    `المبلغ المطلوب لتصفير الرصيد: ${money(Math.abs(Number(balanceCents)))} JOD`,
-    `سبب آخر حركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
-    `المرجع: ${safeReference}`,
-    "يرجى شحن المحفظة من خلال الشركة حتى تتمكن من تنفيذ الطلبات دون توقف.",
-    `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
+    `عزيزي الكابتن ${captain.name}،`,
+    `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
+    `يرجى شحن مبلغ ${money(Math.abs(Number(balanceCents)))} JOD لتصفير الرصيد ومتابعة تنفيذ الطلبات.`,
+    `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
+    `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
+    "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
+    `المرجع الداخلي: ${safeReference}`,
   ];
   const message = brandedMessage(title, lines);
   const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phoneWithCountry(captain.phone), title, message);

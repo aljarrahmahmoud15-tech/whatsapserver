@@ -22,6 +22,11 @@ assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchron
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');
 assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
 assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative captain wallet notification service exists');
+assert(server.includes('const title = "تنبيه من وصلني الآن"'), 'negative wallet alert uses the approved Waslni title');
+assert(server.includes('عزيزي الكابتن ${captain.name}،'), 'negative wallet alert addresses the captain politely');
+assert(server.includes('أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.'), 'negative wallet alert shows the current balance');
+assert(server.includes('لتصفير الرصيد ومتابعة تنفيذ الطلبات'), 'negative wallet alert includes the approved action');
+assert(server.includes('شكرًا لتعاونك مع وصلني الآن – Waslni Now.'), 'negative wallet alert uses the approved closing');
 assert(server.includes("event='captain.wallet.negative'"), 'negative wallet notifications use a dedicated event');
 assert(server.includes('if (existing) return { status: existing.delivery_status, duplicate: true'), 'negative wallet notifications are idempotent');
 assert(server.includes('if (Number(result.balanceAfterCents) < 0) void notifyCaptainNegativeBalance'), 'subscription debit triggers negative wallet notification');
