@@ -1135,7 +1135,7 @@ function ensureCaptainUser(phone, name) {
   if (existing && (existing.role === "company" || existing.is_bot === 1)) return null;
   if (existing && existing.role !== "company" && existing.is_bot !== 1) return existing;
   const stamp = now();
-  const displayName = String(name || displayPhone(normalized)).trim().slice(0, 100) || displayPhone(normalized);
+  const displayName = captainDisplayName(name).slice(0, 100);
   const temporaryPin = createCaptainPin();
   try {
     const result = db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,account_status,approved_at,activated_at,captain_auth_method,created_at,updated_at) VALUES(?,?, 'captain',0,1,0,?,?, 'active',?,?, 'pin',?,?)").run(normalized, displayName, bcrypt.hashSync(temporaryPin, 10), cardEncryptionKey ? encryptCardCode(temporaryPin) : null, stamp, stamp, stamp, stamp);
@@ -1225,7 +1225,7 @@ function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
   if (!isValidJordanPhone(normalized) || isBlockedPhone(normalized)) return { status: "skipped_invalid_or_blocked", phone: normalized || String(phone || "") };
   if (isProtectedOwnerIdentity(normalized)) return { status: "skipped_owner", phone: normalized };
   const stamp = now();
-  const displayName = String(name || displayPhone(normalized)).trim().slice(0, 100) || displayPhone(normalized);
+  const displayName = captainDisplayName(name).slice(0, 100);
   const existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(normalized) || findCaptainByPhone(normalized);
   if (existing && (existing.is_bot === 1 || existing.role === "company")) return { status: "skipped_system", phone: normalized, userId: existing.id };
   if (existing) {
@@ -1498,7 +1498,8 @@ async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id",
     const participantId = serializedWhatsappUserId(participant?.id);
     const contact = await withTimeout(client.getContactById(participantId || `${phone}@c.us`), 8000, null)
       || await withTimeout(client.getContactById(`${phone}@c.us`), 8000, null);
-    const name = String(contact && (contact.pushname || contact.name || contact.shortName) || displayPhone(phone)).trim().slice(0, 100);
+    const contactName = String(contact && (contact.pushname || contact.name || contact.shortName) || "").trim();
+    const name = captainDisplayName(contactName).slice(0, 100);
     const normalized = activateHumanCaptainAccount({ phone, name, reactivate });
     const captain = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? AND role='captain'").get(normalized.userId) : null;
     if (normalized.status === "registered") audit("captain.registered_from_group", "user", normalized.userId, { phone, groupId });
@@ -1604,6 +1605,8 @@ const CAPTAIN_ARABIC_DISPLAY_NAMES = {
 };
 function captainDisplayName(name) {
   const original = String(name || "").replace(/\u200f|\u200e/g, "").trim();
+  const digits = original.replace(/[^0-9]/g, "");
+  if (!original || (digits.length >= 8 && digits === original.replace(/[^0-9]/g, ""))) return "كابتن بدون اسم";
   return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
 }
 function applyCaptainSubscriptionCharges(stamp = now()) {
@@ -5533,7 +5536,7 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
       count: rows.length,
       appliedCount: rows.filter((row) => row.status === "applied").length,
       total: money(totalCents),
-      charges: rows.map((row) => ({ name: row.name, phone: row.phone, balance: money(row.wallet_cents), reference: row.reference })),
+      charges: rows.map((row) => ({ name: row.name, displayName: captainDisplayName(row.name), phone: row.phone, balance: money(row.wallet_cents), reference: row.reference })),
     });
   }
   res.json({

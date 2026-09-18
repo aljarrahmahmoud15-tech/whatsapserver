@@ -12,5 +12,8 @@ assert.match(html, /captains-wallets-arabic-2026-09-18\.csv/);
 assert.match(html, /c\.displayName\|\|c\.name/);
 assert.match(server, /displayName: captainDisplayName\(row\.name\)/);
 assert.match(server, /app\.get\("\/api\/admin\/subscriptions", requireAdmin/);
+assert.match(server, /كابتن بدون اسم/);
+assert.match(server, /const contactName = String\(contact/);
+assert.doesNotMatch(server, /const name = String\(contact && \(contact\.pushname \|\| contact\.name \|\| contact\.shortName\) \|\| displayPhone\(phone\)\)/);
 
 console.log('Arabic captain names, wallet balances, and downloadable dashboard report verified');
