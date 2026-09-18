@@ -3282,39 +3282,19 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod);
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (invite.phone && phoneWithCountry(invite.phone) !== phone) return res.status(403).json({ error: "هذه الدعوة مخصصة لرقم هاتف مختلف" });
   if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
-  let existing = db.prepare("SELECT * FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
-  if (existing && (existing.is_bot === 1 || existing.role === "company" || isProtectedOwnerIdentity(phone))) return res.status(409).json({ error: "هذا الرقم مخصص لحساب المالك أو النظام" });
-  if (existing && existing.role !== "captain") {
-    const normalized = activateHumanCaptainAccount({ phone, name, reactivate: true });
-    existing = normalized.userId ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(normalized.userId) : null;
-  }
+  const existing = db.prepare("SELECT id,role,active,account_status FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
+  if (existing) return res.status(409).json({ error: "هذا الرقم مسجل مسبقًا؛ لا يمكن إنشاء طلب كابتن جديد" });
+  const openForPhone = db.prepare("SELECT id FROM captain_invites WHERE phone=? AND status='pending' AND id<>? LIMIT 1").get(phone, invite.id);
+  if (openForPhone) return res.status(409).json({ error: "يوجد طلب موافقة مفتوح لهذا الرقم" });
   const stamp = now();
   const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
-  let captainId = existing?.id || null;
-  if (existing) {
-    db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?")
-      .run(name, authMethod, pinHash, stamp, stamp, stamp, existing.id);
-  } else {
-    captainId = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,captain_pin_hash,captain_pin_ciphertext,captain_auth_method,account_status,approved_at,activated_at,created_at,updated_at) VALUES(?,?,?, 'captain',0,1,0,?,NULL,?,'active',?,?,?,?)")
-      .run(phone, name, name, pinHash, authMethod, stamp, stamp, stamp, stamp).lastInsertRowid;
-  }
-  db.prepare("UPDATE captain_invites SET status='approved',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,approved_user_id=?,submitted_at=COALESCE(submitted_at,?),decided_at=?,decision_note=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
-    .run(name, phone, pinHash, authMethod, captainId, stamp, stamp, "تم الاعتماد والتفعيل تلقائيًا عند التسجيل", stamp, invite.id);
-  audit("captain.join.auto_approved", "captain_invite", invite.id, { captainId, name, phone, authMethod }, null);
-  const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
-  const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
-  const authText = authMethod === "whatsapp" ? "طريقة الدخول: اطلب رمز تحقق WhatsApp إلى رقمك." : "طريقة الدخول: استخدم رقم الهاتف والرمز السري الذي اخترته.";
-  const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
-  const notified = captain.phone ? await sendCaptainOperationsCard(`${phone}@c.us`, "تم تسجيل وتفعيل الكابتن", [
-    `الكابتن: ${name}`,
-    "تم تسجيل حسابك واعتماده وتفعيله مباشرة داخل شبكة وصلني الآن.",
-    `رقم الهاتف: ${phone}`,
-    authText,
-    `رابط الدخول المباشر: ${captainAppLink}`
-  ]).catch(() => false) : false;
-  void notifyOperations({ event: "captain.join.auto_approved", title: "تسجيل كابتن مباشر", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "تم إنشاء الحساب واعتماده وتفعيله تلقائيًا.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
-  res.status(201).json({ success: true, status: "approved", activated: true, captainId, notified, membership, token: createdInviteToken || req.params.token, message: "تم تسجيل الكابتن واعتماد حسابه وتفعيله مباشرة" });
+  db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,approved_user_id=NULL,submitted_at=COALESCE(submitted_at,?),decided_at=NULL,decision_note=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
+    .run(name, phone, pinHash, authMethod, stamp, "بانتظار موافقة المالك؛ لم يُنشأ الحساب بعد", stamp, invite.id);
+  audit("captain.join.requested", "captain_invite", invite.id, { name, phone, authMethod, status: "pending" }, null);
+  void notifyOperations({ event: "captain.join.requested", title: "طلب تسجيل كابتن جديد بانتظار الموافقة", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "لم يُنشأ الحساب ولم يُفعّل الدخول. يجب اعتماد الطلب من زر الموافقة في لوحة المالك."], ownersOnly: true });
+  res.status(202).json({ success: true, status: "pending", activated: false, accountCreated: false, token: createdInviteToken || req.params.token, message: "تم إرسال طلب التسجيل إلى الشركة. لا يمكن الدخول أو استخدام الحساب قبل موافقة المالك." });
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();
@@ -4750,22 +4730,22 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
   audit("captain.access_card.resent", "user", captain.id, { phone, deletedPreviousPlain, deletedMessageId });
   res.json({ success: true, captain: { id: captain.id, name: captain.name, phone: captain.phone }, deletedPreviousPlain, cardSent: true });
 });
-app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, async (req, res) => {
+async function handleAdminWalletAdjustment(req, res) {
   const id = Number(req.params.id);
-  const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
-  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,active,role,account_status,is_bot FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
+  if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لمحفظة كابتن" });
   const direction = String(req.body.direction || "").toLowerCase();
   const amount = Number(req.body.amount);
   const reason = String(req.body.reason || "").trim();
   const idempotencyKey = String(req.body.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
-    return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
+    return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
   const amountCents = Math.round(amount * 100);
-  if (amountCents < 1) return res.status(400).json({ error: "Amount is too small" });
+  if (amountCents < 1) return res.status(400).json({ error: "المبلغ صغير جدًا" });
   if (direction === "credit") {
     if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
-    if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
+    if (!captain.active || captain.account_status !== "active") return res.status(409).json({ error: "حساب الكابتن غير نشط أو غير معتمد" });
     const issueIdempotencyKey = `ADMIN-WALLET-${idempotencyKey}`.slice(0, 100);
     let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
     if (card && (Number(card.assigned_captain_id) !== captain.id || Number(card.value_cents) !== amountCents)) return res.status(409).json({ error: "مفتاح العملية مستخدم لبطاقة مختلفة" });
@@ -4794,24 +4774,26 @@ app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, async (req, 
       return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
     }
   }
-  const signedAmount = direction === "credit" ? amountCents : -amountCents;
+  const signedAmount = -amountCents;
   const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
+  if (existing) return res.status(409).json({ error: "هذه الحركة مسجلة مسبقًا", ledgerId: existing.id, reference: existing.reference });
   const nextBalance = captain.wallet_cents + signedAmount;
-  if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `Debit exceeds the captain debt limit (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
+  if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: `الخصم يتجاوز حد دين الكابتن (${money(CAPTAIN_MIN_BALANCE_CENTS)})` });
   const reference = `ADMIN-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   const details = { idempotencyKey, direction, amount, amountCents, reason, actor: "admin" };
   const stamp = now();
   const apply = db.transaction(() => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
-    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance });
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
+    audit("captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance });
     return result.lastInsertRowid;
   });
   const ledgerId = apply();
-  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
+  void notifyOperations({ event: "captain.wallet.debited", title: "تأكيد خصم من محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `تم خصم: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
-});
+}
+app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
+app.post("/api/admin/users/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);

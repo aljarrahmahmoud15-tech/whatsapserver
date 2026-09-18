@@ -36,8 +36,12 @@ assert.ok(
   'unsubmitted captain registrations receive a clear next step'
 );
 assert.ok(
-  server.includes('status=\'approved\',name=?,phone=?,pin_hash=?') && server.includes('activated: true'),
-  'captain registration immediately approves and activates the account'
+  server.includes('captain.join.requested') && server.includes('accountCreated: false') && server.includes('status: "pending"'),
+  'captain registration creates a pending request without activating the account'
+);
+assert.ok(
+  server.includes('app.post("/api/admin/captain-invites/:id/decision", requireAdmin') && server.includes('captain.join.approved'),
+  'owner approval is required to create and activate the captain account'
 );
 assert.ok(
   server.includes('confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)"'),

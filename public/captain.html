@@ -146,7 +146,7 @@
     async function loadOverview() { const data = await api('/api/captain/overview'); render(data); }
     function updateInviteStatus(invite) {
       inviteState = invite;
-      if (invite.status === 'pending') { showSection('pending'); setText('pending-title','الطلب قيد المراجعة'); setText('pending-message','تم إرسال طلبك إلى الشركة. ستظهر هنا نتيجة الموافقة أو الرفض.'); $('#approved-login').classList.add('hidden'); return; }
+      if (invite.status === 'pending') { showSection('pending'); setText('pending-title','الطلب قيد المراجعة'); setText('pending-message','تم إرسال طلبك إلى الشركة. لا يمكن إنشاء الحساب أو الدخول أو استخدام النظام قبل موافقة المالك. ستظهر هنا نتيجة الموافقة أو الرفض.'); $('#approved-login').classList.add('hidden'); return; }
       if (invite.status === 'approved') { showSection('pending'); setText('pending-title','تمت الموافقة'); setText('pending-message','تمت الموافقة. جارٍ فتح واجهتك الخاصة تلقائيًا…'); $('#approved-login').classList.add('hidden'); return; }
       if (invite.status === 'rejected') { showSection('pending'); setText('pending-title','تم رفض الطلب'); setText('pending-message', invite.decision_note || 'تم رفض طلب الانضمام من الشركة.'); $('#approved-login').classList.add('hidden'); return; }
       showSection('registration');
