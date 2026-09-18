@@ -1587,6 +1587,25 @@ function currentCaptainSubscriptionPeriod(stamp = now()) {
   const periodStartMs = startMs + Math.floor((stampMs - startMs) / periodMs) * periodMs;
   return { start: new Date(periodStartMs).toISOString(), end: new Date(periodStartMs + periodMs).toISOString() };
 }
+const CAPTAIN_ARABIC_DISPLAY_NAMES = {
+  "Ahmad Ali": "أحمد علي",
+  Ahmadalmomani: "أحمد المومني",
+  BASHAR_ALBDOUR: "بشار البدور",
+  "Ehab Battah.": "إيهاب بطاح",
+  "Hamza Bataineh": "حمزة بطاينة",
+  "Marwan Mhedat": "مروان مهدات",
+  "Mohammad Sheyab ID6": "محمد شعيب ID6",
+  "Mohammed Abusalem": "محمد أبو سلام",
+  "Mohanad alomari": "مهند العمري",
+  "Omar Shatnawi": "عمر الشطناوي",
+  "Roshde Alawneh": "رشدي علاونة",
+  atiahnimri: "عطية النمري",
+  "m.alomari": "م. العمري",
+};
+function captainDisplayName(name) {
+  const original = String(name || "").replace(/\u200f|\u200e/g, "").trim();
+  return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
+}
 function applyCaptainSubscriptionCharges(stamp = now()) {
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [] };
@@ -4431,6 +4450,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     ORDER BY u.active DESC,u.id DESC`).all();
   res.json({ captains: rows.map((row) => ({
     ...row,
+    displayName: captainDisplayName(row.name),
     authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
     balance: money(row.wallet_cents),
     grossFares: money(row.gross_fares_cents),
@@ -5528,6 +5548,7 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
       id: row.id,
       captainId: row.user_id,
       name: row.name,
+      displayName: captainDisplayName(row.name),
       phone: row.phone,
       status: row.status,
       amountCents: row.amount_cents,
