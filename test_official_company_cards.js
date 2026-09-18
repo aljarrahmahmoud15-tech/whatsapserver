@@ -26,6 +26,7 @@ assert(server.includes('captains.group_membership.bulk_sync'), 'captain synchron
 assert(server.includes('app.post("/api/admin/group/send-balance-notifications", requireAdmin'), 'balance broadcast is admin protected');
 assert(server.includes('SEND_PRIVATE_BALANCE_NOTICES_TO_GROUP_MEMBERS'), 'balance broadcast requires explicit confirmation');
 assert(server.includes('captain.balance.snapshot.'), 'balance broadcast is idempotent per run key');
+assert(server.includes('member.recipientId && /@(c\\.us|lid)$/'), 'balance broadcast prefers direct WhatsApp member ids');
 assert(server.includes('هذه رسالة اطلاع فقط، ولا تغيّر الرصيد أو تنشئ بطاقة.'), 'balance broadcast is informational and non-financial');
 assert(server.includes('app.get("/api/admin/group/balance-notifications/:runKey", requireAdmin'), 'balance broadcast status is admin protected');
 assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests notify the owner');

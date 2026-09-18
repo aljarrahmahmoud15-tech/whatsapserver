@@ -831,7 +831,7 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
     let deliveryStatus = "failed";
     let messageId = null;
     try {
-      const recipient = await resolveWhatsAppRecipientId(phone);
+      const recipient = member.recipientId && /@(c\.us|lid)$/.test(String(member.recipientId)) ? String(member.recipientId) : await resolveWhatsAppRecipientId(phone);
       const sent = recipient && client && isReady ? await withTimeout(client.sendMessage(recipient, message), 15000, null) : null;
       if (sent) { deliveryStatus = "sent"; messageId = sent.id?._serialized || null; }
     } catch (_) {}
@@ -5174,10 +5174,17 @@ app.post("/api/admin/group/send-balance-notifications", requireAdmin, async (req
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(404).json({ error: "القروب الرسمي غير متاح" });
   const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
-  const memberPhones = [...new Set((chat.participants || []).map(groupParticipantPhone).map(normalize).filter((phone) => phone && !isBotPhone(phone)))];
+  const memberEntries = (chat.participants || []).map((participant) => ({
+    phone: normalize(groupParticipantPhone(participant)),
+    recipientId: participant && participant.id && (participant.id._serialized || String(participant.id)) || null,
+  })).filter((entry) => entry.phone && !isBotPhone(entry.phone));
+  const memberPhones = [...new Set(memberEntries.map((entry) => entry.phone))];
   const captains = db.prepare("SELECT id,phone,name,wallet_cents,active,account_status,is_bot FROM users WHERE role='captain' AND account_status<>'merged' AND is_bot=0").all();
   const byPhone = new Map(captains.map((captain) => [normalize(captain.phone), captain]));
-  const members = memberPhones.map((phone) => byPhone.get(phone)).filter(Boolean).map((captain) => ({ phone: captain.phone, name: captain.name, balanceCents: Number(captain.wallet_cents || 0) }));
+  const members = memberEntries.map((entry) => {
+    const captain = byPhone.get(entry.phone);
+    return captain ? { phone: captain.phone, name: captain.name, balanceCents: Number(captain.wallet_cents || 0), recipientId: entry.recipientId } : null;
+  }).filter(Boolean);
   if (members.length !== expectedCount) return res.status(409).json({ error: "تغير عدد الأعضاء أو الحسابات منذ المعاينة؛ أعد المعاينة", expectedCount, matchedCount: members.length, memberCount: memberPhones.length });
   const run = { runKey, status: "running", total: members.length, processed: 0, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: null, cancelled: false };
   balanceNotificationBroadcasts.set(runKey, run);
