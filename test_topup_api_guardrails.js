@@ -10,6 +10,14 @@ assert.ok(server.includes('issue_idempotency_key'), 'card issuance persists an i
 assert.ok(server.includes('delivery_idempotency_key'), 'card delivery persists an idempotency key');
 assert.ok(server.includes('cardDeliveryInFlight.has(cardId)'), 'card delivery rejects concurrent sends');
 assert.ok(server.includes('renderTopupCardMedia'), 'card delivery renders an official branded image');
+assert.ok(server.includes('app.post("/api/admin/cards/:id/send-text", requireAdmin'), 'admin card text fallback is protected');
+assert.ok(server.includes('function topupCardTextMessage'), 'card text fallback has a dedicated formatter');
+assert.ok(server.includes('topup_card.sent_text_fallback'), 'text fallback delivery is audited without exposing the code');
+assert.ok(server.includes('res.json({ success: true, status: "sent", deliveryMode });'), 'delivery response does not expose the card code');
+const deliveryBlock = server.slice(server.indexOf('function topupCardTextMessage'), server.indexOf('app.post("/api/redeem"'));
+assert.ok(deliveryBlock.indexOf('if (!sent) return res.status(504)') < deliveryBlock.indexOf('UPDATE topup_cards SET sent_at=?'), 'sent_at is updated only after WhatsApp confirms delivery');
+assert.doesNotMatch(deliveryBlock, /console\.(?:log|error)[^\n]*code/, 'card code must not be written to console logs');
+assert.doesNotMatch(deliveryBlock, /audit\([^\n]*\bcode\b/, 'card code must not be written to audit logs');
 assert.ok(server.includes('const appUrl = captainAppUrl(captainInviteBaseUrl(req))'), 'card message contains the official operations gateway');
 assert.ok(server.includes('app.post("/api/captain/redeem-card", requireCaptain'), 'captain session redemption API exists');
 assert.ok(server.includes('source: "captain_portal"'), 'portal redemption is audited');
@@ -20,6 +28,7 @@ assert.ok(index.includes('crypto.randomUUID()'), 'owner UI creates request idemp
 assert.ok(index.includes('/api/admin/cards?limit=12'), 'owner UI reads recent card history');
 assert.ok(index.includes('id="topup-history-refresh"'), 'owner UI provides history refresh');
 assert.ok(index.includes('data-card-history-send'), 'owner UI provides controlled resend action');
+assert.ok(index.includes("'/api/admin/cards/'+encodeURIComponent(cardId)+'/send-text'"), 'owner UI uses the reliable text resend endpoint');
 assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'owner invite points to the official operations gateway');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has a redemption form');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app submits redemption to the session API');

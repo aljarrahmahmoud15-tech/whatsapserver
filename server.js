@@ -5454,14 +5454,26 @@ app.post("/api/admin/cards", requireAdmin, (req, res) => {
   audit("topup_card.issued", "topup_card", result.lastInsertRowid, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey });
   res.status(201).json({ id: result.lastInsertRowid, code, value: money(amountCents), phone, captainName: captain.name, status: "issued", reused: false });
 });
-app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
+function topupCardTextMessage({ cardId, code, valueCents, captainName, appUrl }) {
+  return brandedMessage("بطاقة شحن رسمية", [
+    `الكابتن: ${captainName || "حسابك"}`,
+    `القيمة: ${money(valueCents)} JOD`,
+    "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.",
+    `رمز البطاقة: ${code}`,
+    `الدخول: ${appUrl}`,
+    "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة.",
+    `رقم البطاقة الداخلي: #${cardId}`,
+    "لا تشارك رمز البطاقة مع أي شخص.",
+  ]);
+}
+async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
   const cardId = Number(req.params.id);
   const deliveryIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!Number.isInteger(cardId) || cardId < 1 || deliveryIdempotencyKey.length < 16 || deliveryIdempotencyKey.length > 100) return res.status(400).json({ error: "معرف البطاقة ومفتاح idempotency مطلوبان" });
   const card = db.prepare("SELECT c.*,u.phone AS captain_phone,u.name AS captain_name,u.active AS captain_active FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id WHERE c.id=? LIMIT 1").get(cardId);
   if (!card) return res.status(404).json({ error: "البطاقة غير موجودة" });
-  if (card.delivery_idempotency_key && card.delivery_idempotency_key !== deliveryIdempotencyKey) return res.status(409).json({ error: "إرسال البطاقة مسجل بمفتاح مختلف" });
   if (card.sent_at) return res.json({ success: true, alreadySent: true, status: "sent" });
+  if (card.delivery_idempotency_key && card.delivery_idempotency_key !== deliveryIdempotencyKey) return res.status(409).json({ error: "إرسال البطاقة مسجل بمفتاح مختلف" });
   if (!card.captain_phone || !card.captain_active) return res.status(409).json({ error: "المستفيد غير نشط أو غير معتمد" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا؛ البطاقة محفوظة ولم تُرسل" });
   if (!cardEncryptionKey || !card.code_ciphertext) return res.status(503).json({ error: "تشفير البطاقة غير مهيأ" });
@@ -5471,17 +5483,27 @@ app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة."]);
-    const media = await renderTopupCardMedia({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
-    const sent = await withTimeout(client.sendMessage(`${phoneWithCountry(card.captain_phone)}@c.us`, media, { caption }), 30000, null);
+    const recipient = `${phoneWithCountry(card.captain_phone)}@c.us`;
+    let sent = null;
+    if (deliveryMode === "text") {
+      const text = topupCardTextMessage({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
+      sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+    } else {
+      const media = await renderTopupCardMedia({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
+      sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
+    }
     if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
     if (!update.changes) return res.json({ success: true, alreadySent: true, status: "sent" });
-    audit("topup_card.sent", "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey });
-    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${card.captain_name}`, `القيمة: ${money(card.value_cents)} JOD`, `رقم البطاقة الداخلي: #${cardId}`, "تم إرسال البطاقة المصوّرة إلى الكابتن.", "يُضاف الرصيد عند إدخال الرمز من بوابة التشغيل."], ownersOnly: true });
-    res.json({ success: true, status: "sent" });
-  } catch (error) { audit("topup_card.delivery_failed", "topup_card", cardId, { deliveryIdempotencyKey, error: String(error?.message || error) }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
+    const event = deliveryMode === "text" ? "topup_card.sent_text_fallback" : "topup_card.sent";
+    audit(event, "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey, deliveryMode });
+    void notifyOperations({ event, title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${card.captain_name}`, `القيمة: ${money(card.value_cents)} JOD`, `رقم البطاقة الداخلي: #${cardId}`, deliveryMode === "text" ? "تم إرسال البطاقة نصيًا إلى الكابتن عبر المسار الاحتياطي." : "تم إرسال البطاقة المصوّرة إلى الكابتن.", "يُضاف الرصيد عند إدخال الرمز من بوابة التشغيل."], ownersOnly: true });
+    res.json({ success: true, status: "sent", deliveryMode });
+  } catch (_) { audit("topup_card.delivery_failed", "topup_card", cardId, { deliveryIdempotencyKey, deliveryMode }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
   finally { cardDeliveryInFlight.delete(cardId); }
-});
+}
+app.post("/api/admin/cards/:id/send", requireAdmin, async (req, res) => handleStoredTopupCardDelivery(req, res, "media"));
+app.post("/api/admin/cards/:id/send-text", requireAdmin, async (req, res) => handleStoredTopupCardDelivery(req, res, "text"));
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
   const phone = phoneWithCountry(req.body.phone || "");
