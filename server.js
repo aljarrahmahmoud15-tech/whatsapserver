@@ -5505,6 +5505,17 @@ app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
     ORDER BY c.status='applied' DESC,u.name,u.id`).all(periodStart);
   const totalCents = rows.filter((row) => row.status === "applied").reduce((sum, row) => sum + Number(row.amount_cents || 0), 0);
   res.setHeader("Cache-Control", "no-store");
+  if (req.query.compact === "1") {
+    return res.json({
+      success: true,
+      periodStart,
+      periodEnd: rows[0]?.period_end || currentPeriod?.end || null,
+      count: rows.length,
+      appliedCount: rows.filter((row) => row.status === "applied").length,
+      total: money(totalCents),
+      charges: rows.map((row) => ({ name: row.name, phone: row.phone, balance: money(row.wallet_cents), reference: row.reference })),
+    });
+  }
   res.json({
     success: true,
     periodStart,
