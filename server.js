@@ -4987,6 +4987,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
   const orderRefs = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?");
   const candidateRefs = db.prepare("SELECT COUNT(*) AS count FROM order_candidates WHERE producer_user_id=? OR pending_captain_user_id=?");
   const acceptanceRefs = db.prepare("SELECT COUNT(*) AS count FROM order_candidate_acceptances WHERE captain_user_id=?");
+  const auditRefs = db.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id=?");
   const ledgerRefs = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?");
   const settlementRefs = db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?");
   const cardRefs = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?");
@@ -4997,6 +4998,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
       orders: Number(orderRefs.get(user.id, user.id, user.id).count || 0),
       candidates: Number(candidateRefs.get(user.id, user.id).count || 0),
       acceptances: Number(acceptanceRefs.get(user.id).count || 0),
+      audit: Number(auditRefs.get(user.id).count || 0),
       ledger: Number(ledgerRefs.get(user.id).count || 0),
       settlements: Number(settlementRefs.get(user.id, user.id).count || 0),
       cards: Number(cardRefs.get(user.id, user.id).count || 0),
@@ -5005,7 +5007,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
     };
     const inGroup = memberPhones.has(phone);
     const protectedIdentity = isProtectedOwnerIdentity(phone);
-    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && Number(user.wallet_cents || 0) === 0;
+    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && Number(user.wallet_cents || 0) === 0;
     return {
       id: user.id,
       phone: user.phone,
@@ -5060,6 +5062,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
   const orderRefs = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?");
   const candidateRefs = db.prepare("SELECT COUNT(*) AS count FROM order_candidates WHERE producer_user_id=? OR pending_captain_user_id=?");
   const acceptanceRefs = db.prepare("SELECT COUNT(*) AS count FROM order_candidate_acceptances WHERE captain_user_id=?");
+  const auditRefs = db.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id=?");
   const ledgerRefs = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?");
   const settlementRefs = db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?");
   const cardRefs = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?");
@@ -5070,6 +5073,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
       orders: Number(orderRefs.get(user.id, user.id, user.id).count || 0),
       candidates: Number(candidateRefs.get(user.id, user.id).count || 0),
       acceptances: Number(acceptanceRefs.get(user.id).count || 0),
+      audit: Number(auditRefs.get(user.id).count || 0),
       ledger: Number(ledgerRefs.get(user.id).count || 0),
       settlements: Number(settlementRefs.get(user.id, user.id).count || 0),
       cards: Number(cardRefs.get(user.id, user.id).count || 0),
@@ -5078,7 +5082,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
     };
     const inGroup = memberPhones.has(phone);
     const protectedIdentity = isProtectedOwnerIdentity(phone);
-    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && refs.balance === 0;
+    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && refs.balance === 0;
     return { user, phone, refs, inGroup, protectedIdentity, deletable };
   });
   const keep = candidates.filter((candidate) => candidate.inGroup);

@@ -11,6 +11,8 @@ assert.match(server, /orderRefs\.get\(user\.id, user\.id, user\.id\)/);
 assert.match(server, /order_candidates WHERE producer_user_id=\? OR pending_captain_user_id=\?/);
 assert.match(server, /order_candidate_acceptances WHERE captain_user_id=\?/);
 assert.match(server, /refs\.candidates === 0 && refs\.acceptances === 0/);
+assert.match(server, /audit_logs WHERE actor_user_id=\?/);
+assert.match(server, /refs\.audit === 0/);
 assert.match(server, /settlementRefs\.get\(user\.id, user\.id\)/);
 assert.match(server, /Buffer\.from\(JSON\.stringify\(payload\), "utf8"\)\.toString\("base64"\)/);
 const previewStart = server.indexOf('app.get("/api/admin/captains/cleanup-preview"');
