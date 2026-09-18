@@ -4853,24 +4853,28 @@ async function handleAdminWalletAdjustment(req, res) {
       audit("topup_card.issued", "topup_card", card.id, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey, source: "company_direct_transfer" });
     }
     if (!client || !isReady) return res.status(503).json({ error: "تم إصدار بطاقة الرصيد لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.id, status: "issued" });
+    if (card.sent_at) return res.status(201).json({ success: true, cardId: card.id, status: "sent", alreadySent: true, balance: money(captain.wallet_cents), credited: "0.00" });
+    if (cardDeliveryInFlight.has(card.id)) return res.status(409).json({ error: "إرسال البطاقة قيد التنفيذ", cardId: card.id, status: "issued" });
+    cardDeliveryInFlight.add(card.id);
     try {
       const code = decryptCardCode(card.code_ciphertext);
       const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-      const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
-      const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
       const recipient = await resolveWhatsAppRecipientId(captain.phone);
       if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
-      const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
+      const text = topupCardTextMessage({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
+      const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
-      db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
-      audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
+      const deliveryIdempotencyKey = `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100);
+      const updated = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, card.id);
+      if (!updated.changes) return res.status(201).json({ success: true, cardId: card.id, status: "sent", alreadySent: true, balance: money(captain.wallet_cents), credited: "0.00" });
+      audit("topup_card.sent_text_fallback", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", deliveryMode: "text", deliveryIdempotencyKey });
       notifyCaptainCreditSent({ captain, valueCents: amountCents, cardId: card.id });
-      void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
-      return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
+      void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد وإرسالها نصيًا للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
+      return res.status(201).json({ success: true, cardId: card.id, status: "sent", deliveryMode: "text", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
     } catch (error) {
-      audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", error: String(error?.message || error) });
+      audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", deliveryMode: "text" });
       return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
-    }
+    } finally { cardDeliveryInFlight.delete(card.id); }
   }
   const signedAmount = -amountCents;
   const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);

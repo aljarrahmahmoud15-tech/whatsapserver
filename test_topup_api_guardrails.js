@@ -22,6 +22,11 @@ assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(ca
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(captain.phone);'), 'new captain card delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'support top-up delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('app.post("/api/admin/cards/:id/send-text", requireAdmin'), 'admin card text fallback is protected');
+const walletAdjustmentBlock = server.slice(server.indexOf('async function handleAdminWalletAdjustment'), server.indexOf('app.post("/api/admin/captains/:id/wallet-adjustment"'));
+assert.ok(walletAdjustmentBlock.includes('topupCardTextMessage'), 'wallet credit delivery uses the text card path');
+assert.ok(walletAdjustmentBlock.includes('topup_card.sent_text_fallback'), 'wallet credit text delivery is audited safely');
+assert.ok(walletAdjustmentBlock.includes('cardDeliveryInFlight.has(card.id)'), 'wallet credit delivery rejects concurrent sends');
+assert.doesNotMatch(walletAdjustmentBlock, /error: String\(error\?\.message \|\| error\)/, 'wallet credit delivery does not expose raw errors');
 assert.ok(server.includes('app.post("/api/admin/cards/:id/void", requireAdmin, handleVoidTopupCard)'), 'admin card cancellation is protected');
 assert.ok(server.includes('if (card.sent_at) return res.status(409)'), 'recovery cancellation rejects delivered cards');
 assert.ok(server.includes("WHERE id=? AND status='issued' AND sent_at IS NULL"), 'recovery cancellation mutates only unsent issued cards');
