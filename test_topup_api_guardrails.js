@@ -3,6 +3,7 @@ const fs = require('fs');
 
 const server = fs.readFileSync('./server.js', 'utf8');
 const index = fs.readFileSync('./public/index.html', 'utf8');
+const admin = fs.readFileSync('./admin.html', 'utf8');
 
 assert.ok(server.includes('app.get("/api/admin/cards", requireAdmin'), 'admin card history API is protected');
 assert.ok(server.includes('app.get("/api/admin/bulk-topup/preview", requireAdmin'), 'bulk top-up preview API is protected');
@@ -56,6 +57,15 @@ assert.ok(index.includes('id="generate-card"'), 'owner card issuance control exi
 assert.ok(index.includes('crypto.randomUUID()'), 'owner UI creates request idempotency keys');
 assert.ok(index.includes('/api/admin/cards?limit=12'), 'owner UI reads recent card history');
 assert.ok(index.includes('id="topup-history-refresh"'), 'owner UI provides history refresh');
+assert.ok(server.includes('cards_issued_cents'), 'admin users API includes issued card totals');
+assert.ok(server.includes('cards_sent_cents'), 'admin users API includes sent card totals');
+assert.ok(server.includes('cards_redeemed_cents'), 'admin users API includes redeemed card totals');
+assert.ok(server.includes('cards_pending_cents'), 'admin users API includes pending card totals');
+assert.ok(admin.includes('البطاقات المصدرة'), 'admin users table shows issued card totals');
+assert.ok(admin.includes('البطاقات المرسلة'), 'admin users table shows sent card totals');
+assert.ok(admin.includes('البطاقات المستردة'), 'admin users table shows redeemed card totals');
+assert.ok(admin.includes('بطاقات معلّقة'), 'admin users table shows pending card totals');
+assert.ok(admin.includes('إرسال WhatsApp'), 'admin users table includes WhatsApp action');
 assert.ok(index.includes('data-card-history-send'), 'owner UI provides controlled resend action');
 assert.ok(index.includes("'/api/admin/cards/'+encodeURIComponent(cardId)+'/send-text'"), 'owner UI uses the reliable text resend endpoint');
 assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'owner invite points to the official operations gateway');

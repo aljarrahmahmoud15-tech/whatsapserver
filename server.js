@@ -4646,8 +4646,13 @@ app.get("/api/admin/group/create-status", requireAdmin, (req, res) => {
 
 app.get("/api/admin/users", requireAdmin, (req, res) => {
   normalizeBotIdentity();
-  const users = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,captain_auth_method,created_at,updated_at FROM users ORDER BY is_bot DESC,role,name,id").all();
-  res.json({ users: users.map((user) => ({ ...user, balance: money(user.wallet_cents), protected: Boolean(user.is_bot || user.role === "company") })) });
+  const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.is_bot,u.account_status,u.captain_auth_method,u.created_at,u.updated_at,
+    COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id),0) AS cards_issued_cents,
+    COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.sent_at IS NOT NULL),0) AS cards_sent_cents,
+    COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.status='redeemed'),0) AS cards_redeemed_cents,
+    COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.status='issued' AND c.sent_at IS NULL),0) AS cards_pending_cents
+    FROM users u ORDER BY u.is_bot DESC,u.role,u.name,u.id`).all();
+  res.json({ users: users.map((user) => ({ ...user, balance: money(user.wallet_cents), cardsIssued: money(user.cards_issued_cents), cardsSent: money(user.cards_sent_cents), cardsRedeemed: money(user.cards_redeemed_cents), cardsPending: money(user.cards_pending_cents), protected: Boolean(user.is_bot || user.role === "company") })) });
 });
 app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
