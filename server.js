@@ -3366,6 +3366,42 @@ app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   });
   res.json({ invites });
 });
+async function issueApprovalTopupCard({ captain, approvalId, req }) {
+  const amountCents = Number.parseInt(process.env.AUTO_APPROVAL_TOPUP_CENTS || "0", 10);
+  if (!Number.isInteger(amountCents) || amountCents < 1) return { status: "disabled" };
+  if (!captain || captain.role !== "captain" || captain.active !== 1 || captain.account_status !== "active" || captain.is_bot === 1) return { status: "ineligible" };
+  const issueIdempotencyKey = `APPROVAL-TOPUP-${approvalId}`.slice(0, 100);
+  let card = db.prepare("SELECT * FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
+  if (!card) {
+    let code = randomCode();
+    while (db.prepare("SELECT id FROM topup_cards WHERE code_hash=?").get(hashCode(code))) code = randomCode();
+    const result = db.prepare("INSERT INTO topup_cards(code_hash,code_last4,value_cents,status,assigned_captain_id,issue_idempotency_key,code_ciphertext,created_at) VALUES(?,?,?,'issued',?,?,?,?)").run(hashCode(code), code.slice(-4), amountCents, captain.id, issueIdempotencyKey, encryptCardCode(code), now());
+    card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(result.lastInsertRowid);
+    audit("topup_card.issued", "topup_card", card.id, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey, source: "captain_approval_auto" });
+  }
+  if (card.sent_at) return { status: "sent", cardId: card.id, reused: true };
+  if (!client || !isReady) return { status: "pending", cardId: card.id, reason: "whatsapp_not_ready" };
+  if (cardDeliveryInFlight.has(card.id)) return { status: "pending", cardId: card.id, reason: "delivery_in_flight" };
+  cardDeliveryInFlight.add(card.id);
+  try {
+    const recipient = await resolveWhatsAppRecipientId(captain.phone);
+    if (!recipient) return { status: "pending", cardId: card.id, reason: "recipient_unresolved" };
+    const code = decryptCardCode(card.code_ciphertext);
+    const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+    const text = topupCardTextMessage({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
+    const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+    if (!sent) return { status: "pending", cardId: card.id, reason: "delivery_timeout" };
+    const deliveryIdempotencyKey = `APPROVAL-TOPUP-DELIVERY-${approvalId}`.slice(0, 100);
+    const updated = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, card.id);
+    if (!updated.changes) return { status: "sent", cardId: card.id, reused: true };
+    audit("topup_card.sent_text_fallback", "topup_card", card.id, { captainId: captain.id, source: "captain_approval_auto", deliveryIdempotencyKey, deliveryMode: "text" });
+    void notifyOperations({ event: "captain.approval_topup.sent", title: "تأكيد بطاقة رصيد بعد الموافقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "أُرسلت البطاقة نصيًا بعد الموافقة.", "لا يُضاف الرصيد إلا عند الاسترداد."], ownersOnly: true });
+    return { status: "sent", cardId: card.id };
+  } catch (_) {
+    audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "captain_approval_auto", deliveryMode: "text" });
+    return { status: "pending", cardId: card.id, reason: "delivery_failed" };
+  } finally { cardDeliveryInFlight.delete(card.id); }
+}
 app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const decision = String(req.body?.decision || "").trim().toLowerCase();
@@ -3415,10 +3451,11 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     ]));
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  const autoTopup = await issueApprovalTopupCard({ captain: { ...captain, role: "captain", active: 1, account_status: "active", is_bot: 0 }, approvalId: id, req });
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
   audit("captain.group_membership.sync", "user", captainId, { membership });
   void notifyOperations({ event: "captain.join.approved", title: "تأكيد اعتماد كابتن", lines: [`الكابتن: ${invite.name}`, `الهاتف: ${invite.phone}`, "تم اعتماد التسجيل وإرسال بطاقة الدخول.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
-  res.json({ success: true, status: "approved", captainId, notified, membership });
+  res.json({ success: true, status: "approved", captainId, notified, membership, autoTopup });
 });
 app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, async (req, res) => {
   const captainId = Number(req.params.id);
