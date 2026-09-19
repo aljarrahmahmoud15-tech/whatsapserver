@@ -1,0 +1,11 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('server.js', 'utf8');
+const start = source.indexOf('async function handleCustomerMessage');
+const end = source.indexOf('\nfunction ensureBlockedPhones', start);
+assert.ok(start >= 0 && end > start, 'معالج العميل موجود');
+const handler = source.slice(start, end);
+assert.doesNotMatch(handler, /await sendBotText\(/, 'معالج العميل لا يرسل رسائل قبل التأكيد');
+assert.match(source, /customer\.state !== "booking_confirmed"/, 'حارس مركزي يمنع رسالة العميل قبل التأكيد');
+assert.match(source, /function sendBotText\(to, text\)/, 'مسار الرسائل النصية موجود');
+console.log('customer confirmation messaging guardrails verified');
