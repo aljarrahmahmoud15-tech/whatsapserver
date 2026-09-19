@@ -2088,14 +2088,26 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName }) {
+function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents }) {
   const firstCaptain = String(downloaderName ?? consumerName ?? "غير محدد").trim() || "غير محدد";
   const secondCaptain = String(executorName || "غير محدد").trim() || "غير محدد";
   return [
-    "وصلني الآن — تم تثبيت الحجز",
+    "✅ تم قبول الطلب وتثبيته",
+    `💰 السعر: ${money(Number(priceCents || 0))} JOD (شامل العمولة)`,
+    `🚖 الكابتن المنفذ: ${secondCaptain}`,
+    "📌 الحالة: مقبول ومعتمد",
+    "",
+    "تم تحويل الطلب للتسوية المالية حسب النظام.",
     `رقم الرحلة: #${String(orderNo || "غير محدد")}`,
-    `الكابتن الأول: ${firstCaptain}`,
-    `الكابتن الثاني المنفّذ: ${secondCaptain}`,
+    `صاحب الطلب: ${firstCaptain}`,
+  ].join("\n");
+}
+function finalBookingCancellationText() {
+  return [
+    "❌ تم رفض أو إلغاء الطلب",
+    "",
+    "📌 الحالة: غير معتمد",
+    "لا يتم احتساب أي عمولة أو تسوية مالية.",
   ].join("\n");
 }
 async function sendFinalBookingConfirmation(groupId, details) {
@@ -3280,7 +3292,10 @@ async function handleMessageReaction(reaction) {
     if (acceptance) {
       const producer = acceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.producer_user_id) : null;
       if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
-      db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE id=? AND status='pending'").run(now(), acceptance.id);
+      const cancelled = db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE id=? AND status='pending'").run(now(), acceptance.id);
+      if (cancelled.changes === 1) {
+        void sendBotText(target.from, finalBookingCancellationText()).catch(() => null);
+      }
       audit("order.candidate.acceptance_cancelled_downloader_removed_thumb", "order_candidate", acceptance.candidate_id, { producerId: producer.id, messageId, captainId: acceptance.captain_user_id });
       return;
     }
@@ -3306,6 +3321,22 @@ async function handleMessageReaction(reaction) {
   }
   if (!acceptance) return;
   const pending = acceptance;
+  const quotedReply = pending.acceptance_message_id === messageId && target.hasQuotedMsg && typeof target.getQuotedMessage === "function"
+    ? await withTimeout(target.getQuotedMessage(), 8000, null)
+    : null;
+  const quotedReplyId = serializedMessageId(quotedReply);
+  const quotedReplyIsOrder = Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && quotedReplyId === pending.source_message_id);
+  if (!quotedReplyIsOrder) {
+    logOrderTrace("reaction_target_not_selected_quoted_reply", {
+      groupKey: orderTraceKey(target.from),
+      reactionKey: orderTraceKey(messageId),
+      candidateId: pending.candidate_id,
+      hasQuotedMsg: Boolean(target.hasQuotedMsg),
+      quotedKey: orderTraceKey(quotedReplyId),
+      sourceKey: orderTraceKey(pending.source_message_id),
+    });
+    return;
+  }
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
   const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
   const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);

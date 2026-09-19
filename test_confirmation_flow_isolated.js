@@ -94,7 +94,7 @@ const db = {
 
 const context = {
   db,
-  client: { async getMessageById() { return { from: "test-group@g.us" }; } },
+  client: { async getMessageById() { return { from: "test-group@g.us", hasQuotedMsg: true, async getQuotedMessage() { return { id: { _serialized: "request-1" }, from: "test-group@g.us", body: "السعر 20" }; } }; } },
   isReady: true,
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
@@ -102,6 +102,9 @@ const context = {
   isBlockedPhone: () => false,
   phoneWithCountry: (value) => String(value),
   isBotReactionSender,
+  serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
+  parseOrder: (body) => ({ isOrder: /^السعر\s*\d+/i.test(String(body || "")) }),
+  logOrderTrace: () => {},
   connectedBotPhone: () => "0775696880",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
   getSetting: (_key, fallback) => fallback,
@@ -116,7 +119,9 @@ const context = {
   audit: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
-  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `وصلني الآن — تم تثبيت الحجز\nرقم الرحلة: #${details.orderNo}\nالكابتن الأول: ${details.downloaderName}\nالكابتن الثاني المنفّذ: ${details.executorName}` }); },
+  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✅ تم قبول الطلب وتثبيته\n💰 السعر: ${details.priceCents / 100} JOD (شامل العمولة)\n🚖 الكابتن المنفذ: ${details.executorName}\n📌 الحالة: مقبول ومعتمد\n\nتم تحويل الطلب للتسوية المالية حسب النظام.\nرقم الرحلة: #${details.orderNo}\nصاحب الطلب: ${details.downloaderName}` }); },
+  finalBookingCancellationText: () => "❌ تم رفض أو إلغاء الطلب",
+  sendBotText: async () => true,
   console,
 };
 
@@ -145,9 +150,10 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.match(messages[0].text, /وصلني الآن — تم تثبيت الحجز/);
+  assert.match(messages[0].text, /✅ تم قبول الطلب وتثبيته/);
+  assert.match(messages[0].text, /شامل العمولة/);
   assert.match(messages[0].text, /رقم الرحلة: #7/);
-  assert.match(messages[0].text, /الكابتن الأول: المنتج/);
-  assert.match(messages[0].text, /الكابتن الثاني المنفّذ: الكابتن/);
+  assert.match(messages[0].text, /صاحب الطلب: المنتج/);
+  assert.match(messages[0].text, /الكابتن المنفذ: الكابتن/);
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
