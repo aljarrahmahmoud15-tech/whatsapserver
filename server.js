@@ -3232,10 +3232,18 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
   const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
-  const match = Boolean(producerPhone && captainPhone && producer && captain && authorizedThumb);
+  const phoneIdentityResolved = Boolean(
+    isValidJordanPhone(producerPhone) &&
+    isValidJordanPhone(captainPhone) &&
+    producer &&
+    captain &&
+    recoveryPhoneMatches(producer.phone, producerPhone) &&
+    recoveryPhoneMatches(captain.phone, captainPhone)
+  );
+  const match = Boolean(phoneIdentityResolved && authorizedThumb);
   return {
     match,
-    reason: match ? "confirmed" : (!authorizedThumb ? "missing_authorized_thumb_reaction" : (!captain ? "captain_not_registered" : (!producer ? "producer_not_registered" : "identity_unresolved"))),
+    reason: match ? "confirmed" : (!phoneIdentityResolved ? "phone_identity_unresolved" : !authorizedThumb ? "missing_authorized_thumb_reaction" : "identity_unresolved"),
     acceptanceMessageId,
     orderMessageId,
     acceptedAt: new Date(acceptanceTimestamp * 1000 || Date.now()).toISOString(),
@@ -3251,6 +3259,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     reactedByBot,
     hasBotConfirmationCard,
     reactionPhones: [...new Set(reactionPhones)],
+    phoneIdentityResolved,
     existingOrder,
     existingSettlement,
   };
