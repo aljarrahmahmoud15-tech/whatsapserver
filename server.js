@@ -2393,6 +2393,28 @@ function startWhatsAppWatchdog() {
   }, WHATSAPP_WATCHDOG_INTERVAL_MS);
   whatsappWatchdogTimer.unref?.();
 }
+const recentMessageEventKeys = new Map();
+const MESSAGE_EVENT_DEDUP_TTL_MS = 10 * 60 * 1000;
+function shouldHandleMessageEvent(msg, eventName) {
+  const serializedId = String(msg?.id?._serialized || msg?.id?.id || "").trim();
+  if (!serializedId) return true;
+  const key = `${String(eventName || "message")}:${serializedId}`;
+  const currentTime = Date.now();
+  for (const [storedKey, seenAt] of recentMessageEventKeys) {
+    if (currentTime - seenAt > MESSAGE_EVENT_DEDUP_TTL_MS) recentMessageEventKeys.delete(storedKey);
+  }
+  if (recentMessageEventKeys.has(key)) {
+    console.log(`[WhatsApp] duplicate ${eventName} event ignored`);
+    return false;
+  }
+  recentMessageEventKeys.set(key, currentTime);
+  if (recentMessageEventKeys.size > 5000) {
+    const oldestKey = recentMessageEventKeys.keys().next().value;
+    if (oldestKey) recentMessageEventKeys.delete(oldestKey);
+  }
+  return true;
+}
+
 function createClient() {
   const generation = ++connectionGeneration;
   const instance = new Client({
@@ -2482,12 +2504,12 @@ function createClient() {
     console.log(`[WhatsApp] state changed: ${state}`);
   });
   instance.on("message_create", async (msg) => {
-    if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
     recordGroupMessageTelemetry("message_create", msg);
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
   });
   instance.on("message", async (msg) => {
-    if (generation !== connectionGeneration) return;
+    if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
