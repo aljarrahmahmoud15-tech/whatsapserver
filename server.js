@@ -3118,7 +3118,7 @@ function recoveryExpectedMatches(evidence, expected = {}) {
   if (expected.price !== undefined && expected.price !== null && expected.price !== "" && evidence.parsed?.price !== Number(expected.price)) return false;
   if (expected.origin && normalizeRecoveryText(evidence.parsed?.origin) !== normalizeRecoveryText(expected.origin)) return false;
   if (expected.destination && normalizeRecoveryText(evidence.parsed?.destination) !== normalizeRecoveryText(expected.destination)) return false;
-  if (expected.tripTime && !normalizeRecoveryText(evidence.rawText).includes(normalizeRecoveryText(expected.tripTime))) return false;
+  // وقت الرحلة ليس شرطًا للتثبيت؛ كلمة «السعر» والقيمة والهوية والتفاعل هي الأدلة التشغيلية.
   return true;
 }
 
