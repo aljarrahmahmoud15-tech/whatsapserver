@@ -2559,6 +2559,16 @@ function serializedMessageId(message) {
   ).trim() || null;
 }
 
+function orderTraceKey(value) {
+  const normalized = String(value || "").trim();
+  return normalized ? crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12) : null;
+}
+
+function logOrderTrace(event, details = {}) {
+  const safeDetails = Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined));
+  console.log(`[OrderTrace] ${event} ${JSON.stringify(safeDetails)}`);
+}
+
 const whatsappLidPhoneCache = new Map();
 function serializedWhatsappUserId(value) {
   if (!value) return "";
@@ -2760,14 +2770,31 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (!insertedMessage.changes) return;
+  // Equivalent duplicate guard: if (!insertedMessage.changes) return;
+  if (!insertedMessage.changes) {
+    if (captainAcceptance) {
+      logOrderTrace("acceptance_message_duplicate_or_not_persisted", {
+        groupKey: orderTraceKey(groupId),
+        senderKey: orderTraceKey(senderPhone),
+      });
+    }
+    return;
+  }
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
   }
   if (!body) return;
   const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
-  if (!messageId) return;
+  if (!messageId) {
+    if (captainAcceptance) {
+      logOrderTrace("acceptance_missing_message_id", {
+        groupKey: orderTraceKey(groupId),
+        senderKey: orderTraceKey(senderPhone),
+      });
+    }
+    return;
+  }
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
     const producer = botGenerated
@@ -2779,18 +2806,71 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!captainAcceptance) return;
+  logOrderTrace("acceptance_received", {
+    groupKey: orderTraceKey(groupId),
+    acceptanceKey: orderTraceKey(messageId),
+    senderKey: orderTraceKey(senderPhone),
+    hasQuotedMsg: Boolean(msg.hasQuotedMsg),
+  });
   // «تم» لا يُربط بآخر طلب بشكل تخميني؛ يجب أن يقتبس رسالة السعر نفسها.
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  if (!quoted) {
+    logOrderTrace("acceptance_missing_quote", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(messageId),
+      quotedLookupAttempted: Boolean(msg.hasQuotedMsg),
+    });
+    return;
+  }
   const candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
-  if (!candidate) return;
+  if (!candidate) {
+    logOrderTrace("acceptance_candidate_not_found", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(messageId),
+      quotedKey: orderTraceKey(serializedMessageId(quoted)),
+      quotedIsOrder: parseOrder(quoted.body).isOrder,
+      quotedBodyKey: orderTraceKey(quoted.body),
+    });
+    return;
+  }
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
-  if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
+  if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) {
+    logOrderTrace("acceptance_captain_ineligible", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(messageId),
+      candidateId: candidate.id,
+      senderKey: orderTraceKey(senderPhone),
+      captainFound: Boolean(captain),
+      active: captain?.active ?? null,
+      accountStatus: captain?.account_status ?? null,
+      isBot: captain?.is_bot ?? null,
+    });
+    return;
+  }
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
-  if (!producer || captain.id === producer.id) return;
+  if (!producer || captain.id === producer.id) {
+    logOrderTrace("acceptance_producer_missing_or_same_captain", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(messageId),
+      candidateId: candidate.id,
+      producerFound: Boolean(producer),
+      captainId: captain.id,
+      producerId: producer?.id ?? null,
+    });
+    return;
+  }
   const acceptanceMessageId = messageId;
   const stampNow = now();
   const acceptanceInsert = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, acceptanceMessageId, stampNow, stampNow);
-  if (!acceptanceInsert.changes) return;
+  if (!acceptanceInsert.changes) {
+    logOrderTrace("acceptance_duplicate_or_already_recorded", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(acceptanceMessageId),
+      candidateId: candidate.id,
+      captainId: captain.id,
+    });
+    return;
+  }
   const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_PRODUCER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
@@ -2801,8 +2881,23 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return true;
   })();
-  if (!pending) return;
+  if (!pending) {
+    logOrderTrace("acceptance_pending_transition_failed", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(acceptanceMessageId),
+      candidateId: candidate.id,
+      captainId: captain.id,
+    });
+    return;
+  }
   audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId, requiredCents: settlement.confirmingCaptainFeeCents });
+  logOrderTrace("acceptance_recorded", {
+    groupKey: orderTraceKey(groupId),
+    acceptanceKey: orderTraceKey(acceptanceMessageId),
+    candidateId: candidate.id,
+    captainId: captain.id,
+    producerId: producer.id,
+  });
   // لا تسوية عند «تم» فقط؛ صاحب الطلب يختار أحد الردود بوضع 👍 عليه.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
