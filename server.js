@@ -3573,14 +3573,21 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
     const authText = authMethod === "whatsapp" ? "طريقة الدخول: رمز تحقق يُرسل إلى رقم WhatsApp نفسه." : "طريقة الدخول: رقم الهاتف والرمز السري من 5 أرقام الذي اخترته.";
     const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
     const recipient = await resolveWhatsAppRecipientId(invite.phone);
-    notified = Boolean(recipient && await sendCaptainOperationsCard(recipient, "تمت الموافقة", [
+    const recipients = [...new Set([recipient, `${phoneWithCountry(invite.phone)}@c.us`].filter(Boolean))];
+    const approvalLines = [
       `عزيزي الكابتن ${invite.name}،`,
       "تمت الموافقة على تسجيلك من الشركة.",
       `رقم الهاتف: ${invite.phone}`,
       authText,
       `رابط دخول الكابتن المباشر: ${captainAppLink}`,
       "افتح رابط دخول الكابتن المرفق، ثم أدخل رقم هاتفك والرقم السري. هذا الرابط مخصص للدخول بعد الموافقة، وليس لتسجيل كابتن جديد."
-    ]));
+    ];
+    for (const candidate of recipients) {
+      if (await sendCaptainOperationsCard(candidate, "تمت الموافقة", approvalLines)) {
+        notified = true;
+        break;
+      }
+    }
   }
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const autoTopup = await issueApprovalTopupCard({ captain: { ...captain, role: "captain", active: 1, account_status: "active", is_bot: 0 }, approvalId: id, req });
@@ -3607,7 +3614,14 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   let sentMessageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(captain.phone);
-    const sent = recipient ? await sendCaptainOperationsCard(recipient, title, lines) : false;
+    const recipients = [...new Set([recipient, `${phoneWithCountry(captain.phone)}@c.us`].filter(Boolean))];
+    let sent = false;
+    for (const candidate of recipients) {
+      if (await sendCaptainOperationsCard(candidate, title, lines)) {
+        sent = true;
+        break;
+      }
+    }
     if (sent) { deliveryStatus = "sent"; sentMessageId = idempotencyKey; }
   } catch (_) {}
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, sentMessageId, row.lastInsertRowid);
