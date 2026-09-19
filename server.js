@@ -61,7 +61,9 @@ const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CAPTAIN_DAILY_CHARGE_CENTS = 10;
 const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
-const CAPTAIN_DAILY_CHARGE_ENABLED = process.env.CAPTAIN_DAILY_CHARGE_ENABLED === "true";
+// Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
+// Keep this hard-off until a future code change explicitly re-enables the policy.
+const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
