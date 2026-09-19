@@ -1,0 +1,62 @@
+services:
+  - type: web
+    name: whatsapserver-clean
+    runtime: node
+    plan: standard
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: clean-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: CLEAN_INSTANCE
+        value: "true"
+      - key: QR_PUBLIC
+        value: "false"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium
+      - key: DATA_DIR
+        value: /app/data
+      - key: AUTH_PATH
+        value: /app/data/.wwebjs_auth
+      - key: BAILEYS_AUTH_PATH
+        value: /app/data/.baileys_auth
+      - key: BAILEYS_ENABLED
+        value: "false"
+      - key: API_RATE_LIMIT_MAX
+        value: "120"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "900000"
+      - key: WHATSAPP_INIT_TIMEOUT_MS
+        value: "180000"
+      - key: WHATSAPP_RECONNECT_BASE_DELAY_MS
+        value: "5000"
+      - key: WHATSAPP_RECONNECT_MAX_DELAY_MS
+        value: "120000"
+      - key: WHATSAPP_RECONNECT_MAX_ATTEMPTS
+        value: "20"
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CAPTAIN_PASSWORD
+        sync: false
+      - key: BOT_PHONE
+        sync: false
+      - key: BOT_PHONE_INTL
+        sync: false
+      - key: WHATSAPP_GROUP_ID
+        sync: false
+      - key: GROUP_SETUP_OWNER_PHONES
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false

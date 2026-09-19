@@ -20,10 +20,11 @@ const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = requi
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
+const CLEAN_INSTANCE = process.env.CLEAN_INSTANCE === "true";
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -47,11 +48,11 @@ const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "Aljarah";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Jojo1987@";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (CLEAN_INSTANCE ? "" : "Jojo1987@");
 const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
 const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
-const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
+const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || (CLEAN_INSTANCE ? "" : "9871040319");
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
@@ -488,7 +489,7 @@ function createTicketCode() {
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962775969880"]);
-const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
+const GROUP_SETUP_OWNER_PHONES = new Set([(CLEAN_INSTANCE ? "" : "+962779110123"), ...(process.env.GROUP_SETUP_OWNER_PHONES || (CLEAN_INSTANCE ? "" : "+962785217886")).split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
