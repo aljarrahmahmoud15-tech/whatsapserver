@@ -61,6 +61,7 @@ const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CAPTAIN_DAILY_CHARGE_CENTS = 10;
 const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
+const CAPTAIN_DAILY_CHARGE_ENABLED = process.env.CAPTAIN_DAILY_CHARGE_ENABLED === "true";
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
@@ -1884,8 +1885,10 @@ function applyCaptainDailyCharges(stamp = now()) {
 function startCaptainSubscriptionScheduler() {
   applyCaptainSubscriptionCharges();
   setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
-  applyCaptainDailyCharges();
-  setInterval(() => applyCaptainDailyCharges(), CAPTAIN_DAILY_CHARGE_INTERVAL_MS).unref();
+  if (CAPTAIN_DAILY_CHARGE_ENABLED) {
+    applyCaptainDailyCharges();
+    setInterval(() => applyCaptainDailyCharges(), CAPTAIN_DAILY_CHARGE_INTERVAL_MS).unref();
+  }
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "");

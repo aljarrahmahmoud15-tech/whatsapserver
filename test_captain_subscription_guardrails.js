@@ -24,6 +24,8 @@ assert.match(source, /function applyCaptainDailyCharges\(stamp = now\(\)\)/);
 assert.match(source, /"daily_captain_charge"/);
 assert.match(source, /DAILY-CAPTAIN-\$\{chargeDate\}-\$\{captain\.id\}/);
 assert.match(source, /setInterval\(\(\) => applyCaptainDailyCharges\(\), CAPTAIN_DAILY_CHARGE_INTERVAL_MS\)/);
+assert.match(source, /const CAPTAIN_DAILY_CHARGE_ENABLED = process\.env\.CAPTAIN_DAILY_CHARGE_ENABLED === "true"/);
+assert.match(source, /if \(CAPTAIN_DAILY_CHARGE_ENABLED\) \{/);
 const dailyBlock = source.slice(source.indexOf('function applyCaptainDailyCharges'), source.indexOf('function startCaptainSubscriptionScheduler'));
 assert.equal(dailyBlock.includes('notifyCaptain'), false, 'daily charge must not notify captains');
 assert.match(source, /app\.get\("\/api\/admin\/daily-charges", requireAdmin/);
