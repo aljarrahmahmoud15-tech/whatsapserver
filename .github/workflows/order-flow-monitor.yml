@@ -1,0 +1,69 @@
+name: Order Flow Health Monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: order-flow-health-monitor
+  cancel-in-progress: false
+
+jobs:
+  order-flow-tests:
+    name: Order flow regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Run full regression suite
+        run: npm test
+      - name: Run focused order confirmation suite
+        run: |
+          node test_price_confirmation_rule.js
+          node test_confirmation_flow_isolated.js
+          node test_selected_reply_reaction.js
+          node test_phone_identity_settlement.js
+          node test_reaction_cancellation.js
+
+  production-health:
+    name: Production WhatsApp and group health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SERVICE_URL: https://whatsapserver-2.onrender.com
+    steps:
+      - name: Check public health endpoint
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/health" \
+            | jq -e '(.ok == true) and (.ready == true) and (.whatsapp == "ready")' >/dev/null
+          echo "Health endpoint is ready."
+      - name: Check WhatsApp group receiver and order counters
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" \
+            | jq -e '
+              (.ready == true) and
+              (.whatsappState == "ready") and
+              (.groupConfigured == true) and
+              (.groupReceiverReady == true) and
+              (.whatsappLastError == null) and
+              (.orders.openUnassigned >= 0) and
+              (.orders.pendingConfirmation >= 0) and
+              (.orders.acceptedUnlinked >= 0)
+            ' >/dev/null
+          echo "WhatsApp, group receiver, and order counters are healthy."
