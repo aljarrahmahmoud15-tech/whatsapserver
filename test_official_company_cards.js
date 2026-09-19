@@ -8,7 +8,7 @@ assert(server.includes('async function sendCompanyOperationsCard'), 'company car
 assert(server.includes('renderOperationsMessageMedia(title, lines)'), 'individual company replies render branded media');
 assert(server.includes('async function sendBotText(to, text)'), 'text API is preserved as a compatibility wrapper');
 assert(server.includes('return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines)'), 'ordinary company messages use the official card');
-assert(server.includes('sendCaptainOperationsCard(candidate, "تمت الموافقة"'), 'captain approval is sent as a branded card');
+assert(server.includes('sendBotText(candidate, approvalMessage)'), 'captain approval is sent as plain text');
 assert(server.includes('`${phoneWithCountry(invite.phone)}@c.us`'), 'captain approval has a direct phone recipient fallback');
 assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
 assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');
@@ -37,8 +37,8 @@ assert(server.includes('event: "captain.wallet.credit_sent"'), 'captain credit n
 assert(server.includes("event='captain.wallet.credit_sent' AND message LIKE ?"), 'captain credit notification is idempotent per card');
 assert(server.includes('تم إرسال رصيد بالقيمة المطلوبة'), 'captain credit notification includes the requested value');
 assert(server.includes('const recipient = await resolveWhatsAppRecipientId(invite.phone);'), 'captain approval resolves the current WhatsApp recipient');
-assert(server.includes('sendCaptainOperationsCard(candidate, "تمت الموافقة"'), 'captain approval sends the approved notification');
-assert(server.includes('تمت الموافقة على تسجيلك من الشركة.'), 'captain approval notification uses the approved wording');
+assert(server.includes('sendBotText(candidate, approvalMessage)'), 'captain approval sends the approved notification');
+assert(server.includes('تمت موافقة الشركة على الكابتن وتفعيل الحساب.'), 'captain approval notification uses the approved plain-text wording');
 assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative captain wallet notification service exists');
 assert(server.includes('const title = "تنبيه من وصلني الآن"'), 'negative wallet alert uses the approved Waslni title');
 assert(server.includes('عزيزي الكابتن ${captain.name}،'), 'negative wallet alert addresses the captain politely');
@@ -111,7 +111,8 @@ assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'th
 assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
 assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
 assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
-assert(server.includes('const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));'), 'approval flow uses the direct captain login URL');
-assert(server.includes('رابط دخول الكابتن المباشر'), 'approval message labels the direct captain login URL');
+const approvalFlow = server.slice(server.indexOf('app.post("/api/admin/captain-invites/:id/decision"'), server.indexOf('app.post("/api/admin/captains/:id/approval-notification-test"'));
+assert(!approvalFlow.includes('captainAppLink'), 'approval text does not include a login link');
+assert(!approvalFlow.includes('sendCaptainOperationsCard(candidate, "تمت الموافقة"'), 'approval text does not send a branded card');
 assert(fs.readFileSync('./public/captain.html', 'utf8').includes("get('mode') === 'login' ? 'login' : 'registration'"), 'direct login URL opens the captain login screen');
 console.log('official company card and compact top-up flow guardrails verified');

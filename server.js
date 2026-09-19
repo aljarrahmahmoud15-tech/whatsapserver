@@ -3573,20 +3573,11 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   audit("captain.join.approved", "captain_invite", id, { captainId, phone: invite.phone });
   let notified = false;
   if (invite.phone) {
-    const authText = authMethod === "whatsapp" ? "طريقة الدخول: رمز تحقق يُرسل إلى رقم WhatsApp نفسه." : "طريقة الدخول: رقم الهاتف والرمز السري من 5 أرقام الذي اخترته.";
-    const captainAppLink = captainLoginUrl(captainInviteBaseUrl(req));
     const recipient = await resolveWhatsAppRecipientId(invite.phone);
     const recipients = [...new Set([recipient, `${phoneWithCountry(invite.phone)}@c.us`].filter(Boolean))];
-    const approvalLines = [
-      `عزيزي الكابتن ${invite.name}،`,
-      "تمت الموافقة على تسجيلك من الشركة.",
-      `رقم الهاتف: ${invite.phone}`,
-      authText,
-      `رابط دخول الكابتن المباشر: ${captainAppLink}`,
-      "افتح رابط دخول الكابتن المرفق، ثم أدخل رقم هاتفك والرقم السري. هذا الرابط مخصص للدخول بعد الموافقة، وليس لتسجيل كابتن جديد."
-    ];
+    const approvalMessage = "تمت موافقة الشركة على الكابتن وتفعيل الحساب.";
     for (const candidate of recipients) {
-      if (await sendCaptainOperationsCard(candidate, "تمت الموافقة", approvalLines)) {
+      if (await sendBotText(candidate, approvalMessage)) {
         notified = true;
         break;
       }
@@ -3610,8 +3601,7 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   if (previous) return res.json({ success: true, duplicate: true, status: previous.delivery_status, messageId: previous.message_id });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للإرسال حاليًا" });
   const title = "إشعار اختبار الموافقة";
-  const lines = [`عزيزي الكابتن ${captain.name}،`, "تمت الموافقة على تسجيلك من الشركة.", "هذه رسالة اختبار فقط، ولا تغيّر حالة حسابك أو رصيدك.", `رقم الهاتف: ${captain.phone}`, `رابط دخول الكابتن المباشر: ${captainLoginUrl(PUBLIC_APP_URL)}`];
-  const message = lines.join("\n");
+  const message = "تمت موافقة الشركة على الكابتن وتفعيل الحساب.";
   const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,message_id,created_at) VALUES(?,?,?,?,?,'pending',?,?)").run(phoneWithCountry(captain.phone), "captain", "captain.approval_notification.test", title, message, idempotencyKey, now());
   let deliveryStatus = "failed";
   let sentMessageId = null;
@@ -3620,7 +3610,7 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
     const recipients = [...new Set([recipient, `${phoneWithCountry(captain.phone)}@c.us`].filter(Boolean))];
     let sent = false;
     for (const candidate of recipients) {
-      if (await sendCaptainOperationsCard(candidate, title, lines)) {
+      if (await sendBotText(candidate, message)) {
         sent = true;
         break;
       }
