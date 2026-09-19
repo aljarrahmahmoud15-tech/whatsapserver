@@ -538,9 +538,18 @@ const phoneWithCountry = (value = "") => {
 async function resolveWhatsAppRecipientId(phoneValue) {
   const phone = phoneWithCountry(phoneValue);
   if (!phone || !client || !isReady || typeof client.getNumberId !== "function") return null;
+  const persisted = db.prepare("SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=? AND active=1 ORDER BY last_seen_at DESC LIMIT 1").get(phone);
+  if (persisted?.whatsapp_lid) return String(persisted.whatsapp_lid).trim();
   const resolved = await withTimeout(client.getNumberId(phone), 20000, null);
   const serialized = String(resolved?._serialized || "").trim();
-  return /@(c\.us|lid)$/.test(serialized) ? serialized : null;
+  if (/@(c\.us|lid)$/.test(serialized)) return serialized;
+  const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 10000, null);
+  const contactId = String(contact?.id?._serialized || contact?.id || "").trim();
+  if (/@(c\.us|lid)$/.test(contactId)) return contactId;
+  const registered = typeof client.isRegisteredUser === "function"
+    ? await withTimeout(client.isRegisteredUser(phone), 10000, false)
+    : false;
+  return registered ? `${phone}@c.us` : null;
 }
 const cents = (value) => Math.round(Number(value || 0) * 100);
 const money = (value) => (Number(value || 0) / 100).toFixed(2);
@@ -792,8 +801,13 @@ async function sendCompanyOperationsCard(to, title, lines) {
     const sent = await withTimeout(client.sendMessage(to, media, { caption }), 30000, null);
     return Boolean(sent);
   } catch (error) {
-    console.error("[WhatsApp] operations card not sent because branded media failed:", error.message);
-    return false;
+    console.warn("[WhatsApp] operations card media failed; using text fallback");
+    try {
+      const sent = await withTimeout(client.sendMessage(to, caption), 20000, null);
+      return Boolean(sent);
+    } catch (_) {
+      return false;
+    }
   }
 }
 async function sendBotText(to, text) {

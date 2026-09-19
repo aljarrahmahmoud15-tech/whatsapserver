@@ -28,6 +28,9 @@ assert.ok(server.includes('renderTopupCardMedia'), 'card delivery renders an off
 assert.ok(server.includes('async function resolveWhatsAppRecipientId'), 'card delivery resolves the current WhatsApp recipient id');
 assert.ok(server.includes('client.getNumberId(phone)'), 'recipient resolution checks the registered WhatsApp identity');
 assert.ok(server.includes('/@(c\\.us|lid)$/.test(serialized)'), 'recipient resolution accepts current LID identities');
+assert.ok(server.includes('client.getContactById(`${phone}@c.us`)'), 'recipient resolution falls back to the direct WhatsApp contact');
+assert.ok(server.includes('client.isRegisteredUser(phone)'), 'recipient resolution checks registered phone fallback');
+assert.ok(server.includes('using text fallback'), 'operations notifications have a text fallback when media fails');
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(card.captain_phone);'), 'stored card delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(captain.phone);'), 'new captain card delivery uses the resolved WhatsApp identity');
 assert.ok(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'support top-up delivery uses the resolved WhatsApp identity');
