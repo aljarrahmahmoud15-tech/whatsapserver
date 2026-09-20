@@ -84,6 +84,8 @@ const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_B
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
+const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
+const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
 const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -2501,6 +2503,31 @@ function startWhatsAppWatchdog() {
     void restartWhatsApp("automatic watchdog restart").catch((error) => console.error("[WhatsApp] watchdog restart:", error.message));
   }, WHATSAPP_WATCHDOG_INTERVAL_MS);
   whatsappWatchdogTimer.unref?.();
+}
+let whatsappReactionScanTimer = null;
+let whatsappReactionScanRunning = false;
+function startWhatsAppReactionScanner() {
+  if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
+  whatsappReactionScanTimer = setInterval(() => {
+    if (!isReady || initializing || whatsappReactionScanRunning) return;
+    void scanPendingAcceptanceReactions().catch((error) => console.error("[WhatsApp] reaction scanner:", error.message));
+  }, WHATSAPP_REACTION_SCAN_INTERVAL_MS);
+  whatsappReactionScanTimer.unref?.();
+}
+async function scanPendingAcceptanceReactions() {
+  if (!client || !isReady || whatsappReactionScanRunning) return;
+  const groupId = getSetting("active_group_id", getSetting("group_id", ""));
+  if (!groupId || !isConfiguredGroup(groupId)) return;
+  whatsappReactionScanRunning = true;
+  try {
+    const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+    for (const row of rows) {
+      try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
+    }
+    if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} pending acceptance message(s)`);
+  } finally {
+    whatsappReactionScanRunning = false;
+  }
 }
 const recentMessageEventKeys = new Map();
 const MESSAGE_EVENT_DEDUP_TTL_MS = 10 * 60 * 1000;
@@ -6972,6 +6999,7 @@ app.listen(PORT, () => {
   startCaptainSubscriptionScheduler();
   initializeWhatsApp();
   startWhatsAppWatchdog();
+  startWhatsAppReactionScanner();
   if (BAILEYS_ENABLED) initializeBaileys();
 });
 
