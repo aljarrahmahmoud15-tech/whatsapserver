@@ -3456,6 +3456,24 @@ async function handleMessageReaction(reaction) {
     return;
   }
   let acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
+  if (!acceptance && target.hasQuotedMsg && typeof target.getQuotedMessage === "function") {
+    const quoted = await withTimeout(target.getQuotedMessage(), 8000, null);
+    const sourceMessageId = serializedMessageId(quoted);
+    const candidate = sourceMessageId && quoted && parseOrder(quoted.body)?.isOrder
+      ? db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND source_message_id=? AND status IN ('candidate','pending') LIMIT 1").get(target.from, sourceMessageId)
+      : null;
+    if (candidate) {
+      const captainPhone = await resolveMessageSenderPhone(target);
+      const captain = captainPhone ? findActiveRegisteredUser(captainPhone) : null;
+      const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+      if (captain && producer && captain.id !== producer.id) {
+        const stamp = now();
+        db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, stamp, stamp);
+        acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE a.candidate_id=? AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(candidate.id, messageId);
+        if (acceptance) logOrderTrace("reaction_acceptance_recovered_from_quoted_source", { groupKey: orderTraceKey(target.from), reactionKey: orderTraceKey(messageId), sourceKey: orderTraceKey(sourceMessageId), candidateId: candidate.id, captainId: captain.id });
+      }
+    }
+  }
   if (!acceptance) {
     const legacy = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
     if (legacy?.pending_captain_user_id) {
