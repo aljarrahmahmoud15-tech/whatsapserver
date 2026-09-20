@@ -3569,7 +3569,7 @@ async function handleMessageReaction(reaction) {
 async function reconcileStoredThumbReaction(messageId) {
   if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
   const target = await withTimeout(client.getMessageById(messageId), 12000, null);
-  if (!target || !target.hasReaction || typeof target.getReactions !== "function") return;
+  if (!target || typeof target.getReactions !== "function") return;
   const reactions = await withTimeout(target.getReactions(), 12000, []);
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
