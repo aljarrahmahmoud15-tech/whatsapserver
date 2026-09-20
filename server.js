@@ -6047,7 +6047,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!order) order = createOrderRecord({ messageId: sourceMessageId, groupId, body: evidence.rawText, producer: evidence.producer, parsed: evidence.parsed });
   if (!order) return res.status(409).json({ error: "Unable to create the matched order record", mutation: "none" });
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
-  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
+  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
     const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
