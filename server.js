@@ -2542,7 +2542,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
   if (!pendingCandidates.length) return;
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
-  const scan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
+  const scan = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
   let recovered = 0;
   for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;

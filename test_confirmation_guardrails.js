@@ -36,6 +36,7 @@ assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)
 assert.match(server, /async function recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /whatsappHistoricalCandidateRecoveryAttempted/);
 assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
+assert.match(server, /const scan = await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);
