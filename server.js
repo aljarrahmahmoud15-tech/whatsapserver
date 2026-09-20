@@ -2637,6 +2637,7 @@ function createClient() {
         setTimeout(() => {
           if (generation !== connectionGeneration || !isReady) return;
           void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
+          void reconcileStoredThumbReaction(reaction?.msgId).catch((error) => console.error("[WhatsApp] stored reaction retry:", error));
         }, delay);
       }
     }
@@ -3415,7 +3416,22 @@ async function handleMessageReaction(reaction) {
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
-  const approverPhone = await resolveReactionSenderPhone(reaction);
+  let approverPhone = await resolveReactionSenderPhone(reaction);
+  // WhatsApp may emit a LID-only sender on the live event while the full
+  // reaction collection contains the sender identity that can be mapped to PN.
+  if (!approverPhone && typeof target.getReactions === "function") {
+    const storedReactions = await withTimeout(target.getReactions(), 12000, []);
+    const storedThumb = (Array.isArray(storedReactions) ? storedReactions : [])
+      .find((item) => item && (item.aggregateEmoji === "👍" || item.reaction === "👍"));
+    for (const sender of (storedThumb?.senders || [])) {
+      approverPhone = await resolveReactionSenderPhone({
+        senderId: sender?.senderId || sender?.id?._serialized || sender?.id || sender,
+        senderUserJid: sender?.senderUserJid,
+        author: sender?.author,
+      });
+      if (approverPhone) break;
+    }
+  }
   if (removedThumb) {
     const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (acceptance) {
