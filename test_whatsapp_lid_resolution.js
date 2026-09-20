@@ -12,6 +12,8 @@ assert.match(source, /reaction\?\._data\?\.senderUserJid/);
 assert.match(source, /client\.getContactLidAndPhone\(lidIds\)/);
 assert.match(source, /resolveWhatsappLidsFromConfiguredGroup\(lidIds\)/);
 assert.match(source, /configured_group_toPn/);
+assert.match(source, /app\.get\("\/api\/admin\/group\/resolve-identity", requireAdmin/);
+assert.match(source, /A WhatsApp LID ending with @lid is required/);
 assert.match(source, /accepted_message_sender/);
 assert.match(source, /for \(const delay of \[1500, 5000\]\)/);
 assert.match(source, /reconcileStoredThumbReaction\(messageId\)/);

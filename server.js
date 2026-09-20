@@ -5995,6 +5995,17 @@ app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, cutoff, batch, cursor: before || null, nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), exhausted: Boolean(result.exhausted), scanned: messages.length, orders, acceptances, messages, mutation: "none", readOnly: true });
 });
+app.get("/api/admin/group/resolve-identity", requireAdmin, async (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const requested = String(req.query.lid || req.query.id || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  if (!/@lid$/i.test(requested)) return res.status(400).json({ error: "A WhatsApp LID ending with @lid is required", mutation: "none" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const phone = await resolveWhatsappUserPhone(requested);
+  const captain = phone ? db.prepare("SELECT id,phone,name,active,account_status,role FROM users WHERE phone=? AND role='captain' AND account_status<>'merged' LIMIT 1").get(phone) : null;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, groupId, lid: requested, phone: phone || null, captain: captain || null, resolved: Boolean(phone && captain), mutation: "none", readOnly: true });
+});
 app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
