@@ -1575,6 +1575,57 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   }, groupId, limit, includeOutgoing), 20000, { chat: null, messages: [] });
   return messages;
 }
+async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false } = {}) {
+  if (!client?.pupPage || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
+  const result = await withTimeout(client.pupPage.evaluate(async (requestedId, options) => {
+    try {
+      const wid = window.require("WAWebWidFactory").createWid(requestedId);
+      const collections = window.require("WAWebCollections");
+      const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
+      if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [], nextCursor: null, exhausted: true };
+      const includeOutgoingMessages = Boolean(options.includeOutgoing);
+      const beforeTs = Number(options.before || 0);
+      const cutoffTs = Number(options.cutoff || 0);
+      const batchSize = Math.max(1, Math.min(Number(options.batch || 25), 50));
+      const filter = (message) => !message.isNotification && (includeOutgoingMessages || !message.id?.fromMe);
+      let models = chat.msgs.getModelsArray().filter(filter);
+      let loader = null;
+      try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
+      let loads = 0;
+      const eligible = () => models.filter((message) => {
+        const timestamp = Number(message.t || 0);
+        return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
+      });
+      while (loader?.loadEarlierMsgs && loads < 6 && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
+        const earlier = await loader.loadEarlierMsgs({ chat });
+        loads += 1;
+        if (!earlier?.length) break;
+        models = [...earlier.filter(filter), ...models];
+      }
+      models.sort((a, b) => Number(b.t || 0) - Number(a.t || 0));
+      const selected = models.filter((message) => {
+        const timestamp = Number(message.t || 0);
+        return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
+      }).slice(0, batchSize);
+      const messages = selected.map((message) => ({
+        id: message.id?._serialized || String(message.id || ""),
+        timestamp: Number(message.t || 0) || null,
+        from: message.from?._serialized || String(message.from || requestedId),
+        to: message.to?._serialized || String(message.to || ""),
+        fromMe: Boolean(message.id?.fromMe),
+        author: message.author?._serialized || String(message.author || ""),
+        body: String(message.body || message.text || message.caption || "").trim(),
+        type: message.type || null,
+      }));
+      const oldest = messages.length ? Number(messages[messages.length - 1].timestamp || 0) : 0;
+      const hasOlder = models.some((message) => Number(message.t || 0) * 1000 >= cutoffTs && (!beforeTs || Number(message.t || 0) < beforeTs) && Number(message.t || 0) < oldest);
+      return { chat: { id: requestedId, isGroup: true }, messages, nextCursor: hasOlder && oldest ? oldest : null, exhausted: !hasOlder };
+    } catch (error) {
+      return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
+    }
+  }, groupId, { before, cutoff, batch, includeOutgoing }), 25000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
+}
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
   if (!client) return [];
   const ids = [...new Set([sourceMessageId, acceptanceMessageId].map((value) => String(value || "").trim()).filter(Boolean))];
@@ -5647,6 +5698,42 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   });
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, includeOutgoing, count: rows.length, messages: rows });
+});
+app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const hours = Math.max(1, Math.min(Number(req.query.hours || 12), 168));
+  const batch = Math.max(1, Math.min(Number(req.query.batch || 25), 50));
+  const before = Math.max(0, Number(req.query.cursor || 0));
+  const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing });
+  if (!result.chat) return res.status(result.timedOut ? 504 : 502).json({ error: result.timedOut ? "Group scan timed out; retry with the returned batch size" : "Configured group is not readable", mutation: "none", retryable: true });
+  const messages = (Array.isArray(result.messages) ? result.messages : []).map((message) => ({
+    ...message,
+    parsedOrder: parseOrder(message.body),
+    captainAcceptance: isCaptainAcceptance(message.body),
+  }));
+  const orders = messages.filter((message) => message.parsedOrder?.isOrder).map((message) => ({
+    sourceMessageId: message.id,
+    timestamp: message.timestamp,
+    from: message.from,
+    body: message.body,
+    parsedOrder: message.parsedOrder,
+    evidence: "price_message_only",
+    mutation: "none",
+  }));
+  const acceptances = messages.filter((message) => message.captainAcceptance).map((message) => ({
+    acceptanceMessageId: message.id,
+    timestamp: message.timestamp,
+    from: message.from,
+    body: message.body,
+    evidence: "acceptance_message_only",
+    mutation: "none",
+  }));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, groupId, hours, cutoff, batch, cursor: before || null, nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), exhausted: Boolean(result.exhausted), scanned: messages.length, orders, acceptances, messages, mutation: "none", readOnly: true });
 });
 app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });

@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('./server.js', 'utf8');
+
+assert.match(source, /app\.get\("\/api\/admin\/group\/order-scan", requireAdmin/);
+assert.match(source, /const batch = Math\.max\(1, Math\.min\(Number\(req\.query\.batch \|\| 25\), 50\)\)/);
+assert.match(source, /const hours = Math\.max\(1, Math\.min\(Number\(req\.query\.hours \|\| 12\), 168\)\)/);
+assert.match(source, /fetchGroupOrderScanBatch\(groupId/);
+assert.match(source, /nextCursor: result\.nextCursor/);
+assert.match(source, /hasMore: Boolean\(result\.nextCursor\)/);
+assert.match(source, /mutation: "none"/);
+assert.match(source, /readOnly: true/);
+assert.match(source, /evidence: "price_message_only"/);
+assert.match(source, /evidence: "acceptance_message_only"/);
+assert.match(source, /loadEarlierMsgs/);
+assert.match(source, /loads < 6/);
+console.log('order-scan guardrails: OK');
