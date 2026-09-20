@@ -612,6 +612,21 @@ function settlementRows(limit = 200) {
     ORDER BY COALESCE(s.applied_at,s.created_at) DESC,s.id DESC LIMIT ?`).all(safeLimit);
 }
 
+function maskSettlementPhone(value) {
+  const phone = phoneWithCountry(value) || String(value || "");
+  if (phone.length <= 6) return phone ? "***" : null;
+  return `${phone.slice(0, 4)}***${phone.slice(-4)}`;
+}
+
+function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, chargedWallet, settlement, settlementKey }) {
+  const price = money(priceCents);
+  const producerShare = money(settlement.producerNetCents);
+  const companyShare = money(settlement.companyCents);
+  const executorDebit = money(settlement.confirmingCaptainFeeCents);
+  console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} price=${price} JOD`);
+  console.log(`[Settlement] CONFIRMED 12% downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | 3% company=${companyShare} JOD | 15% executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)}`);
+}
+
 function serializeSettlement(row, includeLedger = true) {
   const finance = settlementFinancials(row);
   const ledger = includeLedger
@@ -3091,7 +3106,8 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, candidateId, expectedMessageId);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: confirmer.phone });
-    console.log(`[Order] accepted #${orderNo} group=${current.group_id} captain=${captain.phone} confirmedBy=${confirmer.phone}`);
+    logSettlementCompleted({ mode: "live", orderId, orderNo, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
+    console.log(`[Order] accepted #${orderNo} group=${current.group_id} captain=${maskSettlementPhone(captain.phone)} confirmedBy=${maskSettlementPhone(confirmer.phone)}`);
     return {
       state: "accepted",
       order: { id: orderId, order_no: orderNo, price_cents: current.price_cents, status: "accepted", settlement_state: "settled" },
@@ -3144,6 +3160,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 3% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن المنفذ (15% إجمالًا)", now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
+    logSettlementCompleted({ mode: "historical", orderId, orderNo: current.order_no, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id) };
   })();
 }
