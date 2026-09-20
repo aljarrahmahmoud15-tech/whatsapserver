@@ -3623,7 +3623,19 @@ async function reconcileStoredThumbReaction(messageId) {
   if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
   const target = await withTimeout(client.getMessageById(messageId), 12000, null);
   if (!target || typeof target.getReactions !== "function") return;
-  const reactions = await withTimeout(target.getReactions(), 12000, []);
+  let reactions = await withTimeout(target.getReactions(), 12000, []);
+  if ((!Array.isArray(reactions) || !reactions.length) && target.hasReaction) {
+    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
+      await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (await hasVisibleThumbReaction(messageId)) {
+      await handleMessageReaction({ reaction: "👍", msgId: messageId, hasReactionByMe: true });
+      return;
+    }
+    console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(messageId).slice(0, 80)}`);
+    return;
+  }
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
     const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;

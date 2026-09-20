@@ -31,6 +31,7 @@ assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
 assert.match(server, /hasReactionByMe: storedThumb\?\.hasReactionByMe === true/);
 assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
+assert.match(server, /if \(await hasVisibleThumbReaction\(messageId\)\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /async function recoverHistoricalOrderCandidates\(groupId\)/);
