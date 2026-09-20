@@ -30,6 +30,7 @@ assert.match(server, /const approver = botCompanyApproval \? companyUser\(\) : f
 assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
 assert.match(server, /hasReactionByMe: storedThumb\?\.hasReactionByMe === true/);
+assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
 assert.match(server, /quotedReplyId === pending\.source_message_id/);

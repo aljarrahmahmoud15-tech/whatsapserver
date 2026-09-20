@@ -3573,7 +3573,13 @@ async function reconcileStoredThumbReaction(messageId) {
   const reactions = await withTimeout(target.getReactions(), 12000, []);
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
-    for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
+    const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;
+    const senders = Array.isArray(reaction.senders) ? reaction.senders : [];
+    if (reactionIsByCurrentAccount && !senders.length) {
+      await handleMessageReaction({ reaction: "👍", msgId: messageId, hasReactionByMe: true });
+      continue;
+    }
+    for (const sender of senders) {
       await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }
   }
