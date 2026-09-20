@@ -2549,11 +2549,14 @@ async function recoverPendingAcceptanceMessages(groupId) {
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (existing) continue;
     const live = await withTimeout(client.getMessageById(row.id), 12000, null);
-    if (!live || !live.hasQuotedMsg || typeof live.getQuotedMessage !== "function") continue;
-    const quoted = await withTimeout(live.getQuotedMessage(), 8000, null);
+    const acceptance = live && typeof live.getQuotedMessage === "function" ? live : row;
+    if (!acceptance || (!acceptance.hasQuotedMsg && !acceptance.__quoted)) continue;
+    const quoted = typeof acceptance.getQuotedMessage === "function"
+      ? await withTimeout(acceptance.getQuotedMessage(), 8000, null)
+      : acceptance.__quoted;
     const sourceId = serializedMessageId(quoted);
     if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
-    await handleIncomingMessage(live, { allowSelf: true });
+    await handleIncomingMessage(acceptance, { allowSelf: true });
     const recorded = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (recorded) recovered += 1;
   }
@@ -3624,7 +3627,7 @@ async function reconcileStoredThumbReaction(messageId) {
   const target = await withTimeout(client.getMessageById(messageId), 12000, null);
   if (!target || typeof target.getReactions !== "function") return;
   let reactions = await withTimeout(target.getReactions(), 12000, []);
-  if ((!Array.isArray(reactions) || !reactions.length) && target.hasReaction) {
+  if (!Array.isArray(reactions) || !reactions.length) {
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 500));
