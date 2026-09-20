@@ -33,6 +33,9 @@ assert.match(server, /hasReactionByMe: storedThumb\?\.hasReactionByMe === true/)
 assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
+assert.match(server, /async function recoverHistoricalOrderCandidates\(groupId\)/);
+assert.match(server, /whatsappHistoricalCandidateRecoveryAttempted/);
+assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);

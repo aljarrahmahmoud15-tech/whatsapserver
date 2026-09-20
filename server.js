@@ -2506,6 +2506,7 @@ function startWhatsAppWatchdog() {
 }
 let whatsappReactionScanTimer = null;
 let whatsappReactionScanRunning = false;
+let whatsappHistoricalCandidateRecoveryAttempted = false;
 function startWhatsAppReactionScanner() {
   if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
   whatsappReactionScanTimer = setInterval(() => {
@@ -2513,6 +2514,27 @@ function startWhatsAppReactionScanner() {
     void scanPendingAcceptanceReactions().catch((error) => console.error("[WhatsApp] reaction scanner:", error.message));
   }, WHATSAPP_REACTION_SCAN_INTERVAL_MS);
   whatsappReactionScanTimer.unref?.();
+}
+async function recoverHistoricalOrderCandidates(groupId) {
+  if (whatsappHistoricalCandidateRecoveryAttempted || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
+  const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
+  if (!history.chat) return;
+  whatsappHistoricalCandidateRecoveryAttempted = true;
+  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  let recovered = 0;
+  for (const message of Array.isArray(history.messages) ? history.messages : []) {
+    if (!message || !message.fromMe || resolveGroupChatId(message) !== groupId || Number(message.timestamp || message.__timestamp || 0) * 1000 < cutoff) continue;
+    const messageId = serializedMessageId(message);
+    const parsed = parseOrder(message.body);
+    if (!messageId || !parsed.isOrder) continue;
+    const existingOrder = db.prepare("SELECT 1 FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+    const existingCandidate = db.prepare("SELECT 1 FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
+    if (existingOrder || existingCandidate) continue;
+    const producer = companyUser();
+    const candidate = producer ? createOrderCandidate({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
+    if (candidate) recovered += 1;
+  }
+  if (recovered) console.log(`[WhatsApp] recovered ${recovered} historical self order candidate(s)`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
@@ -2543,6 +2565,7 @@ async function scanPendingAcceptanceReactions() {
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
+    await recoverHistoricalOrderCandidates(groupId);
     await recoverPendingAcceptanceMessages(groupId);
     const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
     for (const row of rows) {
