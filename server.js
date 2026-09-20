@@ -3500,14 +3500,11 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
   const existingSettlement = existingOrder ? db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(existingOrder.id) : null;
-  const phoneIdentityResolved = Boolean(
-    isValidJordanPhone(producerPhone) &&
-    isValidJordanPhone(captainPhone) &&
-    producer &&
-    captain &&
-    recoveryPhoneMatches(producer.phone, producerPhone) &&
-    recoveryPhoneMatches(captain.phone, captainPhone)
-  );
+  const producerIdentityResolved = botProducer
+    ? Boolean(producer && isValidJordanPhone(producerPhone) && recoveryPhoneMatches(producerPhone, botPhone))
+    : Boolean(producer && isValidJordanPhone(producerPhone) && recoveryPhoneMatches(producer.phone, producerPhone));
+  const captainIdentityResolved = Boolean(captain && isValidJordanPhone(captainPhone) && recoveryPhoneMatches(captain.phone, captainPhone));
+  const phoneIdentityResolved = Boolean(producerIdentityResolved && captainIdentityResolved);
   const match = Boolean(phoneIdentityResolved && authorizedThumb);
   return {
     match,

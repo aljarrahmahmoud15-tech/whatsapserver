@@ -11,6 +11,8 @@ assert.match(flow, /isValidJordanPhone\(producerPhone\)/, 'يتحقق من رق�
 assert.match(flow, /isValidJordanPhone\(captainPhone\)/, 'يتحقق من رقم المنفذ');
 assert.match(flow, /recoveryPhoneMatches\(producer\.phone, producerPhone\)/, 'يطابق صاحب السعر بالهاتف');
 assert.match(flow, /recoveryPhoneMatches\(captain\.phone, captainPhone\)/, 'يطابق المنفذ بالهاتف');
+assert.match(flow, /const producerIdentityResolved = botProducer/, 'يعالج حساب الشركة عند كون رسالة السعر من البوت');
+assert.match(flow, /recoveryPhoneMatches\(producerPhone, botPhone\)/, 'يثبت هوية رسالة البوت عبر رقم الاتصال التشغيلي');
 assert.match(flow, /const match = Boolean\(phoneIdentityResolved && authorizedThumb\)/, 'التثبيت يتطلب هوية هاتفية وتفاعلًا مصرحًا');
 assert.doesNotMatch(flow, /producer\.name\s*===|captain\.name\s*===|producerName.*captainName/, 'لا يعتمد على الاسم للمطابقة');
 
