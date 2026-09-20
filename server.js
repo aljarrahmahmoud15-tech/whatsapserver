@@ -2961,15 +2961,14 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  // Equivalent duplicate guard: if (!insertedMessage.changes) return;
-  if (!insertedMessage.changes) {
-    if (captainAcceptance) {
-      logOrderTrace("acceptance_message_duplicate_or_not_persisted", {
-        groupKey: orderTraceKey(groupId),
-        senderKey: orderTraceKey(senderPhone),
-      });
-    }
-    return;
+  // Keep normal messages idempotent, but replay a stored «تم» so a late
+  // reaction or a reconnect can still create its pending acceptance row.
+  if (!insertedMessage.changes && !captainAcceptance) return;
+  if (!insertedMessage.changes && captainAcceptance) {
+    logOrderTrace("acceptance_message_replayed_after_duplicate_guard", {
+      groupKey: orderTraceKey(groupId),
+      senderKey: orderTraceKey(senderPhone),
+    });
   }
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);

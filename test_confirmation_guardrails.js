@@ -35,6 +35,8 @@ assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof 
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
+assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);
+assert.match(server, /acceptance_message_replayed_after_duplicate_guard/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
 assert.match(server, /quotedReplyId === pending\.source_message_id/);
