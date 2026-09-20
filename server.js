@@ -6172,6 +6172,49 @@ app.get("/api/admin/group/reset-active-captain-pins/:runKey", requireAdmin, (req
   if (!run) return res.status(404).json({ error: "عملية PIN غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run });
 });
+const dailyDebitCancellationRuns = new Map();
+app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  const dryRun = Boolean(req.body?.dryRun);
+  if (confirmation !== "SEND_DAILY_DEBIT_CANCELLATION_NOTICE" || !/^DAILY-CANCEL-[A-Z0-9-]{12,80}$/.test(runKey)) return res.status(400).json({ error: "تأكيد العملية ومفتاحها مطلوبان" });
+  if (dailyDebitCancellationRuns.has(runKey)) return res.json({ success: true, started: true, ...dailyDebitCancellationRuns.get(runKey) });
+  const captains = db.prepare("SELECT id,phone,name,active,account_status,is_bot FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' ORDER BY id").all();
+  const run = { runKey, status: dryRun ? "preview" : "running", dryRun, total: captains.length, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: dryRun ? now() : null };
+  dailyDebitCancellationRuns.set(runKey, run);
+  if (dryRun) return res.json({ success: true, started: false, ...run });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  void (async () => {
+    for (const captain of captains) {
+      try {
+        const prior = db.prepare("SELECT id FROM audit_logs WHERE action='captain.daily_debit_cancellation_notice.sent' AND entity_type='user' AND entity_id=? LIMIT 1").get(String(captain.id));
+        if (prior) { run.skipped += 1; continue; }
+        const recipient = await resolveWhatsAppRecipientId(captain.phone);
+        if (!recipient) throw new Error("recipient_unresolved");
+        const text = brandedMessage("إشعار رسمي — إلغاء الخصم اليومي", [
+          `الكابتن: ${captain.name || "حساب الكابتن"}`,
+          "نحيطك علمًا بأنه تم إلغاء الخصم اليومي بقيمة 10 قروش من حسابك.",
+          "لن يتم تنفيذ أي خصم يومي جديد ابتداءً من الآن.",
+          "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
+          "وصلني الآن — الإدارة",
+        ]);
+        const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+        if (!sent) throw new Error("delivery_failed");
+        audit("captain.daily_debit_cancellation_notice.sent", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
+        run.sent += 1;
+      } catch (_) { run.failed += 1; }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    run.status = "completed";
+    run.completedAt = now();
+  })().catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/notifications/daily-debit-cancellation/:runKey", requireAdmin, (req, res) => {
+  const run = dailyDebitCancellationRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية إشعار إلغاء الخصم غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run });
+});
 app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, async (req, res) => {
   const confirmation = String(req.body?.confirmation || "");
   const runKey = String(req.body?.runKey || "").trim();
