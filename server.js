@@ -1416,6 +1416,28 @@ function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
     results,
   };
 }
+let configuredGroupCaptainSyncTimer = null;
+let configuredGroupCaptainSyncInFlight = false;
+function scheduleConfiguredGroupCaptainSync(trigger = "group_activity") {
+  if (!isReady || !client || configuredGroupCaptainSyncInFlight || configuredGroupCaptainSyncTimer) return;
+  configuredGroupCaptainSyncTimer = setTimeout(async () => {
+    configuredGroupCaptainSyncTimer = null;
+    if (!isReady || !client || configuredGroupCaptainSyncInFlight) return;
+    configuredGroupCaptainSyncInFlight = true;
+    try {
+      const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true });
+      const activated = (result.results || []).filter((item) => ["registered", "activated_captain"].includes(item.status));
+      if (activated.length) {
+        audit("captains.auto_activated_from_group", "group", result.groupId, { trigger, activated: activated.map((item) => ({ captainId: item.captainId, phone: item.phone })) });
+        console.log(`[Captains] auto activation from configured group: trigger=${trigger} activated=${activated.length}`);
+      }
+    } catch (error) {
+      console.error(`[Captains] auto activation failed (${trigger}):`, error.message);
+    } finally {
+      configuredGroupCaptainSyncInFlight = false;
+    }
+  }, 1500);
+}
 async function resolveGroupChat(groupId, inviteCode = "") {
   if (!groupId || !client || !isReady) return null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -2467,7 +2489,7 @@ function createClient() {
       void normalizeAllCaptains()
         .then(async (normalization) => {
           if (normalization.status !== "already_completed") return normalization;
-          const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: false });
+          const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true });
           console.log(`[Captains] configured group sync completed: members=${result.resolvedMembers || 0} registered=${(result.results || []).filter((item) => item.status === "registered").length} activated=${(result.results || []).filter((item) => item.status === "activated_captain").length}`);
           return result;
         })
@@ -2508,11 +2530,13 @@ function createClient() {
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
     recordGroupMessageTelemetry("message_create", msg);
+    if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message_create");
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
+    if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message");
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
   instance.on("message_reaction", async (reaction) => {
