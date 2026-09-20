@@ -1596,7 +1596,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
         const timestamp = Number(message.t || 0);
         return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
       });
-      while (loader?.loadEarlierMsgs && loads < 6 && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
+      while (loader?.loadEarlierMsgs && loads < 1 && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
         const earlier = await loader.loadEarlierMsgs({ chat });
         loads += 1;
         if (!earlier?.length) break;
@@ -1623,7 +1623,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     } catch (error) {
       return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
     }
-  }, groupId, { before, cutoff, batch, includeOutgoing }), 25000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  }, groupId, { before, cutoff, batch, includeOutgoing }), 12000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {

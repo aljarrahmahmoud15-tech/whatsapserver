@@ -13,5 +13,5 @@ assert.match(source, /readOnly: true/);
 assert.match(source, /evidence: "price_message_only"/);
 assert.match(source, /evidence: "acceptance_message_only"/);
 assert.match(source, /loadEarlierMsgs/);
-assert.match(source, /loads < 6/);
+assert.match(source, /loads < 1/);
 console.log('order-scan guardrails: OK');
