@@ -20,7 +20,10 @@
     @media(max-width:620px){.bar{position:static}.brand strong{font-size:14px}.head h1{font-size:24px}.head-actions{width:100%}.head-actions>*{flex:1;text-align:center}.metrics{grid-template-columns:repeat(2,1fr)}.panel{padding:14px}.topup-cards{padding:16px}.card-notification{align-items:flex-start;flex-direction:column}.card-value{align-self:flex-end}}
     .login-card{position:relative;overflow:hidden;border-color:rgba(72,217,209,.42);background:linear-gradient(145deg,rgba(22,48,69,.96),rgba(9,21,37,.97));box-shadow:0 0 0 1px rgba(72,217,209,.08),0 0 34px rgba(72,217,209,.16),0 26px 80px rgba(0,0,0,.48);transition:transform .2s ease,box-shadow .2s ease}.login-card:before{content:"";position:absolute;width:230px;height:230px;right:-95px;top:-115px;border-radius:50%;background:radial-gradient(circle,rgba(72,217,209,.36),transparent 67%);pointer-events:none}.login-card:after{content:"";position:absolute;width:180px;height:180px;left:-90px;bottom:-100px;border-radius:50%;background:radial-gradient(circle,rgba(255,183,95,.2),transparent 68%);pointer-events:none}.login-card>*{position:relative;z-index:1}.login-card:focus-within{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(72,217,209,.18),0 0 46px rgba(72,217,209,.28),0 28px 90px rgba(0,0,0,.52)}.login h1{letter-spacing:-.03em;text-shadow:0 0 18px rgba(72,217,209,.18)}.login-card .primary{box-shadow:0 10px 25px rgba(72,217,209,.2);transition:transform .16s ease,filter .16s ease,box-shadow .16s ease}.login-card .primary:hover{transform:translateY(-2px);filter:brightness(1.1);box-shadow:0 14px 32px rgba(72,217,209,.32)}.login-card .input{background:rgba(5,15,27,.82);border-color:rgba(72,217,209,.34)}
   </style>
-</head>
+<style>
+.order-format-guide{display:grid;grid-template-columns:auto 1fr;gap:1.1rem;align-items:start;margin:1rem 0;padding:1.25rem;border:1px solid rgba(72,217,209,.32);border-radius:22px;background:linear-gradient(135deg,rgba(22,61,82,.8),rgba(9,21,36,.95));box-shadow:0 18px 50px rgba(0,0,0,.2)}
+.order-format-guide .guide-badge{padding:.55rem .8rem;border-radius:999px;background:rgba(72,217,209,.14);color:#67e5dc;font-weight:800;white-space:nowrap}.order-format-guide h2{margin:.1rem 0 .45rem}.order-format-guide p{margin:.35rem 0;color:rgba(235,244,248,.78);line-height:1.7}.format-example{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.8rem 0}.format-example code,.format-example strong{padding:.65rem .85rem;border-radius:12px;background:rgba(0,0,0,.25);color:#fff}.format-example code{direction:rtl;font-size:1.05rem;color:#8ff1e8}.guide-steps{display:grid;gap:.45rem;margin:.7rem 0}.guide-steps span{color:#eaf7f6}.guide-steps b{display:inline-grid;place-items:center;width:1.5rem;height:1.5rem;margin-left:.35rem;border-radius:50%;background:#48d9d1;color:#06202b}.guide-note{font-size:.9rem!important;color:#ffd58a!important}@media(max-width:700px){.order-format-guide{grid-template-columns:1fr}.order-format-guide .guide-badge{justify-self:start}}
+</style></head>
 <body>
   <div class="shell">
     <header class="bar">
@@ -76,7 +79,16 @@
       </form>
     </section>
 
-    <section id="app" class="hidden">
+    <section id="app" class="hidden"><section class="order-format-guide captain-order-guide" aria-labelledby="captain-order-format-title">
+  <div class="guide-badge">تعليمات تنزيل الطلب</div>
+  <div class="guide-copy">
+    <h2 id="captain-order-format-title">اكتب الطلب بهذه الصيغة</h2>
+    <p>لا تكتب الوقت أو نقطة الانطلاق أو الوجهة. اكتب الكلمة الأولى ثم القيمة فقط:</p>
+    <div class="format-example"><code>السعر 5</code><code>السعر 10</code><code>السعر 15</code></div>
+    <div class="guide-steps"><span><b>1</b> أرسل: السعر [القيمة]</span><span><b>2</b> الكابتن المنفذ يرد باقتباس ويكتب: تم</span><span><b>3</b> ضع 👍 على رسالة تم لاختيار الرد</span></div>
+    <p class="guide-note">لا يُثبت الطلب إلا عند اكتمال الاقتباس والتفاعل من صاحب رسالة السعر. المطابقة تعتمد على رقم WhatsApp.</p>
+  </div>
+</section>
       <div id="demo-banner" class="demo-banner hidden"><strong>وضع المعاينة التجريبية</strong>الأرقام والرحلات الظاهرة هنا أمثلة توضيحية فقط، وليست بيانات حقيقية ولا تؤثر على حسابات الكباتن.</div>
       <div class="head">
         <div><div class="eyebrow">مساحة الكابتن</div><h1>أهلًا، <span id="captain-name">—</span></h1><p>هذه الصفحة تعرض الحساب الحقيقي المرتبط برقم الهاتف المسجل.</p></div>
