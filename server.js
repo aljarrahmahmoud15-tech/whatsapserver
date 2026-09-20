@@ -3171,6 +3171,44 @@ function reactionId(value) {
   return value._serialized || value.id || null;
 }
 
+function reactionSenderValues(reaction) {
+  const values = [
+    reaction?.senderId,
+    reaction?._data?.senderId,
+    reaction?.senderUserJid,
+    reaction?._data?.senderUserJid,
+    reaction?.author,
+    reaction?._data?.author,
+    reaction?.sender,
+    reaction?._data?.sender,
+    reaction?.id?.participant,
+    reaction?._data?.id?.participant,
+  ].filter(Boolean);
+  const flatten = (value) => {
+    if (!value) return [];
+    if (typeof value === "string") return [value.trim()];
+    if (Array.isArray(value)) return value.flatMap(flatten);
+    return [
+      value.senderId,
+      value.senderUserJid,
+      value.author,
+      value._serialized,
+      value.id?._serialized,
+      value.id,
+      value.user && value.server ? `${value.user}@${value.server}` : null,
+    ].flatMap(flatten);
+  };
+  return [...new Set(values.flatMap(flatten).map((value) => serializedWhatsappUserId(value) || String(value).trim()).filter(Boolean))];
+}
+
+function isConnectedBotReactionIdentity(value) {
+  const direct = directJordanPhoneFromWhatsappValue(value);
+  if (direct && phoneWithCountry(direct) === phoneWithCountry(connectedBotPhone())) return true;
+  const serialized = serializedWhatsappUserId(value);
+  const connectedWid = serializedWhatsappUserId(client?.info?.wid);
+  return Boolean(serialized && connectedWid && serialized === connectedWid);
+}
+
 async function resolveReactionSenderPhone(reaction) {
   const reactionIsByCurrentAccount = reaction?.hasReactionByMe === true
     || reaction?._data?.hasReactionByMe === true
@@ -3180,30 +3218,40 @@ async function resolveReactionSenderPhone(reaction) {
     console.log("[WhatsApp] reaction sender mapped to connected bot from self-reaction evidence");
     return connectedBotPhone();
   }
-  const rawValues = [
-    reaction?.senderId,
-    reaction?._data?.senderId,
-    reaction?._data?.senderUserJid,
-    reaction?.senderUserJid,
-    reaction?.author,
-  ].filter(Boolean);
+  const rawValues = reactionSenderValues(reaction);
   for (const value of rawValues) {
     const direct = directJordanPhoneFromWhatsappValue(value);
-    if (direct) return direct;
+    if (direct) {
+      console.log(`[WhatsApp] reaction sender resolved from direct PN: ${maskSettlementPhone(direct)}`);
+      return direct;
+    }
+    if (isConnectedBotReactionIdentity(value)) {
+      console.log("[WhatsApp] reaction sender mapped to connected bot from sender identity");
+      return connectedBotPhone();
+    }
   }
-  const serializedIds = [...new Set(rawValues.map((value) => reactionId(value) || serializedWhatsappUserId(value)).filter(Boolean))];
+  const serializedIds = [...new Set(rawValues.map((value) => reactionId(value) || serializedWhatsappUserId(value)).filter((value) => /@lid$/i.test(String(value))) )];
   if (!client || !isReady || !serializedIds.length) return "";
-  const mapped = await resolveWhatsappUserPhone(...serializedIds);
-  if (mapped) return mapped;
+  for (const serialized of serializedIds) {
+    const mapped = await resolveWhatsappUserPhone(serialized);
+    if (mapped) {
+      console.log(`[WhatsApp] reaction sender resolved from LID mapping: ${orderTraceKey(serialized)} -> ${maskSettlementPhone(mapped)}`);
+      return mapped;
+    }
+  }
   for (const serialized of serializedIds) {
     try {
       const contact = await withTimeout(client.getContactById(serialized), 8000, null);
       const resolved = await resolveWhatsappUserPhone(contact, serialized);
-      if (resolved) return resolved;
+      if (resolved) {
+        console.log(`[WhatsApp] reaction sender resolved from contact fallback: ${orderTraceKey(serialized)} -> ${maskSettlementPhone(resolved)}`);
+        return resolved;
+      }
     } catch (error) {
       console.warn(`[WhatsApp] reaction contact lookup failed: ${String(error?.message || error)}`);
     }
   }
+  console.warn(`[WhatsApp] reaction sender unresolved: ${JSON.stringify(serializedIds.map(orderTraceKey))}`);
   return "";
 }
 
@@ -3562,6 +3610,15 @@ async function handleMessageReaction(reaction) {
       if (approverPhone) break;
     }
   }
+  if (!approverPhone) {
+    logOrderTrace("reaction_approver_identity_unresolved", {
+      groupKey: orderTraceKey(target.from),
+      reactionKey: orderTraceKey(messageId),
+      senderKeys: reactionSenderValues(reaction).map(orderTraceKey),
+      hasReactionByMe: Boolean(reaction?.hasReactionByMe || reaction?._data?.hasReactionByMe),
+      targetHasReaction: Boolean(target.hasReaction || target._data?.hasReaction),
+    });
+  }
   if (removedThumb) {
     const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (acceptance) {
@@ -3668,7 +3725,9 @@ async function reconcileStoredThumbReaction(messageId) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (await hasVisibleThumbReaction(messageId)) {
-      await handleMessageReaction({ reaction: "👍", msgId: messageId, hasReactionByMe: true });
+      // Visibility proves that a thumb exists, not who placed it. Re-read the
+      // stored sender identities; never manufacture self-reaction evidence.
+      await handleMessageReaction({ reaction: "👍", msgId: messageId });
       return;
     }
     console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(messageId).slice(0, 80)}`);

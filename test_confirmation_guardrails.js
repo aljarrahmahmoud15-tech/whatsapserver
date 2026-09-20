@@ -29,7 +29,12 @@ assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && 
 assert.match(server, /const approver = botCompanyApproval \? companyUser\(\) : findActiveRegisteredUser\(approverPhone\)/);
 assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
+assert.match(server, /function reactionSenderValues\(reaction\)/);
+assert.match(server, /isConnectedBotReactionIdentity/);
+assert.match(server, /reaction sender resolved from LID mapping/);
+assert.match(server, /reaction_approver_identity_unresolved/);
 assert.match(server, /hasReactionByMe: storedThumb\?\.hasReactionByMe === true/);
+assert.doesNotMatch(server, /hasVisibleThumbReaction\(messageId\)\)[\s\S]{0,180}hasReactionByMe: true/);
 assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
 assert.match(server, /if \(await hasVisibleThumbReaction\(messageId\)\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
