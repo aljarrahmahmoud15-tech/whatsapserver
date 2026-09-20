@@ -2758,8 +2758,15 @@ function connectedBotPhone() {
 }
 
 function resolveGroupChatId(message) {
-  const candidates = [message && message.from, message && message.to, message && message.id && message.id.remote];
-  return candidates.map((value) => String(value || "")).find((value) => value.endsWith("@g.us")) || "";
+  const serialize = (value) => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (value._serialized) return String(value._serialized);
+    if (value.server && value.user) return `${value.user}@${value.server}`;
+    return "";
+  };
+  const candidates = [message && message.from, message && message.to, message && message.id && message.id.remote, message && message.id?._data?.remote];
+  return candidates.map(serialize).find((value) => value.endsWith("@g.us")) || "";
 }
 function serializedMessageId(message) {
   const raw = message && message.id;
