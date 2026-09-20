@@ -86,6 +86,7 @@ const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MA
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
+const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 60000));
 const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -2507,6 +2508,7 @@ function startWhatsAppWatchdog() {
 let whatsappReactionScanTimer = null;
 let whatsappReactionScanRunning = false;
 let whatsappHistoricalCandidateRecoveryAttempted = false;
+let whatsappHistoricalCandidateRecoveryAt = 0;
 function startWhatsAppReactionScanner() {
   if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
   whatsappReactionScanTimer = setInterval(() => {
@@ -2516,10 +2518,11 @@ function startWhatsAppReactionScanner() {
   whatsappReactionScanTimer.unref?.();
 }
 async function recoverHistoricalOrderCandidates(groupId) {
-  if (whatsappHistoricalCandidateRecoveryAttempted || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
+  if ((whatsappHistoricalCandidateRecoveryAttempted && Date.now() - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS) || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
   if (!history.chat) return;
   whatsappHistoricalCandidateRecoveryAttempted = true;
+  whatsappHistoricalCandidateRecoveryAt = Date.now();
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   let recovered = 0;
   for (const message of Array.isArray(history.messages) ? history.messages : []) {

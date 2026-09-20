@@ -36,6 +36,8 @@ assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof 
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /async function recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /whatsappHistoricalCandidateRecoveryAttempted/);
+assert.match(server, /WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
+assert.match(server, /Date\.now\(\) - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
 assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /const scan = await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
