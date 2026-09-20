@@ -2527,6 +2527,11 @@ function createClient() {
   instance.on("change_state", (state) => {
     console.log(`[WhatsApp] state changed: ${state}`);
   });
+  instance.on("group_join", (notification) => {
+    if (generation !== connectionGeneration || !notification || !isConfiguredGroup(notification.chatId)) return;
+    scheduleConfiguredGroupCaptainSync("group_join");
+    console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
+  });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
     recordGroupMessageTelemetry("message_create", msg);
