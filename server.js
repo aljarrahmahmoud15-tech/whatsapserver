@@ -3078,6 +3078,14 @@ function reactionId(value) {
 }
 
 async function resolveReactionSenderPhone(reaction) {
+  const reactionIsByCurrentAccount = reaction?.hasReactionByMe === true
+    || reaction?._data?.hasReactionByMe === true
+    || reaction?.isFromMe === true
+    || reaction?._data?.isFromMe === true;
+  if (reactionIsByCurrentAccount) {
+    console.log("[WhatsApp] reaction sender mapped to connected bot from self-reaction evidence");
+    return connectedBotPhone();
+  }
   const rawValues = [
     reaction?.senderId,
     reaction?._data?.senderId,
@@ -3450,11 +3458,15 @@ async function handleMessageReaction(reaction) {
     const storedReactions = await withTimeout(target.getReactions(), 12000, []);
     const storedThumb = (Array.isArray(storedReactions) ? storedReactions : [])
       .find((item) => item && (item.aggregateEmoji === "👍" || item.reaction === "👍"));
+    if (storedThumb?.hasReactionByMe === true || storedThumb?._data?.hasReactionByMe === true) {
+      approverPhone = connectedBotPhone();
+    }
     for (const sender of (storedThumb?.senders || [])) {
       approverPhone = await resolveReactionSenderPhone({
         senderId: sender?.senderId || sender?.id?._serialized || sender?.id || sender,
         senderUserJid: sender?.senderUserJid,
         author: sender?.author,
+        hasReactionByMe: storedThumb?.hasReactionByMe === true || storedThumb?._data?.hasReactionByMe === true,
       });
       if (approverPhone) break;
     }
@@ -3562,7 +3574,7 @@ async function reconcileStoredThumbReaction(messageId) {
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
     for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
-      await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender });
+      await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }
   }
 }
