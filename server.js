@@ -2812,6 +2812,26 @@ function directJordanPhoneFromWhatsappValue(value) {
   const normalized = phoneWithCountry(String(raw || "").split("@")[0].split(":")[0]);
   return isValidJordanPhone(normalized) ? normalized : "";
 }
+async function resolveWhatsappLidsFromConfiguredGroup(lidIds) {
+  if (!client?.pupPage || !isReady || !Array.isArray(lidIds) || !lidIds.length) return [];
+  const groupId = String(getSetting("active_group_id", getSetting("group_id", "")) || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return [];
+  await readGroupSnapshot(groupId);
+  return withTimeout(client.pupPage.evaluate((requestedLids) => {
+    try {
+      const widFactory = window.require("WAWebWidFactory");
+      const { toPn } = window.require("WAWebLidMigrationUtils");
+      return requestedLids.map((lid) => {
+        const lidWid = widFactory.createWid(lid);
+        const phoneWid = toPn(lidWid) || null;
+        const pn = phoneWid && (phoneWid._serialized || (phoneWid.user && phoneWid.server ? `${phoneWid.user}@${phoneWid.server}` : String(phoneWid)));
+        return { lid, pn: pn || null };
+      }).filter((mapping) => mapping.pn);
+    } catch (_) {
+      return [];
+    }
+  }, lidIds), 12000, []);
+}
 async function resolveWhatsappUserPhone(...values) {
   for (const value of values) {
     const direct = directJordanPhoneFromWhatsappValue(value);
@@ -2827,21 +2847,33 @@ async function resolveWhatsappUserPhone(...values) {
     const cached = whatsappLidPhoneCache.get(lid);
     if (cached && isValidJordanPhone(cached)) return cached;
   }
-  if (!client || !isReady || !lidIds.length || typeof client.getContactLidAndPhone !== "function") return "";
-  try {
-    const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
-    for (let index = 0; index < lidIds.length; index += 1) {
-      const mapping = Array.isArray(mappings) ? mappings[index] : null;
-      const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
-      if (!phone) continue;
-      const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
-      whatsappLidPhoneCache.set(lid, phone);
-      whatsappLidPhoneCache.set(lidIds[index], phone);
-      if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "getContactLidAndPhone");
-      return phone;
+  if (!client || !isReady || !lidIds.length) return "";
+  if (typeof client.getContactLidAndPhone === "function") {
+    try {
+      const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
+      for (let index = 0; index < lidIds.length; index += 1) {
+        const mapping = Array.isArray(mappings) ? mappings[index] : null;
+        const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+        if (!phone) continue;
+        const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
+        whatsappLidPhoneCache.set(lid, phone);
+        whatsappLidPhoneCache.set(lidIds[index], phone);
+        if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "getContactLidAndPhone");
+        return phone;
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
     }
-  } catch (error) {
-    console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
+  }
+  const groupMappings = await resolveWhatsappLidsFromConfiguredGroup(lidIds);
+  for (const mapping of Array.isArray(groupMappings) ? groupMappings : []) {
+    const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+    const lid = serializedWhatsappUserId(mapping?.lid);
+    if (!phone || !lidIds.includes(lid)) continue;
+    whatsappLidPhoneCache.set(lid, phone);
+    if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "configured_group_toPn");
+    console.log(`[WhatsApp] LID resolved from configured group membership: ${orderTraceKey(lid)}`);
+    return phone;
   }
   return "";
 }
@@ -3069,6 +3101,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       isBot: captain?.is_bot ?? null,
     });
     return;
+  }
+  for (const identityValue of [msg?.author, msg?._data?.author, msg?.id?.participant, msg?._data?.id?.participant]) {
+    if (/@lid$/i.test(serializedWhatsappUserId(identityValue))) persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender");
   }
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) {

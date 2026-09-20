@@ -10,6 +10,9 @@ assert.match(source, /function findPersistedWhatsappPhone\(/);
 assert.match(source, /refusing conflicting identity mapping/);
 assert.match(source, /reaction\?\._data\?\.senderUserJid/);
 assert.match(source, /client\.getContactLidAndPhone\(lidIds\)/);
+assert.match(source, /resolveWhatsappLidsFromConfiguredGroup\(lidIds\)/);
+assert.match(source, /configured_group_toPn/);
+assert.match(source, /accepted_message_sender/);
 assert.match(source, /for \(const delay of \[1500, 5000\]\)/);
 assert.match(source, /reconcileStoredThumbReaction\(messageId\)/);
 const start = source.indexOf("const whatsappLidPhoneCache = new Map();");
@@ -21,12 +24,21 @@ const context = {
   client: {
     async getContactLidAndPhone(ids) {
       lookupCalls += 1;
-      assert.deepEqual(Array.from(ids), ["123456789012345@lid"]);
-      return [{ lid: "123456789012345@lid", pn: "962785344508@c.us" }];
+      if (String(ids[0]) === "123456789012345@lid") return [{ lid: "123456789012345@lid", pn: "962785344508@c.us" }];
+      return [];
+    },
+    pupPage: {
+      async evaluate(_callback, ids) {
+        return Array.from(ids).map((lid) => ({ lid, pn: "962772531964@c.us" }));
+      },
     },
   },
   isReady: true,
   withTimeout: async (promise) => promise,
+  getSetting: (_key, fallback) => fallback || "120363426604560611@g.us",
+  isConfiguredGroup: () => true,
+  readGroupSnapshot: async () => ({ isGroup: true }),
+  orderTraceKey: (value) => String(value),
   phoneWithCountry(value = "") {
     const digits = String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
     return digits.startsWith("0") ? `962${digits.slice(1)}` : digits;
@@ -52,6 +64,9 @@ this.directJordanPhoneFromWhatsappValue = directJordanPhoneFromWhatsappValue;`, 
   const cached = await context.resolveWhatsappUserPhone({ _serialized: "123456789012345@lid" });
   assert.equal(cached, "962785344508");
   assert.equal(lookupCalls, 1, "resolved LID is cached for later messages and reactions");
+
+  const fromConfiguredGroup = await context.resolveWhatsappUserPhone("264256670928948@lid");
+  assert.equal(fromConfiguredGroup, "962772531964");
 
   const sender = await context.resolveMessageSenderPhone({
     fromMe: false,
