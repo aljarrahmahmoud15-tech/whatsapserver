@@ -1576,7 +1576,26 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   return messages;
 }
 async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false } = {}) {
-  if (!client?.pupPage || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
+  if (!client || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
+  const chat = await resolveReadableGroupChat(groupId);
+  if (chat) {
+    const messages = await withTimeout(chat.fetchMessages({ limit: Math.min(batch, 10), ...(includeOutgoing ? {} : { fromMe: false }) }), 8000, []);
+    const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
+      id: serializedMessageId(message),
+      timestamp: Number(message?.timestamp || 0) || null,
+      from: message?.from || groupId,
+      to: message?.to || null,
+      fromMe: Boolean(message?.fromMe),
+      author: message?.author || null,
+      body: String(message?.body || "").trim(),
+      type: message?.type || null,
+    })).filter((message) => message.timestamp && message.timestamp * 1000 >= Number(cutoff || 0) && (!before || message.timestamp < before));
+    rows.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    const selected = rows.slice(0, Math.min(batch, 10));
+    const oldest = selected.length ? Number(selected[selected.length - 1].timestamp || 0) : 0;
+    return { chat, messages: selected, nextCursor: selected.length === Math.min(batch, 10) && oldest ? oldest : null, exhausted: selected.length < Math.min(batch, 10), source: "chat.fetchMessages" };
+  }
+  if (!client.pupPage) return { chat: null, messages: [], nextCursor: null, exhausted: true };
   const result = await withTimeout(client.pupPage.evaluate(async (requestedId, options) => {
     try {
       const wid = window.require("WAWebWidFactory").createWid(requestedId);
@@ -1623,7 +1642,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     } catch (error) {
       return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
     }
-  }, groupId, { before, cutoff, batch, includeOutgoing }), 12000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  }, groupId, { before, cutoff, batch, includeOutgoing }), 9000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {

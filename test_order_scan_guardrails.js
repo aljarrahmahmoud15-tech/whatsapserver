@@ -6,6 +6,8 @@ assert.match(source, /app\.get\("\/api\/admin\/group\/order-scan", requireAdmin/
 assert.match(source, /const batch = Math\.max\(1, Math\.min\(Number\(req\.query\.batch \|\| 25\), 50\)\)/);
 assert.match(source, /const hours = Math\.max\(1, Math\.min\(Number\(req\.query\.hours \|\| 12\), 168\)\)/);
 assert.match(source, /fetchGroupOrderScanBatch\(groupId/);
+assert.match(source, /chat\.fetchMessages\(\{ limit: Math\.min\(batch, 10\)/);
+assert.match(source, /fetchMessages\(\{ limit: Math\.min\(batch, 10\)[\s\S]*?\}\), 8000, \[\]\)/);
 assert.match(source, /nextCursor: result\.nextCursor/);
 assert.match(source, /hasMore: Boolean\(result\.nextCursor\)/);
 assert.match(source, /mutation: "none"/);
