@@ -32,6 +32,9 @@ assert.match(server, /reaction sender mapped to connected bot from self-reaction
 assert.match(server, /hasReactionByMe: storedThumb\?\.hasReactionByMe === true/);
 assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
+assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
+assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
+assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
 assert.match(server, /quotedReplyId === pending\.source_message_id/);

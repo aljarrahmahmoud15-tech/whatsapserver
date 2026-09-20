@@ -2514,12 +2514,36 @@ function startWhatsAppReactionScanner() {
   }, WHATSAPP_REACTION_SCAN_INTERVAL_MS);
   whatsappReactionScanTimer.unref?.();
 }
+async function recoverPendingAcceptanceMessages(groupId) {
+  if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
+  const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+  if (!pendingCandidates.length) return;
+  const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
+  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const scan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
+  let recovered = 0;
+  for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
+    if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
+    const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
+    if (existing) continue;
+    const live = await withTimeout(client.getMessageById(row.id), 12000, null);
+    if (!live || !live.hasQuotedMsg || typeof live.getQuotedMessage !== "function") continue;
+    const quoted = await withTimeout(live.getQuotedMessage(), 8000, null);
+    const sourceId = serializedMessageId(quoted);
+    if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
+    await handleIncomingMessage(live, { allowSelf: true });
+    const recorded = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
+    if (recorded) recovered += 1;
+  }
+  if (recovered) console.log(`[WhatsApp] recovered ${recovered} quoted pending acceptance message(s)`);
+}
 async function scanPendingAcceptanceReactions() {
   if (!client || !isReady || whatsappReactionScanRunning) return;
   const groupId = getSetting("active_group_id", getSetting("group_id", ""));
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
+    await recoverPendingAcceptanceMessages(groupId);
     const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
     for (const row of rows) {
       try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
