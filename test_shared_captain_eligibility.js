@@ -24,7 +24,7 @@ assert.ok(
   'all active registered users can confirm while bot and company identities remain blocked'
 );
 assert.ok(
-  server.includes('confirmingCaptainFeeCents') && server.includes('خصم 12% لصاحب تنزيل الطلب و4% للشركة'),
+  server.includes('confirmingCaptainFeeCents') && server.includes('خصم 12% لصاحب تنزيل الطلب و3% للشركة'),
   'confirming captain pays the downloader share plus company share'
 );
 assert.ok(
@@ -44,20 +44,20 @@ assert.ok(
   'owner approval is required to create and activate the captain account'
 );
 assert.ok(
-  server.includes('confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)"'),
-  'the agreed 12% plus 4% accounting rule is exposed'
+  server.includes('confirmingCaptainWalletRate: "-15% (12% downloader + 3% company)"'),
+  'the agreed 12% plus 3% accounting rule is exposed'
 );
 assert.ok(
   server.includes('posted_share_cents') &&
   server.includes('executed_debit_cents') &&
   server.includes('executedDebit: money(executedDebitCents)'),
-  'captain-facing fee summaries include the full 16% debit'
+  'captain-facing fee summaries include the full 15% debit'
 );
 assert.ok(
   server.includes('const PRODUCER_RATE_BPS = 1200;') &&
   server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
-  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 400;'),
-  'the approved 12% downloader and 4% company rates are immutable policy constants'
+  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 300;'),
+  'the approved 12% downloader and 3% company rates are immutable policy constants'
 );
 assert.ok(
   server.includes('setSetting("producer_rate_bps", PRODUCER_RATE_BPS);') &&

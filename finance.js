@@ -1,10 +1,10 @@
 // Shared-captain settlement policy: the captain who posts the order receives
-// 12%, while the captain who confirms it pays 12% to that poster plus 4% to
-// the company (16% total from the confirming captain's wallet).
+// 12%, while the captain who confirms it pays exactly 12% to that poster plus
+// 3% to the company (15% total from the confirming captain's wallet).
 const REGULAR_PRODUCER_RATE_BPS = 1200;
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1200;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 
 function calculateSettlement({
   priceCents,
