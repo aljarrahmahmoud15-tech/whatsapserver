@@ -8,6 +8,8 @@ const { isBotGeneratedMessage } = require("./message_guardrails");
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const helperStart = source.indexOf("function createOrderRecord(");
 const helperEnd = source.indexOf("function brandedMessage(", helperStart);
+const messageHelperStart = source.indexOf("function serializedMessageId(");
+const messageHelperEnd = source.indexOf("function orderTraceKey(", messageHelperStart);
 const incomingStart = source.indexOf("async function handleIncomingMessage(");
 const incomingEnd = source.indexOf("function reactionId(", incomingStart);
 const reactionStart = source.indexOf("async function handleMessageReaction(");
@@ -17,6 +19,7 @@ const settleEnd = source.indexOf("function settleHistoricalConfirmedOrder(", set
 const cancelStart = source.indexOf("function cancelPendingOrderForProducerReaction(");
 const cancelEnd = source.indexOf("async function hasVisibleThumbReaction(", cancelStart);
 assert(helperStart >= 0 && helperEnd > helperStart);
+assert(messageHelperStart >= 0 && messageHelperEnd > messageHelperStart);
 assert(incomingStart >= 0 && incomingEnd > incomingStart);
 assert(reactionStart >= 0 && reactionEnd > reactionStart);
 assert(settleStart >= 0 && settleEnd > settleStart);
@@ -51,7 +54,7 @@ function reset({ archived = false, executorBalance = 5000 } = {}) {
   state.acceptance = null;
   state.order = null;
   state.settlement = null;
-  state.archivedOrder = archived ? { id: 77, order_no: 77, source_message_id: "price-archived", archive_state: "archived" } : null;
+  state.archivedOrder = archived ? { id: 77, order_no: 77, source_message_id: "price-archived", group_id: GROUP, archive_state: "archived" } : null;
   state.ledgers = [];
   state.messages = new Set();
   state.confirmations = [];
@@ -77,6 +80,10 @@ const db = {
         if (query.startsWith("SELECT * FROM order_candidates WHERE group_id=? AND producer_user_id=?")) return null;
         if (query.startsWith("SELECT * FROM order_candidates WHERE id=?")) return state.candidate && state.candidate.id === Number(args[0]) ? { ...state.candidate } : null;
         if (query.startsWith("SELECT * FROM order_candidates WHERE group_id=? AND source_message_id=?")) return state.candidate && state.candidate.group_id === args[0] && state.candidate.source_message_id === args[1] && ["candidate", "pending"].includes(state.candidate.status) ? { ...state.candidate } : null;
+        if (query.startsWith("SELECT * FROM orders WHERE group_id=? AND source_message_id=?")) {
+          const order = state.archivedOrder || state.order;
+          return order && order.group_id === args[0] && order.source_message_id === args[1] ? { ...order } : null;
+        }
         if (query.startsWith("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=?")) return state.candidate && state.candidate.group_id === args[0] && state.candidate.status === "pending" && state.candidate.pending_message_id === args[1] ? { ...state.candidate } : null;
         if (query.startsWith("SELECT a.*,c.* FROM order_candidate_acceptances")) {
           return state.acceptance && state.candidate?.status === "pending" && state.acceptance.acceptance_message_id === args[1] && ["pending", "selected"].includes(state.acceptance.status)
@@ -96,6 +103,11 @@ const db = {
         if (query.startsWith("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=?")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, group_id: state.candidate.group_id, source_message_id: state.candidate.source_message_id } : null;
         if (query.startsWith("SELECT * FROM orders WHERE group_id=?")) return state.order && state.order.accepted_message_id === args[1] ? { ...state.order } : null;
         throw new Error(`Unexpected get query: ${query}`);
+      },
+      all() {
+        if (query.includes("FROM order_candidates") && state.candidate) return [{ ...state.candidate }];
+        if (query.includes("FROM orders") && (state.order || state.archivedOrder)) return [{ ...(state.order || state.archivedOrder) }];
+        return [];
       },
       run(...args) {
         if (query.startsWith("INSERT OR IGNORE INTO messages")) {
@@ -207,7 +219,7 @@ const context = {
   findPendingAcceptanceByMessage: null,
 };
 
-vm.runInNewContext(`${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
+vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
 
 async function ingestPrice(sourceId = "price-1") {
   const price = message(sourceId, "السعر 20", PRODUCER);

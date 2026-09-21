@@ -2128,7 +2128,7 @@ function parseOrder(text) {
 }
 function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
   if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
-  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+  const existingOrder = findEquivalentOrder(groupId, messageId);
   if (existingOrder) return existingOrder.archive_state === "archived" ? null : existingOrder;
   const recentCutoff = new Date(Date.now() - 120000).toISOString();
   const recentDuplicate = db.prepare("SELECT * FROM orders WHERE group_id=? AND producer_user_id=? AND raw_text=? AND created_at>=? ORDER BY id DESC LIMIT 1").get(groupId, producer.id, body, recentCutoff);
@@ -2142,9 +2142,9 @@ function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
 }
 function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
   if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
-  const existing = db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
+  const existing = findEquivalentCandidate(groupId, messageId, ["candidate", "pending", "finalized", "cancelled"]);
   if (existing) return existing;
-  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+  const existingOrder = findEquivalentOrder(groupId, messageId);
   if (existingOrder) {
     logOrderTrace("order_candidate_blocked_existing_order", {
       groupKey: orderTraceKey(groupId),
@@ -2243,12 +2243,12 @@ function isCaptainAcceptance(text) {
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
 }
-function findOrderByQuotedId(quotedId) {
+function findOrderByQuotedId(groupId, quotedId) {
   if (!quotedId) return null;
-  return db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? AND status IN ('candidate','pending') LIMIT 1").get(quotedId);
+  return findEquivalentCandidate(groupId, quotedId, ["candidate", "pending"]);
 }
 function findOrderByQuotedMessage(groupId, quoted) {
-  const byId = findOrderByQuotedId(serializedMessageId(quoted));
+  const byId = findOrderByQuotedId(groupId, serializedMessageId(quoted));
   return byId && byId.group_id === groupId ? byId : null;
 }
 function findLatestStandaloneAcceptanceCandidate(groupId) {
@@ -3040,6 +3040,36 @@ function serializedMessageId(message) {
     message?._data?.key?.id ||
     ""
   ).trim() || null;
+}
+function messageIdCore(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const decorated = raw.match(/^(?:true|false)_([^_]+@g\.us)_([^_]+)(?:_|$)/i);
+  return decorated ? decorated[2] : raw;
+}
+function sourceMessageIdsEqual(left, right) {
+  const leftCore = messageIdCore(left);
+  const rightCore = messageIdCore(right);
+  return Boolean(leftCore && rightCore && leftCore === rightCore);
+}
+function findEquivalentCandidate(groupId, messageId, statuses = ["candidate", "pending"]) {
+  if (!groupId || !messageId) return null;
+  const placeholders = statuses.map(() => "?").join(",");
+  const core = messageIdCore(messageId);
+  if (!core) return null;
+  const escapedCore = core.replace(/[\\%_]/g, "\\$&");
+  const rows = db.prepare(`SELECT * FROM order_candidates
+    WHERE group_id=? AND source_message_id LIKE ? ESCAPE '\\' AND status IN (${placeholders})
+    ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, id DESC LIMIT 100`).all(groupId, `%${escapedCore}%`, ...statuses);
+  return rows.find((row) => sourceMessageIdsEqual(row.source_message_id, messageId)) || null;
+}
+function findEquivalentOrder(groupId, messageId) {
+  if (!groupId || !messageId) return null;
+  const core = messageIdCore(messageId);
+  if (!core) return null;
+  const escapedCore = core.replace(/[\\%_]/g, "\\$&");
+  const rows = db.prepare("SELECT * FROM orders WHERE group_id=? AND source_message_id LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 100").all(groupId, `%${escapedCore}%`);
+  return rows.find((row) => sourceMessageIdsEqual(row.source_message_id, messageId)) || null;
 }
 
 function orderTraceKey(value) {
@@ -3942,7 +3972,7 @@ async function handleMessageReaction(reaction) {
     const quoted = quotedForTarget;
     const sourceMessageId = serializedMessageId(quoted);
     const candidate = sourceMessageId && quoted && parseOrder(quoted.body)?.isOrder
-      ? db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND source_message_id=? AND status IN ('candidate','pending') LIMIT 1").get(target.from, sourceMessageId)
+      ? findEquivalentCandidate(target.from, sourceMessageId, ["candidate", "pending"])
       : null;
     if (candidate) {
       const captainPhone = await resolveMessageSenderPhone(target);
