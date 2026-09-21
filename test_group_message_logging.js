@@ -13,7 +13,9 @@ assert(botFilterPosition >= 0 && botFilterPosition < logPosition, "رسائل ا
 assert(handler.includes("if (!insertedMessage.changes && !captainAcceptance) return;"), "الرسائل المكررة العادية لا تعاد معالجتها تشغيليًا");
 assert(handler.includes("acceptance_message_replayed_after_duplicate_guard"), "رسائل تم المكررة يمكن إعادة ربطها بالقبول");
 assert(source.includes('app.get("/api/admin/group-messages", requireAdmin'), "واجهة قراءة السجل محمية إداريًا");
+const sendFinalizer = source.slice(source.indexOf("function finalizeAdminSentMessage"), source.indexOf("function currentCaptainSubscriptionPeriod"));
 const sendRoute = source.slice(source.indexOf('app.post("/api/admin/send"'), source.indexOf("function reconcileConfiguredGroupFromEnvironment"));
-assert(sendRoute.includes('isConfiguredGroup(chatId) && messageId'), "لا يُنشأ مرشح إداري دون معرّف WhatsApp حقيقي");
+assert(sendFinalizer.includes('isConfiguredGroup(chatId) && messageId'), "لا يُنشأ مرشح إداري دون معرّف WhatsApp حقيقي");
+assert(sendRoute.includes("finalizeAdminSentMessage"), "مسار الإرسال يستخدم إنهاء الرسالة الموحد");
 assert(!sendRoute.includes("admin-send-${Date.now()}"), "لا تُستخدم معرّفات مؤقتة تفصل المرشح عن رسالة WhatsApp");
 console.log("group message logging guardrails verified");

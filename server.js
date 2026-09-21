@@ -80,6 +80,7 @@ const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
+const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
@@ -1966,6 +1967,17 @@ async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl 
 }
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
+}
+function finalizeAdminSentMessage({ chatId, message, sent, operationId, late = false }) {
+  const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
+  audit(late ? "message.sent_after_timeout" : "message.sent", "chat", chatId, { operationId, messageId, responseObject: Boolean(sent), late });
+  const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
+  let order = null;
+  if (parsed && parsed.isOrder && isConfiguredGroup(chatId) && messageId) {
+    const producer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
+    order = createOrderCandidate({ messageId, groupId: chatId, body: message, producer, parsed });
+  }
+  return { messageId, order };
 }
 function currentCaptainSubscriptionPeriod(stamp = now()) {
   const startMs = Date.parse(CAPTAIN_SUBSCRIPTION_START);
@@ -7553,16 +7565,43 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!to || !message) return res.status(400).json({ error: "to and message are required" });
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
-  const sent = await client.sendMessage(chatId, message);
-  const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
-  audit("message.sent", "chat", chatId, { messageId, responseObject: Boolean(sent) });
-  const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
-  let order = null;
-  if (parsed && parsed.isOrder && isConfiguredGroup(chatId) && messageId) {
-    const producer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
-    order = createOrderCandidate({ messageId, groupId: chatId, body: message, producer, parsed });
+  const operationId = String(req.body.operationId || crypto.randomUUID()).slice(0, 120);
+  const sendPromise = Promise.resolve().then(() => client.sendMessage(chatId, message));
+  const sendTimeoutMarker = {};
+  try {
+    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
+    if (sent === sendTimeoutMarker) {
+      audit("message.send_pending", "chat", chatId, { operationId, timeoutMs: ADMIN_SEND_TIMEOUT_MS, messageLength: message.length });
+      void sendPromise.then((lateSent) => {
+        if (!lateSent) throw new Error("WhatsApp returned no confirmed message after timeout");
+        const finalized = finalizeAdminSentMessage({ chatId, message, sent: lateSent, operationId, late: true });
+        console.warn(`[WhatsApp] admin send completed after timeout: operation=${operationId} message=${finalized.messageId || "none"}`);
+      }).catch((error) => {
+        audit("message.send_failed_after_timeout", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
+        console.error(`[WhatsApp] admin send failed after timeout: operation=${operationId}:`, error.message);
+      });
+      return res.status(202).json({
+        success: false,
+        accepted: true,
+        sendState: "pending",
+        operationId,
+        messageId: null,
+        order: null,
+        retryAfterMs: 5000,
+        error: "WhatsApp is still processing the message; verify delivery before retrying.",
+      });
+    }
+    if (!sent) {
+      audit("message.send_failed", "chat", chatId, { operationId, responseObject: false });
+      return res.status(502).json({ success: false, sendState: "failed", operationId, error: "WhatsApp returned no confirmed message" });
+    }
+    const finalized = finalizeAdminSentMessage({ chatId, message, sent, operationId });
+    return res.json({ success: true, sendState: "confirmed", operationId, messageId: finalized.messageId, order: finalized.order ? { candidate: true, status: finalized.order.status } : null });
+  } catch (error) {
+    audit("message.send_failed", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
+    console.error(`[WhatsApp] admin send failed: operation=${operationId}:`, error.message);
+    return res.status(502).json({ success: false, sendState: "failed", operationId, error: String(error?.message || "WhatsApp send failed").slice(0, 240) });
   }
-  res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
