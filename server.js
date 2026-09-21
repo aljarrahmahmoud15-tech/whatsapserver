@@ -3379,6 +3379,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     captainId: captain.id,
     producerId: producer.id,
   });
+  if (producer.is_bot === 1 || producer.role === "company") {
+    void reactToCaptainAcceptance(msg, acceptanceMessageId).then((reacted) => {
+      if (!reacted) logOrderTrace("bot_producer_reaction_failed", { groupKey: orderTraceKey(groupId), acceptanceKey: orderTraceKey(acceptanceMessageId), candidateId: candidate.id });
+    }).catch((error) => console.warn(`[WhatsApp] bot producer reaction failed: ${error.message}`));
+  }
   // لا تسوية عند «تم» فقط؛ صاحب الطلب يختار أحد الردود بوضع 👍 عليه.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
