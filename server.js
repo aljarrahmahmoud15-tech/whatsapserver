@@ -2640,9 +2640,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
-  const scan = fastScan.chat
-    ? { messages: fastScan.messages }
-    : await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
+  const scan = { messages: Array.isArray(fastScan.messages) ? fastScan.messages : [] };
   let recovered = 0;
   for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
     lastAcceptanceRecovery.scanned += 1;
