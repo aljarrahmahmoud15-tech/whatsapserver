@@ -504,6 +504,9 @@ if (!existingOrderColumns.includes("captain_name_snapshot")) db.exec("ALTER TABL
 if (!existingOrderColumns.includes("confirmed_by_phone")) db.exec("ALTER TABLE orders ADD COLUMN confirmed_by_phone TEXT");
 if (!existingOrderColumns.includes("settlement_state")) db.exec("ALTER TABLE orders ADD COLUMN settlement_state TEXT NOT NULL DEFAULT 'pending'");
 if (!existingOrderColumns.includes("import_source")) db.exec("ALTER TABLE orders ADD COLUMN import_source TEXT NOT NULL DEFAULT 'live'");
+if (!existingOrderColumns.includes("archive_state")) db.exec("ALTER TABLE orders ADD COLUMN archive_state TEXT NOT NULL DEFAULT 'active'");
+if (!existingOrderColumns.includes("archived_at")) db.exec("ALTER TABLE orders ADD COLUMN archived_at TEXT");
+if (!existingOrderColumns.includes("archive_reason")) db.exec("ALTER TABLE orders ADD COLUMN archive_reason TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_pending_message ON order_candidates(pending_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order_candidates(source_message_id)");
@@ -2133,7 +2136,7 @@ function isCaptainAcceptance(text) {
   return String(text || "").trim() === "تم";
 }
 function latestOpenOrder(groupId) {
-  return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
+  return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
 }
 function findOrderByQuotedId(quotedId) {
   if (!quotedId) return null;
@@ -3375,7 +3378,7 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     const stamp = now();
     const pendingCaptain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (current.status === "open" && current.pending_message_id === expectedMessageId) {
-      const changed = db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND pending_message_id=?").run(stamp, orderId, expectedMessageId);
+      const changed = db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id=?").run(stamp, orderId, expectedMessageId);
       if (!changed.changes) return { state: "stale" };
       audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, pendingCaptainId: pendingCaptain?.id || null, messageId: expectedMessageId });
       return { state: "cancelled", order: current, producer, captain: pendingCaptain, reversed: false };
@@ -4476,8 +4479,8 @@ app.get("/status", (req, res) => {
   const activeCaptains = userRoles.filter((user) => user.role === "captain" && user.is_bot !== 1 && user.active === 1 && user.account_status === "active").length;
   const nonCaptainHumans = userRoles.filter((user) => user.is_bot !== 1 && user.role !== "company" && user.role !== "captain" && !isProtectedOwnerIdentity(user.phone)).length;
   const orderLinkStats = db.prepare(`SELECT
-    SUM(CASE WHEN status='open' AND captain_user_id IS NULL THEN 1 ELSE 0 END) AS open_unassigned,
-    SUM(CASE WHEN status='open' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND captain_user_id IS NULL THEN 1 ELSE 0 END) AS open_unassigned,
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
     SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS accepted_unlinked
     FROM orders`).get();
   res.setHeader("Cache-Control", "no-store");
@@ -6392,6 +6395,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       }
     }
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
+    if (order.archive_state === "archived") { skipped.push({ messageId: acceptanceMessageId, reason: "order_archived", orderNo: order.order_no }); continue; }
     const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now()).toISOString();
     if (!captain || !producer || confirmedByPhone === "visual_thumb_unresolved") {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
@@ -6985,11 +6989,24 @@ app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
 });
 app.get("/api/admin/orders/open", requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status='open' AND o.captain_user_id IS NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 500`).all();
+  const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status='open' AND COALESCE(o.archive_state,'active')='active' AND o.captain_user_id IS NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 500`).all();
   if (String(req.query.summary || "") === "1") {
     return res.json({ orders: rows.map((row) => ({ orderNo: row.order_no, price: money(row.price_cents), origin: row.origin || null, destination: row.destination || null, tripTime: row.trip_time || null, orderKind: row.order_kind, producerName: row.producer_name || row.producer_name_snapshot || "غير مسجل", status: row.status, settlementState: row.settlement_state, createdAt: row.created_at, importSource: row.import_source || null })) });
   }
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
+});
+app.post("/api/admin/orders/archive-open", requireAdmin, (req, res) => {
+  const reason = String(req.body?.reason || "أرشفة نهائية للطلبات المفتوحة القديمة غير الموزعة").trim().slice(0, 240);
+  const stamp = now();
+  const rows = db.prepare("SELECT id,order_no,status,captain_user_id,settlement_state FROM orders WHERE status='open' AND COALESCE(archive_state,'active')='active' AND captain_user_id IS NULL ORDER BY id").all();
+  const archive = db.transaction(() => {
+    for (const row of rows) {
+      db.prepare("UPDATE orders SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND captain_user_id IS NULL").run(stamp, reason, stamp, row.id);
+      audit("order.archived", "order", row.id, { orderNo: row.order_no, reason, financialMutation: false, settlementState: row.settlement_state });
+    }
+  });
+  archive();
+  res.json({ success: true, archivedCount: rows.length, orderNos: rows.map((row) => row.order_no), financialMutation: false, reason, archivedAt: stamp });
 });
 app.post("/api/admin/orders/:id/link-captain", requireAdmin, (req, res) => {
   const orderId = Number(req.params.id);
