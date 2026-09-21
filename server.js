@@ -2582,13 +2582,8 @@ async function recoverHistoricalOrderCandidates(groupId) {
   const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
   lastHistoricalRecovery = recovery;
   const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
-  let recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
-  recovery.source = fastScan.chat ? "order-scan" : "history";
-  if (!fastScan.chat) {
-    const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
-    if (!history.chat) { recovery.finishedAt = new Date().toISOString(); return; }
-    recoveredMessages = Array.isArray(history.messages) ? history.messages : [];
-  }
+  const recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
+  recovery.source = "order-scan";
   whatsappHistoricalCandidateRecoveryAttempted = true;
   whatsappHistoricalCandidateRecoveryAt = Date.now();
   let recovered = 0;
