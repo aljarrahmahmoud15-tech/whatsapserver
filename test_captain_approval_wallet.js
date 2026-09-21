@@ -21,8 +21,8 @@ assert.match(server, /app\.post\("\/api\/admin\/captain-invites\/:id\/decision",
 assert.match(server, /invite\.status !== "pending"/);
 assert.match(server, /decision === "reject"/);
 assert.match(server, /captain\.join\.approved/);
-assert.match(server, /const approvalMessage = "تمت موافقة الشركة على الكابتن وتفعيل الحساب\."/);
-assert.match(server, /sendBotText\(candidate, approvalMessage\)/);
+assert.match(server, /event: "captain\.approval"/);
+assert.match(server, /تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك\./);
 assert.match(server, /INSERT INTO users/);
 assert.match(server, /async function issueApprovalTopupCard/);
 assert.match(server, /AUTO_APPROVAL_TOPUP_CENTS/);
@@ -34,7 +34,7 @@ assert.match(server, /new Set\(\[500, 1000, 1500, 2000\]\)/);
 assert.match(server, /status: "disabled_invalid_value"/);
 assert.match(server, /app\.post\("\/api\/admin\/captains\/\:id\/approval-notification-test", requireAdmin/);
 assert.match(server, /captain\.approval_notification\.test/);
-assert.match(server, /const message = "تمت موافقة الشركة على الكابتن وتفعيل الحساب\."/);
+assert.match(server, /const message = "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك\."/);
 assert.match(server, /X-Idempotency-Key/);
 
 assert.match(server, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment\)/);

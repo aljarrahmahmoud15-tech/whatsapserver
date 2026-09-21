@@ -375,6 +375,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   message TEXT NOT NULL,
   delivery_status TEXT NOT NULL DEFAULT 'pending',
   message_id TEXT,
+  source_message_id TEXT,
+  idempotency_key TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS captain_invites (
@@ -488,7 +490,11 @@ CREATE TABLE IF NOT EXISTS captain_daily_charges (
 );
 CREATE INDEX IF NOT EXISTS idx_captain_daily_charges_date ON captain_daily_charges(charge_date);
 `);
-
+const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
+if (!existingNotificationColumns.includes("source_message_id")) db.exec("ALTER TABLE notifications ADD COLUMN source_message_id TEXT");
+if (!existingNotificationColumns.includes("idempotency_key")) db.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
+db.exec("CREATE INDEX IF NOT EXISTS idx_notifications_source_message ON notifications(source_message_id)");
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
 if (!existingInviteColumns.includes("token_ciphertext")) db.exec("ALTER TABLE captain_invites ADD COLUMN token_ciphertext TEXT");
 const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all().map((column) => column.name);
@@ -907,21 +913,21 @@ async function sendBotTextRaw(to, text) {
     return false;
   }
 }
-async function sendCompanyOperationsCard(to, title, lines) {
+async function sendCompanyOperationsCard(to, title, lines, { returnMessage = false } = {}) {
   if (!client || !isReady) return false;
   const caption = brandedMessage(title, lines);
   try {
     const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
     if (!media) throw new Error("operations card render returned no media");
     const sent = await withTimeout(client.sendMessage(to, media, { caption }), 30000, null);
-    return Boolean(sent);
+    return returnMessage ? { sent: Boolean(sent), messageId: sent?.id?._serialized || null } : Boolean(sent);
   } catch (error) {
     console.warn("[WhatsApp] operations card media failed; using text fallback");
     try {
       const sent = await withTimeout(client.sendMessage(to, caption), 20000, null);
-      return Boolean(sent);
+      return returnMessage ? { sent: Boolean(sent), messageId: sent?.id?._serialized || null } : Boolean(sent);
     } catch (_) {
-      return false;
+      return returnMessage ? { sent: false, messageId: null } : false;
     }
   }
 }
@@ -935,7 +941,64 @@ async function sendBotText(to, text) {
   const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 10);
   return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines);
 }
-async function sendCaptainOperationsCard(to, title, lines) {
+const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
+const captainStatusNotificationInFlight = new Set();
+async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null }) {
+  const recipientPhone = phoneWithCountry(phone);
+  const message = String(text || "").trim();
+  const key = String(idempotencyKey || "").trim();
+  if (!isValidJordanPhone(recipientPhone) || !event || !title || !message || message.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH || !key) {
+    return { status: "invalid" };
+  }
+  if (captainStatusNotificationInFlight.has(key)) return { status: "pending", duplicate: true };
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
+  if (existing && ["sent", "delivered"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null };
+  let row = existing;
+  if (row) {
+    db.prepare("UPDATE notifications SET recipient_phone=?,event=?,title=?,message=?,delivery_status='pending',source_message_id=? WHERE id=?").run(recipientPhone, event, title, message, sourceMessageId, row.id);
+  } else {
+    try {
+      row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?,?)").run(recipientPhone, event, title, message, sourceMessageId, key, now());
+    } catch (error) {
+      const duplicate = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
+      if (duplicate) return { status: duplicate.delivery_status, duplicate: true, notificationId: duplicate.id, messageId: duplicate.message_id || null };
+      throw error;
+    }
+  }
+  const notificationId = row.lastInsertRowid || row.id;
+  captainStatusNotificationInFlight.add(key);
+  let deliveryStatus = "failed";
+  let messageId = null;
+  try {
+    if (client && isReady) {
+      const resolved = await resolveWhatsAppRecipientId(recipientPhone);
+      const recipients = [...new Set([resolved, `${recipientPhone}@c.us`].filter(Boolean))];
+      for (const recipient of recipients) {
+        const sent = await withTimeout(client.sendMessage(recipient, message), 20000, null);
+        if (sent) {
+          deliveryStatus = "sent";
+          messageId = sent.id?._serialized || null;
+          break;
+        }
+      }
+    }
+  } catch (_) {}
+  captainStatusNotificationInFlight.delete(key);
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit(`notification.${event}`, "user", recipientPhone, { deliveryStatus, idempotencyKey: key, sourceMessageId: sourceMessageId || null });
+  return { status: deliveryStatus, notificationId, messageId };
+}
+async function retryCaptainStatusNotifications() {
+  if (!client || !isReady) return { attempted: 0 };
+  const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
+  const placeholders = events.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT recipient_phone,event,title,message,idempotency_key,source_message_id FROM notifications WHERE recipient_role='captain' AND delivery_status IN ('pending','failed') AND event IN (${placeholders}) ORDER BY id DESC LIMIT 50`).all(...events);
+  for (const row of rows) {
+    await sendCaptainStatusText({ phone: row.recipient_phone, event: row.event, title: row.title, text: row.message, idempotencyKey: row.idempotency_key, sourceMessageId: row.source_message_id }).catch(() => null);
+  }
+  return { attempted: rows.length };
+}
+function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
 }
 function ownerNotificationPhones() {
@@ -1032,37 +1095,25 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
 }
 function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
   if (!captain?.phone) return;
-  const lines = [`الكابتن: ${captain.name}`, `تم إرسال رصيد بالقيمة المطلوبة: ${money(valueCents)} JOD`, "تم إرسال بطاقة الرصيد إلى WhatsApp الخاص بك.", "يُضاف الرصيد إلى محفظتك بعد استرداد البطاقة من بوابة الكابتن."];
-  if (cardId) lines.push(`رقم البطاقة الداخلي: #${cardId}`);
-  if (cardId) {
-    const duplicate = db.prepare("SELECT id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.credit_sent' AND message LIKE ? LIMIT 1").get(phoneWithCountry(captain.phone), `%رقم البطاقة الداخلي: #${cardId}%`);
-    if (duplicate) return;
-  }
-  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines });
+  const key = cardId ? `CAPTAIN-WALLET-CARD-SENT-${cardId}` : `CAPTAIN-WALLET-CREDIT-SENT-${phoneWithCountry(captain.phone)}-${Date.now()}`;
+  void sendCaptainStatusText({
+    phone: captain.phone,
+    event: "captain.wallet.credit_sent",
+    title: "إرسال بطاقة الرصيد",
+    text: "تم إرسال بطاقة الرصيد إلى واتسابك.",
+    idempotencyKey: key,
+  });
+  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "تم إرسال بطاقة الرصيد."], ownersOnly: true });
 }
 async function notifyCaptainCreditRedeemed({ captain, valueCents, balanceCents, cardId }) {
   if (!captain?.phone || !cardId) return { status: "skipped" };
-  const title = "تمت إضافة الرصيد إلى محفظتك";
-  const message = brandedMessage(title, [
-    `عزيزي الكابتن ${captain.name || ""}`.trim(),
-    `تمت إضافة: ${money(valueCents)} JOD إلى محفظتك.`,
-    `الرصيد الحالي: ${money(balanceCents)} JOD`,
-    `رقم البطاقة: #${cardId}`,
-    "تمت العملية بنجاح بعد استرداد البطاقة.",
-  ]);
-  const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.credit_redeemed' AND message LIKE ? LIMIT 1").get(phoneWithCountry(captain.phone), `%رقم البطاقة: #${cardId}%`);
-  if (existing) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
-  const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.credit_redeemed',?,?,'pending',?)").run(phoneWithCountry(captain.phone), title, message, now());
-  let deliveryStatus = "failed";
-  let messageId = null;
-  try {
-    const recipient = await resolveWhatsAppRecipientId(captain.phone);
-    const sent = recipient && client && isReady ? await withTimeout(client.sendMessage(recipient, message), 30000, null) : null;
-    if (sent) { deliveryStatus = "sent"; messageId = sent.id?._serialized || null; }
-  } catch (_) {}
-  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
-  audit("captain.wallet.credit_redeemed_notified", "user", captain.id, { cardId, valueCents: Number(valueCents), balanceCents: Number(balanceCents), deliveryStatus });
-  return { status: deliveryStatus, notificationId: row.lastInsertRowid };
+  return sendCaptainStatusText({
+    phone: captain.phone,
+    event: "captain.wallet.credit_redeemed",
+    title: "استلام بطاقة الرصيد",
+    text: "تم استلام البطاقة وإضافة الرصيد لمحفظتك.",
+    idempotencyKey: `CAPTAIN-WALLET-CARD-REDEEMED-${cardId}`,
+  });
 }
 function updateCustomerLead(lead, patch) {
   const next = { ...lead, ...patch, updated_at: now() };
@@ -1459,8 +1510,22 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
     whatsappAuth ? "رمز WhatsApp صالح لمدة 10 دقائق ويُرسل عند الطلب." : (prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام."),
     "لا تستخدم رابطًا آخر ولا تشارك رمز الدخول مع أي شخص."
   ];
-  const sent = await sendCaptainOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines).catch(() => false);
-  if (sent) void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, "تم إرسال بطاقة الدخول المباشر الرسمية إلى الكابتن.", `الرابط: ${captainLoginUrl(baseUrl)}`], ownersOnly: true });
+  const cardResult = await sendCompanyOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines, { returnMessage: true }).catch(() => ({ sent: false, messageId: null }));
+  const sent = Boolean(cardResult && cardResult.sent);
+  if (sent) {
+    const cardMessageId = cardResult.messageId || null;
+    const statusNotice = await sendCaptainStatusText({
+      phone,
+      event: "captain.access_card.sent",
+      title: "إرسال بطاقة الدخول",
+      text: "تم إرسال بطاقة دخولك إلى واتساب.",
+      idempotencyKey: `CAPTAIN-ACCESS-SENT-${prepared.id || phone}-${cardMessageId || Date.now()}`,
+      sourceMessageId: cardMessageId,
+    });
+    void notifyOperations({ event: "captain.access_card.sent", title: "تأكيد بطاقة دخول كابتن", lines: [`الكابتن: ${prepared.name || "حساب الكابتن"}`, `رقم الهاتف: ${prepared.phone}`, `حالة الإشعار النصي: ${statusNotice.status}`], ownersOnly: true });
+    const earlyAck = cardMessageId ? captainAccessCardAckCache.get(cardMessageId) : null;
+    if (earlyAck) void handleCaptainAccessCardAck(cardMessageId, earlyAck.ack);
+  }
   return sent;
 }
 function groupParticipantPhone(participant) {
@@ -2987,6 +3052,28 @@ function shouldHandleMessageEvent(msg, eventName) {
   }
   return true;
 }
+const captainAccessCardAckCache = new Map();
+async function handleCaptainAccessCardAck(messageOrId, ack) {
+  const messageId = typeof messageOrId === "string" ? messageOrId : serializedMessageId(messageOrId);
+  if (!messageId || Number(ack) < 2) return;
+  const cardNotice = db.prepare("SELECT id,recipient_phone,source_message_id FROM notifications WHERE event='captain.access_card.sent' AND source_message_id=? ORDER BY id DESC LIMIT 1").get(messageId);
+  if (!cardNotice) {
+    captainAccessCardAckCache.set(messageId, { ack: Number(ack), at: Date.now() });
+    for (const [key, value] of captainAccessCardAckCache) if (Date.now() - value.at > 10 * 60 * 1000) captainAccessCardAckCache.delete(key);
+    return;
+  }
+  const notice = await sendCaptainStatusText({
+    phone: cardNotice.recipient_phone,
+    event: "captain.access_card.delivered",
+    title: "تسليم بطاقة الدخول",
+    text: "تم تسليم بطاقة الدخول إلى واتسابك.",
+    idempotencyKey: `CAPTAIN-ACCESS-DELIVERED-${cardNotice.id}`,
+    sourceMessageId: messageId,
+  });
+  db.prepare("UPDATE notifications SET delivery_status='delivered' WHERE id=? AND delivery_status IN ('sent','delivered')").run(cardNotice.id);
+  audit("captain.access_card.delivered", "user", cardNotice.recipient_phone, { sourceMessageId: messageId, deliveryStatus: notice.status, ack: Number(ack) });
+  captainAccessCardAckCache.delete(messageId);
+}
 
 function createClient() {
   const generation = ++connectionGeneration;
@@ -3043,6 +3130,9 @@ function createClient() {
           return result;
         })
         .catch((error) => console.error("[Captains] configured group sync failed:", error.message));
+      void retryCaptainStatusNotifications()
+        .then((result) => { if (result.attempted) console.log(`[Captains] retried pending status notifications: ${result.attempted}`); })
+        .catch((error) => console.error("[Captains] status notification retry failed:", error.message));
     }, 3000);
   });
   instance.on("auth_failure", (message) => {
@@ -3087,6 +3177,10 @@ function createClient() {
     recordGroupMessageTelemetry("message_create", msg);
     if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message_create");
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
+  });
+  instance.on("message_ack", async (msg, ack) => {
+    if (generation !== connectionGeneration) return;
+    try { await handleCaptainAccessCardAck(msg, ack); } catch (error) { console.error("[WhatsApp] captain card ack:", error); }
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
@@ -4465,6 +4559,13 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   db.prepare("UPDATE captain_invites SET status='pending',name=?,phone=?,pin_hash=?,pin_ciphertext=NULL,auth_method=?,approved_user_id=NULL,submitted_at=COALESCE(submitted_at,?),decided_at=NULL,decision_note=?,updated_at=? WHERE id=? AND status IN ('issued','pending')")
     .run(name, phone, pinHash, authMethod, stamp, "بانتظار موافقة المالك؛ لم يُنشأ الحساب بعد", stamp, invite.id);
   audit("captain.join.requested", "captain_invite", invite.id, { name, phone, authMethod, status: "pending" }, null);
+  void sendCaptainStatusText({
+    phone,
+    event: "captain.join.received",
+    title: "استلام طلب الكابتن",
+    text: "تم استلام طلب تسجيلك، وبانتظار موافقة الشركة.",
+    idempotencyKey: `CAPTAIN-REQUEST-RECEIVED-${invite.id}`,
+  });
   void notifyOperations({ event: "captain.join.requested", title: "طلب تسجيل كابتن جديد بانتظار الموافقة", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "لم يُنشأ الحساب ولم يُفعّل الدخول. يجب اعتماد الطلب من زر الموافقة في لوحة المالك."], ownersOnly: true });
   res.status(202).json({ success: true, status: "pending", activated: false, accountCreated: false, token: createdInviteToken || req.params.token, message: "تم إرسال طلب التسجيل إلى الشركة. لا يمكن الدخول أو استخدام الحساب قبل موافقة المالك." });
 });
@@ -4550,18 +4651,14 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   }
   db.prepare("UPDATE captain_invites SET status='approved',approved_user_id=?,decision_note=?,decided_at=?,updated_at=? WHERE id=? AND status='pending'").run(captainId, note || "تمت الموافقة", stamp, stamp, id);
   audit("captain.join.approved", "captain_invite", id, { captainId, phone: invite.phone });
-  let notified = false;
-  if (invite.phone) {
-    const recipient = await resolveWhatsAppRecipientId(invite.phone);
-    const recipients = [...new Set([recipient, `${phoneWithCountry(invite.phone)}@c.us`].filter(Boolean))];
-    const approvalMessage = "تمت موافقة الشركة على الكابتن وتفعيل الحساب.";
-    for (const candidate of recipients) {
-      if (await sendBotText(candidate, approvalMessage)) {
-        notified = true;
-        break;
-      }
-    }
-  }
+  const approvalNotice = invite.phone ? await sendCaptainStatusText({
+    phone: invite.phone,
+    event: "captain.approval",
+    title: "اعتماد الكابتن",
+    text: "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.",
+    idempotencyKey: `CAPTAIN-APPROVAL-${id}`,
+  }) : { status: "skipped" };
+  const notified = approvalNotice.status === "sent";
   const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
   const autoTopup = await issueApprovalTopupCard({ captain: { ...captain, role: "captain", active: 1, account_status: "active", is_bot: 0 }, approvalId: id, req });
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
@@ -4580,7 +4677,7 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   if (previous) return res.json({ success: true, duplicate: true, status: previous.delivery_status, messageId: previous.message_id });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للإرسال حاليًا" });
   const title = "إشعار اختبار الموافقة";
-  const message = "تمت موافقة الشركة على الكابتن وتفعيل الحساب.";
+  const message = "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.";
   const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,message_id,created_at) VALUES(?,?,?,?,?,'pending',?,?)").run(phoneWithCountry(captain.phone), "captain", "captain.approval_notification.test", title, message, idempotencyKey, now());
   let deliveryStatus = "failed";
   let sentMessageId = null;
@@ -5881,7 +5978,14 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   if (!name || name.length > 100) return res.status(400).json({ error: "Captain name is invalid" });
   db.prepare("UPDATE users SET name=?,active=?,account_status=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, active ? "active" : "suspended", now(), id);
   audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
-  void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", captainPhone: captain.phone, lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`, active ? "يمكن للكابتن استخدام بوابة التشغيل." : "تم إيقاف الدخول والحركات المالية للحساب." ] });
+  void sendCaptainStatusText({
+    phone: captain.phone,
+    event: active ? "captain.activated" : "captain.deactivated",
+    title: active ? "تفعيل حساب الكابتن" : "إيقاف حساب الكابتن",
+    text: active ? "تم تفعيل حسابك ويمكنك استخدام بوابة التشغيل." : "تم إيقاف حسابك مؤقتًا؛ راجع الشركة.",
+    idempotencyKey: `CAPTAIN-STATUS-${id}-${active ? "ACTIVE" : "SUSPENDED"}-${Date.now()}`,
+  });
+  void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`], ownersOnly: true });
   res.json({ success: true, id, active, name });
 });
 app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
