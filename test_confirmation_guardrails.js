@@ -47,6 +47,8 @@ assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /const scan = await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
+assert.match(server, /const senderPhone = message\.fromMe\s*\? connectedBotPhone\(\)\s*:\s*await resolveMessageSenderPhone\(message\)/);
+assert.match(server, /historical_order_producer_unresolved/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);
 assert.match(server, /acceptance_message_replayed_after_duplicate_guard/);
 assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);

@@ -2579,19 +2579,38 @@ async function recoverHistoricalOrderCandidates(groupId) {
   whatsappHistoricalCandidateRecoveryAt = Date.now();
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   let recovered = 0;
+  let unresolved = 0;
   for (const message of Array.isArray(history.messages) ? history.messages : []) {
-    if (!message || !message.fromMe || resolveGroupChatId(message) !== groupId || Number(message.timestamp || message.__timestamp || 0) * 1000 < cutoff) continue;
+    if (!message || resolveGroupChatId(message) !== groupId || Number(message.timestamp || message.__timestamp || 0) * 1000 < cutoff) continue;
     const messageId = serializedMessageId(message);
     const parsed = parseOrder(message.body);
     if (!messageId || !parsed.isOrder) continue;
     const existingOrder = db.prepare("SELECT 1 FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
     const existingCandidate = db.prepare("SELECT 1 FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
     if (existingOrder || existingCandidate) continue;
-    const producer = companyUser();
+    const senderPhone = message.fromMe
+      ? connectedBotPhone()
+      : await resolveMessageSenderPhone(message);
+    const senderName = message.fromMe
+      ? `${COMPANY_BRAND_NAME} — المنتج الأساسي`
+      : String(message.__notifyName || message.notifyName || message.author?.pushname || message.author?.name || displayPhone(senderPhone)).trim();
+    const producer = message.fromMe
+      ? companyUser()
+      : ensureProducerUser(senderPhone, senderName);
+    if (!producer || producer.active === 0) {
+      unresolved += 1;
+      logOrderTrace("historical_order_producer_unresolved", {
+        groupKey: orderTraceKey(groupId),
+        sourceKey: orderTraceKey(messageId),
+        fromMe: Boolean(message.fromMe),
+        senderKey: orderTraceKey(senderPhone),
+      });
+      continue;
+    }
     const candidate = producer ? createOrderCandidate({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (candidate) recovered += 1;
   }
-  if (recovered) console.log(`[WhatsApp] recovered ${recovered} historical self order candidate(s)`);
+  if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved}`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
