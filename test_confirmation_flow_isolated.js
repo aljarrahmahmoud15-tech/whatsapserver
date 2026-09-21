@@ -14,6 +14,7 @@ function between(start, end) {
 }
 
 const reactionIdSource = between("function reactionId(", "async function resolveReactionSenderPhone");
+const messageLookupSource = between("function messageIdCore(", "function orderTraceKey(");
 const settleSource = between("function settlePendingOrder(", "function settleHistoricalConfirmedOrder(");
 const reactionHandlerSource = between("async function handleMessageReaction(", "function parseCookies");
 
@@ -52,6 +53,7 @@ const db = {
         if (normalized.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return users[args[0]] ? { wallet_cents: users[args[0]].wallet_cents } : null;
         throw new Error(`Unexpected get query: ${normalized}`);
       },
+      all() { return []; },
       run(...args) {
         if (normalized.startsWith("INSERT OR IGNORE INTO order_candidate_acceptances")) return { changes: 1 };
         if (normalized.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { candidate.pending_captain_user_id = args[0]; candidate.pending_message_id = args[1]; return { changes: 1 }; }
@@ -136,7 +138,7 @@ const context = {
   console,
 };
 
-vm.runInNewContext(`${reactionIdSource}\n${settleSource}\n${reactionHandlerSource}\nthis.handleMessageReaction = handleMessageReaction;`, context);
+vm.runInNewContext(`${messageLookupSource}\n${reactionIdSource}\n${settleSource}\n${reactionHandlerSource}\nthis.handleMessageReaction = handleMessageReaction;`, context);
 
 assert.strictEqual(candidate.status, "pending");
 assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لايك");

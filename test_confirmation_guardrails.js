@@ -58,7 +58,7 @@ assert.match(server, /const scan = \{ messages: Array\.isArray\(fastScan\.messag
 assert.match(server, /acceptance\.quotedMsg \|\| acceptance\._data\?\.quotedMsg/);
 assert.match(server, /async function getQuotedMessageWithFallback\(message\)/);
 assert.match(server, /const quoted = await getQuotedMessageWithFallback\(msg\)/);
-assert.match(server, /pendingSourceIds\.has\(sourceId\)/);
+assert.match(server, /Array\.from\(pendingSourceIds\)\.find\(\(pendingSourceId\) => sourceMessageIdsEqual\(pendingSourceId, sourceId\)\)/);
 assert.match(server, /const senderPhone = message\.fromMe\s*\? connectedBotPhone\(\)\s*:\s*await resolveMessageSenderPhone\(message\)/);
 assert.match(server, /historical_order_producer_unresolved/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);

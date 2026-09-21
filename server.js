@@ -2749,8 +2749,8 @@ async function recoverHistoricalOrderCandidates(groupId) {
     const parsed = parseOrder(message.body);
     if (!messageId || !parsed.isOrder) continue;
     recovery.orderMessages += 1;
-    const existingOrder = db.prepare("SELECT 1 FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
-    const existingCandidate = db.prepare("SELECT 1 FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
+    const existingOrder = findEquivalentOrder(groupId, messageId);
+    const existingCandidate = findEquivalentCandidate(groupId, messageId, ["candidate", "pending", "finalized", "cancelled"]);
     if (existingOrder || existingCandidate) { recovery.skipped += 1; continue; }
     const senderPhone = message.fromMe
       ? connectedBotPhone()
@@ -2801,7 +2801,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
       : null;
     if (!quoted) quoted = acceptance.__quoted || acceptance.quotedMsg || acceptance._data?.quotedMsg || null;
     const sourceId = serializedMessageId(quoted);
-    if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
+    const matchingPendingSourceId = sourceId && Array.from(pendingSourceIds).find((pendingSourceId) => sourceMessageIdsEqual(pendingSourceId, sourceId));
+    if (!matchingPendingSourceId || !parseOrder(quoted?.body).isOrder) continue;
     lastAcceptanceRecovery.quotedMatches += 1;
     setAcceptanceRecoveryStage("before_handle_incoming_message");
     try {
@@ -3596,7 +3597,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
-    const archivedOrder = db.prepare("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=? LIMIT 1").get(current.source_message_id);
+    const archivedOrder = findEquivalentOrder(current.group_id, current.source_message_id);
     if (archivedOrder?.archive_state === "archived") return { state: "archived", order: archivedOrder };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status IN ('pending','selected') LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
