@@ -6709,12 +6709,15 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, mutation: "none" });
 });
-app.post("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
+app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
+  if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {
+    return res.status(400).json({ error: "Explicit cleanup confirmation is required", mutation: "none" });
+  }
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
-  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
-  const orderNo = Number(req.body?.orderNo || 0);
-  const keepMessageId = String(req.body?.keepMessageId || "").trim();
-  const limit = Math.max(20, Math.min(Number(req.body?.limit || 200), 500));
+  const groupId = String(req.body?.groupId || req.query?.groupId || getSetting("group_id", "")).trim();
+  const orderNo = Number(req.body?.orderNo || req.query?.orderNo || 0);
+  const keepMessageId = String(req.body?.keepMessageId || req.query?.keepMessageId || "").trim();
+  const limit = Math.max(20, Math.min(Number(req.body?.limit || req.query?.limit || 200), 500));
   if (!groupId || !isConfiguredGroup(groupId) || !Number.isInteger(orderNo) || orderNo < 1) {
     return res.status(400).json({ error: "configured groupId and positive integer orderNo are required", mutation: "none" });
   }
