@@ -2574,20 +2574,12 @@ function startWhatsAppReactionScanner() {
 async function recoverHistoricalOrderCandidates(groupId) {
   if ((whatsappHistoricalCandidateRecoveryAttempted && Date.now() - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS) || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
-  const recoveredMessages = [];
-  let cursor = 0;
-  let scanResult = null;
-  for (let page = 0; page < 30 && recoveredMessages.length < 300; page += 1) {
-    scanResult = await fetchGroupOrderScanBatch(groupId, { before: cursor, cutoff, batch: 50, includeOutgoing: true });
-    if (!scanResult.chat) break;
-    recoveredMessages.push(...(Array.isArray(scanResult.messages) ? scanResult.messages : []));
-    if (!scanResult.nextCursor) break;
-    cursor = scanResult.nextCursor;
-  }
-  if (!scanResult?.chat) {
+  const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
+  let recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
+  if (!fastScan.chat) {
     const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
     if (!history.chat) return;
-    recoveredMessages.push(...(Array.isArray(history.messages) ? history.messages : []));
+    recoveredMessages = Array.isArray(history.messages) ? history.messages : [];
   }
   whatsappHistoricalCandidateRecoveryAttempted = true;
   whatsappHistoricalCandidateRecoveryAt = Date.now();
@@ -2626,7 +2618,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
     const candidate = producer ? createOrderCandidate({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (candidate) recovered += 1;
   }
-  if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved} source=order-scan`);
+  if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved} source=${fastScan.chat ? "order-scan" : "history"}`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
@@ -2634,7 +2626,10 @@ async function recoverPendingAcceptanceMessages(groupId) {
   if (!pendingCandidates.length) return;
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
-  const scan = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
+  const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
+  const scan = fastScan.chat
+    ? { messages: fastScan.messages }
+    : await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
   let recovered = 0;
   for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
