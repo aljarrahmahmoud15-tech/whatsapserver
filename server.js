@@ -2563,6 +2563,7 @@ let whatsappReactionScanTimer = null;
 let whatsappReactionScanRunning = false;
 let whatsappHistoricalCandidateRecoveryAttempted = false;
 let whatsappHistoricalCandidateRecoveryAt = 0;
+let lastHistoricalRecovery = null;
 function startWhatsAppReactionScanner() {
   if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
   whatsappReactionScanTimer = setInterval(() => {
@@ -2574,11 +2575,14 @@ function startWhatsAppReactionScanner() {
 async function recoverHistoricalOrderCandidates(groupId) {
   if ((whatsappHistoricalCandidateRecoveryAttempted && Date.now() - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS) || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
+  lastHistoricalRecovery = recovery;
   const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
   let recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
+  recovery.source = fastScan.chat ? "order-scan" : "history";
   if (!fastScan.chat) {
     const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
-    if (!history.chat) return;
+    if (!history.chat) { recovery.finishedAt = new Date().toISOString(); return; }
     recoveredMessages = Array.isArray(history.messages) ? history.messages : [];
   }
   whatsappHistoricalCandidateRecoveryAttempted = true;
@@ -2587,15 +2591,17 @@ async function recoverHistoricalOrderCandidates(groupId) {
   let unresolved = 0;
   const seenMessageIds = new Set();
   for (const message of recoveredMessages) {
+    recovery.scanned += 1;
     if (!message || resolveGroupChatId(message) !== groupId || Number(message.timestamp || message.__timestamp || 0) * 1000 < cutoff) continue;
     const messageId = serializedMessageId(message);
     if (!messageId || seenMessageIds.has(messageId)) continue;
     seenMessageIds.add(messageId);
     const parsed = parseOrder(message.body);
     if (!messageId || !parsed.isOrder) continue;
+    recovery.orderMessages += 1;
     const existingOrder = db.prepare("SELECT 1 FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
     const existingCandidate = db.prepare("SELECT 1 FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
-    if (existingOrder || existingCandidate) continue;
+    if (existingOrder || existingCandidate) { recovery.skipped += 1; continue; }
     const senderPhone = message.fromMe
       ? connectedBotPhone()
       : await resolveMessageSenderPhone(message);
@@ -2607,6 +2613,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
       : ensureProducerUser(senderPhone, senderName);
     if (!producer || producer.active === 0) {
       unresolved += 1;
+      recovery.unresolved += 1;
       logOrderTrace("historical_order_producer_unresolved", {
         groupKey: orderTraceKey(groupId),
         sourceKey: orderTraceKey(messageId),
@@ -2616,8 +2623,9 @@ async function recoverHistoricalOrderCandidates(groupId) {
       continue;
     }
     const candidate = producer ? createOrderCandidate({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
-    if (candidate) recovered += 1;
+    if (candidate) { recovered += 1; recovery.candidatesCreated += 1; }
   }
+  recovery.finishedAt = new Date().toISOString();
   if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved} source=${fastScan.chat ? "order-scan" : "history"}`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
@@ -4486,6 +4494,7 @@ app.get("/status", (req, res) => {
       pendingConfirmation: Number(orderLinkStats.pending_confirmation || 0),
       acceptedUnlinked: Number(orderLinkStats.accepted_unlinked || 0),
     },
+    historicalRecovery: lastHistoricalRecovery,
   });
 });
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
