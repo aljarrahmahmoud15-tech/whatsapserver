@@ -2573,16 +2573,32 @@ function startWhatsAppReactionScanner() {
 }
 async function recoverHistoricalOrderCandidates(groupId) {
   if ((whatsappHistoricalCandidateRecoveryAttempted && Date.now() - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS) || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
-  if (!history.chat) return;
+  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const recoveredMessages = [];
+  let cursor = 0;
+  let scanResult = null;
+  for (let page = 0; page < 30 && recoveredMessages.length < 300; page += 1) {
+    scanResult = await fetchGroupOrderScanBatch(groupId, { before: cursor, cutoff, batch: 50, includeOutgoing: true });
+    if (!scanResult.chat) break;
+    recoveredMessages.push(...(Array.isArray(scanResult.messages) ? scanResult.messages : []));
+    if (!scanResult.nextCursor) break;
+    cursor = scanResult.nextCursor;
+  }
+  if (!scanResult?.chat) {
+    const history = await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
+    if (!history.chat) return;
+    recoveredMessages.push(...(Array.isArray(history.messages) ? history.messages : []));
+  }
   whatsappHistoricalCandidateRecoveryAttempted = true;
   whatsappHistoricalCandidateRecoveryAt = Date.now();
-  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   let recovered = 0;
   let unresolved = 0;
-  for (const message of Array.isArray(history.messages) ? history.messages : []) {
+  const seenMessageIds = new Set();
+  for (const message of recoveredMessages) {
     if (!message || resolveGroupChatId(message) !== groupId || Number(message.timestamp || message.__timestamp || 0) * 1000 < cutoff) continue;
     const messageId = serializedMessageId(message);
+    if (!messageId || seenMessageIds.has(messageId)) continue;
+    seenMessageIds.add(messageId);
     const parsed = parseOrder(message.body);
     if (!messageId || !parsed.isOrder) continue;
     const existingOrder = db.prepare("SELECT 1 FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
@@ -2610,7 +2626,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
     const candidate = producer ? createOrderCandidate({ messageId, groupId, body: String(message.body || ""), producer, parsed }) : null;
     if (candidate) recovered += 1;
   }
-  if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved}`);
+  if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved} source=order-scan`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
