@@ -2564,6 +2564,7 @@ let whatsappReactionScanRunning = false;
 let whatsappHistoricalCandidateRecoveryAttempted = false;
 let whatsappHistoricalCandidateRecoveryAt = 0;
 let lastHistoricalRecovery = null;
+let lastAcceptanceRecovery = null;
 function startWhatsAppReactionScanner() {
   if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
   whatsappReactionScanTimer = setInterval(() => {
@@ -2631,7 +2632,8 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
-  if (!pendingCandidates.length) return;
+  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quotedMatches: 0, recovered: 0, finishedAt: null };
+  if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
@@ -2640,6 +2642,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     : await fetchGroupHistory(groupId, 300, { includeOutgoing: true });
   let recovered = 0;
   for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
+    lastAcceptanceRecovery.scanned += 1;
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (existing) continue;
@@ -2651,10 +2654,12 @@ async function recoverPendingAcceptanceMessages(groupId) {
       : acceptance.__quoted;
     const sourceId = serializedMessageId(quoted);
     if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
+    lastAcceptanceRecovery.quotedMatches += 1;
     await handleIncomingMessage(acceptance, { allowSelf: true });
     const recorded = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
-    if (recorded) recovered += 1;
+    if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; }
   }
+  lastAcceptanceRecovery.finishedAt = new Date().toISOString();
   if (recovered) console.log(`[WhatsApp] recovered ${recovered} quoted pending acceptance message(s)`);
 }
 async function scanPendingAcceptanceReactions() {
@@ -4495,6 +4500,7 @@ app.get("/status", (req, res) => {
       acceptedUnlinked: Number(orderLinkStats.accepted_unlinked || 0),
     },
     historicalRecovery: lastHistoricalRecovery,
+    acceptanceRecovery: lastAcceptanceRecovery,
   });
 });
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
