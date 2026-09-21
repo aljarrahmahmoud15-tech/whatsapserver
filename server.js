@@ -2565,6 +2565,8 @@ function finalBookingCancellationText() {
   ].join("\n");
 }
 const confirmationDeliveryInFlight = new Set();
+const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
+const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 async function sendFinalBookingConfirmation(groupId, details) {
   const orderId = Number(details?.orderId || 0) || null;
   if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
@@ -2575,6 +2577,11 @@ async function sendFinalBookingConfirmation(groupId, details) {
     delivery = db.transaction(() => {
       const existing = db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
       if (existing?.status === "sent") return existing;
+      const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
+      const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
+      if (existing && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
+        return { ...existing, retrySuppressed: true };
+      }
       if (existing) {
         db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
         return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
@@ -2583,6 +2590,10 @@ async function sendFinalBookingConfirmation(groupId, details) {
       return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
     })();
     if (delivery?.status === "sent") {
+      confirmationDeliveryInFlight.delete(orderId);
+      return null;
+    }
+    if (delivery?.retrySuppressed) {
       confirmationDeliveryInFlight.delete(orderId);
       return null;
     }
@@ -2605,6 +2616,19 @@ async function sendFinalBookingConfirmation(groupId, details) {
   } finally {
     if (orderId) confirmationDeliveryInFlight.delete(orderId);
   }
+}
+function observeFinalBookingConfirmationMessage(message) {
+  if (!message?.fromMe || !message?.from || !isConfiguredGroup(String(message.from))) return null;
+  const body = String(message.body || "").trim();
+  if (!body.startsWith("✅ تم قبول الطلب وتثبيته")) return null;
+  const orderNo = Number(body.match(/رقم الرحلة:\s*#(\d+)/)?.[1] || 0);
+  const messageId = serializedMessageId(message);
+  if (!orderNo || !messageId) return null;
+  const order = db.prepare("SELECT id FROM orders WHERE group_id=? AND order_no=? ORDER BY id DESC LIMIT 1").get(String(message.from), orderNo);
+  if (!order) return null;
+  const updated = db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(messageId, now(), now(), order.id);
+  if (updated.changes) console.log(`[WhatsApp] final booking confirmation observed order=${orderNo} message=${messageId}`);
+  return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
 async function sendFinalBookingCancellation(groupId) {
   if (!client || !groupId) return null;
@@ -3174,6 +3198,7 @@ function createClient() {
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
     observeAdminSentMessage(msg);
+    observeFinalBookingConfirmationMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
     if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message_create");
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
@@ -4306,11 +4331,14 @@ async function reconcileStoredThumbReaction(messageId) {
 }
 async function retryFailedBookingConfirmations(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const rows = db.prepare(`SELECT d.order_id,d.group_id,o.order_no,o.price_cents,o.captain_name_snapshot,o.producer_name_snapshot
+  const rows = db.prepare(`SELECT d.order_id,d.group_id,d.attempts,d.updated_at,o.order_no,o.price_cents,o.captain_name_snapshot,o.producer_name_snapshot
     FROM order_confirmation_deliveries d JOIN orders o ON o.id=d.order_id
     WHERE d.group_id=? AND d.status IN ('failed','pending') AND o.status IN ('accepted','completed') AND o.settlement_state='settled'
     ORDER BY d.updated_at ASC LIMIT ?`).all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, 10));
   for (const row of rows) {
+    const updatedAtMs = Date.parse(String(row.updated_at || ""));
+    const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
+    if (Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS) continue;
     await sendFinalBookingConfirmation(row.group_id, { orderId: row.order_id, orderNo: row.order_no, executorName: row.captain_name_snapshot, downloaderName: row.producer_name_snapshot, priceCents: row.price_cents });
   }
 }
@@ -6680,6 +6708,48 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   }
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, mutation: "none" });
+});
+app.post("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const orderNo = Number(req.body?.orderNo || 0);
+  const keepMessageId = String(req.body?.keepMessageId || "").trim();
+  const limit = Math.max(20, Math.min(Number(req.body?.limit || 200), 500));
+  if (!groupId || !isConfiguredGroup(groupId) || !Number.isInteger(orderNo) || orderNo < 1) {
+    return res.status(400).json({ error: "configured groupId and positive integer orderNo are required", mutation: "none" });
+  }
+  const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  if (!history.chat) return res.status(504).json({ error: "Unable to read configured group", mutation: "none" });
+  const matches = history.messages
+    .filter((message) => {
+      const body = String(message?.body || "").trim();
+      const messageOrderNo = Number(body.match(/رقم الرحلة:\s*#(\d+)/)?.[1] || 0);
+      return message?.fromMe === true && resolveGroupChatId(message) === groupId && body.startsWith("✅ تم قبول الطلب وتثبيته") && messageOrderNo === orderNo && typeof message.delete === "function";
+    })
+    .sort((a, b) => Number(a.timestamp || a.__timestamp || 0) - Number(b.timestamp || b.__timestamp || 0));
+  if (!matches.length) return res.status(404).json({ error: "No deletable confirmation messages found", groupId, orderNo, mutation: "none" });
+  const requestedKeep = keepMessageId ? matches.find((message) => serializedMessageId(message) === keepMessageId) : null;
+  const keep = requestedKeep || matches[matches.length - 1];
+  const deleted = [];
+  const failed = [];
+  for (const message of matches) {
+    const messageId = serializedMessageId(message);
+    if (!messageId || messageId === serializedMessageId(keep)) continue;
+    try {
+      const deletedForEveryone = await withTimeout(message.delete(true), 15000, false);
+      if (deletedForEveryone) deleted.push(messageId);
+      else failed.push({ messageId, reason: "delete_not_confirmed" });
+    } catch (error) {
+      failed.push({ messageId, reason: String(error?.message || error).slice(0, 160) });
+    }
+  }
+  const keptMessageId = serializedMessageId(keep);
+  const order = db.prepare("SELECT id FROM orders WHERE group_id=? AND order_no=? ORDER BY id DESC LIMIT 1").get(groupId, orderNo);
+  if (order && keptMessageId) {
+    db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(keptMessageId, now(), now(), order.id);
+  }
+  audit("order.confirmation_duplicates_deleted", "order", order?.id || null, { groupId, orderNo, matched: matches.length, deleted, failed, keptMessageId });
+  res.json({ success: failed.length === 0, mutation: "messages_deleted", groupId, orderNo, matched: matches.length, keptMessageId, deleted, failed });
 });
 app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
