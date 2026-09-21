@@ -6727,7 +6727,7 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
     .filter((message) => {
       const body = String(message?.body || "").trim();
       const messageOrderNo = Number(body.match(/رقم الرحلة:\s*#(\d+)/)?.[1] || 0);
-      return message?.fromMe === true && resolveGroupChatId(message) === groupId && body.startsWith("✅ تم قبول الطلب وتثبيته") && messageOrderNo === orderNo && typeof message.delete === "function";
+      return message?.fromMe === true && resolveGroupChatId(message) === groupId && body.startsWith("✅ تم قبول الطلب وتثبيته") && messageOrderNo === orderNo;
     })
     .sort((a, b) => Number(a.timestamp || a.__timestamp || 0) - Number(b.timestamp || b.__timestamp || 0));
   if (!matches.length) return res.status(404).json({ error: "No deletable confirmation messages found", groupId, orderNo, mutation: "none" });
@@ -6739,7 +6739,12 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
     const messageId = serializedMessageId(message);
     if (!messageId || messageId === serializedMessageId(keep)) continue;
     try {
-      const deletedForEveryone = await withTimeout(message.delete(true), 15000, false);
+      const liveMessage = typeof message.delete === "function" ? message : await withTimeout(client.getMessageById(messageId), 12000, null);
+      if (!liveMessage || typeof liveMessage.delete !== "function") {
+        failed.push({ messageId, reason: "live_message_unavailable" });
+        continue;
+      }
+      const deletedForEveryone = await withTimeout(liveMessage.delete(true), 15000, false);
       if (deletedForEveryone) deleted.push(messageId);
       else failed.push({ messageId, reason: "delete_not_confirmed" });
     } catch (error) {
