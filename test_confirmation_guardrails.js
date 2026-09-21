@@ -39,6 +39,7 @@ assert.match(server, /isConnectedBotReactionIdentity/);
 assert.match(server, /reaction sender resolved from LID mapping/);
 assert.match(server, /reaction_approver_identity_unresolved/);
 assert.match(server, /hasReactionByMe: storedReaction\?\.hasReactionByMe === true/);
+assert.match(server, /if \(reactionValue === "👍" \|\| reactionValue === "❌"\)/);
 assert.doesNotMatch(server, /hasVisibleThumbReaction\(messageId\)\)[\s\S]{0,180}hasReactionByMe: true/);
 assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
 assert.match(server, /if \(await hasVisibleThumbReaction\(messageId\)\)/);

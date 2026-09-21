@@ -2966,7 +2966,8 @@ function createClient() {
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
-    if (String(reaction?.reaction || "").trim() === "👍") {
+    const reactionValue = String(reaction?.reaction || "").trim();
+    if (reactionValue === "👍" || reactionValue === "❌") {
       for (const delay of [1500, 5000]) {
         setTimeout(() => {
           if (generation !== connectionGeneration || !isReady) return;
