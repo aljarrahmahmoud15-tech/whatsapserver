@@ -2565,6 +2565,9 @@ let whatsappHistoricalCandidateRecoveryAttempted = false;
 let whatsappHistoricalCandidateRecoveryAt = 0;
 let lastHistoricalRecovery = null;
 let lastAcceptanceRecovery = null;
+function setAcceptanceRecoveryStage(stage) {
+  if (lastAcceptanceRecovery) lastAcceptanceRecovery.lastStage = String(stage || "");
+}
 function startWhatsAppReactionScanner() {
   if (whatsappReactionScanTimer || WHATSAPP_REACTION_SCAN_INTERVAL_MS <= 0) return;
   whatsappReactionScanTimer = setInterval(() => {
@@ -2632,7 +2635,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
-  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quotedMatches: 0, recovered: 0, finishedAt: null };
+  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
@@ -2656,7 +2659,15 @@ async function recoverPendingAcceptanceMessages(groupId) {
     const sourceId = serializedMessageId(quoted);
     if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
     lastAcceptanceRecovery.quotedMatches += 1;
-    await handleIncomingMessage(acceptance, { allowSelf: true });
+    setAcceptanceRecoveryStage("before_handle_incoming_message");
+    try {
+      await handleIncomingMessage(acceptance, { allowSelf: true });
+      setAcceptanceRecoveryStage("after_handle_incoming_message");
+    } catch (error) {
+      lastAcceptanceRecovery.errors = Number(lastAcceptanceRecovery.errors || 0) + 1;
+      lastAcceptanceRecovery.lastError = String(error?.message || error).slice(0, 180);
+      setAcceptanceRecoveryStage("handle_incoming_message_error");
+    }
     const recorded = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; }
   }
