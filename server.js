@@ -3917,12 +3917,10 @@ async function handleMessageReaction(reaction) {
     const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (acceptance) {
       const producer = acceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.producer_user_id) : null;
-      if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
-      const cancelled = db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE id=? AND status='pending'").run(now(), acceptance.id);
-      if (cancelled.changes === 1) {
-        audit("order.candidate.acceptance_cancelled_downloader_removed_thumb", "order_candidate", acceptance.candidate_id, { producerId: producer.id, messageId, captainId: acceptance.captain_user_id });
-      }
-      audit("order.candidate.acceptance_cancelled_downloader_removed_thumb", "order_candidate", acceptance.candidate_id, { producerId: producer.id, messageId, captainId: acceptance.captain_user_id });
+      const producerAuthorized = Boolean(producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")));
+      if (!producerAuthorized || isBlockedPhone(approverPhone)) return;
+      const cancelled = cancelPendingOrderForProducerReaction(acceptance.candidate_id, messageId, approverPhone);
+      if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
     }
     const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);

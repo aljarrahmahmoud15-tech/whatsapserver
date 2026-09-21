@@ -5,6 +5,8 @@ const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 assert.match(server, /const removedThumb = reactionValue === ""/);
 assert.match(server, /order_candidate_acceptances a JOIN order_candidates c ON c\.id=a\.candidate_id/);
 assert.match(server, /order_candidate_acceptances SET status='cancelled'/);
+assert.match(server, /cancelPendingOrderForProducerReaction\(acceptance\.candidate_id, messageId, approverPhone\)/);
+assert.match(server, /void sendFinalBookingCancellation\(target\.from\)\.catch\(\(\) => null\)/);
 assert.match(server, /status IN \('accepted','completed'\) AND accepted_message_id=\?/);
 assert.match(server, /cancelOrderForReactionRemoval\(order\.id, messageId, approverPhone\)/);
 assert.match(server, /status='cancelled',settlement_state='reversed'/);

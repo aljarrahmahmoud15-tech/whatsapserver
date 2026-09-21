@@ -294,5 +294,15 @@ async function approve(doneId = "done-1") {
   assert.equal(state.ledgers.length, 0, "الإلغاء قبل التسوية لا ينشئ حركات مالية");
   assert.equal(state.cancellations.length, 1, "الإلغاء يرسل بطاقة واحدة");
 
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-remove-thumb");
+  state.targets = { "done-remove-thumb": message("done-remove-thumb", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "", msgId: "done-remove-thumb" });
+  assert.equal(state.candidate.status, "cancelled", "إزالة 👍 من صاحب السعر تلغي الطلب المعلق بالكامل");
+  assert.equal(state.ledgers.length, 0, "إزالة 👍 قبل التسوية لا تنشئ حركات مالية");
+  assert.equal(state.cancellations.length, 1, "إزالة 👍 ترسل بطاقة إلغاء واحدة");
+
   console.log("unified order lifecycle race, identity, debt, idempotency, and archive guards verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
