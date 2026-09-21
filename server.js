@@ -716,6 +716,60 @@ function persistWhatsappIdentity(lidValue, phoneValue, source = "whatsapp_event"
   );
   return user;
 }
+async function auditActiveCaptainLidMappings({ groupId = getSetting("group_id", ""), chunkSize = 25 } = {}) {
+  const normalizedGroupId = String(groupId || "").trim();
+  if (!normalizedGroupId || !isConfiguredGroup(normalizedGroupId)) return { status: "group_not_configured", groupId: normalizedGroupId || null, mappings: [], unresolved: [], conflicts: [] };
+  if (!client || !isReady || typeof client.getContactLidAndPhone !== "function") return { status: "bot_not_ready_or_lid_api_unavailable", groupId: normalizedGroupId, mappings: [], unresolved: [], conflicts: [] };
+  const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND account_status='active' ORDER BY id").all();
+  const mappings = [];
+  const unresolved = [];
+  const conflicts = [];
+  const safeChunkSize = Math.max(1, Math.min(Number(chunkSize) || 25, 50));
+  for (let offset = 0; offset < captains.length; offset += safeChunkSize) {
+    const chunk = captains.slice(offset, offset + safeChunkSize);
+    let resolved = [];
+    try {
+      resolved = await withTimeout(client.getContactLidAndPhone(chunk.map((captain) => `${phoneWithCountry(captain.phone)}@c.us`)), 20000, []);
+    } catch (error) {
+      console.warn(`[WhatsApp] captain LID audit chunk failed: ${String(error?.message || error)}`);
+      resolved = [];
+    }
+    for (let index = 0; index < chunk.length; index += 1) {
+      const captain = chunk[index];
+      const mapping = Array.isArray(resolved) ? resolved[index] : null;
+      const phone = phoneWithCountry(captain.phone);
+      const mappedPhone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+      const lid = serializedWhatsappUserId(mapping?.lid);
+      if (!/@lid$/i.test(lid) || !isValidJordanPhone(mappedPhone)) {
+        unresolved.push({ captainId: captain.id, phone, name: captain.name, reason: "lid_not_returned" });
+        continue;
+      }
+      if (mappedPhone !== phone) {
+        conflicts.push({ captainId: captain.id, phone, mappedPhone, lid, reason: "phone_mismatch" });
+        continue;
+      }
+      const user = persistWhatsappIdentity(lid, phone, "captain_lid_audit");
+      if (!user) {
+        conflicts.push({ captainId: captain.id, phone, lid, reason: "conflicting_identity_mapping" });
+        continue;
+      }
+      mappings.push({ captainId: captain.id, phone, name: captain.name, lid, source: "captain_lid_audit" });
+    }
+  }
+  return {
+    status: "completed",
+    groupId: normalizedGroupId,
+    totalActiveCaptains: captains.length,
+    resolvedCount: mappings.length,
+    unresolvedCount: unresolved.length,
+    conflictCount: conflicts.length,
+    mappings,
+    unresolved,
+    conflicts,
+    mutation: "identity_metadata_only",
+    financialMutation: false,
+  };
+}
 function findPersistedWhatsappPhone(lidValue) {
   if (typeof db === "undefined") return "";
   const lid = serializedWhatsappUserId(lidValue);
@@ -6005,6 +6059,15 @@ app.get("/api/admin/group/resolve-identity", requireAdmin, async (req, res) => {
   const captain = phone ? db.prepare("SELECT id,phone,name,active,account_status,role FROM users WHERE phone=? AND role='captain' AND account_status<>'merged' LIMIT 1").get(phone) : null;
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, lid: requested, phone: phone || null, captain: captain || null, resolved: Boolean(phone && captain), mutation: "none", readOnly: true });
+});
+app.post("/api/admin/group/audit-lid-mappings", requireAdmin, async (req, res) => {
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const result = await auditActiveCaptainLidMappings({ groupId, chunkSize: req.body?.chunkSize });
+  if (result.status === "group_not_configured") return res.status(409).json(result);
+  if (result.status !== "completed") return res.status(503).json(result);
+  audit("captains.lid_mappings.audited", "group", groupId, { totalActiveCaptains: result.totalActiveCaptains, resolvedCount: result.resolvedCount, unresolvedCount: result.unresolvedCount, conflictCount: result.conflictCount, financialMutation: false });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, ...result });
 });
 app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
