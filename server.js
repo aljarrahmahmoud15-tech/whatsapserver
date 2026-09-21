@@ -6731,6 +6731,9 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
     })
     .sort((a, b) => Number(a.timestamp || a.__timestamp || 0) - Number(b.timestamp || b.__timestamp || 0));
   if (!matches.length) return res.status(404).json({ error: "No deletable confirmation messages found", groupId, orderNo, mutation: "none" });
+  if (String(req.query?.preview || "") === "1") {
+    return res.json({ success: true, mutation: "none", groupId, orderNo, matched: matches.length, messages: matches.map((message) => ({ id: serializedMessageId(message), timestamp: message.timestamp || message.__timestamp || null })) });
+  }
   const requestedKeep = keepMessageId ? matches.find((message) => serializedMessageId(message) === keepMessageId) : null;
   const keep = requestedKeep || matches[matches.length - 1];
   const deleted = [];
