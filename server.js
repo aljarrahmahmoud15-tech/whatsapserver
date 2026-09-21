@@ -6060,6 +6060,15 @@ app.get("/api/admin/group/resolve-identity", requireAdmin, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, lid: requested, phone: phone || null, captain: captain || null, resolved: Boolean(phone && captain), mutation: "none", readOnly: true });
 });
+app.get("/api/admin/group/audit-lid-mappings", requireAdmin, async (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const result = await auditActiveCaptainLidMappings({ groupId, chunkSize: req.query.chunkSize });
+  if (result.status === "group_not_configured") return res.status(409).json(result);
+  if (result.status !== "completed") return res.status(503).json(result);
+  audit("captains.lid_mappings.audited", "group", groupId, { totalActiveCaptains: result.totalActiveCaptains, resolvedCount: result.resolvedCount, unresolvedCount: result.unresolvedCount, conflictCount: result.conflictCount, financialMutation: false, method: "GET" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, ...result, mutation: "none", readOnly: true });
+});
 app.post("/api/admin/group/audit-lid-mappings", requireAdmin, async (req, res) => {
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const result = await auditActiveCaptainLidMappings({ groupId, chunkSize: req.body?.chunkSize });
