@@ -41,7 +41,9 @@ const db = {
     return {
       get(...args) {
         if (normalized.startsWith("SELECT a.*,c.* FROM order_candidate_acceptances")) return args[1] === "captain-done-1" && candidate.status === "pending" ? { ...acceptance } : null;
+        if (normalized.startsWith("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=?")) return args[0] === candidate.id && args[1] === acceptance.acceptance_message_id && ["pending", "selected"].includes(acceptance.status) ? { ...acceptance } : null;
         if (normalized.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return acceptance.status === "pending" ? { ...acceptance } : null;
+        if (normalized.startsWith("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=?")) return null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE group_id=?")) return candidate.group_id === args[0] && candidate.status === "pending" && candidate.pending_message_id === args[1] ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE id=?")) return args[0] === candidate.id ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM users WHERE id=?")) return users[args[0]] ? { ...users[args[0]] } : null;
@@ -55,6 +57,7 @@ const db = {
         if (normalized.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { candidate.pending_captain_user_id = args[0]; candidate.pending_message_id = args[1]; return { changes: 1 }; }
         if (normalized.startsWith("UPDATE order_candidate_acceptances SET status='selected'")) { acceptance.status = "selected"; return { changes: 1 }; }
         if (normalized.startsWith("UPDATE order_candidate_acceptances SET status='rejected'")) return { changes: 1 };
+        if (normalized.startsWith("UPDATE order_candidates SET lifecycle_stage")) return { changes: 1 };
         if (normalized.startsWith("INSERT INTO orders")) return { changes: 1, lastInsertRowid: order.id };
         if (normalized.startsWith("INSERT OR IGNORE INTO order_settlements")) {
           if (settlementRecord) return { changes: 0 };
@@ -79,6 +82,7 @@ const db = {
           settlementRecord.status = "applied";
           return { changes: 1 };
         }
+        if (normalized.startsWith("INSERT OR IGNORE INTO order_confirmation_deliveries")) return { changes: 1 };
         if (normalized.startsWith("UPDATE order_candidates SET status='finalized'")) {
           candidate.status = "finalized";
           candidate.final_order_id = order.id;
@@ -94,7 +98,7 @@ const db = {
 
 const context = {
   db,
-  client: { async getMessageById() { return { from: "test-group@g.us", hasQuotedMsg: true, async getQuotedMessage() { return { id: { _serialized: "request-1" }, from: "test-group@g.us", body: "السعر 20" }; } }; } },
+  client: { async getMessageById(messageId) { return { from: "test-group@g.us", body: messageId === "captain-done-1" ? "تم" : "رسالة مختلفة", hasQuotedMsg: true, async getQuotedMessage() { return { id: { _serialized: "request-1" }, from: "test-group@g.us", body: "السعر 20" }; } }; } },
   isReady: true,
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
@@ -104,6 +108,11 @@ const context = {
   isBotReactionSender,
   serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
   parseOrder: (body) => ({ isOrder: /^السعر\s*\d+/i.test(String(body || "")) }),
+  isCaptainAcceptance: (body) => String(body || "").trim() === "تم",
+  findPendingAcceptanceByMessage: (groupId, messageId) => groupId === candidate.group_id && messageId === acceptance.acceptance_message_id && candidate.status === "pending" && ["pending", "selected"].includes(acceptance.status) ? { ...acceptance } : null,
+  getQuotedMessageWithFallback: async (message) => typeof message?.getQuotedMessage === "function" ? message.getQuotedMessage() : null,
+  updateOrderCandidateLifecycle: () => ({ changes: 1 }),
+  notifyOrderLifecycleBlocker: () => {},
   logOrderTrace: () => {},
   connectedBotPhone: () => "0775696880",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,

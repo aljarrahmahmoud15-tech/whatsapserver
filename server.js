@@ -249,11 +249,27 @@ CREATE TABLE IF NOT EXISTS order_candidates (
   pending_at TEXT,
   final_order_id INTEGER,
   finalized_at TEXT,
+  lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created',
+  lifecycle_blocker TEXT,
+  lifecycle_updated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(producer_user_id) REFERENCES users(id),
   FOREIGN KEY(pending_captain_user_id) REFERENCES users(id),
   FOREIGN KEY(final_order_id) REFERENCES orders(id)
+);
+CREATE TABLE IF NOT EXISTS order_confirmation_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL UNIQUE,
+  group_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
+  message_id TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(order_id) REFERENCES orders(id)
 );
 CREATE TABLE IF NOT EXISTS order_candidate_acceptances (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -507,9 +523,25 @@ if (!existingOrderColumns.includes("import_source")) db.exec("ALTER TABLE orders
 if (!existingOrderColumns.includes("archive_state")) db.exec("ALTER TABLE orders ADD COLUMN archive_state TEXT NOT NULL DEFAULT 'active'");
 if (!existingOrderColumns.includes("archived_at")) db.exec("ALTER TABLE orders ADD COLUMN archived_at TEXT");
 if (!existingOrderColumns.includes("archive_reason")) db.exec("ALTER TABLE orders ADD COLUMN archive_reason TEXT");
+const existingCandidateColumns = db.prepare("PRAGMA table_info(order_candidates)").all().map((column) => column.name);
+if (!existingCandidateColumns.includes("lifecycle_stage")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created'");
+if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_blocker TEXT");
+if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
+db.exec(`
+  UPDATE order_candidates
+  SET lifecycle_stage=CASE
+    WHEN status='finalized' THEN 'settled'
+    WHEN status='pending' THEN 'acceptance_pending'
+    WHEN status='cancelled' THEN 'cancelled'
+    ELSE COALESCE(NULLIF(lifecycle_stage,''),'candidate_created')
+  END,
+  lifecycle_updated_at=COALESCE(lifecycle_updated_at,updated_at)
+  WHERE lifecycle_updated_at IS NULL OR lifecycle_stage IS NULL OR lifecycle_stage='';
+`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_pending_message ON order_candidates(pending_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order_candidates(source_message_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_lifecycle ON order_candidates(lifecycle_stage,updated_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
@@ -2095,8 +2127,8 @@ function parseOrder(text) {
 }
 function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
   if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
-  const existingByMessage = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
-  if (existingByMessage) return existingByMessage;
+  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+  if (existingOrder) return existingOrder.archive_state === "archived" ? null : existingOrder;
   const recentCutoff = new Date(Date.now() - 120000).toISOString();
   const recentDuplicate = db.prepare("SELECT * FROM orders WHERE group_id=? AND producer_user_id=? AND raw_text=? AND created_at>=? ORDER BY id DESC LIMIT 1").get(groupId, producer.id, body, recentCutoff);
   if (recentDuplicate) return recentDuplicate;
@@ -2111,14 +2143,85 @@ function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
   if (!messageId || !groupId || !body || !producer || !parsed || !parsed.isOrder) return null;
   const existing = db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? LIMIT 1").get(messageId);
   if (existing) return existing;
+  const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(messageId);
+  if (existingOrder) {
+    logOrderTrace("order_candidate_blocked_existing_order", {
+      groupKey: orderTraceKey(groupId),
+      sourceKey: orderTraceKey(messageId),
+      orderNo: existingOrder.order_no,
+      archiveState: existingOrder.archive_state || "active",
+    });
+    return null;
+  }
   const recentCutoff = new Date(Date.now() - 120000).toISOString();
   const recentDuplicate = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND producer_user_id=? AND raw_text=? AND created_at>=? ORDER BY id DESC LIMIT 1").get(groupId, producer.id, body, recentCutoff);
   if (recentDuplicate) return recentDuplicate;
   const stamp = now();
   const result = db.prepare("INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)").run(messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, stamp, stamp);
+  db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=? WHERE id=?").run(stamp, result.lastInsertRowid);
   audit("order.candidate.created", "order_candidate", result.lastInsertRowid, { groupId, producerPhone: producer.phone });
   console.log(`[OrderCandidate] candidate created from ${groupId}`);
   return db.prepare("SELECT * FROM order_candidates WHERE id=?").get(result.lastInsertRowid);
+}
+function updateOrderCandidateLifecycle(candidateId, stage, blocker = null, extra = {}) {
+  if (!candidateId) return null;
+  const stamp = now();
+  const result = db.prepare("UPDATE order_candidates SET lifecycle_stage=?,lifecycle_blocker=?,lifecycle_updated_at=?,updated_at=? WHERE id=?").run(String(stage || "candidate_created"), blocker ? String(blocker) : null, stamp, stamp, candidateId);
+  if (result.changes) {
+    audit(`order.lifecycle.${String(stage || "candidate_created")}`, "order_candidate", candidateId, { blocker: blocker || null, ...extra });
+  }
+  return result;
+}
+function notifyOrderLifecycleBlocker(candidateId, blocker, details = {}) {
+  if (!candidateId || !blocker) return;
+  const event = `order.lifecycle.blocked.${candidateId}.${String(blocker)}`;
+  if (db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(event)) return;
+  const candidate = db.prepare("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=? LIMIT 1").get(candidateId);
+  if (!candidate) return;
+  void notifyOperations({
+    event,
+    title: "توقف آلي يحتاج متابعة",
+    lines: [`المرشح: #${candidate.id}`, `القيمة: ${money(candidate.price_cents)} JOD`, `السبب: ${String(blocker).slice(0, 80)}`, "لم تُنفذ أي حركة مالية بسبب هذا العائق.", details.acceptanceMessageId ? `رسالة القبول: ${orderTraceKey(details.acceptanceMessageId)}` : ""],
+    ownersOnly: true,
+  });
+}
+function findPendingAcceptanceByMessage(groupId, acceptanceMessageId) {
+  if (!groupId || !acceptanceMessageId) return null;
+  return db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1").get(groupId, acceptanceMessageId);
+}
+function registerQuotedAcceptance({ groupId, messageId, senderPhone, senderName, candidate }) {
+  if (!groupId || !messageId || !senderPhone || !candidate) return { state: "invalid" };
+  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
+  if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) {
+    return { state: "captain_ineligible", captain: null };
+  }
+  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
+  if (!producer || captain.id === producer.id) return { state: "producer_missing_or_same_captain", captain, producer };
+  for (const identityValue of [candidate.acceptance_author, candidate.acceptance_author_lid]) {
+    if (/@lid$/i.test(serializedWhatsappUserId(identityValue))) persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender");
+  }
+  const recorded = db.transaction(() => {
+    const stamp = now();
+    const inserted = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, stamp, stamp);
+    const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? LIMIT 1").get(candidate.id, messageId);
+    if (!acceptance) return { state: "not_recorded", captain, producer };
+    if (!inserted.changes) {
+      db.prepare("UPDATE order_candidates SET lifecycle_stage='acceptance_pending',lifecycle_blocker='awaiting_authorized_thumb',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status IN ('candidate','pending')").run(stamp, stamp, candidate.id);
+      return { state: "duplicate", acceptance, captain, producer };
+    }
+    const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
+    if (!current || !["candidate", "pending"].includes(current.status)) return { state: "transition_failed", acceptance, captain, producer };
+    if (current.status === "candidate") {
+      const result = db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,lifecycle_stage='acceptance_pending',lifecycle_blocker='awaiting_authorized_thumb',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='candidate'").run(captain.id, messageId, stamp, stamp, stamp, candidate.id);
+      return result.changes === 1 ? { state: "recorded", acceptance, captain, producer } : { state: "transition_failed", acceptance, captain, producer };
+    }
+    const result = db.prepare("UPDATE order_candidates SET lifecycle_stage='acceptance_pending',lifecycle_blocker='awaiting_authorized_thumb',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending'").run(stamp, stamp, candidate.id);
+    return result.changes === 1 ? { state: "recorded", acceptance, captain, producer } : { state: "transition_failed", acceptance, captain, producer };
+  })();
+  if (recorded.state !== "recorded") return recorded;
+  const { acceptance } = recorded;
+  audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId });
+  return { state: "recorded", acceptance, captain, producer };
 }
 function latestEligibleGroupOrderMessage(messages, groupId) {
   return (Array.isArray(messages) ? messages : [])
@@ -2144,10 +2247,7 @@ function findOrderByQuotedId(quotedId) {
 }
 function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(serializedMessageId(quoted));
-  if (byId) return byId;
-  const body = String(quoted && quoted.body || "");
-  if (!body || !parseOrder(body).isOrder) return null;
-  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND raw_text=? AND status IN ('candidate','pending') ORDER BY id DESC LIMIT 1").get(groupId, body);
+  return byId && byId.group_id === groupId ? byId : null;
 }
 function findLatestStandaloneAcceptanceCandidate(groupId) {
   return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -2268,12 +2368,46 @@ function finalBookingCancellationText() {
     "لا يتم احتساب أي عمولة أو تسوية مالية.",
   ].join("\n");
 }
+const confirmationDeliveryInFlight = new Set();
 async function sendFinalBookingConfirmation(groupId, details) {
+  const orderId = Number(details?.orderId || 0) || null;
+  if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
+  if (orderId) confirmationDeliveryInFlight.add(orderId);
+  let delivery = null;
+  if (orderId) {
+    const stamp = now();
+    delivery = db.transaction(() => {
+      const existing = db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
+      if (existing?.status === "sent") return existing;
+      if (existing) {
+        db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
+        return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
+      }
+      db.prepare("INSERT INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',1,?,?)").run(orderId, groupId, stamp, stamp);
+      return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
+    })();
+    if (delivery?.status === "sent") {
+      confirmationDeliveryInFlight.delete(orderId);
+      return null;
+    }
+  }
   try {
-    return await withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
+    const sent = await withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
+    if (!sent) throw new Error("confirmation message was not acknowledged");
+    if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
+    return sent;
   } catch (error) {
     console.error("[WhatsApp] final booking confirmation not sent:", error.message);
+    if (orderId) {
+      db.prepare("UPDATE order_confirmation_deliveries SET status='failed',last_error=?,updated_at=? WHERE order_id=?").run(String(error?.message || error).slice(0, 240), now(), orderId);
+      const alertEvent = `order.confirmation_card.failed.${orderId}`;
+      if (!db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(alertEvent)) {
+        void notifyOperations({ event: alertEvent, title: "تعذر إرسال بطاقة تثبيت الطلب", lines: [`رقم الطلب: #${details?.orderNo || "غير محدد"}`, "تمت التسوية المالية بشكل ذري، لكن رسالة التثبيت لم تصل إلى القروب.", "سيعاد المحاولة تلقائيًا عند توفر الاتصال."], ownersOnly: true });
+      }
+    }
     return null;
+  } finally {
+    if (orderId) confirmationDeliveryInFlight.delete(orderId);
   }
 }
 function formatAcceptance(order, captain, producer) {
@@ -2682,6 +2816,7 @@ async function scanPendingAcceptanceReactions() {
     for (const row of rows) {
       try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
     }
+    await retryFailedBookingConfirmations(groupId);
     if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} pending acceptance message(s)`);
   } finally {
     whatsappReactionScanRunning = false;
@@ -3205,67 +3340,38 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     });
     return;
   }
-  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
-  if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) {
-    logOrderTrace("acceptance_captain_ineligible", {
+  const acceptanceResult = registerQuotedAcceptance({
+    groupId,
+    messageId,
+    senderPhone,
+    senderName,
+    candidate: {
+      ...candidate,
+      acceptance_author: msg?.author,
+      acceptance_author_lid: msg?._data?.author || msg?.id?.participant || msg?._data?.id?.participant,
+    },
+  });
+  if (["captain_ineligible", "producer_missing_or_same_captain", "not_recorded", "transition_failed"].includes(acceptanceResult.state)) {
+    logOrderTrace(`acceptance_${acceptanceResult.state}`, {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
       candidateId: candidate.id,
       senderKey: orderTraceKey(senderPhone),
-      captainFound: Boolean(captain),
-      active: captain?.active ?? null,
-      accountStatus: captain?.account_status ?? null,
-      isBot: captain?.is_bot ?? null,
     });
     return;
   }
-  for (const identityValue of [msg?.author, msg?._data?.author, msg?.id?.participant, msg?._data?.id?.participant]) {
-    if (/@lid$/i.test(serializedWhatsappUserId(identityValue))) persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender");
-  }
-  const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
-  if (!producer || captain.id === producer.id) {
-    logOrderTrace("acceptance_producer_missing_or_same_captain", {
+  if (acceptanceResult.state === "duplicate") {
+    logOrderTrace("acceptance_duplicate_or_already_recorded", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
       candidateId: candidate.id,
-      producerFound: Boolean(producer),
-      captainId: captain.id,
-      producerId: producer?.id ?? null,
+      captainId: acceptanceResult.captain?.id,
     });
     return;
   }
+  const captain = acceptanceResult.captain;
+  const producer = acceptanceResult.producer;
   const acceptanceMessageId = messageId;
-  const stampNow = now();
-  const acceptanceInsert = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, acceptanceMessageId, stampNow, stampNow);
-  if (!acceptanceInsert.changes) {
-    logOrderTrace("acceptance_duplicate_or_already_recorded", {
-      groupKey: orderTraceKey(groupId),
-      acceptanceKey: orderTraceKey(acceptanceMessageId),
-      candidateId: candidate.id,
-      captainId: captain.id,
-    });
-    return;
-  }
-  const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_PRODUCER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
-  const pending = db.transaction(() => {
-    const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
-    if (!current || !['candidate','pending'].includes(current.status)) return false;
-    if (current.status === 'candidate') {
-      const result = db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,updated_at=? WHERE id=? AND status='candidate'").run(captain.id, acceptanceMessageId, stampNow, stampNow, candidate.id);
-      return result.changes === 1;
-    }
-    return true;
-  })();
-  if (!pending) {
-    logOrderTrace("acceptance_pending_transition_failed", {
-      groupKey: orderTraceKey(groupId),
-      acceptanceKey: orderTraceKey(acceptanceMessageId),
-      candidateId: candidate.id,
-      captainId: captain.id,
-    });
-    return;
-  }
-  audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId, requiredCents: settlement.confirmingCaptainFeeCents });
   logOrderTrace("acceptance_recorded", {
     groupKey: orderTraceKey(groupId),
     acceptanceKey: orderTraceKey(acceptanceMessageId),
@@ -3420,13 +3526,19 @@ async function hasVisibleThumbReaction(messageId) {
 function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
-    if (!current || current.status !== "pending" || current.pending_message_id !== expectedMessageId) return { state: "stale" };
+    if (!current || current.status !== "pending") return { state: "stale" };
+    const archivedOrder = db.prepare("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=? LIMIT 1").get(current.source_message_id);
+    if (archivedOrder?.archive_state === "archived") return { state: "archived", order: archivedOrder };
+    const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status IN ('pending','selected') LIMIT 1").get(candidateId, expectedMessageId);
+    if (!acceptance) return { state: "stale" };
+    db.prepare("UPDATE order_candidates SET pending_captain_user_id=?,pending_message_id=?,updated_at=? WHERE id=? AND status='pending'").run(acceptance.captain_user_id, expectedMessageId, now(), candidateId);
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     const botCompanyConfirmation = isBotPhone(confirmerPhone) && BOT_FINANCIAL_MODE === "company";
     const confirmer = botCompanyConfirmation ? companyUser() : findActiveRegisteredUser(confirmerPhone);
     if (!producer || !confirmer || (!botCompanyConfirmation && (confirmer.is_bot === 1 || confirmer.role === "company"))) return { state: "unauthorized" };
-    const captain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
+    const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
+    if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
     const settlement = calculateSettlement({
       priceCents: current.price_cents,
       orderKind: current.order_kind,
@@ -3440,6 +3552,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     if (!walletOwner) return { state: "stale" };
     const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
+      db.prepare("UPDATE order_candidates SET lifecycle_stage='debt_limit',lifecycle_blocker='debt_limit',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending'").run(now(), now(), candidateId);
       audit("order.candidate_debt_limit", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
       return { state: "debt_limit", captain, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
     }
@@ -3466,7 +3579,10 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% + 3% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن الذي وضع تم (15% إجمالًا)", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
-    db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, candidateId, expectedMessageId);
+    db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
+    db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
+    db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='settled',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, stamp, candidateId, expectedMessageId);
+    db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, captainGrossCents: settlement.captainGrossCents, confirmedBy: confirmer.phone });
     logSettlementCompleted({ mode: "live", orderId, orderNo, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
     console.log(`[Order] accepted #${orderNo} group=${current.group_id} captain=${maskSettlementPhone(captain.phone)} confirmedBy=${maskSettlementPhone(confirmer.phone)}`);
@@ -3485,6 +3601,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     const captain = db.prepare("SELECT * FROM users WHERE id=? AND active=1 AND account_status='active' AND (role='captain' OR is_bot=1)").get(captainId);
     if (!current || !captain) return { state: "unlinked" };
+    if (current.archive_state === "archived") return { state: "archived", order: current, captain };
     const existingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
     if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled", order: current, captain };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
@@ -3521,6 +3638,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 3% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن المنفذ (15% إجمالًا)", now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
+    db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
     logSettlementCompleted({ mode: "historical", orderId, orderNo: current.order_no, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id) };
@@ -3704,6 +3822,8 @@ async function handleMessageReaction(reaction) {
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
+  if (!isCaptainAcceptance(target.body)) return;
+  if (target.fromMe) return;
   let approverPhone = await resolveReactionSenderPhone(reaction);
   // WhatsApp may emit a LID-only sender on the live event while the full
   // reaction collection contains the sender identity that can be mapped to PN.
@@ -3756,41 +3876,46 @@ async function handleMessageReaction(reaction) {
     }
     return;
   }
-  let acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
-  if (!acceptance && target.hasQuotedMsg && typeof target.getQuotedMessage === "function") {
-    const quoted = await withTimeout(target.getQuotedMessage(), 8000, null);
+  let acceptance = findPendingAcceptanceByMessage(target.from, messageId);
+  let quotedForTarget = null;
+  if (!acceptance) {
+    quotedForTarget = await getQuotedMessageWithFallback(target);
+    const quoted = quotedForTarget;
     const sourceMessageId = serializedMessageId(quoted);
     const candidate = sourceMessageId && quoted && parseOrder(quoted.body)?.isOrder
       ? db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND source_message_id=? AND status IN ('candidate','pending') LIMIT 1").get(target.from, sourceMessageId)
       : null;
     if (candidate) {
       const captainPhone = await resolveMessageSenderPhone(target);
-      const captain = captainPhone ? findActiveRegisteredUser(captainPhone) : null;
-      const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
-      if (captain && producer && captain.id !== producer.id) {
-        const stamp = now();
-        db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, stamp, stamp);
-        acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE a.candidate_id=? AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(candidate.id, messageId);
-        if (acceptance) logOrderTrace("reaction_acceptance_recovered_from_quoted_source", { groupKey: orderTraceKey(target.from), reactionKey: orderTraceKey(messageId), sourceKey: orderTraceKey(sourceMessageId), candidateId: candidate.id, captainId: captain.id });
+      const recovered = registerQuotedAcceptance({
+        groupId: target.from,
+        messageId,
+        senderPhone: captainPhone,
+        senderName: target?._data?.notifyName || target?.notifyName || displayPhone(captainPhone),
+        candidate,
+      });
+      acceptance = findPendingAcceptanceByMessage(target.from, messageId);
+      if (acceptance && ["recorded", "duplicate"].includes(recovered.state)) {
+        logOrderTrace("reaction_acceptance_recovered_from_quoted_source", { groupKey: orderTraceKey(target.from), reactionKey: orderTraceKey(messageId), sourceKey: orderTraceKey(sourceMessageId), candidateId: candidate.id, captainId: acceptance.captain_user_id });
       }
     }
   }
   if (!acceptance) {
     const legacy = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
     if (legacy?.pending_captain_user_id) {
-      const stamp = now();
-      db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(legacy.id, legacy.pending_captain_user_id, messageId, stamp, stamp);
-      acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.id=? AND a.acceptance_message_id=? AND a.status='pending'").get(legacy.id, messageId);
+      const captain = db.prepare("SELECT * FROM users WHERE id=?").get(legacy.pending_captain_user_id);
+      registerQuotedAcceptance({ groupId: target.from, messageId, senderPhone: captain?.phone, senderName: captain?.name, candidate: legacy });
+      acceptance = findPendingAcceptanceByMessage(target.from, messageId);
     }
   }
   if (!acceptance) return;
   const pending = acceptance;
-  const quotedReply = pending.acceptance_message_id === messageId && target.hasQuotedMsg && typeof target.getQuotedMessage === "function"
-    ? await withTimeout(target.getQuotedMessage(), 8000, null)
-    : null;
+  const quotedReply = pending.acceptance_message_id === messageId ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
   const quotedReplyId = serializedMessageId(quotedReply);
   const quotedReplyIsOrder = Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && quotedReplyId === pending.source_message_id);
   if (!quotedReplyIsOrder) {
+    updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "quote_mismatch", { acceptanceMessageId: messageId, quotedMessageId: quotedReplyId || null });
+    notifyOrderLifecycleBlocker(pending.candidate_id, "quote_mismatch", { acceptanceMessageId: messageId });
     logOrderTrace("reaction_target_not_selected_quoted_reply", {
       groupKey: orderTraceKey(target.from),
       reactionKey: orderTraceKey(messageId),
@@ -3804,27 +3929,30 @@ async function handleMessageReaction(reaction) {
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
   const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
   const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
-  if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) return;
+  if (!approverPhone) {
+    updateOrderCandidateLifecycle(pending.candidate_id, "identity_unresolved", "identity_unresolved", { acceptanceMessageId: messageId });
+    notifyOrderLifecycleBlocker(pending.candidate_id, "identity_unresolved", { acceptanceMessageId: messageId });
+  }
+  if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) {
+    if (approverPhone) updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "approver_ineligible", { acceptanceMessageId: messageId });
+    return;
+  }
   const producerApproved = botCompanyApproval
     ? (producer.role === "company" || producer.is_bot === 1)
     : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
-  if (!producerApproved) return;
-  const selected = db.transaction(() => {
-    const current = db.prepare("SELECT * FROM order_candidates WHERE id=? AND status='pending'").get(pending.candidate_id);
-    const row = db.prepare("SELECT * FROM order_candidate_acceptances WHERE id=? AND status='pending'").get(pending.id);
-    if (!current || !row) return false;
-    db.prepare("UPDATE order_candidates SET pending_captain_user_id=?,pending_message_id=?,updated_at=? WHERE id=? AND status='pending'").run(row.captain_user_id, row.acceptance_message_id, now(), current.id);
-    db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status='pending'").run(now(), row.id);
-    db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(now(), current.id, row.id);
-    return true;
-  })();
-  if (!selected) return;
+  if (!producerApproved) {
+    updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", { acceptanceMessageId: messageId });
+    return;
+  }
   const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, approverPhone);
   if (result.state !== "accepted") {
+    const blockedStage = result.state === "debt_limit" ? "debt_limit" : result.state === "archived" ? "archived" : "awaiting_authorized_thumb";
+    updateOrderCandidateLifecycle(pending.candidate_id, blockedStage, result.state, { acceptanceMessageId: pending.acceptance_message_id });
+    if (["debt_limit", "archived"].includes(result.state)) notifyOrderLifecycleBlocker(pending.candidate_id, result.state, { acceptanceMessageId: pending.acceptance_message_id });
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
   }
-  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, orderId: result.order?.id, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
   if (result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
 }
 
@@ -3858,6 +3986,16 @@ async function reconcileStoredThumbReaction(messageId) {
     for (const sender of senders) {
       await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }
+  }
+}
+async function retryFailedBookingConfirmations(groupId) {
+  if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
+  const rows = db.prepare(`SELECT d.order_id,d.group_id,o.order_no,o.price_cents,o.captain_name_snapshot,o.producer_name_snapshot
+    FROM order_confirmation_deliveries d JOIN orders o ON o.id=d.order_id
+    WHERE d.group_id=? AND d.status IN ('failed','pending') AND o.status IN ('accepted','completed') AND o.settlement_state='settled'
+    ORDER BY d.updated_at ASC LIMIT ?`).all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, 10));
+  for (const row of rows) {
+    await sendFinalBookingConfirmation(row.group_id, { orderId: row.order_id, orderNo: row.order_no, executorName: row.captain_name_snapshot, downloaderName: row.producer_name_snapshot, priceCents: row.price_cents });
   }
 }
 
@@ -6253,7 +6391,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
   const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
-    const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+    const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
     audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
@@ -6304,7 +6442,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
         return;
       }
-      const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+      const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
       void sendFinalBookingConfirmation(verified.groupId, confirmationDetails).catch(() => null);
       audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     } catch (error) {
@@ -6994,6 +7132,20 @@ app.get("/api/admin/orders/open", requireAdmin, (req, res) => {
     return res.json({ orders: rows.map((row) => ({ orderNo: row.order_no, price: money(row.price_cents), origin: row.origin || null, destination: row.destination || null, tripTime: row.trip_time || null, orderKind: row.order_kind, producerName: row.producer_name || row.producer_name_snapshot || "غير مسجل", status: row.status, settlementState: row.settlement_state, createdAt: row.created_at, importSource: row.import_source || null })) });
   }
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
+});
+app.get("/api/admin/order-lifecycle", requireAdmin, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const rows = db.prepare(`SELECT c.id,c.source_message_id,c.group_id,c.raw_text,c.price_cents,c.status,c.pending_message_id,c.pending_at,
+      c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,c.created_at,c.updated_at,
+      p.name AS producer_name,p.phone AS producer_phone
+    FROM order_candidates c LEFT JOIN users p ON p.id=c.producer_user_id
+    LEFT JOIN orders o ON o.source_message_id=c.source_message_id
+    WHERE c.status IN ('candidate','pending') AND COALESCE(o.archive_state,'active')='active' ${groupId ? "AND c.group_id=?" : ""}
+    ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(...(groupId ? [groupId, limit] : [limit]));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ lifecycle: rows.map((row) => ({ ...row, price: money(row.price_cents), producer_name: row.producer_name || "غير مسجل", producer_phone: row.producer_phone || null })) });
 });
 app.post("/api/admin/orders/archive-open", requireAdmin, (req, res) => {
   const reason = String(req.body?.reason || "أرشفة نهائية للطلبات المفتوحة القديمة غير الموزعة").trim().slice(0, 240);
