@@ -14,10 +14,13 @@ const reactionStart = source.indexOf("async function handleMessageReaction(");
 const reactionEnd = source.indexOf("async function reconcileStoredThumbReaction(", reactionStart);
 const settleStart = source.indexOf("function settlePendingOrder(");
 const settleEnd = source.indexOf("function settleHistoricalConfirmedOrder(", settleStart);
+const cancelStart = source.indexOf("function cancelPendingOrderForProducerReaction(");
+const cancelEnd = source.indexOf("async function hasVisibleThumbReaction(", cancelStart);
 assert(helperStart >= 0 && helperEnd > helperStart);
 assert(incomingStart >= 0 && incomingEnd > incomingStart);
 assert(reactionStart >= 0 && reactionEnd > reactionStart);
 assert(settleStart >= 0 && settleEnd > settleStart);
+assert(cancelStart >= 0 && cancelEnd > cancelStart);
 
 const GROUP = "test-group@g.us";
 const PRODUCER = "962771111111";
@@ -38,6 +41,7 @@ const state = {
   ledgers: [],
   messages: new Set(),
   confirmations: [],
+  cancellations: [],
   reactionSender: PRODUCER,
   lifecycle: [],
 };
@@ -51,6 +55,7 @@ function reset({ archived = false, executorBalance = 5000 } = {}) {
   state.ledgers = [];
   state.messages = new Set();
   state.confirmations = [];
+  state.cancellations = [];
   state.reactionSender = PRODUCER;
   state.lifecycle = [];
   users.producer.wallet_cents = 0;
@@ -121,9 +126,11 @@ const db = {
         if (query.startsWith("UPDATE order_settlements SET status='applied'")) { state.settlement.status = "applied"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { state.candidate.pending_captain_user_id = args[0]; state.candidate.pending_message_id = args[1]; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidate_acceptances SET status='selected'")) { state.acceptance.status = "selected"; return { changes: 1 }; }
+        if (query.startsWith("UPDATE order_candidate_acceptances SET status='cancelled'")) { state.acceptance.status = "cancelled"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidate_acceptances SET status='rejected'")) return { changes: 1 };
         if (query.startsWith("INSERT OR IGNORE INTO order_confirmation_deliveries")) return { changes: 1 };
         if (query.startsWith("UPDATE order_candidates SET status='finalized'")) { state.candidate.status = "finalized"; state.candidate.lifecycle_stage = "settled"; state.candidate.lifecycle_blocker = null; state.candidate.pending_message_id = null; return { changes: 1 }; }
+        if (query.startsWith("UPDATE order_candidates SET status='cancelled'")) { state.candidate.status = "cancelled"; state.candidate.lifecycle_stage = "cancelled"; state.candidate.lifecycle_blocker = "producer_cancelled"; state.candidate.pending_message_id = null; return { changes: 1 }; }
         throw new Error(`Unexpected run query: ${query}`);
       },
     };
@@ -157,7 +164,7 @@ const context = {
   isConfiguredGroup: (groupId) => groupId === GROUP,
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
-  isCaptainAcceptance: (body) => String(body || "").trim() === "تم",
+  isCaptainAcceptance: (body) => /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(String(body || "").trim()),
   parseOrder: (body) => ({ isOrder: /^السعر\s*\d+/u.test(String(body || "")), price: 20, priceMin: 20, priceMax: 20, origin: null, destination: null, tripTime: null, orderKind: "normal" }),
   connectedBotPhone: () => BOT,
   phoneWithCountry: (value) => String(value || "").replace(/[^0-9]/g, "").replace(/^0/, "962"),
@@ -196,10 +203,11 @@ const context = {
   notifyOrderLifecycleBlocker: () => {},
   notifyOperations: () => Promise.resolve([]),
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },
+  sendFinalBookingCancellation: async () => { state.cancellations.push(true); return { id: { _serialized: "cancellation-1" } }; },
   findPendingAcceptanceByMessage: null,
 };
 
-vm.runInNewContext(`${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;`, context);
+vm.runInNewContext(`${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
 
 async function ingestPrice(sourceId = "price-1") {
   const price = message(sourceId, "السعر 20", PRODUCER);
@@ -208,11 +216,11 @@ async function ingestPrice(sourceId = "price-1") {
 }
 async function ingestAcceptance(doneId = "done-1") {
   const quoted = message("price-1", "السعر 20", PRODUCER);
-  await context.handleIncomingMessage(message(doneId, "تم", EXECUTOR, quoted));
+  await context.handleIncomingMessage(message(doneId, "تم جاهز الآن", EXECUTOR, quoted));
   assert.equal(state.acceptance?.acceptance_message_id, doneId, "تم المقتبسة تسجل قبولًا واحدًا");
 }
 async function approve(doneId = "done-1") {
-  state.targets = { [doneId]: message(doneId, "تم", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.targets = { [doneId]: message(doneId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = PRODUCER;
   await context.handleMessageReaction({ reaction: "👍", msgId: doneId });
 }
@@ -275,6 +283,16 @@ async function approve(doneId = "done-1") {
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-bot" });
   assert.equal(state.candidate.status, "candidate", "رد تم الصادر عن البوت لا ينشئ قبولًا");
   assert.equal(state.ledgers.length, 0);
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-cancel");
+  state.targets = { "done-cancel": message("done-cancel", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "❌", msgId: "done-cancel" });
+  assert.equal(state.candidate.status, "cancelled", "X من صاحب السعر يلغي الطلب المعلق");
+  assert.equal(state.ledgers.length, 0, "الإلغاء قبل التسوية لا ينشئ حركات مالية");
+  assert.equal(state.cancellations.length, 1, "الإلغاء يرسل بطاقة واحدة");
 
   console.log("unified order lifecycle race, identity, debt, idempotency, and archive guards verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

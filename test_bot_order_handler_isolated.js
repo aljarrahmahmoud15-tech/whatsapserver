@@ -33,6 +33,7 @@ const context = {
   isConfiguredGroup: () => true,
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
+  isCaptainAcceptance: (body) => /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(String(body || "").trim()),
   parseOrder: () => ({ isOrder: true, price: 5, origin: "إربد", destination: "عمّان", tripTime: null, orderKind: "normal" }),
   connectedBotPhone: () => "962775696880",
   phoneWithCountry: (value) => String(value).replace(/^0/, "962"),

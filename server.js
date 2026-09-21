@@ -2081,13 +2081,14 @@ function startCaptainSubscriptionScheduler() {
   }
 }
 function parseOrder(text) {
-  const normalized = String(text || "").replace(/\u200f|\u200e/g, "");
+  const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
+  const startsWithPriceKeyword = /^السعر(?:\s|[:：]|$)/u.test(normalized);
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
   const numberPattern = digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?";
   const numberValue = (value) => Number(normalizeDigits(value).replace(/[٫,]/g, "."));
-  const rangeMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i"));
-  const singleMatch = normalized.match(new RegExp("السعر\\s*[:：]?\\s*(" + numberPattern + ")", "i"));
+  const rangeMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i")) : null;
+  const singleMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(" + numberPattern + ")", "i")) : null;
   let priceMin = null;
   let priceMax = null;
   let price = null;
@@ -2236,7 +2237,8 @@ function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
   );
 }
 function isCaptainAcceptance(text) {
-  return String(text || "").trim() === "تم";
+  const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
+  return /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(normalized);
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -2408,6 +2410,18 @@ async function sendFinalBookingConfirmation(groupId, details) {
     return null;
   } finally {
     if (orderId) confirmationDeliveryInFlight.delete(orderId);
+  }
+}
+async function sendFinalBookingCancellation(groupId) {
+  if (!client || !groupId) return null;
+  try {
+    const sent = await withTimeout(client.sendMessage(groupId, finalBookingCancellationText()), 15000, null);
+    if (!sent) throw new Error("cancellation message was not acknowledged");
+    return sent;
+  } catch (error) {
+    console.error("[WhatsApp] final booking cancellation not sent:", error.message);
+    void notifyOperations({ event: `order.cancellation_card.failed.${orderTraceKey(groupId)}`, title: "تعذر إرسال بطاقة إلغاء الطلب", lines: ["تم تسجيل إلغاء الطلب دون تسوية مالية، لكن رسالة الإلغاء لم تصل إلى القروب."], ownersOnly: true });
+    return null;
   }
 }
 function formatAcceptance(order, captain, producer) {
@@ -3254,7 +3268,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
   if (botGenerated && !parseOrder(body).isOrder) return;
-  const captainAcceptance = String(body || "").trim() === "تم";
+  const captainAcceptance = isCaptainAcceptance(body);
   const senderName = msg.fromMe ? `${COMPANY_BRAND_NAME} — المنتج الأساسي` : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   let insertedMessage = { changes: 0 };
   if (body) {
@@ -3512,6 +3526,25 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     db.prepare("UPDATE orders SET status='cancelled',settlement_state='reversed',updated_at=? WHERE id=? AND status='accepted' AND accepted_message_id=?").run(stamp, orderId, expectedMessageId);
     audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, captainId: captain.id, reversed: true, messageId: expectedMessageId });
     return { state: "cancelled", order: current, producer, captain, reversed: true };
+  })();
+}
+
+function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, producerPhone) {
+  return db.transaction(() => {
+    const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
+    if (!current || current.status !== "pending") return { state: "stale" };
+    const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
+    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status='pending' LIMIT 1").get(candidateId, expectedMessageId);
+    if (!acceptance) return { state: "stale" };
+    const stamp = now();
+    const cancelled = db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE id=? AND status='pending'").run(stamp, acceptance.id);
+    if (!cancelled.changes) return { state: "stale" };
+    db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND status='pending'").run(stamp, candidateId);
+    const finalized = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='cancelled',lifecycle_blocker='producer_cancelled',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(stamp, stamp, candidateId, expectedMessageId);
+    if (!finalized.changes) return { state: "stale" };
+    audit("order.cancelled_producer_x", "order_candidate", candidateId, { producerId: producer.id, captainId: acceptance.captain_user_id, messageId: expectedMessageId, financialMutation: false });
+    return { state: "cancelled", candidate: current, producer, acceptance };
   })();
 }
 
@@ -3821,7 +3854,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
 async function handleMessageReaction(reaction) {
   const reactionValue = String(reaction?.reaction || "").trim();
   const removedThumb = reactionValue === "";
-  if (!reaction || (!removedThumb && reactionValue !== "👍")) return;
+  const cancellationReaction = reactionValue === "❌";
+  if (!reaction || (!removedThumb && !cancellationReaction && reactionValue !== "👍")) return;
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
@@ -3834,17 +3868,17 @@ async function handleMessageReaction(reaction) {
   // reaction collection contains the sender identity that can be mapped to PN.
   if (!approverPhone && typeof target.getReactions === "function") {
     const storedReactions = await withTimeout(target.getReactions(), 12000, []);
-    const storedThumb = (Array.isArray(storedReactions) ? storedReactions : [])
-      .find((item) => item && (item.aggregateEmoji === "👍" || item.reaction === "👍"));
-    if (storedThumb?.hasReactionByMe === true || storedThumb?._data?.hasReactionByMe === true) {
+    const storedReaction = (Array.isArray(storedReactions) ? storedReactions : [])
+      .find((item) => item && (item.aggregateEmoji === (cancellationReaction ? "❌" : "👍") || item.reaction === (cancellationReaction ? "❌" : "👍")));
+    if (storedReaction?.hasReactionByMe === true || storedReaction?._data?.hasReactionByMe === true) {
       approverPhone = connectedBotPhone();
     }
-    for (const sender of (storedThumb?.senders || [])) {
+    for (const sender of (storedReaction?.senders || [])) {
       approverPhone = await resolveReactionSenderPhone({
         senderId: sender?.senderId || sender?.id?._serialized || sender?.id || sender,
         senderUserJid: sender?.senderUserJid,
         author: sender?.author,
-        hasReactionByMe: storedThumb?.hasReactionByMe === true || storedThumb?._data?.hasReactionByMe === true,
+        hasReactionByMe: storedReaction?.hasReactionByMe === true || storedReaction?._data?.hasReactionByMe === true,
       });
       if (approverPhone) break;
     }
@@ -3857,6 +3891,27 @@ async function handleMessageReaction(reaction) {
       hasReactionByMe: Boolean(reaction?.hasReactionByMe || reaction?._data?.hasReactionByMe),
       targetHasReaction: Boolean(target.hasReaction || target._data?.hasReaction),
     });
+  }
+  if (cancellationReaction) {
+    const pendingAcceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
+    if (pendingAcceptance) {
+      const producer = pendingAcceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pendingAcceptance.producer_user_id) : null;
+      const producerAuthorized = Boolean(producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")));
+      if (!producerAuthorized || isBlockedPhone(approverPhone)) {
+        updateOrderCandidateLifecycle(pendingAcceptance.candidate_id, "awaiting_authorized_thumb", "producer_authorization", { acceptanceMessageId: messageId, reaction: "❌" });
+        return;
+      }
+      const cancelled = cancelPendingOrderForProducerReaction(pendingAcceptance.candidate_id, messageId, approverPhone);
+      if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+      return;
+    }
+    const acceptedOrder = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
+    if (!acceptedOrder) return;
+    const producer = acceptedOrder.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptedOrder.producer_user_id) : null;
+    if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+    const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, messageId, approverPhone);
+    if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+    return;
   }
   if (removedThumb) {
     const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
@@ -3981,15 +4036,17 @@ async function reconcileStoredThumbReaction(messageId) {
     return;
   }
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
-    if (!reaction || (reaction.aggregateEmoji !== "👍" && reaction.reaction !== "👍")) continue;
+    if (!reaction) continue;
+    const reactionEmoji = reaction.aggregateEmoji || reaction.reaction || "";
+    if (reactionEmoji !== "👍" && reactionEmoji !== "❌") continue;
     const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;
     const senders = Array.isArray(reaction.senders) ? reaction.senders : [];
     if (reactionIsByCurrentAccount && !senders.length) {
-      await handleMessageReaction({ reaction: "👍", msgId: messageId, hasReactionByMe: true });
+      await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, hasReactionByMe: true });
       continue;
     }
     for (const sender of senders) {
-      await handleMessageReaction({ reaction: "👍", msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
+      await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }
   }
 }
