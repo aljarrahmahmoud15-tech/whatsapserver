@@ -20,6 +20,6 @@ const handlerEnd = source.indexOf("function reactionId(", handlerStart);
 const handler = source.slice(handlerStart, handlerEnd);
 assert.match(handler, /const candidate = quoted \? findOrderByQuotedMessage\(groupId, quoted\) : null/);
 assert.doesNotMatch(handler, /: findLatestStandaloneAcceptanceCandidate\(groupId\)/, "تم غير المقتبس لا يجوز ربطه بآخر طلب");
-assert.match(handler, /const quoted = msg\.hasQuotedMsg \? await withTimeout\(msg\.getQuotedMessage\(\), 8000, null\)/);
+assert.match(handler, /const quoted = await getQuotedMessageWithFallback\(msg\)/);
 
 console.log("price confirmation rule verified");

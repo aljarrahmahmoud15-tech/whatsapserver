@@ -5,8 +5,9 @@ const { isBotGeneratedMessage } = require("./message_guardrails");
 
 const source = fs.readFileSync("./server.js", "utf8");
 const start = source.indexOf("async function handleIncomingMessage(");
+const helperStart = source.indexOf("async function getQuotedMessageWithFallback(");
 const end = source.indexOf("function reactionId(", start);
-assert(start >= 0 && end > start);
+assert(helperStart >= 0 && start >= 0 && end > start);
 
 const writes = [];
 const candidateInsert = [];
@@ -49,7 +50,7 @@ const context = {
   console,
 };
 
-vm.runInNewContext(`${source.slice(start, end)}\nthis.handleIncomingMessage = handleIncomingMessage;`, context);
+vm.runInNewContext(`${source.slice(helperStart, end)}\nthis.handleIncomingMessage = handleIncomingMessage;`, context);
 
 (async () => {
   await context.handleIncomingMessage({

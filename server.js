@@ -3077,6 +3077,14 @@ async function reactToCaptainAcceptance(message, messageId) {
   }
 }
 
+async function getQuotedMessageWithFallback(message) {
+  let quoted = message?.hasQuotedMsg && typeof message.getQuotedMessage === "function"
+    ? await withTimeout(message.getQuotedMessage(), 8000, null)
+    : null;
+  if (!quoted) quoted = message?.__quoted || message?.quotedMsg || message?._data?.quotedMsg || null;
+  return quoted;
+}
+
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const groupId = resolveGroupChatId(msg);
@@ -3114,7 +3122,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
   }
-  const quotedForRecovery = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  const quotedForRecovery = await getQuotedMessageWithFallback(msg);
   if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
     const sourceMessageId = quotedForRecovery.id._serialized;
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
@@ -3170,7 +3178,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     hasQuotedMsg: Boolean(msg.hasQuotedMsg),
   });
   // «تم» لا يُربط بآخر طلب بشكل تخميني؛ يجب أن يقتبس رسالة السعر نفسها.
-  const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  const quoted = await getQuotedMessageWithFallback(msg);
   if (!quoted) {
     logOrderTrace("acceptance_missing_quote", {
       groupKey: orderTraceKey(groupId),
