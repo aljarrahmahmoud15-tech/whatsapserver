@@ -16,6 +16,7 @@ assert(source.includes('app.get("/api/admin/group-messages", requireAdmin'), "و
 const sendFinalizer = source.slice(source.indexOf("function finalizeAdminSentMessage"), source.indexOf("function currentCaptainSubscriptionPeriod"));
 const sendRoute = source.slice(source.indexOf('app.post("/api/admin/send"'), source.indexOf("function reconcileConfiguredGroupFromEnvironment"));
 assert(sendFinalizer.includes('isConfiguredGroup(chatId) && messageId'), "لا يُنشأ مرشح إداري دون معرّف WhatsApp حقيقي");
-assert(sendRoute.includes("finalizeAdminSentMessage"), "مسار الإرسال يستخدم إنهاء الرسالة الموحد");
+assert(sendRoute.includes("completeAdminSend"), "مسار الإرسال يستخدم إنهاء الرسالة الموحد");
+assert(source.includes("observeAdminSentMessage(msg)"), "حدث message_create يمكنه تأكيد الإرسال المتأخر");
 assert(!sendRoute.includes("admin-send-${Date.now()}"), "لا تُستخدم معرّفات مؤقتة تفصل المرشح عن رسالة WhatsApp");
 console.log("group message logging guardrails verified");

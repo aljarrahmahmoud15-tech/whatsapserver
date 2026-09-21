@@ -81,6 +81,8 @@ const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
+const ADMIN_SEND_OBSERVATION_TIMEOUT_MS = Math.max(10000, Math.min(120000, Number(process.env.ADMIN_SEND_OBSERVATION_TIMEOUT_MS || 30000)));
+const ADMIN_SEND_RESULT_TTL_MS = Math.max(60000, Math.min(6 * 60 * 60 * 1000, Number(process.env.ADMIN_SEND_RESULT_TTL_MS || 2 * 60 * 60 * 1000)));
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
@@ -92,6 +94,8 @@ const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللو
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
 const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لوصلني الآن.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
+const pendingAdminSends = new Map();
+const adminSendResults = new Map();
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
@@ -1968,9 +1972,122 @@ async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl 
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
 }
-function finalizeAdminSentMessage({ chatId, message, sent, operationId, late = false }) {
-  const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
-  audit(late ? "message.sent_after_timeout" : "message.sent", "chat", chatId, { operationId, messageId, responseObject: Boolean(sent), late });
+function adminSendMessageMatches(pending, message, observedAtMs = Date.now()) {
+  if (!pending || pending.sendState !== "pending" || !message || message.fromMe !== true) return false;
+  const chatIds = [
+    message.from,
+    message.to,
+    message.id?.remote,
+    message.id?._data?.remote,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const elapsedMs = observedAtMs - Number(pending.createdAtMs || 0);
+  return chatIds.includes(String(pending.chatId || "").trim()) &&
+    String(message.body || "").trim() === String(pending.message || "").trim() &&
+    elapsedMs >= -5000 && elapsedMs <= Number(pending.observationTimeoutMs || ADMIN_SEND_OBSERVATION_TIMEOUT_MS);
+}
+function adminSendResponse(state) {
+  const sendState = String(state?.sendState || "failed");
+  return {
+    success: sendState === "confirmed" || sendState === "observed",
+    accepted: sendState === "pending",
+    sendState,
+    operationId: state?.operationId || null,
+    messageId: state?.messageId || null,
+    confirmationSource: state?.confirmationSource || null,
+    order: state?.order ? { candidate: true, status: state.order.status } : null,
+    retryAfterMs: sendState === "pending" ? 3000 : null,
+    error: state?.error || null,
+  };
+}
+function pruneAdminSendState(atMs = Date.now()) {
+  for (const [operationId, state] of pendingAdminSends) {
+    if (atMs <= Number(state.observationDeadlineMs || 0)) continue;
+    pendingAdminSends.delete(operationId);
+    if (state.sendState === "pending") {
+      state.sendState = "failed";
+      state.error = "لم يصل تأكيد message_create خلال المهلة المحددة";
+      state.confirmationSource = null;
+      state.updatedAt = new Date(atMs).toISOString();
+      audit("message.send_failed_observation_timeout", "chat", state.chatId, { operationId, timeoutMs: state.observationTimeoutMs });
+    }
+    adminSendResults.set(operationId, state);
+  }
+  for (const [operationId, state] of adminSendResults) {
+    if (atMs > Number(state.expiresAtMs || 0) && !pendingAdminSends.has(operationId)) adminSendResults.delete(operationId);
+  }
+}
+function registerAdminSend({ operationId, chatId, message }) {
+  pruneAdminSendState();
+  const existing = adminSendResults.get(operationId);
+  if (existing) return { state: existing, created: false };
+  const createdAtMs = Date.now();
+  const state = {
+    operationId,
+    chatId,
+    message,
+    createdAtMs,
+    observationTimeoutMs: ADMIN_SEND_OBSERVATION_TIMEOUT_MS,
+    observationDeadlineMs: createdAtMs + ADMIN_SEND_OBSERVATION_TIMEOUT_MS,
+    expiresAtMs: createdAtMs + ADMIN_SEND_RESULT_TTL_MS,
+    sendState: "pending",
+    messageId: null,
+    confirmationSource: null,
+    order: null,
+    error: null,
+    updatedAt: new Date(createdAtMs).toISOString(),
+  };
+  pendingAdminSends.set(operationId, state);
+  adminSendResults.set(operationId, state);
+  return { state, created: true };
+}
+function completeAdminSend({ operationId, chatId, message, sent, confirmationSource = "sendMessage", late = false }) {
+  const state = adminSendResults.get(operationId) || pendingAdminSends.get(operationId);
+  const messageId = serializedMessageId(sent);
+  if (!state || !messageId) return state || null;
+  if (state.sendState === "confirmed" || state.sendState === "observed") return state;
+  const finalized = finalizeAdminSentMessage({ chatId, message, sent, operationId, late, confirmationSource });
+  state.sendState = confirmationSource === "message_create" ? "observed" : "confirmed";
+  state.messageId = finalized.messageId;
+  state.confirmationSource = confirmationSource;
+  state.order = finalized.order;
+  state.error = null;
+  state.updatedAt = now();
+  pendingAdminSends.delete(operationId);
+  adminSendResults.set(operationId, state);
+  return state;
+}
+function failAdminSend(operationId, error) {
+  const state = adminSendResults.get(operationId) || pendingAdminSends.get(operationId);
+  if (!state || state.sendState === "confirmed" || state.sendState === "observed") return state || null;
+  state.sendState = "failed";
+  state.error = String(error?.message || error || "WhatsApp send failed").slice(0, 240);
+  state.updatedAt = now();
+  pendingAdminSends.delete(operationId);
+  adminSendResults.set(operationId, state);
+  return state;
+}
+function observeAdminSentMessage(message) {
+  pruneAdminSendState();
+  for (const [operationId, state] of pendingAdminSends) {
+    if (!adminSendMessageMatches(state, message)) continue;
+    const observed = completeAdminSend({
+      operationId,
+      chatId: state.chatId,
+      message: state.message,
+      sent: message,
+      confirmationSource: "message_create",
+    });
+    if (observed) {
+      console.log(`[WhatsApp] admin send observed from message_create: operation=${operationId} message=${observed.messageId || "none"}`);
+      return observed;
+    }
+  }
+  return null;
+}
+function finalizeAdminSentMessage({ chatId, message, sent, operationId, late = false, confirmationSource = "sendMessage" }) {
+  const messageId = serializedMessageId(sent);
+  const auditAction = confirmationSource === "message_create" ? "message.sent_observed" : (late ? "message.sent_after_timeout" : "message.sent");
+  audit(auditAction, "chat", chatId, { operationId, messageId, responseObject: Boolean(sent), late, confirmationSource });
   const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
   let order = null;
   if (parsed && parsed.isOrder && isConfiguredGroup(chatId) && messageId) {
@@ -2966,6 +3083,7 @@ function createClient() {
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
+    observeAdminSentMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
     if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message_create");
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
@@ -7566,6 +7684,11 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const operationId = String(req.body.operationId || crypto.randomUUID()).slice(0, 120);
+  const registration = registerAdminSend({ operationId, chatId, message });
+  if (!registration.created) {
+    const existing = registration.state;
+    return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
+  }
   const sendPromise = Promise.resolve().then(() => client.sendMessage(chatId, message));
   const sendTimeoutMarker = {};
   try {
@@ -7573,35 +7696,45 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     if (sent === sendTimeoutMarker) {
       audit("message.send_pending", "chat", chatId, { operationId, timeoutMs: ADMIN_SEND_TIMEOUT_MS, messageLength: message.length });
       void sendPromise.then((lateSent) => {
-        if (!lateSent) throw new Error("WhatsApp returned no confirmed message after timeout");
-        const finalized = finalizeAdminSentMessage({ chatId, message, sent: lateSent, operationId, late: true });
-        console.warn(`[WhatsApp] admin send completed after timeout: operation=${operationId} message=${finalized.messageId || "none"}`);
+        if (serializedMessageId(lateSent)) {
+          const completed = completeAdminSend({ chatId, message, sent: lateSent, operationId, late: true });
+          console.warn(`[WhatsApp] admin send completed after timeout: operation=${operationId} message=${completed?.messageId || "none"}`);
+        } else {
+          console.warn(`[WhatsApp] admin send returned without a message object after timeout: operation=${operationId}; waiting for message_create`);
+        }
       }).catch((error) => {
+        failAdminSend(operationId, error);
         audit("message.send_failed_after_timeout", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
         console.error(`[WhatsApp] admin send failed after timeout: operation=${operationId}:`, error.message);
       });
       return res.status(202).json({
-        success: false,
-        accepted: true,
-        sendState: "pending",
-        operationId,
-        messageId: null,
-        order: null,
-        retryAfterMs: 5000,
-        error: "WhatsApp is still processing the message; verify delivery before retrying.",
+        ...adminSendResponse(adminSendResults.get(operationId)),
+        error: "WhatsApp is still processing the message; waiting for message_create confirmation.",
       });
     }
-    if (!sent) {
-      audit("message.send_failed", "chat", chatId, { operationId, responseObject: false });
-      return res.status(502).json({ success: false, sendState: "failed", operationId, error: "WhatsApp returned no confirmed message" });
+    if (serializedMessageId(sent)) {
+      const completed = completeAdminSend({ chatId, message, sent, operationId });
+      return res.json(adminSendResponse(completed));
     }
-    const finalized = finalizeAdminSentMessage({ chatId, message, sent, operationId });
-    return res.json({ success: true, sendState: "confirmed", operationId, messageId: finalized.messageId, order: finalized.order ? { candidate: true, status: finalized.order.status } : null });
+    audit("message.send_waiting_confirmation", "chat", chatId, { operationId, responseObject: Boolean(sent), observationTimeoutMs: ADMIN_SEND_OBSERVATION_TIMEOUT_MS });
+    return res.status(202).json({
+      ...adminSendResponse(adminSendResults.get(operationId)),
+      error: "WhatsApp accepted the send request without a message object; waiting for message_create confirmation.",
+    });
   } catch (error) {
+    failAdminSend(operationId, error);
     audit("message.send_failed", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
     console.error(`[WhatsApp] admin send failed: operation=${operationId}:`, error.message);
     return res.status(502).json({ success: false, sendState: "failed", operationId, error: String(error?.message || "WhatsApp send failed").slice(0, 240) });
   }
+});
+app.get("/api/admin/send-status/:operationId", requireAdmin, (req, res) => {
+  const operationId = String(req.params.operationId || "").trim();
+  pruneAdminSendState();
+  const state = adminSendResults.get(operationId);
+  if (!state) return res.status(404).json({ error: "Send operation was not found or has expired" });
+  res.setHeader("Cache-Control", "no-store");
+  res.status(state.sendState === "pending" ? 202 : 200).json(adminSendResponse(state));
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
