@@ -23,6 +23,7 @@ assert.match(server, /❌ تم رفض أو إلغاء الطلب/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "تم تسجيل الطلب"/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "بانتظار اعتماد كابتن تنزيل الطلب"/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
+assert.match(server, /typeof raw === "string" \? raw : ""/);
 assert.match(server, /const candidate = quoted/);
 assert.match(server, /findLatestStandaloneAcceptanceCandidate\(groupId\)/);
 assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);

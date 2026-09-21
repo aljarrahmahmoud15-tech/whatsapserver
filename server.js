@@ -2867,6 +2867,7 @@ function serializedMessageId(message) {
   const raw = message && message.id;
   return String(
     message?.__serializedId ||
+    (typeof raw === "string" ? raw : "") ||
     raw?._serialized ||
     raw?.id ||
     message?._data?.id ||
