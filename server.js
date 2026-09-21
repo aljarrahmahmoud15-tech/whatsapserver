@@ -2649,9 +2649,10 @@ async function recoverPendingAcceptanceMessages(groupId) {
     const live = await withTimeout(client.getMessageById(row.id), 12000, null);
     const acceptance = live && typeof live.getQuotedMessage === "function" ? live : row;
     if (!acceptance || (!acceptance.hasQuotedMsg && !acceptance.__quoted)) continue;
-    const quoted = typeof acceptance.getQuotedMessage === "function"
+    let quoted = typeof acceptance.getQuotedMessage === "function"
       ? await withTimeout(acceptance.getQuotedMessage(), 8000, null)
-      : acceptance.__quoted;
+      : null;
+    if (!quoted) quoted = acceptance.__quoted || acceptance.quotedMsg || acceptance._data?.quotedMsg || null;
     const sourceId = serializedMessageId(quoted);
     if (!sourceId || !pendingSourceIds.has(sourceId) || !parseOrder(quoted?.body).isOrder) continue;
     lastAcceptanceRecovery.quotedMatches += 1;
