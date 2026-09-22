@@ -8045,7 +8045,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
     LEFT JOIN order_candidate_acceptances a ON a.id=(
       SELECT a2.id FROM order_candidate_acceptances a2
       WHERE a2.candidate_id=c.id AND a2.status IN ('pending','selected')
-      ORDER BY CASE WHEN a2.acceptance_message_id=c.pending_message_id THEN 0 ELSE 1 END,a2.created_at DESC,a2.id DESC
+      ORDER BY CASE WHEN a2.acceptance_message_id=(SELECT c2.pending_message_id FROM order_candidates c2 WHERE c2.id=a2.candidate_id) THEN 0 ELSE 1 END,a2.created_at DESC,a2.id DESC
       LIMIT 1
     )
     LEFT JOIN users e ON e.id=a.captain_user_id

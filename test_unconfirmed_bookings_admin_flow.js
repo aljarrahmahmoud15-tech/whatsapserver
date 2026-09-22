@@ -10,6 +10,8 @@ assert.match(server, /app\.post\("\/api\/admin\/unconfirmed-bookings\/:kind\/:id
 assert.match(server, /if \(!configuredGroupId \|\| !isConfiguredGroup\(configuredGroupId\)\)/);
 assert.match(server, /WHERE c\.group_id=\?/);
 assert.match(server, /c\.status IN \('candidate','pending'\)/);
+assert.doesNotMatch(server, /a2\.acceptance_message_id=c\.pending_message_id/);
+assert.match(server, /a2\.acceptance_message_id=\(SELECT c2\.pending_message_id FROM order_candidates c2 WHERE c2\.id=a2\.candidate_id\)/);
 assert.match(server, /const canConfirm = row\.status === "pending" && Boolean\(row\.acceptance_message_id\)/);
 assert.match(server, /settlePendingOrder\(candidate\.id, acceptance\.acceptance_message_id, connectedBotPhone\(\), \{ adminApproval: true \}\)/);
 assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone, \{ adminApproval = false \} = \{\}\)/);
