@@ -12,7 +12,9 @@ assert.match(source, /liveAcceptance = await withTimeout\(client\.getMessageById
 assert.match(source, /const liveReactions = !botProducer && !archivedHasSenders/);
 assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
 assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
-assert.match(source, /const reactionPresentOnAcceptance = Boolean\(acceptance\.hasReaction \|\| acceptance\.__hasReaction \|\| acceptance\._data\?\.hasReaction/);
+assert.match(source, /const rawReactionHint = Boolean\(acceptance\.hasReaction \|\| acceptance\.__hasReaction \|\| acceptance\._data\?\.hasReaction/);
+assert.match(source, /let reactionPresentOnAcceptance = Boolean\(thumbs\.length\)/);
+assert.match(source, /hasVisibleThumbReaction\(acceptanceMessageId\)/);
 assert.match(source, /if \(botProducer && reactionPresentOnAcceptance\) reactedByBot = true/);
 assert.match(source, /reactionPresent: Boolean\(evidence\.reactionPresentOnAcceptance\)/);
 assert.match(source, /await withTimeout\(acceptance\.getReactions\(\), 1500, null\)/);

@@ -4155,8 +4155,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
   const botProducer = (indexedQuoted?.fromMe || quoted.fromMe) && BOT_FINANCIAL_MODE === "company";
-  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
-  const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
+  const rawReactionHint = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
+  const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || ((!botProducer || !rawReactionHint) && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
     : null);
   const archivedHasSenders = Array.isArray(archivedReactions)
@@ -4171,6 +4171,14 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     ? liveReactions
     : (Array.isArray(archivedReactions) && archivedReactions.length ? archivedReactions : (liveAcceptance.__reactions || acceptance.__reactions || []));
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
+  let reactionPresentOnAcceptance = Boolean(thumbs.length);
+  if (!reactionPresentOnAcceptance && (botProducer || rawReactionHint) && client?.pupPage) {
+    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
+      await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    reactionPresentOnAcceptance = await hasVisibleThumbReaction(acceptanceMessageId);
+  }
   const reactionPhones = [];
   let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
   for (const reaction of botProducer ? [] : thumbs) {
