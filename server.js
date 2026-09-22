@@ -8543,9 +8543,22 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
   }
   const sendPromise = Promise.resolve().then(async () => {
-    const chat = typeof client.getChatById === "function"
-      ? await withTimeout(client.getChatById(chatId), 12000, null)
-      : null;
+    let chat = null;
+    try {
+      chat = typeof client.getChatById === "function"
+        ? await withTimeout(client.getChatById(chatId), 12000, null)
+        : null;
+    } catch (error) {
+      console.warn(`[WhatsApp] admin send getChatById failed for ${chatId}: ${String(error?.message || error)}`);
+    }
+    if (!chat && typeof client.getChats === "function") {
+      try {
+        const chats = await withTimeout(client.getChats(), 15000, []);
+        chat = (Array.isArray(chats) ? chats : []).find((item) => String(item?.id?._serialized || item?.id || "") === chatId) || null;
+      } catch (error) {
+        console.warn(`[WhatsApp] admin send getChats fallback failed for ${chatId}: ${String(error?.message || error)}`);
+      }
+    }
     if (chat && typeof chat.sendMessage === "function") {
       return chat.sendMessage(message, { waitUntilMsgSent: false });
     }

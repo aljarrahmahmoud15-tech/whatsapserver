@@ -5,6 +5,7 @@ const source = fs.readFileSync('./server.js', 'utf8');
 
 assert.match(source, /const sendPromise = Promise\.resolve\(\)\.then\(async \(\) =>/);
 assert.match(source, /client\.getChatById\(chatId\)/);
+assert.match(source, /client\.getChats\(\)/);
 assert.match(source, /chat\.sendMessage\(message, \{ waitUntilMsgSent: false \}\)/);
 assert.match(source, /client\.sendMessage\(chatId, message, \{ waitUntilMsgSent: false \}\)/);
 assert.match(source, /observeAdminSentMessage\(msg\)/);
