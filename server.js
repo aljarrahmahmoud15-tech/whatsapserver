@@ -80,6 +80,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
+const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
 const ADMIN_SEND_OBSERVATION_TIMEOUT_MS = Math.max(10000, Math.min(120000, Number(process.env.ADMIN_SEND_OBSERVATION_TIMEOUT_MS || 30000)));
@@ -2785,7 +2786,7 @@ else console.warn(`[WhatsApp] Chrome executable not found at startup; searched $
 const puppeteerConfig = {
   headless: true,
   executablePath: detectedChromePath || undefined,
-  protocolTimeout: 120000,
+  protocolTimeout: WHATSAPP_PROTOCOL_TIMEOUT_MS,
   defaultViewport: null,
   args: [
     "--no-sandbox",

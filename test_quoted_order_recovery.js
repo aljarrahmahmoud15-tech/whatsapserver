@@ -13,6 +13,7 @@ assert(recoveryStart >= 0 && recoveryEnd > recoveryStart, "حارس استردا
 
 const context = {
   resolveGroupChatId: (message) => String((message && message.from) || ""),
+  WHATSAPP_PROTOCOL_TIMEOUT_MS: 300000,
   process: { env: {} },
 };
 vm.runInNewContext(`${source.slice(parseStart, parseEnd)}\n${source.slice(recoveryStart, recoveryEnd)}\nthis.isQuotedOrderRecoveryCommand = isQuotedOrderRecoveryCommand;`, context);
