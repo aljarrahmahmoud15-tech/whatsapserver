@@ -3880,14 +3880,32 @@ async function fetchInternalReactionRows(messageId) {
   return await withTimeout(client.pupPage.evaluate(async (targetId) => {
     try {
       const collections = window.require("WAWebCollections");
-      const reactionCollection = await collections.Reactions.find(targetId);
-      // WAWebCollections returns a Collection-like object here, not a native
-      // array. Requiring Array.isArray silently discarded valid 👍 rows.
-      const reactionRows = reactionCollection?.reactions;
-      const rows = reactionRows && typeof reactionRows.serialize === "function"
-        ? reactionRows.serialize()
-        : reactionRows;
-      return Array.isArray(rows) ? rows : [];
+      const rawId = String(targetId || "").split("_").slice(2).join("_");
+      const messageIds = [...new Set([String(targetId || ""), rawId].filter(Boolean))];
+      const asArray = (value) => {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        try {
+          if (typeof value.serialize === "function") {
+            const serialized = value.serialize();
+            if (Array.isArray(serialized)) return serialized;
+          }
+        } catch (_) {}
+        if (Array.isArray(value.models)) return value.models;
+        if (Array.isArray(value._models)) return value._models;
+        return [];
+      };
+      for (const candidateId of messageIds) {
+        try {
+          const reactionCollection = await collections.Reactions.find(candidateId);
+          const rows = asArray(reactionCollection?.reactions);
+          if (rows.length) return rows;
+        } catch (_) {}
+      }
+      const message = collections.Msg?.get?.(String(targetId || ""))
+        || collections.Msg?.get?.(rawId)
+        || (await collections.Msg?.getMessagesById?.(messageIds))?.messages?.[0];
+      return asArray(message?.reactions || message?._data?.reactions);
     } catch (_) {
       return [];
     }
