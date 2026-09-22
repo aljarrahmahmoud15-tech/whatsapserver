@@ -49,9 +49,11 @@ assert.match(admin, /\/api\/admin\/group\/confirmed-preview/);
 assert.match(admin, /\/api\/admin\/group\/confirm-one/);
 assert.match(admin, /اعتماد وتسوية/);
 assert.match(admin, /لا تُطبق العملية أكثر من مرة/);
-assert.match(admin, /function recoveryPayload\(\)\{return \{hours:/);
-assert.doesNotMatch(admin, /sourceMessageId:match\?\.sourceMessageId/);
-assert.doesNotMatch(admin, /acceptanceMessageId:match\?\.acceptanceMessageId/);
+assert.match(admin, /function recoveryPayload\(match=null\)/);
+assert.match(admin, /payload\.sourceMessageId=String\(match\.sourceMessageId\|\|'\'\)\.trim\(\)/);
+assert.match(admin, /payload\.acceptanceMessageId=String\(match\.acceptanceMessageId\|\|'\'\)\.trim\(\)/);
+assert.match(admin, /const payload=recoveryPayload\(match\)/);
+assert.doesNotMatch(admin, /confirm-one',[\s\S]{0,240}JSON\.stringify\(recoveryPayload\(\)\)/);
 assert.match(admin, /const text=await r\.text\(\);let data;try\{data=text\?JSON\.parse\(text\):\{\}\}/);
 assert.doesNotMatch(admin, /catch\{data=\{error:await r\.text\(\)\}\}/);
 
