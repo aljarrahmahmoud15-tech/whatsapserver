@@ -4087,7 +4087,7 @@ async function resolveVisibleReactionSenderPhones(messageId, { emoji = "👍" } 
   return phones;
 }
 
-function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
+function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { adminApproval = false } = {}) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
@@ -4097,9 +4097,9 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
     if (!acceptance) return { state: "stale" };
     db.prepare("UPDATE order_candidates SET pending_captain_user_id=?,pending_message_id=?,updated_at=? WHERE id=? AND status='pending'").run(acceptance.captain_user_id, expectedMessageId, now(), candidateId);
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    const botCompanyConfirmation = isBotPhone(confirmerPhone) && BOT_FINANCIAL_MODE === "company";
-    const confirmer = botCompanyConfirmation ? companyUser() : findActiveRegisteredUser(confirmerPhone);
-    if (!producer || !confirmer || (!botCompanyConfirmation && (confirmer.is_bot === 1 || confirmer.role === "company"))) return { state: "unauthorized" };
+    const botCompanyConfirmation = !adminApproval && isBotPhone(confirmerPhone) && BOT_FINANCIAL_MODE === "company";
+    const confirmer = adminApproval ? companyUser() : botCompanyConfirmation ? companyUser() : findActiveRegisteredUser(confirmerPhone);
+    if (!producer || !confirmer || (!adminApproval && !botCompanyConfirmation && (confirmer.is_bot === 1 || confirmer.role === "company"))) return { state: "unauthorized" };
     const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
     if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
@@ -8029,6 +8029,167 @@ app.get("/api/admin/order-lifecycle", requireAdmin, (req, res) => {
     ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(...(groupId ? [groupId, limit] : [limit]));
   res.setHeader("Cache-Control", "no-store");
   res.json({ lifecycle: rows.map((row) => ({ ...row, price: money(row.price_cents), producer_name: row.producer_name || "غير مسجل", producer_phone: row.producer_phone || null })) });
+});
+app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", bookings: [] });
+  const requestedLimit = Number(req.query.limit || 200);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 200;
+  const candidates = db.prepare(`SELECT c.id AS candidate_id,c.source_message_id,c.group_id,c.raw_text,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.status,
+      c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,c.created_at,c.updated_at,
+      p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone,
+      a.acceptance_message_id,a.status AS acceptance_status,e.name AS executor_name,e.registration_name AS executor_registration_name,
+      e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
+    FROM order_candidates c
+    LEFT JOIN users p ON p.id=c.producer_user_id
+    LEFT JOIN order_candidate_acceptances a ON a.id=(
+      SELECT a2.id FROM order_candidate_acceptances a2
+      WHERE a2.candidate_id=c.id AND a2.status IN ('pending','selected')
+      ORDER BY CASE WHEN a2.acceptance_message_id=c.pending_message_id THEN 0 ELSE 1 END,a2.created_at DESC,a2.id DESC
+      LIMIT 1
+    )
+    LEFT JOIN users e ON e.id=a.captain_user_id
+    WHERE c.group_id=? AND c.status IN ('candidate','pending')
+      AND NOT EXISTS (SELECT 1 FROM orders existing_order WHERE existing_order.source_message_id=c.source_message_id AND existing_order.archive_state='archived')
+    ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(configuredGroupId, limit);
+  const openOrders = db.prepare(`SELECT o.id AS order_id,o.order_no,o.source_message_id,o.group_id,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.status,o.settlement_state,o.created_at,o.updated_at,
+      p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone
+    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id
+    WHERE o.group_id=? AND o.status='open' AND COALESCE(o.archive_state,'active')='active' AND o.captain_user_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM order_candidates c WHERE c.source_message_id=o.source_message_id AND c.status IN ('candidate','pending'))
+    ORDER BY o.updated_at DESC,o.id DESC LIMIT ?`).all(configuredGroupId, limit);
+  const candidateBookings = candidates.map((row) => {
+    const executorPhone = row.executor_phone ? phoneWithCountry(row.executor_phone) : null;
+    const producerPhone = row.producer_phone ? phoneWithCountry(row.producer_phone) : null;
+    const executorActive = Number(row.executor_active) === 1 && row.executor_account_status === "active";
+    const canConfirm = row.status === "pending" && Boolean(row.acceptance_message_id) && Boolean(executorPhone) && executorActive;
+    const reason = canConfirm ? null : row.status === "candidate" ? "awaiting_quoted_acceptance" : !row.acceptance_message_id ? "acceptance_message_missing" : !executorActive ? "executor_inactive" : "evidence_incomplete";
+    return {
+      kind: "candidate",
+      id: Number(row.candidate_id),
+      candidateId: Number(row.candidate_id),
+      groupId: row.group_id,
+      sourceMessageId: row.source_message_id,
+      acceptanceMessageId: row.acceptance_message_id || null,
+      rawText: row.raw_text,
+      price: money(row.price_cents),
+      origin: row.origin || null,
+      destination: row.destination || null,
+      tripTime: row.trip_time || null,
+      orderKind: row.order_kind,
+      status: row.status,
+      acceptanceStatus: row.acceptance_status || null,
+      lifecycleStage: row.lifecycle_stage,
+      lifecycleBlocker: row.lifecycle_blocker || null,
+      pendingAt: row.pending_at || null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      producer: { name: row.producer_name || row.producer_registration_name || "غير مسجل", phone: producerPhone },
+      executor: { name: row.executor_name || row.executor_registration_name || null, phone: executorPhone, active: executorActive },
+      canConfirm,
+      canReject: true,
+      reason,
+    };
+  });
+  const openOrderBookings = openOrders.map((row) => ({
+    kind: "order",
+    id: Number(row.order_id),
+    orderId: Number(row.order_id),
+    orderNo: Number(row.order_no),
+    groupId: row.group_id,
+    sourceMessageId: row.source_message_id,
+    acceptanceMessageId: null,
+    rawText: row.raw_text,
+    price: money(row.price_cents),
+    origin: row.origin || null,
+    destination: row.destination || null,
+    tripTime: row.trip_time || null,
+    orderKind: row.order_kind,
+    status: row.status,
+    acceptanceStatus: null,
+    lifecycleStage: "awaiting_acceptance",
+    lifecycleBlocker: "awaiting_quoted_acceptance",
+    pendingAt: null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    producer: { name: row.producer_name || row.producer_registration_name || "غير مسجل", phone: row.producer_phone ? phoneWithCountry(row.producer_phone) : null },
+    executor: { name: null, phone: null, active: false },
+    canConfirm: false,
+    canReject: true,
+    reason: "awaiting_quoted_acceptance",
+  }));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, groupId: configuredGroupId, bookings: [...candidateBookings, ...openOrderBookings], counts: { candidates: candidateBookings.length, openOrders: openOrderBookings.length, total: candidateBookings.length + openOrderBookings.length } });
+});
+app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, (req, res) => {
+  const candidateId = Number(req.params.id);
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!Number.isInteger(candidateId) || candidateId <= 0) return res.status(400).json({ error: "Valid candidate id is required", mutation: "none" });
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none" });
+  const actionKey = `candidate:${candidateId}:confirm`;
+  const actions = app.locals.unconfirmedBookingActions || (app.locals.unconfirmedBookingActions = new Set());
+  if (actions.has(actionKey)) return res.status(409).json({ error: "This booking action is already in progress", mutation: "none" });
+  actions.add(actionKey);
+  try {
+    const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='pending' LIMIT 1").get(candidateId, configuredGroupId);
+    if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none" });
+    const expectedMessageId = String(candidate.pending_message_id || "").trim();
+    if (!expectedMessageId) return res.status(409).json({ error: "A quoted acceptance message is required before confirmation", state: "acceptance_missing", mutation: "none" });
+    const acceptance = db.prepare(`SELECT a.*,e.name AS executor_name,e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
+      FROM order_candidate_acceptances a JOIN users e ON e.id=a.captain_user_id
+      WHERE a.candidate_id=? AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1`).get(candidateId, expectedMessageId);
+    if (!acceptance) return res.status(409).json({ error: "The pending quoted acceptance could not be found", state: "acceptance_missing", mutation: "none" });
+    if (Number(acceptance.executor_active) !== 1 || acceptance.executor_account_status !== "active") return res.status(409).json({ error: "The executor account is not active", state: "executor_inactive", mutation: "none" });
+    const result = settlePendingOrder(candidate.id, acceptance.acceptance_message_id, connectedBotPhone(), { adminApproval: true });
+    if (result.state !== "accepted") {
+      const status = result.state === "unauthorized" ? 403 : result.state === "debt_limit" ? 409 : 422;
+      return res.status(status).json({ success: false, state: result.state, mutation: "none", financialMutation: false, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id } });
+    }
+    const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+    void sendFinalBookingConfirmation(candidate.group_id, confirmationDetails).catch(() => null);
+    audit("order.admin_unconfirmed.confirmed", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, orderNo: result.order?.order_no, financialMutation: true });
+    return res.status(201).json({ success: true, state: "accepted", mutation: "applied_once", order: result.order, chargedWallet: result.chargedWallet, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, executorPhone: phoneWithCountry(acceptance.executor_phone) }, cardSent: false });
+  } finally {
+    actions.delete(actionKey);
+  }
+});
+app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req, res) => {
+  const kind = String(req.params.kind || "").trim();
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason || "رفض إداري: لم يتم تأكيد الحجز").trim().slice(0, 240);
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!['candidate', 'order'].includes(kind) || !Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Valid booking type and id are required", mutation: "none" });
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none" });
+  const actionKey = `${kind}:${id}:reject`;
+  const actions = app.locals.unconfirmedBookingActions || (app.locals.unconfirmedBookingActions = new Set());
+  if (actions.has(actionKey)) return res.status(409).json({ error: "This booking action is already in progress", mutation: "none" });
+  actions.add(actionKey);
+  try {
+    const result = db.transaction(() => {
+      const stamp = now();
+      if (kind === "candidate") {
+        const candidate = db.prepare("SELECT id,source_message_id,group_id,status FROM order_candidates WHERE id=? AND group_id=? AND status IN ('candidate','pending') LIMIT 1").get(id, configuredGroupId);
+        if (!candidate) return { state: "stale" };
+        db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND status IN ('pending','selected')").run(stamp, id);
+        const updated = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='rejected',lifecycle_blocker='admin_rejected',lifecycle_updated_at=?,updated_at=? WHERE id=? AND group_id=? AND status IN ('candidate','pending')").run(stamp, stamp, id, configuredGroupId);
+        if (!updated.changes) return { state: "stale" };
+        const linkedOrder = db.prepare("SELECT id,order_no FROM orders WHERE source_message_id=? AND group_id=? AND status='open' AND captain_user_id IS NULL AND COALESCE(archive_state,'active')='active' LIMIT 1").get(candidate.source_message_id, configuredGroupId);
+        if (linkedOrder) db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',updated_at=? WHERE id=? AND status='open' AND captain_user_id IS NULL").run(stamp, linkedOrder.id);
+        audit("order.admin_unconfirmed.rejected", "order_candidate", id, { sourceMessageId: candidate.source_message_id, reason, financialMutation: false, linkedOrderNo: linkedOrder?.order_no || null });
+        return { state: "rejected", candidateId: id, sourceMessageId: candidate.source_message_id, linkedOrderNo: linkedOrder?.order_no || null };
+      }
+      const order = db.prepare("SELECT id,order_no,source_message_id,group_id,status FROM orders WHERE id=? AND group_id=? AND status='open' AND captain_user_id IS NULL AND COALESCE(archive_state,'active')='active' LIMIT 1").get(id, configuredGroupId);
+      if (!order) return { state: "stale" };
+      const updated = db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',updated_at=? WHERE id=? AND status='open' AND captain_user_id IS NULL").run(stamp, id);
+      if (!updated.changes) return { state: "stale" };
+      audit("order.admin_unconfirmed.rejected", "order", id, { orderNo: order.order_no, sourceMessageId: order.source_message_id, reason, financialMutation: false });
+      return { state: "rejected", orderId: id, orderNo: order.order_no, sourceMessageId: order.source_message_id };
+    })();
+    if (result.state !== "rejected") return res.status(409).json({ error: "Booking is no longer unconfirmed", state: result.state, mutation: "none" });
+    return res.json({ success: true, state: "rejected", mutation: "none", financialMutation: false, ...result });
+  } finally {
+    actions.delete(actionKey);
+  }
 });
 app.post("/api/admin/orders/archive-open", requireAdmin, (req, res) => {
   const reason = String(req.body?.reason || "أرشفة نهائية للطلبات المفتوحة القديمة غير الموزعة").trim().slice(0, 240);

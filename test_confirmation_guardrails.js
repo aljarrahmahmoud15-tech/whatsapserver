@@ -11,7 +11,7 @@ assert.match(server, /const cancellationReaction = reactionValue === "❌"/);
 assert.match(server, /function cancelPendingOrderForProducerReaction\(/);
 assert.match(server, /findOrderByQuotedMessage\(groupId, quoted\)/);
 assert.match(server, /status='pending',pending_captain_user_id/);
-assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone\)/);
+assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone, \{ adminApproval = false \} = \{\}\)/);
 assert.match(server, /INSERT INTO orders\(order_no,source_message_id/);
 assert.match(server, /status IN \('accepted','completed'\)/);
 assert.match(server, /app\.get\("\/api\/admin\/orders", requireAdmin/);

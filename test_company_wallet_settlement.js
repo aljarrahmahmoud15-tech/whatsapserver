@@ -21,7 +21,7 @@ assert.equal(settlement.confirmingCaptainFeeCents, 800, '16% confirming debit fo
 assert.match(server, /charged_user_id INTEGER REFERENCES users\(id\)/);
 assert.match(server, /charged_user_id=CASE WHEN captain_user_id IN \(SELECT id FROM users WHERE is_bot=1\)/);
 assert.match(server, /const BOT_FINANCIAL_MODE = "company"/);
-assert.match(server, /const botCompanyConfirmation = isBotPhone\(confirmerPhone\) && BOT_FINANCIAL_MODE === "company"/);
+assert.match(server, /const botCompanyConfirmation = !adminApproval && isBotPhone\(confirmerPhone\) && BOT_FINANCIAL_MODE === "company"/);
 assert.match(server, /const producer = BOT_FINANCIAL_MODE === "company" \? companyUser\(\) : botEmployeeUser\(\)/);
 assert.match(server, /const walletOwner = captain\.is_bot === 1 && BOT_FINANCIAL_MODE === "company" \? company : captain/);
 assert.match(server, /companyWalletCharge \? "company_bot_fee" : "captain_fee"/);
