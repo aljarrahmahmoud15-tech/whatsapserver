@@ -3599,6 +3599,20 @@ async function getQuotedMessageWithFallback(message) {
     ? await withTimeout(message.getQuotedMessage(), 8000, null)
     : null;
   if (!quoted) quoted = message?.__quoted || message?.quotedMsg || message?._data?.quotedMsg || null;
+  if (!quoted) {
+    const quotedMessageId = String(
+      message?.quotedStanzaID ||
+      message?.quotedMessageId ||
+      message?._data?.quotedStanzaID ||
+      message?._data?.quotedMessageId ||
+      message?._data?.quotedMsgId ||
+      message?._data?.quotedMsg?.id?._serialized ||
+      ""
+    ).trim();
+    if (quotedMessageId && client && typeof client.getMessageById === "function") {
+      quoted = await withTimeout(client.getMessageById(quotedMessageId), 12000, null);
+    }
+  }
   return quoted;
 }
 
