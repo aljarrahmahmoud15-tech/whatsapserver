@@ -3860,6 +3860,18 @@ function normalizeReactionOwnerName(value = "") {
     .toLowerCase();
 }
 
+function reactionOwnerNameMatches(visibleName, registeredName) {
+  const visible = normalizeReactionOwnerName(visibleName);
+  const registered = normalizeReactionOwnerName(registeredName);
+  if (!visible || !registered) return false;
+  if (visible === registered) return true;
+  const visibleTokens = visible.split(/\s+/).filter(Boolean);
+  const registeredTokens = registered.split(/\s+/).filter(Boolean);
+  const shorter = visibleTokens.length <= registeredTokens.length ? visibleTokens : registeredTokens;
+  const longer = visibleTokens.length <= registeredTokens.length ? registeredTokens : visibleTokens;
+  return shorter.length >= 2 && shorter.every((token) => longer.includes(token));
+}
+
 async function resolveVisibleReactionSenderPhones(messageId, { emoji = "👍" } = {}) {
   if (!client?.pupPage || !messageId) return [];
   const rawId = String(messageId).split("_")[2] || String(messageId);
@@ -3893,8 +3905,8 @@ async function resolveVisibleReactionSenderPhones(messageId, { emoji = "👍" } 
   if (!names.length) return [];
   const captains = db.prepare("SELECT phone,name,registration_name FROM users WHERE role='captain' AND active=1 AND account_status='active'").all();
   const matches = captains.filter((captain) => {
-    const values = [captain.name, captain.registration_name].map(normalizeReactionOwnerName).filter(Boolean);
-    return names.some((name) => values.includes(name));
+    const values = [captain.name, captain.registration_name].filter(Boolean);
+    return names.some((name) => values.some((value) => reactionOwnerNameMatches(name, value)));
   });
   const phones = [...new Set(matches.map((captain) => phoneWithCountry(captain.phone)).filter(isValidJordanPhone))];
   if (phones.length) {
