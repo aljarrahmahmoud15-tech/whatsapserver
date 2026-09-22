@@ -3875,6 +3875,25 @@ async function hasVisibleThumbReaction(messageId) {
   }, messageId), 8000, false));
 }
 
+async function fetchInternalReactionRows(messageId) {
+  if (!client?.pupPage || !messageId) return [];
+  return await withTimeout(client.pupPage.evaluate(async (targetId) => {
+    try {
+      const collections = window.require("WAWebCollections");
+      const reactionCollection = await collections.Reactions.find(targetId);
+      const directReactions = Array.isArray(reactionCollection?.reactions)
+        ? reactionCollection.reactions
+        : [];
+      const rows = reactionCollection?.reactions?.serialize
+        ? reactionCollection.reactions.serialize()
+        : directReactions;
+      return Array.isArray(rows) ? rows : [];
+    } catch (_) {
+      return [];
+    }
+  }, messageId), 12000, []);
+}
+
 function normalizeReactionOwnerName(value = "") {
   return String(value || "")
     .normalize("NFKC")
@@ -4167,9 +4186,17 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const liveReactions = !botProducer && !archivedHasSenders && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
+  const internalReactions = (!Array.isArray(liveReactions) || !liveReactions.length)
+    && (!Array.isArray(archivedReactions) || !archivedReactions.length || !archivedHasSenders)
+    ? await fetchInternalReactionRows(acceptanceMessageId)
+    : [];
   const reactions = Array.isArray(liveReactions) && liveReactions.length
     ? liveReactions
-    : (Array.isArray(archivedReactions) && archivedReactions.length ? archivedReactions : (liveAcceptance.__reactions || acceptance.__reactions || []));
+    : (internalReactions.length && !archivedHasSenders
+      ? internalReactions
+      : (Array.isArray(archivedReactions) && archivedReactions.length
+        ? archivedReactions
+        : (internalReactions.length ? internalReactions : (liveAcceptance.__reactions || acceptance.__reactions || []))));
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
   let reactionPresentOnAcceptance = Boolean(thumbs.length);
   if (!reactionPresentOnAcceptance && (botProducer || rawReactionHint) && client?.pupPage) {
