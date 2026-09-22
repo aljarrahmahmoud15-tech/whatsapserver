@@ -212,6 +212,20 @@ CREATE TABLE IF NOT EXISTS messages (
   sent_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reaction_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL,
+  group_id TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  sender_key TEXT NOT NULL DEFAULT '',
+  sender_id TEXT,
+  sender_phone TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  UNIQUE(message_id, emoji, sender_key)
+);
+CREATE INDEX IF NOT EXISTS idx_reaction_evidence_message ON reaction_evidence(message_id, emoji, active);
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_no INTEGER NOT NULL UNIQUE,
@@ -3722,6 +3736,65 @@ function reactionId(value) {
   return value._serialized || value.id || null;
 }
 
+function reactionEvidenceSenderKey(reaction, senderPhone = "") {
+  const values = reactionSenderValues(reaction);
+  return String(values[0] || senderPhone || "anonymous").trim() || "anonymous";
+}
+
+function reactionEvidenceMessageKey(messageId) {
+  const normalized = serializedMessageId({ id: messageId }) || String(messageId || "").trim();
+  return messageIdCore(normalized) || normalized;
+}
+
+function recordReactionEvidence({ messageId, groupId, emoji, reaction, senderPhone = "", source = "live-message-reaction" }) {
+  const normalizedMessageId = reactionEvidenceMessageKey(messageId);
+  const normalizedGroupId = String(groupId || "").trim();
+  const normalizedEmoji = String(emoji || "").trim();
+  if (!normalizedMessageId || !normalizedGroupId || !normalizedEmoji) return;
+  const senderValues = reactionSenderValues(reaction);
+  const senderId = senderValues.find((value) => /@(lid|c\.us)$/i.test(String(value))) || senderValues[0] || null;
+  const senderKey = reactionEvidenceSenderKey(reaction, senderPhone);
+  const capturedAt = now();
+  try {
+    db.prepare(`INSERT INTO reaction_evidence(message_id,group_id,emoji,sender_key,sender_id,sender_phone,active,source,captured_at)
+      VALUES(?,?,?,?,?, ?,1,?,?)
+      ON CONFLICT(message_id,emoji,sender_key) DO UPDATE SET group_id=excluded.group_id,sender_id=excluded.sender_id,sender_phone=excluded.sender_phone,active=1,source=excluded.source,captured_at=excluded.captured_at`).run(
+      normalizedMessageId,
+      normalizedGroupId,
+      normalizedEmoji,
+      senderKey,
+      senderId,
+      senderPhone ? phoneWithCountry(senderPhone) : null,
+      source,
+      capturedAt,
+    );
+  } catch (error) {
+    console.warn(`[WhatsApp] reaction evidence persistence skipped: ${String(error?.message || error)}`);
+  }
+}
+
+function deactivateReactionEvidence(messageId, groupId, emoji = "👍") {
+  const normalizedMessageId = reactionEvidenceMessageKey(messageId);
+  const normalizedGroupId = String(groupId || "").trim();
+  if (!normalizedMessageId || !normalizedGroupId) return;
+  try {
+    db.prepare("UPDATE reaction_evidence SET active=0,captured_at=? WHERE message_id=? AND group_id=? AND emoji=? AND active=1").run(now(), normalizedMessageId, normalizedGroupId, emoji);
+  } catch (error) {
+    console.warn(`[WhatsApp] reaction evidence deactivation skipped: ${String(error?.message || error)}`);
+  }
+}
+
+function storedReactionEvidence(messageId, emoji = "👍") {
+  const normalizedMessageId = reactionEvidenceMessageKey(messageId);
+  if (!normalizedMessageId) return [];
+  try {
+    return db.prepare("SELECT * FROM reaction_evidence WHERE message_id=? AND emoji=? AND active=1 ORDER BY id DESC").all(normalizedMessageId, emoji);
+  } catch (error) {
+    console.warn(`[WhatsApp] reaction evidence lookup skipped: ${String(error?.message || error)}`);
+    return [];
+  }
+}
+
 function reactionSenderValues(reaction) {
   const values = [
     reaction?.__senderPhone,
@@ -4145,6 +4218,8 @@ function recoveryEvidenceSummary(evidence) {
     rawText: evidence.rawText || null,
     authorizedThumb: Boolean(evidence.authorizedThumb),
     reactionPresent: Boolean(evidence.reactionPresentOnAcceptance),
+    reactionEvidenceMessageId: evidence.reactionEvidenceMessageId || evidence.acceptanceMessageId || null,
+    persistedReactionEvidence: Array.isArray(evidence.persistedReactionEvidence) ? evidence.persistedReactionEvidence : [],
     existingOrderNo: evidence.existingOrder?.order_no || null,
     existingSettlementStatus: evidence.existingSettlement?.status || null,
   };
@@ -4235,6 +4310,19 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (!botProducer && reactionPresentOnAcceptance && !reactionPhones.length) {
     reactionPhones.push(...await resolveVisibleReactionSenderPhones(acceptanceMessageId));
   }
+  const persistedReactionRows = storedReactionEvidence(acceptanceMessageId, "👍");
+  if (persistedReactionRows.length) reactionPresentOnAcceptance = true;
+  for (const row of persistedReactionRows) {
+    const persistedPhone = directJordanPhoneFromWhatsappValue(row.sender_phone);
+    if (isValidJordanPhone(persistedPhone)) {
+      reactionPhones.push(persistedPhone);
+      continue;
+    }
+    if (row.sender_id) {
+      const resolvedPhone = await resolveReactionSenderPhone({ senderId: row.sender_id });
+      if (isValidJordanPhone(resolvedPhone)) reactionPhones.push(resolvedPhone);
+    }
+  }
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
@@ -4287,6 +4375,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     reactedByBot,
     hasBotConfirmationCard,
     reactionPhones: [...new Set(reactionPhones)],
+    reactionEvidenceMessageId: acceptanceMessageId,
+    persistedReactionEvidence: persistedReactionRows.map((row) => ({ senderPhone: row.sender_phone || null, senderId: row.sender_id || null, source: row.source })),
     phoneIdentityResolved,
     existingOrder,
     existingSettlement,
@@ -4362,6 +4452,18 @@ async function handleMessageReaction(reaction) {
       });
       if (approverPhone) break;
     }
+  }
+  if (removedThumb) {
+    if (typeof deactivateReactionEvidence === "function") deactivateReactionEvidence(messageId, target.from, "👍");
+  } else if (typeof recordReactionEvidence === "function") {
+    recordReactionEvidence({
+      messageId,
+      groupId: target.from,
+      emoji: reactionValue,
+      reaction,
+      senderPhone: approverPhone,
+      source: "live-message-reaction",
+    });
   }
   if (!approverPhone) {
     logOrderTrace("reaction_approver_identity_unresolved", {
