@@ -6,7 +6,10 @@ const dashboard = fs.readFileSync('./public/index.html', 'utf8');
 
 assert.match(server, /async function reactToCaptainAcceptance\(message, messageId\)/);
 assert.match(server, /if \(producer\.is_bot === 1 \|\| producer\.role === "company"\)/);
-assert.match(server, /void reactToCaptainAcceptance\(msg, acceptanceMessageId\)/);
+assert.match(server, /async function approveBotOwnedAcceptance\(\{ groupId, message, candidateId, acceptanceMessageId \}\)/);
+assert.match(server, /const result = settlePendingOrder\(candidateId, acceptanceMessageId, connectedBotPhone\(\)\)/);
+assert.match(server, /void approveBotOwnedAcceptance\(\{ groupId, message: msg, candidateId: candidate\.id, acceptanceMessageId \}\)/);
+assert.match(server, /await reactToCaptainAcceptance\(message, acceptanceMessageId\)/);
 assert.match(server, /await withTimeout\(target\.react\("👍"\), 12000, null\)/);
 assert.match(server, /const ADMIN_SEND_TIMEOUT_MS = Math\.max\(5000, Math\.min\(60000, Number\(process\.env\.ADMIN_SEND_TIMEOUT_MS \|\| 20000\)\)\);/);
 assert.match(server, /const sendPromise = Promise\.resolve\(\)\.then\(\(\) => client\.sendMessage\(chatId, message\)\);/);

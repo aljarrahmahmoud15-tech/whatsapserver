@@ -3559,6 +3559,37 @@ async function reactToCaptainAcceptance(message, messageId) {
   }
 }
 
+async function approveBotOwnedAcceptance({ groupId, message, candidateId, acceptanceMessageId }) {
+  // A booking published by the bot is approved by the bot itself. The app/dashboard
+  // is only an observer here; settlement remains atomic and idempotent in the DB.
+  const result = settlePendingOrder(candidateId, acceptanceMessageId, connectedBotPhone());
+  if (result.state === "accepted") {
+    const confirmationDetails = {
+      orderNo: result.order?.order_no,
+      orderId: result.order?.id,
+      executorName: result.captain?.name,
+      downloaderName: result.producer?.name,
+      priceCents: result.order?.price_cents,
+    };
+    void sendFinalBookingConfirmation(groupId, confirmationDetails).catch((error) => {
+      console.warn(`[Order] bot-owned confirmation card failed: ${String(error?.message || error)}`);
+    });
+    audit("order.bot_owned.accepted_directly", "order", result.order?.id, {
+      candidateId,
+      acceptanceMessageId,
+      confirmedBy: connectedBotPhone(),
+      confirmationText: finalBookingConfirmationText(confirmationDetails),
+    });
+    console.log(`[Order] bot-owned booking accepted directly #${result.order?.order_no || "?"}`);
+  } else if (result.state !== "stale") {
+    console.warn(`[Order] bot-owned booking approval blocked candidate=${candidateId} state=${result.state}`);
+  }
+
+  // Presentation only: failure to add 👍 must never undo or block an accepted settlement.
+  if (result.state === "accepted") await reactToCaptainAcceptance(message, acceptanceMessageId);
+  return result;
+}
+
 async function getQuotedMessageWithFallback(message) {
   let quoted = message?.hasQuotedMsg && typeof message.getQuotedMessage === "function"
     ? await withTimeout(message.getQuotedMessage(), 8000, null)
@@ -3720,11 +3751,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     producerId: producer.id,
   });
   if (producer.is_bot === 1 || producer.role === "company") {
-    void reactToCaptainAcceptance(msg, acceptanceMessageId).then((reacted) => {
-      if (!reacted) logOrderTrace("bot_producer_reaction_failed", { groupKey: orderTraceKey(groupId), acceptanceKey: orderTraceKey(acceptanceMessageId), candidateId: candidate.id });
-    }).catch((error) => console.warn(`[WhatsApp] bot producer reaction failed: ${error.message}`));
+    void approveBotOwnedAcceptance({ groupId, message: msg, candidateId: candidate.id, acceptanceMessageId })
+      .catch((error) => console.error(`[WhatsApp] bot-owned acceptance settlement failed: ${error.message}`));
+    return;
   }
-  // لا تسوية عند «تم» فقط؛ صاحب الطلب يختار أحد الردود بوضع 👍 عليه.
+  // Human-owned bookings still use the producer's 👍 on this exact quoted reply.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
   }
