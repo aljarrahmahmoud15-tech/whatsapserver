@@ -4598,15 +4598,21 @@ async function reconcileStoredThumbReaction(messageId) {
       await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    if (await hasVisibleThumbReaction(messageId)) {
-      const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
-        ? await resolveVisibleReactionSenderPhones(messageId)
-        : [];
-      for (const phone of visiblePhones) {
-        await handleMessageReaction({ reaction: "👍", msgId: messageId, __senderPhone: phone });
-      }
-      return;
-    }
+	if (await hasVisibleThumbReaction(messageId)) {
+	  const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
+	    ? await resolveVisibleReactionSenderPhones(messageId)
+	    : [];
+	  if (visiblePhones.length) {
+	    for (const phone of visiblePhones) {
+	      await handleMessageReaction({ reaction: "👍", msgId: messageId, __senderPhone: phone });
+	    }
+	  } else {
+	    // The business signal is the visible 👍 on the exact quoted «تم» reply;
+	    // WhatsApp may omit the reaction owner's phone from the collection.
+	    await handleMessageReaction({ reaction: "👍", msgId: messageId });
+	  }
+	  return;
+	}
     console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(messageId).slice(0, 80)}`);
     return;
   }
@@ -4616,10 +4622,10 @@ async function reconcileStoredThumbReaction(messageId) {
     if (reactionEmoji !== "👍" && reactionEmoji !== "❌") continue;
     const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;
     const senders = Array.isArray(reaction.senders) ? reaction.senders : [];
-    if (reactionIsByCurrentAccount && !senders.length) {
-      await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, hasReactionByMe: true });
-      continue;
-    }
+	if (!senders.length) {
+	  await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, hasReactionByMe: reactionIsByCurrentAccount });
+	  continue;
+	}
     for (const sender of senders) {
       await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }

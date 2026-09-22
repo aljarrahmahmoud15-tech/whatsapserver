@@ -43,7 +43,7 @@ assert.match(server, /reaction_approver_identity_unresolved/);
 assert.match(server, /hasReactionByMe: storedReaction\?\.hasReactionByMe === true/);
 assert.match(server, /if \(reactionValue === "👍" \|\| reactionValue === "❌"\)/);
 assert.doesNotMatch(server, /hasVisibleThumbReaction\(messageId\)\)[\s\S]{0,180}hasReactionByMe: true/);
-assert.match(server, /if \(reactionIsByCurrentAccount && !senders\.length\)/);
+assert.match(server, /if \(!senders\.length\)/);
 assert.match(server, /if \(await hasVisibleThumbReaction\(messageId\)\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
