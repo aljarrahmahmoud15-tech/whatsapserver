@@ -4136,6 +4136,38 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   };
 }
 
+async function findAutomaticRecoveryEvidence({ groupId, hours = 168, limit = 1000, downloaderPhone, executorPhone, price, origin = "", destination = "" }) {
+  const safeHours = Math.max(1, Math.min(Number(hours || 168), 168));
+  const safeLimit = Number.isInteger(Number(limit)) ? Math.max(1, Math.min(Number(limit), 2000)) : 1000;
+  const history = await fetchGroupHistory(groupId, safeLimit, { includeOutgoing: true });
+  if (!history.chat) return { state: "unavailable", groupId, hours: safeHours, messages: [], matches: [] };
+  const cutoff = Date.now() - safeHours * 60 * 60 * 1000;
+  const expected = { downloaderPhone, executorPhone, price: Number(price), origin: String(origin || "").trim(), destination: String(destination || "").trim() };
+  const acceptanceMessages = (Array.isArray(history.messages) ? history.messages : []).filter((message) => {
+    const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
+    return message && !message.fromMe && resolveGroupChatId(message) === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
+  });
+  const matches = [];
+  for (let offset = 0; offset < acceptanceMessages.length; offset += 4) {
+    const batch = acceptanceMessages.slice(offset, offset + 4);
+    const evidenceRows = await Promise.all(batch.map((acceptance) => inspectConfirmedRecoveryMessage(acceptance, history.messages, groupId)));
+    for (const evidence of evidenceRows) {
+      if (recoveryExpectedMatches(evidence, expected)) matches.push(evidence);
+    }
+  }
+  const deduped = [...new Map(matches.map((evidence) => [`${evidence.orderMessageId}:${evidence.acceptanceMessageId}`, evidence])).values()];
+  const confirmed = deduped.filter((evidence) => evidence.match);
+  return {
+    state: confirmed.length === 1 ? "matched" : confirmed.length > 1 ? "ambiguous" : "not_found",
+    groupId,
+    hours: safeHours,
+    scanned: Array.isArray(history.messages) ? history.messages.length : 0,
+    messages: history.messages,
+    matches: deduped,
+    confirmed,
+  };
+}
+
 async function handleMessageReaction(reaction) {
   const reactionValue = String(reaction?.reaction || "").trim();
   const removedThumb = reactionValue === "";
@@ -6762,28 +6794,53 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
 app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
-  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
-  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
+  let sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+  let acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
   const downloaderPhone = String(req.body?.downloaderPhone || "").trim();
   const executorPhone = String(req.body?.executorPhone || "").trim();
-  if (!groupId || !isConfiguredGroup(groupId) || !sourceMessageId || !acceptanceMessageId || !downloaderPhone || !executorPhone) {
-    return res.status(400).json({ error: "groupId, sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required" });
+  const autoMatchRequested = !sourceMessageId && !acceptanceMessageId;
+  const suppliedPrice = req.body?.price === undefined || req.body?.price === "" ? "" : Number(req.body.price);
+  if (!groupId || !isConfiguredGroup(groupId) || !downloaderPhone || !executorPhone || (autoMatchRequested && (!Number.isFinite(suppliedPrice) || suppliedPrice <= 0))) {
+    return res.status(400).json({ error: autoMatchRequested ? "groupId, downloaderPhone, executorPhone, and a positive price are required; message IDs are resolved automatically" : "groupId, downloaderPhone, executorPhone, and both internal evidence IDs are required when exact evidence is supplied" });
   }
-  const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
-  if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
-  const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
-  const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
+  let messages;
+  let evidence;
+  if (autoMatchRequested) {
+    const automatic = await findAutomaticRecoveryEvidence({
+      groupId,
+      hours: req.body?.hours,
+      limit: req.body?.limit,
+      downloaderPhone,
+      executorPhone,
+      price: suppliedPrice,
+      origin: req.body?.origin,
+      destination: req.body?.destination,
+    });
+    if (automatic.state === "unavailable") return res.status(504).json({ error: "Unable to read the configured group", mutation: "none" });
+    if (automatic.state === "ambiguous") return res.status(409).json({ error: "More than one confirmed booking matches these phone numbers and price; narrow the time or route", matches: automatic.matches.map(recoveryEvidenceSummary), mutation: "none" });
+    if (automatic.state !== "matched") return res.status(409).json({ error: "No single confirmed booking matched the two phone numbers and price", matches: automatic.matches.map(recoveryEvidenceSummary), mutation: "none" });
+    evidence = automatic.confirmed[0];
+    sourceMessageId = evidence.orderMessageId;
+    acceptanceMessageId = evidence.acceptanceMessageId;
+    messages = automatic.messages;
+  } else {
+    if (!sourceMessageId || !acceptanceMessageId) return res.status(400).json({ error: "Provide both internal evidence IDs or omit both so the system resolves them automatically" });
+    messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
+    if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
+    const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
+    evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
+  }
   const expected = {
     sourceMessageId,
     acceptanceMessageId,
     downloaderPhone,
     executorPhone,
-    price: req.body?.price === undefined || req.body?.price === "" ? "" : Number(req.body.price),
+    price: suppliedPrice,
     origin: String(req.body?.origin || "").trim(),
     destination: String(req.body?.destination || "").trim(),
     tripTime: String(req.body?.tripTime || "").trim(),
   };
-  if (!recoveryExpectedMatches(evidence, expected)) {
+  if (!evidence?.match || !recoveryExpectedMatches(evidence, expected)) {
     return res.status(409).json({ error: "Group evidence does not match the requested booking", evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
   }
   if (evidence.existingSettlement?.status === "applied") {

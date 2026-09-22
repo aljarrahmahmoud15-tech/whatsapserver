@@ -31,9 +31,12 @@ assert.match(server, /const history = await fetchGroupHistory\(groupId, 200, \{ 
 assert.match(server, /messageId\.endsWith\(`_\$\{quotedMessageIdHint\}`\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
-assert.match(server, /const messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
+assert.match(server, /messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /function recoveryExpectedMatches\(evidence, expected = \{\}\)/);
-assert.match(server, /sourceMessageId, acceptanceMessageId, downloaderPhone, and executorPhone are required/);
+assert.match(server, /const autoMatchRequested = !sourceMessageId && !acceptanceMessageId/);
+assert.match(server, /message IDs are resolved automatically/);
+assert.match(server, /async function findAutomaticRecoveryEvidence\(\{ groupId, hours = 168, limit = 1000, downloaderPhone, executorPhone, price, origin = "", destination = "" \}\)/);
+assert.match(server, /if \(!evidence\?\.match \|\| !recoveryExpectedMatches\(evidence, expected\)\)/);
 assert.match(server, /mutation: "none"/);
 assert.match(server, /importSource = "group_history_24h"/);
 assert.match(server, /importSource: "admin_exact_group_recovery"/);
@@ -46,6 +49,9 @@ assert.match(admin, /\/api\/admin\/group\/confirmed-preview/);
 assert.match(admin, /\/api\/admin\/group\/confirm-one/);
 assert.match(admin, /اعتماد وتسوية/);
 assert.match(admin, /لا تُطبق العملية أكثر من مرة/);
+assert.match(admin, /function recoveryPayload\(\)\{return \{hours:/);
+assert.doesNotMatch(admin, /sourceMessageId:match\?\.sourceMessageId/);
+assert.doesNotMatch(admin, /acceptanceMessageId:match\?\.acceptanceMessageId/);
 assert.match(admin, /const text=await r\.text\(\);let data;try\{data=text\?JSON\.parse\(text\):\{\}\}/);
 assert.doesNotMatch(admin, /catch\{data=\{error:await r\.text\(\)\}\}/);
 
