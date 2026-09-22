@@ -27,4 +27,12 @@ assert.match(html, /const payload=recoveryPayload\(match\)/, "زر الاعتم�
 assert.doesNotMatch(html, /api\('\/api\/admin\/group\/confirm-one',[\s\S]{0,240}JSON\.stringify\(recoveryPayload\(\)\)/, "لا يجوز لزر الاعتماد إرسال الحقول العامة بدل الصف المحدد");
 assert.match(html, /error\.data=data/, "واجهة الإدارة يجب أن تحتفظ بتفاصيل خطأ المطابقة");
 
+assert.match(html, /id="recoveryConfirmModal"/, "يجب أن تستخدم التسوية نافذة تأكيد داخلية غير حاجبة");
+assert.match(html, /function openRecoveryConfirmation\(match\)/, "زر الصف يجب أن يفتح نافذة التأكيد للصف نفسه");
+assert.match(html, /function submitRecoveryConfirmation\(\)/, "نافذة التأكيد يجب أن تملك مسار إرسال واحدًا");
+assert.match(html, /recoveryPendingMatch/, "النافذة يجب أن تحفظ الصف المحدد دون إعادة بناء الحمولة العامة");
+assert.match(html, /id="recoveryConfirmSubmit"/, "زر التأكيد الداخلي يجب أن يكون واضحًا وقابلًا للاختبار");
+assert.match(html, /onclick="submitRecoveryConfirmation\(\)"/, "زر التأكيد الداخلي يجب أن يستدعي مسار التسوية فعليًا");
+assert.doesNotMatch(html, /function confirmRecovery\(index\)\{[\s\S]{0,500}confirm\(/, "لا يجوز استخدام confirm() الأصلي الذي يعلق جلسة المتصفح");
+
 console.log("recovery row payload and duplicate-action guardrails verified");

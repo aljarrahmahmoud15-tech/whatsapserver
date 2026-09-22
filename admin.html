@@ -49,10 +49,60 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);let token=localStorage.getItem('adminToken')||'';let allOrders=[],allCaptains=[],allSettlements=[],companyWallet=null,subscriptionReport=null;
-let recoveryMatches=[],pendingCaptainInvites=[];
+let recoveryMatches=[],pendingCaptainInvites=[],recoveryPendingMatch=null;
  function recoveryPayload(match=null){const payload={hours:Number($('recoveryHours').value||168),downloaderPhone:$('recoveryDownloader').value.trim(),executorPhone:$('recoveryExecutor').value.trim(),price:$('recoveryPrice').value.trim(),origin:$('recoveryOrigin').value.trim(),destination:$('recoveryDestination').value.trim(),tripTime:$('recoveryTime').value.trim()};if(match){payload.sourceMessageId=String(match.sourceMessageId||'').trim();payload.acceptanceMessageId=String(match.acceptanceMessageId||'').trim();payload.downloaderPhone=String(match.downloaderPhone||'').trim();payload.executorPhone=String(match.executorPhone||'').trim();payload.price=match.price??'';payload.origin=String(match.origin||'').trim();payload.destination=String(match.destination||'').trim()}return payload}
  async function previewRecovery(){if(window.recoveryPreviewInFlight)return;window.recoveryPreviewInFlight=true;const button=$('recoveryPreviewButton');if(button)button.disabled=true;try{$('recoveryMsg').textContent='جاري قراءة سجل المجموعة دون تعديل قاعدة البيانات…';$('recoveryMsg').classList.remove('error');const data=await api('/api/admin/group/confirmed-preview',{method:'POST',body:JSON.stringify(recoveryPayload())});recoveryMatches=data.matches||[];renderRecoveryMatches();const eligibleCount=recoveryMatches.filter(m=>m.match&&m.sourceMessageId&&m.acceptanceMessageId).length;$('recoveryMsg').textContent=eligibleCount?`تم العثور على ${eligibleCount} صف مؤهل؛ رُتّب الأول المؤهل أولًا. اختر الصف المطلوب؛ سيستخدم الزر دليل الصف نفسه.`:`اكتملت المعاينة: لا توجد مطابقة كاملة قابلة للاعتماد ضمن آخر ${data.hours} ساعة.`}catch(e){$('recoveryMsg').textContent='تعذرت المعاينة: '+e.message;$('recoveryMsg').classList.add('error')}finally{window.recoveryPreviewInFlight=false;if(button)button.disabled=false}}
- function renderRecoveryMatches(){const orderedRecoveryMatches=[...recoveryMatches].sort((a,b)=>{const rank=(m)=>m.existingSettlementStatus==='applied'?2:(m.match&&m.sourceMessageId&&m.acceptanceMessageId?0:m.match?1:2);return rank(a)-rank(b)});recoveryMatches=orderedRecoveryMatches;$('recoveryMatches').innerHTML=recoveryMatches.map((m,index)=>{const route=`${esc(m.origin||'—')} ← ${esc(m.destination||'—')} · ${esc(m.price??'—')} JOD`;const sourceId=String(m.sourceMessageId||'').trim();const acceptanceId=String(m.acceptanceMessageId||'').trim();const idCell=(value)=>value?`<span class="small" dir="ltr">${esc(value)}</span>`:'<span class="muted">غير متوفر</span>';const canConfirm=Boolean(m.match&&sourceId&&acceptanceId);const priorityLabel=canConfirm&&index===0?'الأول المؤهل للاعتماد — ':'';const state=m.existingSettlementStatus==='applied'?'مسوّى مسبقًا':(m.match?(canConfirm?`${priorityLabel}مطابق وقابل للاعتماد`:'مطابق لكن معرّفات الرسائل ناقصة'):'غير مكتمل');const action=m.existingSettlementStatus==='applied'?'لا إجراء':(canConfirm?`<button onclick="confirmRecovery(${index})">اعتماد وتسوية</button>`:(m.match?'تحتاج معرّفي الرسائل':'تحتاج دليل الرسائل'));return `<tr><td>${route}</td><td>${idCell(sourceId)}</td><td>${idCell(acceptanceId)}</td><td dir="ltr">${esc(m.downloaderPhone||'—')}</td><td>${esc(m.executorName||'—')}<br><span class="small" dir="ltr">${esc(m.executorPhone||'—')}</span></td><td class="${m.authorizedThumb?'ok':'bad'}">${m.authorizedThumb?'مؤكد':'غير مؤكد'}</td><td>${state}</td><td>${action}</td></tr>`}).join('')||'<tr><td colspan="8">لا توجد مطابقات</td></tr>'} async function confirmRecovery(index){const match=recoveryMatches[index];if(!match||!match.match||!match.sourceMessageId||!match.acceptanceMessageId||window.recoveryConfirmInFlight)return;const payload=recoveryPayload(match);const route=`${match.origin||'—'} ← ${match.destination||'—'}`;const confirmation=confirm(`سيتم اعتماد الصف المحدد فقط:\n${match.price} JOD · ${match.downloaderPhone} · ${match.executorPhone}\nالمسار: ${route}\nسيُعاد التحقق من رسالتي السعر و«تم» بهذا الصف، وتُطبق التسوية مرة واحدة. هل تتابع؟`);if(!confirmation)return;window.recoveryConfirmInFlight=true;try{$('recoveryMsg').textContent='جاري إعادة التحقق من الصف المحدد وتطبيق التسوية idempotent…';const data=await api('/api/admin/group/confirm-one',{method:'POST',body:JSON.stringify(payload)});$('recoveryMsg').textContent=data.state==='already_settled'?'هذا الطلب مسوّى مسبقًا ولم تُكرر الحركة.':`تم اعتماد الطلب #${data.order?.order_no||'—'} · البطاقة: ${data.cardSent?'أرسلت':'لم ترسل'}`;await Promise.all([loadCompanyWallet(),loadOrders(),loadSettlements()]);await previewRecovery()}catch(e){const reason=e.data?.evidence?.reason?` · السبب: ${e.data.evidence.reason}`:'';$('recoveryMsg').textContent='لم تُطبق التسوية: '+e.message+reason;$('recoveryMsg').classList.add('error')}finally{window.recoveryConfirmInFlight=false}}
+ function renderRecoveryMatches(){const orderedRecoveryMatches=[...recoveryMatches].sort((a,b)=>{const rank=(m)=>m.existingSettlementStatus==='applied'?2:(m.match&&m.sourceMessageId&&m.acceptanceMessageId?0:m.match?1:2);return rank(a)-rank(b)});recoveryMatches=orderedRecoveryMatches;$('recoveryMatches').innerHTML=recoveryMatches.map((m,index)=>{const route=`${esc(m.origin||'—')} ← ${esc(m.destination||'—')} · ${esc(m.price??'—')} JOD`;const sourceId=String(m.sourceMessageId||'').trim();const acceptanceId=String(m.acceptanceMessageId||'').trim();const idCell=(value)=>value?`<span class="small" dir="ltr">${esc(value)}</span>`:'<span class="muted">غير متوفر</span>';const canConfirm=Boolean(m.match&&sourceId&&acceptanceId);const priorityLabel=canConfirm&&index===0?'الأول المؤهل للاعتماد — ':'';const state=m.existingSettlementStatus==='applied'?'مسوّى مسبقًا':(m.match?(canConfirm?`${priorityLabel}مطابق وقابل للاعتماد`:'مطابق لكن معرّفات الرسائل ناقصة'):'غير مكتمل');const action=m.existingSettlementStatus==='applied'?'لا إجراء':(canConfirm?`<button onclick="confirmRecovery(${index})">اعتماد وتسوية</button>`:(m.match?'تحتاج معرّفي الرسائل':'تحتاج دليل الرسائل'));return `<tr><td>${route}</td><td>${idCell(sourceId)}</td><td>${idCell(acceptanceId)}</td><td dir="ltr">${esc(m.downloaderPhone||'—')}</td><td>${esc(m.executorName||'—')}<br><span class="small" dir="ltr">${esc(m.executorPhone||'—')}</span></td><td class="${m.authorizedThumb?'ok':'bad'}">${m.authorizedThumb?'مؤكد':'غير مؤكد'}</td><td>${state}</td><td>${action}</td></tr>`}).join('')||'<tr><td colspan="8">لا توجد مطابقات</td></tr>'} function openRecoveryConfirmation(match){
+  recoveryPendingMatch=match;
+  const route=`${match.origin||'—'} ← ${match.destination||'—'}`;
+  $('recoveryConfirmPreview').textContent=[
+    `القيمة: ${match.price} JOD`,
+    `صاحب الطلب: ${match.downloaderPhone}`,
+    `المنفّذ: ${match.executorName||'—'} — ${match.executorPhone}`,
+    `المسار: ${route}`,
+    `معرّف رسالة السعر: ${match.sourceMessageId}`,
+    `معرّف رد «تم»: ${match.acceptanceMessageId}`,
+    'سيُعاد التحقق من الدليل وتُطبق التسوية مرة واحدة.'
+  ].join('\n');
+  const submit=$('recoveryConfirmSubmit');
+  if(submit){submit.disabled=false;submit.textContent='تأكيد الاعتماد والتسوية'}
+  $('recoveryConfirmModal').hidden=false;
+}
+ function closeRecoveryConfirmation(){
+  if(window.recoveryConfirmInFlight)return;
+  recoveryPendingMatch=null;
+  $('recoveryConfirmModal').hidden=true;
+}
+ function confirmRecovery(index){
+  const match=recoveryMatches[index];
+  if(!match||!match.match||!match.sourceMessageId||!match.acceptanceMessageId||window.recoveryConfirmInFlight)return;
+  openRecoveryConfirmation(match);
+}
+ async function submitRecoveryConfirmation(){
+  const match=recoveryPendingMatch;
+  if(!match||!match.match||!match.sourceMessageId||!match.acceptanceMessageId||window.recoveryConfirmInFlight)return;
+  recoveryPendingMatch=null;
+  $('recoveryConfirmModal').hidden=true;
+  window.recoveryConfirmInFlight=true;
+  const submit=$('recoveryConfirmSubmit');
+  if(submit){submit.disabled=true;submit.textContent='جارٍ التحقق والتسوية…'}
+  const payload=recoveryPayload(match);
+  try{
+    $('recoveryMsg').textContent='جاري إعادة التحقق من الصف المحدد وتطبيق التسوية idempotent…';
+    const data=await api('/api/admin/group/confirm-one',{method:'POST',body:JSON.stringify(payload)});
+    $('recoveryMsg').textContent=data.state==='already_settled'?'هذا الطلب مسوّى مسبقًا ولم تُكرر الحركة.':`تم اعتماد الطلب #${data.order?.order_no||'—'} · البطاقة: ${data.cardSent?'أرسلت':'لم ترسل'}`;
+    await Promise.all([loadCompanyWallet(),loadOrders(),loadSettlements()]);
+    await previewRecovery();
+  }catch(e){
+    const reason=e.data?.evidence?.reason?` · السبب: ${e.data.evidence.reason}`:'';
+    $('recoveryMsg').textContent='لم تُطبق التسوية: '+e.message+reason;
+    $('recoveryMsg').classList.add('error');
+  }finally{
+    window.recoveryConfirmInFlight=false;
+    if(submit){submit.disabled=false;submit.textContent='تأكيد الاعتماد والتسوية'}
+  }
+}
+
 function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}
  async function api(url,options={}){const r=await fetch(url,{...options,headers:{...headers(),...(options.headers||{})}});const text=await r.text();let data;try{data=text?JSON.parse(text):{}}catch{data={error:text||'Invalid server response'}}if(!r.ok){const error=new Error(data.error||'HTTP '+r.status);error.data=data;throw error}return data}
 let waAlertTimer=null,waAlertInitialized=false,waAlertKey='';
@@ -117,7 +167,7 @@ if(token){$('login').classList.add('hidden');$('app').classList.remove('hidden')
 <style>
 .wa-alert{margin:14px 0;padding:14px 16px;border:1px solid #ff7070;border-radius:12px;background:#4b2028;color:#ffc1c9;font-weight:700;line-height:1.7}.wa-alert.hidden{display:none}
 #approvalTestModal[hidden]{display:none}#approvalTestModal{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;direction:rtl}#approvalTestModal .approval-test-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.65)}#approvalTestModal .approval-test-dialog{position:relative;z-index:1;width:min(94vw,620px);max-height:90vh;overflow:auto;padding:24px;border-radius:18px;background:#101d2e;color:#f5f7fa;box-shadow:0 20px 70px rgba(0,0,0,.35)}#approvalTestModal .approval-test-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:#fff;font-size:28px;cursor:pointer}#approvalTestModal pre{white-space:pre-wrap;line-height:1.8;background:#091321;border:1px solid #29415d;border-radius:12px;padding:14px;max-height:300px;overflow:auto}#approvalTestModal .approval-test-actions{display:flex;gap:10px;margin-top:18px}.approval-test-result{margin-top:12px;padding:12px;border-radius:10px}.approval-test-result.ok{background:#123f35;color:#8ff0cf}.approval-test-result.bad{background:#4b2028;color:#ffc1c9}
-</style>
+#recoveryConfirmModal[hidden]{display:none}#recoveryConfirmModal{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;direction:rtl}#recoveryConfirmModal .recovery-confirm-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.68)}#recoveryConfirmModal .recovery-confirm-dialog{position:relative;z-index:1;width:min(94vw,620px);max-height:90vh;overflow:auto;padding:24px;border-radius:18px;background:#101d2e;color:#f5f7fa;box-shadow:0 20px 70px rgba(0,0,0,.35)}#recoveryConfirmModal .recovery-confirm-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:#fff;font-size:28px;cursor:pointer}#recoveryConfirmModal .recovery-confirm-preview{white-space:pre-wrap;line-height:1.8;background:#091321;border:1px solid #29415d;border-radius:12px;padding:14px;max-height:300px;overflow:auto;direction:rtl}#recoveryConfirmModal .recovery-confirm-actions{display:flex;gap:10px;margin-top:18px}</style>
 <div id="approvalTestModal" hidden>
   <div class="approval-test-backdrop" onclick="closeApprovalTest()"></div>
   <section class="approval-test-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalTestTitle">
@@ -129,6 +179,16 @@ if(token){$('login').classList.add('hidden');$('app').classList.remove('hidden')
     <label><input id="approvalTestConfirm" type="checkbox" onchange="toggleApprovalTestSend()"> أؤكد أن هذا إرسال اختباري فقط.</label>
     <div id="approvalTestResult" class="approval-test-result" hidden></div>
     <div class="approval-test-actions"><button type="button" class="secondary" onclick="closeApprovalTest()">إلغاء</button><button type="button" id="approvalTestSend" onclick="sendApprovalTest()" disabled>إرسال الاختبار</button></div>
+  </section>
+</div>
+<div id="recoveryConfirmModal" hidden>
+  <div class="recovery-confirm-backdrop" onclick="closeRecoveryConfirmation()"></div>
+  <section class="recovery-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="recoveryConfirmTitle">
+    <button type="button" class="recovery-confirm-close" onclick="closeRecoveryConfirmation()" aria-label="إغلاق">×</button>
+    <h2 id="recoveryConfirmTitle">اعتماد وتسوية الصف المحدد</h2>
+    <p>راجع الصف المحدد ثم اضغط التأكيد مرة واحدة. لن يُرسل أي طلب قبل الضغط على زر التأكيد.</p>
+    <pre id="recoveryConfirmPreview" class="recovery-confirm-preview"></pre>
+    <div class="recovery-confirm-actions"><button type="button" class="secondary" onclick="closeRecoveryConfirmation()">إلغاء</button><button type="button" id="recoveryConfirmSubmit" onclick="submitRecoveryConfirmation()">تأكيد الاعتماد والتسوية</button></div>
   </section>
 </div>
 <script>
