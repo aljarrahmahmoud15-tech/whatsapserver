@@ -3881,12 +3881,12 @@ async function fetchInternalReactionRows(messageId) {
     try {
       const collections = window.require("WAWebCollections");
       const reactionCollection = await collections.Reactions.find(targetId);
-      const directReactions = Array.isArray(reactionCollection?.reactions)
-        ? reactionCollection.reactions
-        : [];
-      const rows = reactionCollection?.reactions?.serialize
-        ? reactionCollection.reactions.serialize()
-        : directReactions;
+      // WAWebCollections returns a Collection-like object here, not a native
+      // array. Requiring Array.isArray silently discarded valid 👍 rows.
+      const reactionRows = reactionCollection?.reactions;
+      const rows = reactionRows && typeof reactionRows.serialize === "function"
+        ? reactionRows.serialize()
+        : reactionRows;
       return Array.isArray(rows) ? rows : [];
     } catch (_) {
       return [];
