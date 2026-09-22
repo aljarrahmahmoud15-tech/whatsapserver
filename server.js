@@ -3697,6 +3697,8 @@ function reactionId(value) {
 
 function reactionSenderValues(reaction) {
   const values = [
+    reaction?.__senderPhone,
+    reaction?._data?.__senderPhone,
     reaction?.senderId,
     reaction?._data?.senderId,
     reaction?.senderUserJid,
@@ -3844,6 +3846,61 @@ async function hasVisibleThumbReaction(messageId) {
     const reactionNodes = Array.from(node.querySelectorAll('[data-testid*="reaction"], [aria-label*="تفاعل"], [aria-label*="reaction"]'));
     return reactionNodes.some((item) => String(item.textContent || item.getAttribute("aria-label") || "").includes("👍"));
   }, messageId), 8000, false));
+}
+
+function normalizeReactionOwnerName(value = "") {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\u200e\u200f\u202a-\u202e]/g, "")
+    .replace(/\p{M}/gu, "")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function resolveVisibleReactionSenderPhones(messageId, { emoji = "👍" } = {}) {
+  if (!client?.pupPage || !messageId) return [];
+  const rawId = String(messageId).split("_")[2] || String(messageId);
+  const readVisibleDetails = () => client.pupPage.evaluate(async ({ rawId: targetId, emoji: targetEmoji }) => {
+    const nodes = Array.from(document.querySelectorAll("[data-id]"))
+      .filter((node) => String(node.getAttribute("data-id") || "").includes(targetId));
+    const node = nodes[nodes.length - 1] || null;
+    if (!node) return { names: [] };
+    const readNames = () => Array.from(document.querySelectorAll('[data-testid="reactions-details-cell"]'))
+      .map((cell) => String(cell.textContent || "").trim())
+      .filter(Boolean);
+    let names = readNames();
+    if (!names.length) {
+      const trigger = Array.from(node.querySelectorAll("[aria-label], [data-testid]"))
+        .find((item) => `${item.getAttribute("aria-label") || ""} ${item.getAttribute("data-testid") || ""} ${item.textContent || ""}`.includes(targetEmoji));
+      if (trigger && typeof trigger.click === "function") {
+        trigger.click();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        names = readNames();
+      }
+    }
+    return { names };
+  }, { rawId, emoji });
+  let visible = await withTimeout(readVisibleDetails(), 15000, { names: [] });
+  if (!visible?.names?.length && client.interface && typeof client.interface.openChatWindowAt === "function") {
+    await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    visible = await withTimeout(readVisibleDetails(), 15000, { names: [] });
+  }
+  const names = [...new Set((visible?.names || []).map(normalizeReactionOwnerName).filter(Boolean))];
+  if (!names.length) return [];
+  const captains = db.prepare("SELECT phone,name,registration_name FROM users WHERE role='captain' AND active=1 AND account_status='active'").all();
+  const matches = captains.filter((captain) => {
+    const values = [captain.name, captain.registration_name].map(normalizeReactionOwnerName).filter(Boolean);
+    return names.some((name) => values.includes(name));
+  });
+  const phones = [...new Set(matches.map((captain) => phoneWithCountry(captain.phone)).filter(isValidJordanPhone))];
+  if (phones.length) {
+    console.log(`[WhatsApp] reaction owner resolved from visible details: ${phones.length} active captain match(es)`);
+  }
+  return phones;
 }
 
 function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
@@ -4078,6 +4135,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
       if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
     }
   }
+  if (!botProducer && reactionPresentOnAcceptance && !reactionPhones.length) {
+    reactionPhones.push(...await resolveVisibleReactionSenderPhones(acceptanceMessageId));
+  }
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
@@ -4181,6 +4241,12 @@ async function handleMessageReaction(reaction) {
   if (!isCaptainAcceptance(target.body)) return;
   if (target.fromMe) return;
   let approverPhone = await resolveReactionSenderPhone(reaction);
+  if (!approverPhone) {
+    const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
+      ? await resolveVisibleReactionSenderPhones(messageId, { emoji: cancellationReaction ? "❌" : "👍" })
+      : [];
+    if (visiblePhones.length === 1) approverPhone = visiblePhones[0];
+  }
   // WhatsApp may emit a LID-only sender on the live event while the full
   // reaction collection contains the sender identity that can be mapped to PN.
   if (!approverPhone && typeof target.getReactions === "function") {
@@ -4342,9 +4408,12 @@ async function reconcileStoredThumbReaction(messageId) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (await hasVisibleThumbReaction(messageId)) {
-      // Visibility proves that a thumb exists, not who placed it. Re-read the
-      // stored sender identities; never manufacture self-reaction evidence.
-      await handleMessageReaction({ reaction: "👍", msgId: messageId });
+      const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
+        ? await resolveVisibleReactionSenderPhones(messageId)
+        : [];
+      for (const phone of visiblePhones) {
+        await handleMessageReaction({ reaction: "👍", msgId: messageId, __senderPhone: phone });
+      }
       return;
     }
     console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(messageId).slice(0, 80)}`);
