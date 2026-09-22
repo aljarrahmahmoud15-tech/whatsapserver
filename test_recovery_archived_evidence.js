@@ -9,7 +9,7 @@ assert.match(source, /messageId === quotedMessageIdHint \|\| messageId\.endsWith
 assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
 assert.match(source, /const archivedHasSenders = Array\.isArray\(archivedReactions\)/);
 assert.match(source, /liveAcceptance = await withTimeout\(client\.getMessageById\(acceptanceMessageId\)/);
-assert.match(source, /const liveReactions = !botProducer && !archivedHasSenders/);
+assert.match(source, /const liveReactions = !storedRecovery && !botProducer && !archivedHasSenders/);
 assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
 assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
 assert.match(source, /const rawReactionHint = Boolean\(acceptance\.hasReaction \|\| acceptance\.__hasReaction \|\| acceptance\._data\?\.hasReaction/);

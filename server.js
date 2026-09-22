@@ -1845,7 +1845,10 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
     const sourceRow = loggedById.get(sourceMessageId);
     const acceptanceRow = loggedById.get(acceptanceMessageId);
     const source = { id: { _serialized: sourceRow.message_id }, __serializedId: sourceRow.message_id, from: groupId, to: groupId, fromMe: sourceRow.message_id.startsWith("true_"), body: sourceRow.body, __authorPhone: sourceRow.sender_phone, timestamp: Math.floor(new Date(sourceRow.sent_at).getTime() / 1000) };
-    const acceptance = { id: { _serialized: acceptanceRow.message_id }, __serializedId: acceptanceRow.message_id, from: groupId, fromMe: false, body: acceptanceRow.body, author: { _serialized: `${acceptanceRow.sender_phone || ""}@c.us` }, __authorPhone: acceptanceRow.sender_phone, timestamp: Math.floor(new Date(acceptanceRow.sent_at).getTime() / 1000) };
+    const acceptance = { id: { _serialized: acceptanceRow.message_id }, __serializedId: acceptanceRow.message_id, from: groupId, fromMe: false, body: acceptanceRow.body, author: { _serialized: `${acceptanceRow.sender_phone || ""}@c.us` }, __authorPhone: acceptanceRow.sender_phone, timestamp: Math.floor(new Date(acceptanceRow.sent_at).getTime() / 1000), __storedRecovery: true };
+    const persistedReactionRows = storedReactionEvidence(acceptanceRow.message_id, "👍");
+    acceptance.__hasReaction = persistedReactionRows.length > 0;
+    acceptance.__reactions = persistedReactionRows.map((row) => ({ aggregateEmoji: row.emoji, reaction: row.emoji, senders: [{ __senderPhone: row.sender_phone || null, senderId: row.sender_id || row.sender_key || null }] }));
     if (client.pupPage) {
       acceptance.__hasReaction = await withTimeout(client.pupPage.evaluate(async (messageId) => {
         try {
@@ -4256,10 +4259,103 @@ function recoveryEvidenceSummary(evidence) {
   };
 }
 
+function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000) {
+  const safeHours = Math.max(1, Math.min(Number(hours || 168), 168));
+  const safeLimit = Math.max(1, Math.min(Number(limit || 1000), 2000));
+  const cutoff = new Date(Date.now() - safeHours * 60 * 60 * 1000).toISOString();
+  const rows = db.prepare(
+    `
+    SELECT
+      c.id AS candidate_id,
+      c.source_message_id,
+      c.group_id,
+      c.raw_text,
+      c.price_cents,
+      c.origin,
+      c.destination,
+      c.trip_time,
+      c.order_kind,
+      c.created_at AS candidate_created_at,
+      a.acceptance_message_id,
+      a.created_at AS acceptance_created_at,
+      p.phone AS producer_phone,
+      p.name AS producer_name,
+      p.is_bot AS producer_is_bot,
+      cap.phone AS captain_phone,
+      cap.name AS captain_name,
+      sm.body AS source_body,
+      sm.sent_at AS source_sent_at,
+      am.body AS acceptance_body,
+      am.sent_at AS acceptance_sent_at
+    FROM order_candidates c
+    JOIN order_candidate_acceptances a ON a.candidate_id = c.id
+    JOIN users p ON p.id = c.producer_user_id
+    JOIN users cap ON cap.id = a.captain_user_id
+    LEFT JOIN messages sm ON sm.message_id = c.source_message_id AND sm.group_id = c.group_id
+    LEFT JOIN messages am ON am.message_id = a.acceptance_message_id AND am.group_id = c.group_id
+    WHERE c.group_id = ?
+      AND c.status = 'pending'
+      AND c.final_order_id IS NULL
+      AND a.status IN ('pending','selected')
+      AND datetime(a.created_at) >= datetime(?)
+    ORDER BY a.id DESC
+    LIMIT ?
+  `
+  ).all(groupId, cutoff, safeLimit);
+  const reactions = db.prepare(
+    "SELECT emoji,sender_key,sender_id,sender_phone,source FROM reaction_evidence WHERE message_id=? AND group_id=? AND emoji='👍' AND active=1 ORDER BY id DESC"
+  );
+  const toTimestamp = (value, fallback) => {
+    const parsed = Date.parse(String(value || ''));
+    const fallbackNumber = Number(fallback || 0);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : (fallbackNumber || Math.floor(Date.now() / 1000));
+  };
+  const messages = [];
+  for (const row of rows) {
+    const source = {
+      id: { _serialized: row.source_message_id },
+      __serializedId: row.source_message_id,
+      from: groupId,
+      to: groupId,
+      fromMe: Boolean(row.producer_is_bot) || String(row.source_message_id || '').startsWith('true_'),
+      body: String(row.source_body || row.raw_text || ''),
+      __authorPhone: row.producer_phone || null,
+      timestamp: toTimestamp(row.source_sent_at, row.candidate_created_at),
+    };
+    const reactionRows = reactions.all(row.acceptance_message_id, groupId);
+    const acceptance = {
+      id: { _serialized: row.acceptance_message_id },
+      __serializedId: row.acceptance_message_id,
+      from: groupId,
+      to: groupId,
+      fromMe: false,
+      body: String(row.acceptance_body || 'تم'),
+      author: { _serialized: String(row.captain_phone || '') + '@c.us' },
+      __authorPhone: row.captain_phone || null,
+      timestamp: toTimestamp(row.acceptance_sent_at, row.acceptance_created_at),
+      __quoted: source,
+      __quotedMessageId: row.source_message_id,
+      __storedRecovery: true,
+      __hasReaction: reactionRows.length > 0,
+      __reactions: reactionRows.map((reaction) => ({
+        aggregateEmoji: reaction.emoji,
+        reaction: reaction.emoji,
+        senders: [{
+          __senderPhone: reaction.sender_phone || null,
+          senderId: reaction.sender_id || reaction.sender_key || null,
+        }],
+      })),
+    };
+    messages.push(source, acceptance);
+  }
+  return { chat: { id: groupId, isGroup: true }, messages, rows: rows.length, source: 'database_candidates' };
+}
+
 async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const acceptanceMessageId = serializedMessageId(acceptance);
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
   let liveAcceptance = acceptance;
+  const storedRecovery = acceptance.__storedRecovery === true;
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
@@ -4274,13 +4370,13 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     : null;
   const archivedQuoted = indexedQuoted || acceptance.__quoted || null;
   let liveQuoted = archivedQuoted;
-  if (!liveQuoted && client && typeof client.getMessageById === "function") {
+  if (!liveQuoted && !storedRecovery && client && typeof client.getMessageById === "function") {
     liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
     liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
       : liveAcceptance.__quoted || null;
   }
-  if (!liveQuoted && client?.interface && typeof client.interface.openChatWindowAt === "function") {
+  if (!liveQuoted && !storedRecovery && client?.interface && typeof client.interface.openChatWindowAt === "function") {
     await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
     await new Promise((resolve) => setTimeout(resolve, 750));
     const hydratedAcceptance = typeof client.getMessageById === "function"
@@ -4304,10 +4400,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     : null);
   const archivedHasSenders = Array.isArray(archivedReactions)
     && archivedReactions.some((reaction) => Array.isArray(reaction?.senders) && reaction.senders.length);
-  if (!botProducer && !archivedHasSenders && typeof client?.getMessageById === "function") {
+  if (!storedRecovery && !botProducer && !archivedHasSenders && typeof client?.getMessageById === "function") {
     liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || liveAcceptance;
   }
-  const liveReactions = !botProducer && !archivedHasSenders && typeof liveAcceptance.getReactions === "function"
+  const liveReactions = !storedRecovery && !botProducer && !archivedHasSenders && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
   const internalReactions = (!Array.isArray(liveReactions) || !liveReactions.length)
@@ -4323,7 +4419,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
         : (internalReactions.length ? internalReactions : (liveAcceptance.__reactions || acceptance.__reactions || []))));
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
   let reactionPresentOnAcceptance = Boolean(thumbs.length);
-  if (!reactionPresentOnAcceptance && (botProducer || rawReactionHint) && client?.pupPage) {
+  if (!storedRecovery && !reactionPresentOnAcceptance && (botProducer || rawReactionHint) && client?.pupPage) {
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -4338,7 +4434,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
       if (isValidJordanPhone(senderPhone)) reactionPhones.push(senderPhone);
     }
   }
-  if (!botProducer && reactionPresentOnAcceptance && !reactionPhones.length) {
+  if (!storedRecovery && !botProducer && reactionPresentOnAcceptance && !reactionPhones.length) {
     reactionPhones.push(...await resolveVisibleReactionSenderPhones(acceptanceMessageId));
   }
   const persistedReactionRows = storedReactionEvidence(acceptanceMessageId, "👍");
@@ -4375,9 +4471,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  // Policy: any 👍 on the exact quoted «تم» reply confirms the booking.
-  // The reaction owner is recorded as optional evidence, but never blocks approval.
-  const authorizedThumb = Boolean(reactionPresentOnAcceptance);
+  // Policy: human-owned bookings require a 👍 on the exact quoted «تم» reply.
+  // Bot/company-owned bookings are approved by the valid quoted «تم» itself;
+  // any bot 👍 is presentation-only and never becomes a settlement gate.
+  const authorizedThumb = botProducer ? true : Boolean(reactionPresentOnAcceptance);
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -7004,6 +7101,7 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
   let chat;
   let messages;
+  let historySource = "whatsapp_history";
   const expected = {
     sourceMessageId: String(req.body?.sourceMessageId || "").trim(),
     acceptanceMessageId: String(req.body?.acceptanceMessageId || "").trim(),
@@ -7023,8 +7121,15 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     messages = exactMessages;
   } else {
     const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
-    chat = history.chat;
-    messages = history.messages;
+    if (history.chat && Array.isArray(history.messages) && history.messages.length) {
+      chat = history.chat;
+      messages = history.messages;
+    } else {
+      const stored = buildStoredRecoveryMessages(groupId, hours, limit);
+      chat = history.chat || stored.chat;
+      messages = stored.messages;
+      historySource = "database_candidates";
+    }
   }
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
@@ -7041,7 +7146,7 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     }
   }
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, mutation: "none" });
+  res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
 app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
   if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {

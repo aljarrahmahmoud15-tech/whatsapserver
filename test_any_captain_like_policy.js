@@ -3,7 +3,7 @@ const fs = require('node:fs');
 
 const source = fs.readFileSync('server.js', 'utf8');
 
-assert.match(source, /const authorizedThumb = Boolean\(reactionPresentOnAcceptance\);/);
+assert.match(source, /const authorizedThumb = botProducer \? true : Boolean\(reactionPresentOnAcceptance\);/);
 assert.match(source, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(source, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\);/);
 assert.match(source, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);

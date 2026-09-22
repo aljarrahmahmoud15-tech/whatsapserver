@@ -65,7 +65,7 @@ assert.match(server, /const senderPhone = message\.fromMe\s*\? connectedBotPhone
 assert.match(server, /historical_order_producer_unresolved/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);
 assert.match(server, /acceptance_message_replayed_after_duplicate_guard/);
-assert.match(server, /const authorizedThumb = Boolean\(reactionPresentOnAcceptance\)/);
+assert.match(server, /const authorizedThumb = botProducer \? true : Boolean\(reactionPresentOnAcceptance\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
 assert.match(server, /quotedReplyId === pending\.source_message_id/);
 assert.match(server, /confirmingCaptainFeeCents/);
