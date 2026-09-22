@@ -4623,6 +4623,14 @@ async function reconcileStoredThumbReaction(messageId) {
   if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
   const target = await withTimeout(client.getMessageById(messageId), 12000, null);
   if (!target || typeof target.getReactions !== "function") return;
+  const targetGroupId = String(target.from || target._data?.from || "").trim();
+  if (!targetGroupId.endsWith("@g.us") || !isConfiguredGroup(targetGroupId)) {
+    logOrderTrace("reaction_scan_ignored_unconfigured_group", {
+      groupKey: orderTraceKey(targetGroupId),
+      reactionKey: orderTraceKey(messageId),
+    });
+    return;
+  }
   let reactions = await withTimeout(target.getReactions(), 12000, []);
   if (!Array.isArray(reactions) || !reactions.length) {
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
