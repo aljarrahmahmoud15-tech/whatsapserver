@@ -8542,7 +8542,15 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     const existing = registration.state;
     return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
   }
-  const sendPromise = Promise.resolve().then(() => client.sendMessage(chatId, message));
+  const sendPromise = Promise.resolve().then(async () => {
+    const chat = typeof client.getChatById === "function"
+      ? await withTimeout(client.getChatById(chatId), 12000, null)
+      : null;
+    if (chat && typeof chat.sendMessage === "function") {
+      return chat.sendMessage(message, { waitUntilMsgSent: false });
+    }
+    return client.sendMessage(chatId, message, { waitUntilMsgSent: false });
+  });
   const sendTimeoutMarker = {};
   try {
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);

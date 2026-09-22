@@ -12,7 +12,9 @@ assert.match(server, /void approveBotOwnedAcceptance\(\{ groupId, message: msg, 
 assert.match(server, /await reactToCaptainAcceptance\(message, acceptanceMessageId\)/);
 assert.match(server, /await withTimeout\(target\.react\("👍"\), 12000, null\)/);
 assert.match(server, /const ADMIN_SEND_TIMEOUT_MS = Math\.max\(5000, Math\.min\(60000, Number\(process\.env\.ADMIN_SEND_TIMEOUT_MS \|\| 20000\)\)\);/);
-assert.match(server, /const sendPromise = Promise\.resolve\(\)\.then\(\(\) => client\.sendMessage\(chatId, message\)\);/);
+assert.match(server, /const sendPromise = Promise\.resolve\(\)\.then\(async \(\) =>/);
+assert.match(server, /client\.getChatById\(chatId\)/);
+assert.match(server, /chat\.sendMessage\(message, \{ waitUntilMsgSent: false \}\)/);
 assert.match(server, /sendState: "pending"/);
 assert.match(server, /message\.send_pending/);
 assert.match(server, /message\.sent_after_timeout/);
