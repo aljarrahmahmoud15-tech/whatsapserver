@@ -4330,17 +4330,10 @@ async function reconcileStoredThumbReaction(messageId) {
   }
 }
 async function retryFailedBookingConfirmations(groupId) {
-  if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const rows = db.prepare(`SELECT d.order_id,d.group_id,d.attempts,d.updated_at,o.order_no,o.price_cents,o.captain_name_snapshot,o.producer_name_snapshot
-    FROM order_confirmation_deliveries d JOIN orders o ON o.id=d.order_id
-    WHERE d.group_id=? AND d.status IN ('failed','pending') AND o.status IN ('accepted','completed') AND o.settlement_state='settled'
-    ORDER BY d.updated_at ASC LIMIT ?`).all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, 10));
-  for (const row of rows) {
-    const updatedAtMs = Date.parse(String(row.updated_at || ""));
-    const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
-    if (Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS) continue;
-    await sendFinalBookingConfirmation(row.group_id, { orderId: row.order_id, orderNo: row.order_no, executorName: row.captain_name_snapshot, downloaderName: row.producer_name_snapshot, priceCents: row.price_cents });
-  }
+  // Do not replay historical failed cards automatically after a reconnect.
+  // New confirmations still use sendFinalBookingConfirmation exactly once;
+  // any failed delivery must be retried explicitly by an owner action.
+  return { status: "disabled", reason: "manual_resend_only", groupId };
 }
 
 function parseCookies(header = "") {
