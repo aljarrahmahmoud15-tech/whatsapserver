@@ -5750,6 +5750,22 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
   const amountCents = Math.round(amount * 100);
+  if (direction === "credit" && creditMode === "direct") {
+    const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+    if (existing) return res.status(409).json({ error: "هذه الحركة مسجلة مسبقًا", ledgerId: existing.id, reference: existing.reference });
+    if (!captain.active || captain.account_status !== "active") return res.status(409).json({ error: "حساب الكابتن غير نشط أو غير معتمد" });
+    const nextBalance = captain.wallet_cents + amountCents;
+    const reference = "ADMIN-DIRECT-" + Date.now() + "-" + crypto.randomBytes(4).toString("hex");
+    const stamp = now();
+    const ledgerId = db.transaction(() => {
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
+      const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "admin_credit", amountCents, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, creditMode, amount, amountCents, reason, actor: "owner", source: "company_direct" }), idempotencyKey);
+      audit("captain.wallet.credited_direct", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner", source: "company_direct" });
+      return result.lastInsertRowid;
+    })();
+    void notifyOperations({ event: "captain.wallet.credited_direct", title: "تأكيد إضافة رصيد مباشرة", captainPhone: captain.phone, lines: ["الكابتن: " + captain.name, "تمت إضافة: " + money(amountCents) + " JOD", "الرصيد الحالي: " + money(nextBalance) + " JOD", "السبب: " + reason, "تم تسجيل الحركة المباشرة في دفتر الشركة."], ownersOnly: true });
+    return res.status(201).json({ success: true, mode: "direct", ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance, credited: money(amountCents) });
+  }
   if (direction === "credit") {
     if (!cardEncryptionKey) return res.status(503).json({ error: "تشفير بطاقات الشحن غير مهيأ" });
     if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
@@ -6564,10 +6580,11 @@ async function handleAdminWalletAdjustment(req, res) {
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active,role,account_status,is_bot FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
   if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لمحفظة كابتن" });
   const direction = String(req.body.direction || "").toLowerCase();
+  const creditMode = String(req.body.creditMode || "card").toLowerCase();
   const amount = Number(req.body.amount);
   const reason = String(req.body.reason || "").trim();
   const idempotencyKey = String(req.body.idempotencyKey || "").trim();
-  if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
+  if (!["credit", "debit"].includes(direction) || (direction === "credit" && !["card", "direct"].includes(creditMode)) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
     return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
   const amountCents = Math.round(amount * 100);

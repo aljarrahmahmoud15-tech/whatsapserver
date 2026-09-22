@@ -14,7 +14,10 @@ assert.match(server, /SUPPORT-TICKET-\$\{ticketId\}/);
 assert.match(server, /تم إصدار بطاقة الرصيد لكن WhatsApp غير جاهز للإرسال حاليًا/);
 assert.match(server, /يُضاف الرصيد عند إدخال رمز البطاقة/);
 assert.match(server, /topup_card\.redeemed/);
-assert.doesNotMatch(server, /direction === "credit"[\s\S]{0,1200}UPDATE users SET wallet_cents=wallet_cents/);
+assert.match(server, /const creditMode = String\(req.body\.creditMode \|\| "card"\)/);
+assert.match(server, /if \(direction === "credit" && creditMode === "direct"\)/);
+assert.match(server, /source: "company_direct"/);
+assert.match(server, /actor: "owner"/);
 assert.match(index, /r\.cardId\?'تم إصدار بطاقة الرصيد وإرسالها للكابتن/);
 
 console.log('company wallet credits require an issued top-up card and idempotent delivery');
