@@ -18,6 +18,11 @@ assert.match(html, /معرّف رد «تم»/, "المعاينة يجب أن ت�
 assert.match(html, /مطابق لكن معرّفات الرسائل ناقصة/, "الصف المطابق بلا معرفي الرسائل يجب ألا يظهر كقابل للاعتماد");
 assert.match(html, /تحتاج معرّفي الرسائل/, "الصف المطابق بلا معرفي الرسائل يجب أن يمنع زر الاعتماد");
 assert.match(html, /const canConfirm=Boolean\(m\.match&&sourceId&&acceptanceId\)/, "الاعتماد يجب أن يتطلب معرفي الرسائل معًا");
+assert.match(html, /const orderedRecoveryMatches=\[\.\.\.recoveryMatches\]\.sort\(/, "نتائج المعاينة يجب أن ترتب قبل العرض");
+assert.match(html, /m\.match&&m\.sourceMessageId&&m\.acceptanceMessageId\?0/, "الصف الكامل بالأدلة يجب أن يأخذ أولوية العرض");
+assert.match(html, /recoveryMatches=orderedRecoveryMatches/, "زر الاعتماد يجب أن يستخدم الفهارس بعد الترتيب الجديد");
+assert.match(html, /الأول المؤهل للاعتماد/, "أول صف مؤهل يجب أن يحمل وسمًا صريحًا");
+assert.match(html, /const eligibleCount=recoveryMatches\.filter\(m=>m\.match&&m\.sourceMessageId&&m\.acceptanceMessageId\)\.length/, "رسالة المعاينة يجب أن تعرض عدد الصفوف المؤهلة الكاملة");
 assert.match(html, /const payload=recoveryPayload\(match\)/, "زر الاعتماد يجب أن يبني الحمولة من الصف المحدد");
 assert.doesNotMatch(html, /api\('\/api\/admin\/group\/confirm-one',[\s\S]{0,240}JSON\.stringify\(recoveryPayload\(\)\)/, "لا يجوز لزر الاعتماد إرسال الحقول العامة بدل الصف المحدد");
 assert.match(html, /error\.data=data/, "واجهة الإدارة يجب أن تحتفظ بتفاصيل خطأ المطابقة");
