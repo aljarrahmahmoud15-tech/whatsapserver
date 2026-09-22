@@ -4344,9 +4344,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  const authorizedThumb = botProducer
-    ? (reactedByBot || hasBotConfirmationCard)
-    : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
+  // Policy: any 👍 on the exact quoted «تم» reply confirms the booking.
+  // The reaction owner is recorded as optional evidence, but never blocks approval.
+  const authorizedThumb = Boolean(reactionPresentOnAcceptance);
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -4567,24 +4567,16 @@ async function handleMessageReaction(reaction) {
     return;
   }
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
-  const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
-  const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
-  if (!approverPhone) {
-    updateOrderCandidateLifecycle(pending.candidate_id, "identity_unresolved", "identity_unresolved", { acceptanceMessageId: messageId });
-    notifyOrderLifecycleBlocker(pending.candidate_id, "identity_unresolved", { acceptanceMessageId: messageId });
-  }
-  if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) {
-    if (approverPhone) updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "approver_ineligible", { acceptanceMessageId: messageId });
+  const acceptanceCaptain = pending.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.captain_user_id) : null;
+  if (!producer || !acceptanceCaptain || acceptanceCaptain.active !== 1 || acceptanceCaptain.account_status !== "active") {
+    updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "captain_identity_unresolved", { acceptanceMessageId: messageId });
+    notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  const producerApproved = botCompanyApproval
-    ? (producer.role === "company" || producer.is_bot === 1)
-    : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
-  if (!producerApproved) {
-    updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", { acceptanceMessageId: messageId });
-    return;
-  }
-  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, approverPhone);
+  // Policy: any captain's 👍 on the exact quoted «تم» reply confirms the booking.
+  // The reply captain is the executor; the reaction owner is not an authorization gate.
+  const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
+  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone);
   if (result.state !== "accepted") {
     const blockedStage = result.state === "debt_limit" ? "debt_limit" : result.state === "archived" ? "archived" : "awaiting_authorized_thumb";
     updateOrderCandidateLifecycle(pending.candidate_id, blockedStage, result.state, { acceptanceMessageId: pending.acceptance_message_id });
@@ -7244,8 +7236,10 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       const body = String(message?.__caption || message?.body || "");
       return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
     });
-    const confirmedByPhone = (reactedByBot || hasBotConfirmationCard) ? connectedBotPhone() : reactionPhones.find((phone) => phone === producerPhone || isGroupSetupOwner(phone)) || (visibleThumbReaction ? "visual_thumb_unresolved" : "");
-    if (!confirmedByPhone) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_authorized_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
+    const persistedThumbEvidence = storedReactionEvidence(acceptanceMessageId, "👍");
+    const reactionPresentOnAcceptance = Boolean(thumbs.length || visibleThumbReaction || persistedThumbEvidence.length);
+    const confirmedByPhone = quoted.fromMe ? connectedBotPhone() : producerPhone;
+    if (!reactionPresentOnAcceptance) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
@@ -7264,9 +7258,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
     if (order.archive_state === "archived") { skipped.push({ messageId: acceptanceMessageId, reason: "order_archived", orderNo: order.order_no }); continue; }
     const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now()).toISOString();
-    if (!captain || !producer || confirmedByPhone === "visual_thumb_unresolved") {
+    if (!captain || !producer) {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(captain?.id || null, captainPhone || null, captain?.name || captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
-      unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: confirmedByPhone === "visual_thumb_unresolved" ? "reaction_owner_unresolved" : (!captain ? "captain_not_registered" : "producer_not_registered") });
+      unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: !captain ? "captain_not_registered" : "producer_not_registered" });
       continue;
     }
     const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt, confirmedByPhone });

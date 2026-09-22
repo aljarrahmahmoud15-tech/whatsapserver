@@ -270,9 +270,11 @@ async function approve(doneId = "done-1") {
   state.targets = { "done-lid": message("done-lid", "تم", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = "";
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
-  assert.equal(state.candidate.status, "pending", "هوية LID غير المحلولة تبقي الطلب معلقًا");
-  assert.equal(state.ledgers.length, 0);
-  assert.equal(state.candidate.lifecycle_stage, "identity_unresolved");
+  assert.equal(state.candidate.status, "finalized", "هوية صاحب 👍 غير المطلوبة لا تمنع التثبيت");
+  assert.equal(state.ledgers.length, 3);
+  assert.equal(users.producer.wallet_cents, 240);
+  assert.equal(users.company.wallet_cents, 60);
+  assert.equal(users.executor.wallet_cents, 4700);
 
   reset({ executorBalance: -199 });
   await ingestPrice();

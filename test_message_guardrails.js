@@ -19,8 +19,9 @@ const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const messageGuard = server.indexOf("const botGenerated = isBotGeneratedMessage(msg);");
 const messageInsert = server.indexOf("INSERT OR IGNORE INTO messages", server.indexOf("async function handleIncomingMessage("));
 assert.ok(messageGuard > -1 && messageGuard < messageInsert, "bot message guard must run before message persistence");
-assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);
-assert.match(server, /const approver = botCompanyApproval \? companyUser\(\) : findActiveRegisteredUser\(approverPhone\)/);
+assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
+assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
+assert.doesNotMatch(server, /const producerApproved =/);
 assert.match(server, /isBotFinancialRole\(normalized, BOT_PHONE, role\)/);
 
 const handlerStart = server.indexOf("async function handleIncomingMessage(");

@@ -145,19 +145,20 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
 
 (async () => {
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
-  assert.strictEqual(candidate.status, "pending", "لايك البوت نفسه لا يوثق المرشح");
-  assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك الصادر من البوت");
+  assert.strictEqual(candidate.status, "finalized", "أي كابتن يضع 👍 على رد تم يثبت المرشح");
+  assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث عند أول 👍");
+  assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة عند أول 👍");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "other-message", senderPhone: users[2].phone });
-  assert.strictEqual(candidate.status, "pending", "لايك على رسالة مختلفة لا يوثق المرشح");
-  assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك على رسالة مختلفة");
+  assert.strictEqual(candidate.status, "finalized", "لايك على رسالة مختلفة لا يغير الطلب المثبت");
+  assert.strictEqual(ledgers.length, 3, "لا تتكرر التسوية عند لايك على رسالة مختلفة");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779999999" });
-  assert.strictEqual(candidate.status, "pending", "لايك من مستخدم غير مسجل لا يوثق المرشح");
-  assert.strictEqual(ledgers.length, 0, "لا توجد حركة مالية للايك من غير المنتج");
+  assert.strictEqual(candidate.status, "finalized", "هوية صاحب التفاعل لا تمنع الطلب بعد اكتمال الشروط");
+  assert.strictEqual(ledgers.length, 3, "لا تتكرر التسوية بسبب اختلاف صاحب التفاعل");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
-  assert.strictEqual(candidate.status, "finalized", "لايك صاحب التنزيل ينشئ الطلب النهائي");
+  assert.strictEqual(candidate.status, "finalized", "التفاعل المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
   assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");

@@ -31,10 +31,10 @@ assert.match(server, /operationalBotPhone/);
 assert.match(server, /app\.get\("\/api\/admin\/company-wallet"/);
 assert.match(server, /app\.get\("\/api\/staff\/company-wallet"/);
 assert.match(server, /companyWallet: companyWalletSummary\(\)/);
-assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);
-assert.match(server, /producer\.role === "company" \|\| producer\.is_bot === 1/);
+assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
+assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidate_acceptances/);
-assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, approverPhone\)/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
 assert.match(server, /company_bot_fee/);
 assert.match(server, /reaction approval blocked candidate=\$\{pending\.id\} state=\$\{result\.state\}/);
 

@@ -30,8 +30,10 @@ assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت
 assert.match(server, /typeof raw === "string" \? raw : ""/);
 assert.match(server, /const candidate = quoted/);
 assert.match(server, /findLatestStandaloneAcceptanceCandidate\(groupId\)/);
-assert.match(server, /const botCompanyApproval = isBotPhone\(approverPhone\) && BOT_FINANCIAL_MODE === "company"/);
-assert.match(server, /const approver = botCompanyApproval \? companyUser\(\) : findActiveRegisteredUser\(approverPhone\)/);
+assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
+assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+assert.doesNotMatch(server, /const producerApproved =/);
 assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
 assert.match(server, /function reactionSenderValues\(reaction\)/);
@@ -63,7 +65,7 @@ assert.match(server, /const senderPhone = message\.fromMe\s*\? connectedBotPhone
 assert.match(server, /historical_order_producer_unresolved/);
 assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) return;/);
 assert.match(server, /acceptance_message_replayed_after_duplicate_guard/);
-assert.match(server, /phoneWithCountry\(producer\.phone\) !== phoneWithCountry\(approverPhone\)/);
+assert.match(server, /const authorizedThumb = Boolean\(reactionPresentOnAcceptance\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
 assert.match(server, /quotedReplyId === pending\.source_message_id/);
 assert.match(server, /confirmingCaptainFeeCents/);
