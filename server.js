@@ -3375,6 +3375,23 @@ async function resolveWhatsappLidsFromConfiguredGroup(lidIds) {
     }
   }, lidIds), 12000, []);
 }
+async function resolveWhatsappLidsDirectFromPage(lidIds) {
+  if (!client?.pupPage || !isReady || !Array.isArray(lidIds) || !lidIds.length) return [];
+  return withTimeout(client.pupPage.evaluate((requestedLids) => {
+    try {
+      const widFactory = window.require("WAWebWidFactory");
+      const { toPn } = window.require("WAWebLidMigrationUtils");
+      return requestedLids.map((lid) => {
+        const lidWid = widFactory.createWid(lid);
+        const phoneWid = toPn(lidWid) || null;
+        const pn = phoneWid && (phoneWid._serialized || (phoneWid.user && phoneWid.server ? `${phoneWid.user}@${phoneWid.server}` : String(phoneWid)));
+        return { lid, pn: pn || null };
+      }).filter((mapping) => mapping.pn);
+    } catch (_) {
+      return [];
+    }
+  }, lidIds), 12000, []);
+}
 async function resolveWhatsappUserPhone(...values) {
   for (const value of values) {
     const direct = directJordanPhoneFromWhatsappValue(value);
@@ -3407,6 +3424,16 @@ async function resolveWhatsappUserPhone(...values) {
     } catch (error) {
       console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
     }
+  }
+  const directMappings = await resolveWhatsappLidsDirectFromPage(lidIds);
+  for (const mapping of Array.isArray(directMappings) ? directMappings : []) {
+    const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+    const lid = serializedWhatsappUserId(mapping?.lid);
+    if (!phone || !lidIds.includes(lid)) continue;
+    whatsappLidPhoneCache.set(lid, phone);
+    if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "direct_toPn");
+    console.log(`[WhatsApp] LID resolved directly with toPn: ${orderTraceKey(lid)}`);
+    return phone;
   }
   const groupMappings = await resolveWhatsappLidsFromConfiguredGroup(lidIds);
   for (const mapping of Array.isArray(groupMappings) ? groupMappings : []) {
@@ -4132,7 +4159,12 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
     : null);
-  const liveReactions = !botProducer && (!Array.isArray(archivedReactions) || !archivedReactions.length) && typeof liveAcceptance.getReactions === "function"
+  const archivedHasSenders = Array.isArray(archivedReactions)
+    && archivedReactions.some((reaction) => Array.isArray(reaction?.senders) && reaction.senders.length);
+  if (!botProducer && !archivedHasSenders && typeof client?.getMessageById === "function") {
+    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || liveAcceptance;
+  }
+  const liveReactions = !botProducer && !archivedHasSenders && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
     : null;
   const reactions = Array.isArray(liveReactions) && liveReactions.length
