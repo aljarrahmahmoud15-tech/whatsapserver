@@ -4351,6 +4351,14 @@ function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000) {
   return { chat: { id: groupId, isGroup: true }, messages, rows: rows.length, source: 'database_candidates' };
 }
 
+function buildStoredRecoveryMessagesByIds(groupId, sourceMessageId, acceptanceMessageId) {
+  const requested = new Set([sourceMessageId, acceptanceMessageId].map((value) => String(value || '').trim()).filter(Boolean));
+  if (requested.size !== 2) return [];
+  const stored = buildStoredRecoveryMessages(groupId, 168, 2000);
+  const messages = stored.messages.filter((message) => requested.has(serializedMessageId(message)));
+  return messages.length === requested.size ? messages : [];
+}
+
 async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const acceptanceMessageId = serializedMessageId(acceptance);
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
@@ -7235,7 +7243,8 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
     messages = automatic.messages;
   } else {
     if (!sourceMessageId || !acceptanceMessageId) return res.status(400).json({ error: "Provide both internal evidence IDs or omit both so the system resolves them automatically" });
-    messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
+    messages = buildStoredRecoveryMessagesByIds(groupId, sourceMessageId, acceptanceMessageId);
+    if (messages.length < 2) messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
     if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
     const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
     evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);

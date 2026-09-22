@@ -13,6 +13,8 @@ assert.match(server, /historySource = "database_candidates"/);
 assert.match(server, /source: historySource, mutation: "none"/);
 assert.match(server, /const storedRecovery = acceptance\.__storedRecovery === true/);
 assert.ok(server.includes('if (!liveQuoted && !storedRecovery && client && typeof client.getMessageById === "function")'));
+assert.match(server, /function buildStoredRecoveryMessagesByIds\(groupId, sourceMessageId, acceptanceMessageId\)/);
+assert.match(server, /messages = buildStoredRecoveryMessagesByIds\(groupId, sourceMessageId, acceptanceMessageId\);[\s\S]*if \(messages\.length < 2\) messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\);/);
 assert.match(server, /const authorizedThumb = botProducer \? true : Boolean\(reactionPresentOnAcceptance\)/);
 assert.match(server, /if \(!groupId \|\| !isConfiguredGroup\(groupId\)\) return res\.status\(409\)\.json\(\{ error: "No configured production group" \}\)/);
 assert.match(server, /res\.json\(\{ success: true, groupId, hours, scanned: messages\.length, acceptanceMessages: acceptanceMessages\.length, matches, filters: expected, source: historySource, mutation: "none" \}\)/);
