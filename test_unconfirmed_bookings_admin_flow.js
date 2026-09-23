@@ -17,6 +17,9 @@ assert.match(server, /settlePendingOrder\(candidate\.id, acceptance\.acceptance_
 assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone, \{ adminApproval = false \} = \{\}\)/);
 assert.match(server, /const equivalentOrder = findEquivalentOrder\(current\.group_id, current\.source_message_id\)/);
 assert.match(server, /importSource: "admin_archived_candidate_recovery"/);
+assert.match(server, /allowArchivedRestore: true/);
+assert.match(server, /current\.archive_state === "archived" && !allowArchivedRestore/);
+assert.match(server, /archive_state='active',archived_at=NULL,archive_reason=NULL/);
 assert.match(server, /state: "already_registered"/);
 assert.match(server, /const equivalentOrder = findEquivalentOrder\(row\.group_id, row\.source_message_id\)/);
 assert.match(server, /SELECT status FROM order_settlements WHERE order_id=\? ORDER BY id DESC LIMIT 1/);
