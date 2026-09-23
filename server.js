@@ -7057,6 +7057,38 @@ async function handleAdminWalletAdjustment(req, res) {
   void notifyOperations({ event: "captain.wallet.debited", title: "تأكيد خصم من محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `تم خصم: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 }
+function handleAdminDirectWalletCredit(req, res) {
+  const id = Number(req.params.id);
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,active,role,account_status,is_bot FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
+  if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لمحفظة كابتن" });
+  const amount = Number(req.body?.amount);
+  const reason = String(req.body?.reason || "").trim();
+  const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "المبلغ والسبب ومفتاح منع التكرار مطلوبة" });
+  const amountCents = Math.round(amount * 100);
+  if (amountCents < 1) return res.status(400).json({ error: "المبلغ صغير جدًا" });
+  if (!captain.active || captain.account_status !== "active") return res.status(409).json({ error: "حساب الكابتن غير نشط أو غير معتمد" });
+  const existing = db.prepare("SELECT id,user_id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing) {
+    if (Number(existing.user_id) !== id || Number(existing.amount_cents) !== amountCents) return res.status(409).json({ error: "مفتاح العملية مستخدم لحركة مختلفة" });
+    return res.json({ success: true, mode: "direct", alreadyApplied: true, ledgerId: existing.id, reference: existing.reference, balance: money(existing.balance_after_cents), balanceCents: existing.balance_after_cents, credited: money(amountCents), delivery: "wallet_only" });
+  }
+  const nextBalance = Number(captain.wallet_cents) + amountCents;
+  const reference = "ADMIN-DIRECT-" + Date.now() + "-" + crypto.randomBytes(4).toString("hex");
+  const stamp = now();
+  const details = { idempotencyKey, direction: "credit", amount, amountCents, reason, actor: "owner", source: "company_direct", delivery: "wallet_only" };
+  const ledgerId = db.transaction(() => {
+    const updated = db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, id);
+    if (!updated.changes) throw new Error("تعذر تحديث محفظة الكابتن؛ أعد المحاولة بعد تحديث البيانات");
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "admin_credit", amountCents, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
+    audit("captain.wallet.credited_direct", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner", source: "company_direct", delivery: "wallet_only" });
+    return result.lastInsertRowid;
+  })();
+  void notifyOperations({ event: "captain.wallet.credited_direct", title: "تأكيد إضافة رصيد مباشرة", captainPhone: captain.phone, lines: ["الكابتن: " + captain.name, "تمت إضافة: " + money(amountCents) + " JOD", "الرصيد الحالي: " + money(nextBalance) + " JOD", "السبب: " + reason, "إضافة داخلية مباشرة دون إنشاء بطاقة أو إرسال WhatsApp للكابتن."], ownersOnly: true });
+  return res.status(201).json({ success: true, mode: "direct", alreadyApplied: false, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance, credited: money(amountCents), delivery: "wallet_only" });
+}
+app.post("/api/admin/users/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
+app.post("/api/admin/captains/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
 app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
 app.post("/api/admin/users/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
