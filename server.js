@@ -8560,7 +8560,20 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
       }
     }
     if (chat && typeof chat.sendMessage === "function") {
-      return chat.sendMessage(message, { waitUntilMsgSent: false });
+      try {
+        return await chat.sendMessage(message, { waitUntilMsgSent: false });
+      } catch (chatError) {
+        const detail = String(chatError?.stack || chatError?.message || chatError).slice(0, 500);
+        console.warn(`[WhatsApp] admin send chat.sendMessage failed; retrying client.sendMessage: chat=${chatId} detail=${detail}`);
+        audit("message.send_chat_failed", "chat", chatId, { operationId, error: detail });
+        if (typeof client.sendMessage !== "function") throw chatError;
+        try {
+          return await client.sendMessage(chatId, message, { waitUntilMsgSent: false });
+        } catch (clientError) {
+          clientError.cause = chatError;
+          throw clientError;
+        }
+      }
     }
     return client.sendMessage(chatId, message, { waitUntilMsgSent: false });
   });
@@ -8597,9 +8610,10 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     });
   } catch (error) {
     failAdminSend(operationId, error);
-    audit("message.send_failed", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
-    console.error(`[WhatsApp] admin send failed: operation=${operationId}:`, error.message);
-    return res.status(502).json({ success: false, sendState: "failed", operationId, error: String(error?.message || "WhatsApp send failed").slice(0, 240) });
+    const detail = String(error?.stack || error?.message || error).slice(0, 500);
+    audit("message.send_failed", "chat", chatId, { operationId, error: detail });
+    console.error(`[WhatsApp] admin send failed: operation=${operationId}: ${detail}`);
+    return res.status(502).json({ success: false, sendState: "failed", operationId, error: detail.slice(0, 240) });
   }
 });
 app.get("/api/admin/send-status/:operationId", requireAdmin, (req, res) => {
