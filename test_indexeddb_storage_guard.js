@@ -11,6 +11,8 @@ assert.match(server, /async function collectWhatsAppStoragePressure\(\)/);
 assert.match(server, /navigator\.storage\?\.estimate/);
 assert.match(server, /indexedDB\.databases/);
 assert.match(server, /function updateWhatsAppStoragePressure\(snapshot\)/);
+assert.match(server, /function indexedDbErrorIsActive\(pageState\)/);
+assert.match(server, /QuotaExceededError\|quota\(\?:\\s\|_\|-\)\?exceeded\|IndexedDB/);
 assert.match(server, /QuotaExceededError\/IndexedDB send failure/);
 assert.match(server, /function isWhatsAppStorageSendBlocked\(\)/);
 assert.match(server, /function installWhatsAppStorageSendGuard\(instance\)/);

@@ -2934,6 +2934,10 @@ function indexedDbErrorIsActive(pageState) {
   const lastErrorAt = Date.parse(pageState?.lastError?.at || "");
   const lastResultAt = Date.parse(pageState?.lastResult?.at || "");
   if (!pageState?.lastError || !Number.isFinite(lastErrorAt)) return false;
+  const errorText = [pageState.lastError.name, pageState.lastError.message, pageState.lastError.stack]
+    .filter(Boolean)
+    .join(" ");
+  if (!/(QuotaExceededError|quota(?:\s|_|-)?exceeded|IndexedDB|storage\s+quota|database\s+full)/i.test(errorText)) return false;
   return !Number.isFinite(lastResultAt) || lastErrorAt >= lastResultAt;
 }
 
