@@ -15,6 +15,11 @@ assert.match(server, /a2\.acceptance_message_id=\(SELECT c2\.pending_message_id 
 assert.match(server, /const canConfirm = row\.status === "pending" && Boolean\(row\.acceptance_message_id\)/);
 assert.match(server, /settlePendingOrder\(candidate\.id, acceptance\.acceptance_message_id, connectedBotPhone\(\), \{ adminApproval: true \}\)/);
 assert.match(server, /function settlePendingOrder\(candidateId, expectedMessageId, confirmerPhone, \{ adminApproval = false \} = \{\}\)/);
+assert.match(server, /const equivalentOrder = findEquivalentOrder\(current\.group_id, current\.source_message_id\)/);
+assert.match(server, /importSource: "admin_archived_candidate_recovery"/);
+assert.match(server, /state: "already_registered"/);
+assert.match(server, /const equivalentOrder = findEquivalentOrder\(row\.group_id, row\.source_message_id\)/);
+assert.match(server, /SELECT status FROM order_settlements WHERE order_id=\? ORDER BY id DESC LIMIT 1/);
 assert.match(server, /mutation: "applied_once"/);
 assert.match(server, /UPDATE order_candidate_acceptances SET status='rejected'/);
 assert.match(server, /UPDATE order_candidates SET status='cancelled'/);
