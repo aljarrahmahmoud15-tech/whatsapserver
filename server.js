@@ -317,6 +317,7 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   note TEXT,
   created_at TEXT NOT NULL,
   details_json TEXT,
+  idempotency_key TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id),
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
@@ -519,6 +520,8 @@ const existingLedgerColumns = db.prepare("PRAGMA table_info(wallet_ledger)").all
 if (!existingLedgerColumns.includes("details_json")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN details_json TEXT");
 if (!existingLedgerColumns.includes("idempotency_key")) db.exec("ALTER TABLE wallet_ledger ADD COLUMN idempotency_key TEXT");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency ON wallet_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
+db.exec("CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user_created ON wallet_ledger(user_id, created_at DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_created ON audit_logs(entity_type, entity_id, created_at DESC)");
 const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlements)").all().map((column) => column.name);
 if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
