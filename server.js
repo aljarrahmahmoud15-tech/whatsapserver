@@ -9061,9 +9061,14 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   const sendPromise = Promise.resolve().then(async () => {
     const png = await sharp(Buffer.from(svg)).png().toBuffer();
     const media = new MessageMedia("image/png", png.toString("base64"), "waslni-now-media-test.png");
-    const chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
-    if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") throw new Error("Configured chat is not a hydrated group");
-    return withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
+    const chat = await resolveReadableGroupChat(groupId) || await resolveGroupChat(groupId);
+    if (chat && typeof chat.sendMessage === "function") {
+      return withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
+    }
+    if (typeof client.sendMessage === "function") {
+      return withTimeoutStrict(client.sendMessage(groupId, media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
+    }
+    throw new Error("Configured group is not available through a WhatsApp send path");
   });
   try {
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
