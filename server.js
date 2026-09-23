@@ -895,6 +895,18 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
     new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
   ]);
 }
+const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
+async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
+  if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready" };
+  try {
+    const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
+    const message = await withTimeoutStrict(promise, timeoutMs, WHATSAPP_SEND_TIMEOUT);
+    if (message === WHATSAPP_SEND_TIMEOUT) return { status: "uncertain", message: null, error: "send_timeout_no_retry" };
+    return { status: "sent", message: message || null, error: null };
+  } catch (error) {
+    return { status: "failed", message: null, error: String(error?.message || error).slice(0, 240) };
+  }
+}
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
@@ -938,16 +950,20 @@ async function sendCompanyOperationsCard(to, title, lines, { returnMessage = fal
   try {
     const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
     if (!media) throw new Error("operations card render returned no media");
-    const sent = await withTimeout(client.sendMessage(to, media, { caption }), 30000, null);
-    return returnMessage ? { sent: Boolean(sent), messageId: sent?.id?._serialized || null } : Boolean(sent);
+    const result = await sendWhatsAppAtMostOnce(to, media, { caption }, 30000);
+    if (result.status !== "sent") {
+      console.warn(`[WhatsApp] operations card delivery ${result.status}; no text fallback will be attempted`);
+      return returnMessage ? { sent: false, uncertain: result.status === "uncertain", messageId: null } : false;
+    }
+    return returnMessage ? { sent: true, messageId: result.message?.id?._serialized || null } : true;
   } catch (error) {
-    console.warn("[WhatsApp] operations card media failed; using text fallback");
-    try {
-      const sent = await withTimeout(client.sendMessage(to, caption), 20000, null);
-      return returnMessage ? { sent: Boolean(sent), messageId: sent?.id?._serialized || null } : Boolean(sent);
-    } catch (_) {
+    if (error?.message !== "operations card render returned no media") {
+      console.error("[WhatsApp] operations card send failed; no retry to avoid duplicate delivery:", error.message);
       return returnMessage ? { sent: false, messageId: null } : false;
     }
+    console.warn("[WhatsApp] operations card media failed; using text fallback");
+    const result = await sendWhatsAppAtMostOnce(to, caption, undefined, 20000);
+    return returnMessage ? { sent: result.status === "sent", uncertain: result.status === "uncertain", messageId: result.message?.id?._serialized || null } : result.status === "sent";
   }
 }
 async function sendBotText(to, text) {
@@ -1000,14 +1016,14 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   try {
     if (client && isReady) {
       const resolved = await resolveWhatsAppRecipientId(recipientPhone);
-      const recipients = [...new Set([resolved, `${recipientPhone}@c.us`].filter(Boolean))];
-      for (const recipient of recipients) {
-        const sent = await withTimeout(client.sendMessage(recipient, message), 20000, null);
-        if (sent) {
-          deliveryStatus = "sent";
-          messageId = sent.id?._serialized || null;
-          break;
-        }
+      const recipient = resolved || `${recipientPhone}@c.us`;
+      const result = await sendWhatsAppAtMostOnce(recipient, message);
+      if (result.status === "sent") {
+        deliveryStatus = "sent";
+        messageId = result.message?.id?._serialized || null;
+      } else if (result.status === "uncertain") {
+        deliveryStatus = "sent";
+        audit(`notification.${event}.uncertain_ack`, "user", recipientPhone, { idempotencyKey: key, reason: result.error });
       }
     }
   } catch (_) {}
