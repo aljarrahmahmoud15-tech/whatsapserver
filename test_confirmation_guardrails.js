@@ -57,7 +57,7 @@ assert.match(server, /recovery\.source = "order-scan"/);
 assert.doesNotMatch(server, /await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /const scan = \{ messages: Array\.isArray\(fastScan\.messages\)/);
-assert.match(server, /acceptance\.quotedMsg \|\| acceptance\._data\?\.quotedMsg/);
+assert.match(server, /message\?\._data\?\.quotedMsg\?\.id\?\._serialized/);
 assert.match(server, /async function getQuotedMessageWithFallback\(message\)/);
 assert.match(server, /const quoted = await getQuotedMessageWithFallback\(msg\)/);
 assert.match(server, /Array\.from\(pendingSourceIds\)\.find\(\(pendingSourceId\) => sourceMessageIdsEqual\(pendingSourceId, sourceId\)\)/);

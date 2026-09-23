@@ -1787,16 +1787,18 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
   const chat = await resolveReadableGroupChat(groupId);
   if (chat) {
     const messages = await withTimeout(chat.fetchMessages({ limit: Math.min(batch, 10), ...(includeOutgoing ? {} : { fromMe: false }) }), 8000, []);
-    const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
-      id: serializedMessageId(message),
-      timestamp: Number(message?.timestamp || 0) || null,
-      from: message?.from || groupId,
-      to: message?.to || null,
-      fromMe: Boolean(message?.fromMe),
-      author: message?.author || null,
-      body: String(message?.body || "").trim(),
-      type: message?.type || null,
-    })).filter((message) => message.timestamp && message.timestamp * 1000 >= Number(cutoff || 0) && (!before || message.timestamp < before));
+      const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
+        id: serializedMessageId(message),
+        timestamp: Number(message?.timestamp || 0) || null,
+        from: message?.from || groupId,
+        to: message?.to || null,
+        fromMe: Boolean(message?.fromMe),
+        author: message?.author || null,
+        hasQuotedMsg: Boolean(message?.hasQuotedMsg),
+        quotedMessageId: String(message?.quotedStanzaID || message?.quotedMessageId || message?._data?.quotedStanzaID || message?._data?.quotedMessageId || message?._data?.quotedMsgId || "").trim() || null,
+        body: String(message?.body || "").trim(),
+        type: message?.type || null,
+      })).filter((message) => message.timestamp && message.timestamp * 1000 >= Number(cutoff || 0) && (!before || message.timestamp < before));
     rows.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
     const selected = rows.slice(0, Math.min(batch, 10));
     const oldest = selected.length ? Number(selected[selected.length - 1].timestamp || 0) : 0;
@@ -1840,6 +1842,8 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
         to: message.to?._serialized || String(message.to || ""),
         fromMe: Boolean(message.id?.fromMe),
         author: message.author?._serialized || String(message.author || ""),
+        hasQuotedMsg: Boolean(message.hasQuotedMsg || message.quotedStanzaID || message.quotedMessageId),
+        quotedMessageId: String(message.quotedStanzaID || message.quotedMessageId || message._data?.quotedStanzaID || message._data?.quotedMessageId || message._data?.quotedMsgId || "").trim() || null,
         body: String(message.body || message.text || message.caption || "").trim(),
         type: message.type || null,
       }));
@@ -2430,7 +2434,10 @@ function notifyOrderLifecycleBlocker(candidateId, blocker, details = {}) {
 }
 function findPendingAcceptanceByMessage(groupId, acceptanceMessageId) {
   if (!groupId || !acceptanceMessageId) return null;
-  return db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1").get(groupId, acceptanceMessageId);
+  const exact = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1").get(groupId, acceptanceMessageId);
+  if (exact) return exact;
+  const rows = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.status IN ('pending','selected') ORDER BY a.updated_at DESC,a.id DESC LIMIT 200").all(groupId);
+  return rows.find((row) => sourceMessageIdsEqual(row.acceptance_message_id, acceptanceMessageId)) || null;
 }
 function registerQuotedAcceptance({ groupId, messageId, senderPhone, senderName, candidate }) {
   if (!groupId || !messageId || !senderPhone || !candidate) return { state: "invalid" };
@@ -3314,7 +3321,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
-  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
+  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
@@ -3327,12 +3334,15 @@ async function recoverPendingAcceptanceMessages(groupId) {
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (existing) continue;
     const live = await withTimeout(client.getMessageById(row.id), 12000, null);
-    const acceptance = live && typeof live.getQuotedMessage === "function" ? live : row;
-    if (!acceptance || (!acceptance.hasQuotedMsg && !acceptance.__quoted)) continue;
-    let quoted = typeof acceptance.getQuotedMessage === "function"
-      ? await withTimeout(acceptance.getQuotedMessage(), 8000, null)
-      : null;
-    if (!quoted) quoted = acceptance.__quoted || acceptance.quotedMsg || acceptance._data?.quotedMsg || null;
+    const acceptance = live || row;
+    if (!acceptance) continue;
+    lastAcceptanceRecovery.quoteLookupAttempts += 1;
+    const quoted = await getQuotedMessageWithFallback(acceptance);
+    if (quoted) {
+      acceptance.__quoted = quoted;
+      acceptance.__quotedMessageId = serializedMessageId(quoted);
+      lastAcceptanceRecovery.quoteFallbackMatches += 1;
+    }
     const sourceId = serializedMessageId(quoted);
     const matchingPendingSourceId = sourceId && Array.from(pendingSourceIds).find((pendingSourceId) => sourceMessageIdsEqual(pendingSourceId, sourceId));
     if (!matchingPendingSourceId || !parseOrder(quoted?.body).isOrder) continue;
@@ -3346,7 +3356,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
       lastAcceptanceRecovery.lastError = String(error?.message || error).slice(0, 180);
       setAcceptanceRecoveryStage("handle_incoming_message_error");
     }
-    const recorded = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
+    const recorded = findPendingAcceptanceByMessage(groupId, row.id);
     if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; }
   }
   lastAcceptanceRecovery.finishedAt = new Date().toISOString();
@@ -3913,6 +3923,56 @@ async function getQuotedMessageWithFallback(message) {
     ).trim();
     if (quotedMessageId && client && typeof client.getMessageById === "function") {
       quoted = await withTimeout(client.getMessageById(quotedMessageId), 12000, null);
+    }
+  }
+  if (!quoted && typeof client !== "undefined" && client?.pupPage) {
+    const messageId = serializedMessageId(message);
+    const quotedMessageId = String(
+      message?.quotedStanzaID ||
+      message?.quotedMessageId ||
+      message?._data?.quotedStanzaID ||
+      message?._data?.quotedMessageId ||
+      message?._data?.quotedMsgId ||
+      message?._data?.quotedMsg?.id?._serialized ||
+      ""
+    ).trim();
+    if (messageId || quotedMessageId) {
+      quoted = await withTimeout(client.pupPage.evaluate(async ({ messageId: requestedMessageId, quotedMessageId: requestedQuotedId }) => {
+        try {
+          const collections = window.require("WAWebCollections");
+          const rawId = String(requestedMessageId || "").split("_").slice(2).join("_");
+          const rawQuotedId = String(requestedQuotedId || "").split("_").slice(2).join("_");
+          const ids = [...new Set([requestedMessageId, rawId, requestedQuotedId, rawQuotedId].filter(Boolean))];
+          let model = null;
+          for (const id of ids) {
+            model = collections.Msg?.get?.(id) || null;
+            if (model) break;
+          }
+          if (!model && collections.Msg?.getMessagesById) {
+            const loaded = await collections.Msg.getMessagesById(ids);
+            model = Array.isArray(loaded?.messages) ? loaded.messages[0] : null;
+          }
+          if (!model) return null;
+          let quotedModel = null;
+          try {
+            quotedModel = window.require("WAWebQuotedMsgModelUtils").getQuotedMsgObj(model);
+          } catch (_) {}
+          if (!quotedModel) return null;
+          const serialized = window.WWebJS?.getMessageModel
+            ? window.WWebJS.getMessageModel(quotedModel)
+            : (typeof quotedModel.serialize === "function" ? quotedModel.serialize() : quotedModel);
+          if (!serialized) return null;
+          serialized.__serializedId = quotedModel.id?._serialized || serialized.id?._serialized || serialized.id || null;
+          serialized.__timestamp = Number(quotedModel.t || serialized.timestamp || 0) || null;
+          serialized.fromMe = Boolean(quotedModel.id?.fromMe || serialized.fromMe);
+          serialized.body = String(quotedModel.body || quotedModel.text || serialized.body || serialized.caption || "");
+          serialized.from = quotedModel.from?._serialized || serialized.from || "";
+          serialized.to = quotedModel.to?._serialized || serialized.to || "";
+          return serialized;
+        } catch (_) {
+          return null;
+        }
+      }, { messageId, quotedMessageId }), 15000, null);
     }
   }
   return quoted;
