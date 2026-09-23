@@ -7474,6 +7474,34 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
+async function deleteWhatsAppMessageForEveryone(messageId) {
+  if (!client?.pupPage || !messageId) return { ok: false, reason: "page_unavailable_or_missing_id" };
+  return withTimeout(client.pupPage.evaluate(async (targetId) => {
+    const id = String(targetId || "").trim();
+    if (!id) return { ok: false, reason: "missing_id" };
+    try {
+      const collections = window.require("WAWebCollections");
+      const message = collections.Msg.get(id) || (await collections.Msg.getMessagesById([id]))?.messages?.[0];
+      if (!message) return { ok: false, reason: "message_not_found" };
+      const chat = collections.Chat.get(message.id.remote) || (await collections.Chat.find(message.id.remote));
+      if (!chat) return { ok: false, reason: "chat_not_found" };
+      const capability = window.require("WAWebMsgActionCapability");
+      const canSenderRevoke = Boolean(capability?.canSenderRevokeMsg?.(message));
+      const canAdminRevoke = Boolean(capability?.canAdminRevokeMsg?.(message));
+      if (!canSenderRevoke && !canAdminRevoke) return { ok: false, reason: "revoke_not_permitted", canSenderRevoke, canAdminRevoke };
+      const { Cmd } = window.require("WAWebCmd");
+      const modern = window.WWebJS.compareWwebVersions(window.Debug.VERSION, ">=", "2.3000.0");
+      if (modern) await Cmd.sendRevokeMsgs(chat, { list: [message], type: "message" }, { clearMedia: true });
+      else await Cmd.sendRevokeMsgs(chat, [message], { clearMedia: true, type: message.id.fromMe ? "Sender" : "Admin" });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const current = collections.Msg.get(id) || message;
+      const revoked = Boolean(current.isRevoked || current.revoked || current.type === "revoked");
+      return { ok: revoked, requested: true, canSenderRevoke, canAdminRevoke, revoked, currentType: current.type || null, currentBody: String(current.body || current.text || "").trim() };
+    } catch (error) {
+      return { ok: false, reason: String(error?.message || error).slice(0, 240), stack: String(error?.stack || "").slice(0, 800) };
+    }
+  }, String(messageId)), 30000, { ok: false, reason: "page_evaluation_timeout" });
+}
 app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
   if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {
     return res.status(400).json({ error: "Explicit cleanup confirmation is required", mutation: "none" });
@@ -7507,14 +7535,9 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
     const messageId = serializedMessageId(message);
     if (!messageId || messageId === serializedMessageId(keep)) continue;
     try {
-      const liveMessage = typeof message.delete === "function" ? message : await withTimeout(client.getMessageById(messageId), 12000, null);
-      if (!liveMessage || typeof liveMessage.delete !== "function") {
-        failed.push({ messageId, reason: "live_message_unavailable" });
-        continue;
-      }
-      const deletedForEveryone = await withTimeout(liveMessage.delete(true), 15000, false);
-      if (deletedForEveryone) deleted.push(messageId);
-      else failed.push({ messageId, reason: "delete_not_confirmed" });
+      const deletion = await deleteWhatsAppMessageForEveryone(messageId);
+      if (deletion.ok) deleted.push(messageId);
+      else failed.push({ messageId, reason: deletion.reason || "delete_not_confirmed", diagnostics: deletion });
     } catch (error) {
       failed.push({ messageId, reason: String(error?.message || error).slice(0, 160) });
     }
@@ -7550,14 +7573,9 @@ app.post("/api/admin/group/delete-duplicate-text", requireBotWalletOwner, async 
   for (const message of matches) {
     const messageId = serializedMessageId(message);
     try {
-      const liveMessage = typeof message.delete === "function" ? message : await withTimeout(client.getMessageById(messageId), 12000, null);
-      if (!liveMessage || typeof liveMessage.delete !== "function") {
-        failed.push({ messageId, reason: "live_message_unavailable" });
-        continue;
-      }
-      const deletedForEveryone = await withTimeout(liveMessage.delete(true), 15000, false);
-      if (deletedForEveryone) deleted.push(messageId);
-      else failed.push({ messageId, reason: "delete_not_confirmed" });
+      const deletion = await deleteWhatsAppMessageForEveryone(messageId);
+      if (deletion.ok) deleted.push(messageId);
+      else failed.push({ messageId, reason: deletion.reason || "delete_not_confirmed", diagnostics: deletion });
     } catch (error) {
       failed.push({ messageId, reason: String(error?.message || error).slice(0, 160) });
     }
