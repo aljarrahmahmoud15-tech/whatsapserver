@@ -5434,6 +5434,7 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   const captainId = Number(req.params.id);
   const idempotencyKey = String(req.get("X-Idempotency-Key") || req.body?.idempotencyKey || "").trim();
   if (!Number.isInteger(captainId) || captainId < 1 || req.body?.test !== true || idempotencyKey.length < 16 || idempotencyKey.length > 120) return res.status(400).json({ error: "معرف الكابتن ومفتاح الاختبار والتأكيد مطلوبون" });
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED) return res.status(503).json({ error: "إشعارات الكباتن موقوفة حاليًا لمنع التكرار", code: "CAPTAIN_STATUS_NOTIFICATIONS_PAUSED", mutation: "none", walletChanged: false });
   if (!consumeRateLimit(adminActionRate, `approval-notification-test:${clientAddress(req)}:${captainId}`, 2)) return res.status(429).json({ error: "تم إرسال اختبارات كثيرة لهذا الكابتن؛ حاول بعد قليل" });
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status,approved_at FROM users WHERE id=? LIMIT 1").get(captainId);
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active" || !captain.approved_at) return res.status(409).json({ error: "يجب اختيار كابتن مسجل ومعتمد ونشط" });

@@ -6,6 +6,8 @@ assert.match(server, /const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;/);
 assert.match(server, /if \(!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED\)/);
 assert.match(server, /reason: "captain_status_notifications_paused"/);
 assert.match(server, /if \(!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED \|\| !client \|\| !isReady\) return \{ attempted: 0/);
+assert.match(server, /CAPTAIN_STATUS_NOTIFICATIONS_PAUSED/);
+assert.match(server, /walletChanged: false/);
 
 const suppressionStart = server.indexOf('if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED) {');
 const sendStart = server.indexOf('const captainStatusNotificationInFlight');
