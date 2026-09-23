@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "postinstall": "node scripts/patch-whatsapp-web-media.js",
     "check": "node --check server.js",
     "test:indexeddb-guard": "node simulate_indexeddb_quota_guard.js",
     "test": "node --test test_*.js"
