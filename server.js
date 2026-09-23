@@ -9042,6 +9042,43 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
     res.status(502).json({ error: "Unable to apply group identity", details: error.message });
   }
 });
+app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
+  const officialGroupId = "120363426604560611@g.us";
+  const groupId = String(req.body?.groupId || "").trim();
+  const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || crypto.randomUUID()).slice(0, 120);
+  const caption = "اختبار إرسال صورة فقط — لا ينشئ طلبًا ولا يغيّر أي رصيد.";
+  if (groupId !== officialGroupId) return res.status(403).json({ error: "Only the verified official group is allowed" });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });
+  const registration = registerAdminSend({ operationId, chatId: groupId, message: caption });
+  if (!registration.created) {
+    const existing = registration.state;
+    return res.status(existing.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(existing), mediaType: "image/png", filename: "waslni-now-media-test.png" });
+  }
+  audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500"><rect width="900" height="500" rx="36" fill="#0b1f35"/><rect x="28" y="28" width="844" height="444" rx="28" fill="#123b5d" stroke="#38d39f" stroke-width="4"/><text x="450" y="215" text-anchor="middle" fill="#f3f7ff" font-size="42" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">اختبار وسائط Waslni Now</text><text x="450" y="285" text-anchor="middle" fill="#38d39f" font-size="30" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">لا يوجد حجز أو تسوية مالية</text><text x="450" y="390" text-anchor="middle" fill="#b9c9dc" font-size="22" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">اختبار صورة واحد فقط</text></svg>`;
+  const sendPromise = Promise.resolve().then(async () => {
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const media = new MessageMedia("image/png", png.toString("base64"), "waslni-now-media-test.png");
+    const chat = await resolveGroupChat(groupId) || await withTimeout(client.getChatById(groupId), 25000, null);
+    if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") throw new Error("Configured chat is not a hydrated group");
+    return withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
+  });
+  try {
+    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
+    if (serializedMessageId(sent)) {
+      const completed = completeAdminSend({ operationId, chatId: groupId, message: caption, sent, confirmationSource: "sendMessage" });
+      return res.json({ ...adminSendResponse(completed), mediaType: "image/png", filename: "waslni-now-media-test.png" });
+    }
+    return res.status(202).json({ ...adminSendResponse(adminSendResults.get(operationId)), mediaType: "image/png", filename: "waslni-now-media-test.png", error: "WhatsApp accepted the media; waiting for message_create confirmation." });
+  } catch (error) {
+    failAdminSend(operationId, error);
+    const detail = String(error?.stack || error?.message || error).slice(0, 500);
+    audit("message.media_test_failed", "chat", groupId, { operationId, error: detail });
+    return res.status(502).json({ success: false, sendState: "failed", operationId, mediaType: "image/png", filename: "waslni-now-media-test.png", error: detail.slice(0, 240) });
+  }
+});
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
