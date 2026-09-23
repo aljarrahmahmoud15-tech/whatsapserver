@@ -10,6 +10,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pino = require("pino");
 const { execFileSync } = require("child_process");
+const applyWhatsAppMediaPatch = require("./scripts/patch-whatsapp-web-media");
+const whatsappMediaPatchState = applyWhatsAppMediaPatch();
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const sharp = require("sharp");
 sharp.concurrency(1);
@@ -5910,6 +5912,12 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
       usedBytes: Number(inventory.inventory?.totalBytes || inventory.totalBytes || 0),
       freeBytes: Number(inventory.inventory?.filesystem?.freeBytes || inventory.filesystem?.freeBytes || 0),
       availableBytes: Number(inventory.inventory?.filesystem?.availableBytes || inventory.filesystem?.availableBytes || 0),
+    },
+    mediaPatch: {
+      package: "whatsapp-web.js",
+      strategy: "remove-private-media-id-collision",
+      appliedAtStartup: true,
+      alreadyPatchedBeforeStartup: Boolean(whatsappMediaPatchState.alreadyPatched),
     },
     checkedAt: new Date().toISOString(),
   });
