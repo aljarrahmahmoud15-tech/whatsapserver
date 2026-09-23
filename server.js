@@ -1474,6 +1474,14 @@ function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
   return configured > 0 && Boolean(configuredGroup(groupId));
 }
+function configuredRuntimeGroupId() {
+  const candidates = [
+    getSetting("active_group_id", getSetting("group_id", "")),
+    WHATSAPP_GROUP_ID,
+    db.prepare("SELECT group_id FROM groups_config WHERE active=1 ORDER BY updated_at DESC LIMIT 1").get()?.group_id,
+  ];
+  return candidates.map((value) => String(value || "").trim()).find((value) => value && isConfiguredGroup(value)) || "";
+}
 function findActiveRegisteredUser(phone) {
   const normalized = phoneWithCountry(phone);
   if (!normalized) return null;
@@ -3364,7 +3372,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
 }
 async function scanPendingAcceptanceReactions() {
   if (!client || !isReady || whatsappReactionScanRunning) return;
-  const groupId = getSetting("active_group_id", getSetting("group_id", ""));
+  const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
@@ -3687,7 +3695,7 @@ function directJordanPhoneFromWhatsappValue(value) {
 }
 async function resolveWhatsappLidsFromConfiguredGroup(lidIds) {
   if (!client?.pupPage || !isReady || !Array.isArray(lidIds) || !lidIds.length) return [];
-  const groupId = String(getSetting("active_group_id", getSetting("group_id", "")) || "").trim();
+  const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return [];
   await readGroupSnapshot(groupId);
   return withTimeout(client.pupPage.evaluate((requestedLids) => {
@@ -5767,9 +5775,7 @@ app.get("/api/public/operations-feed", (req, res) => {
 });
 
 app.get("/status", (req, res) => {
-  const groupId = getSetting("group_id", null);
-  const activeGroupId = getSetting("active_group_id", null);
-  const configuredGroupId = groupId || activeGroupId;
+  const configuredGroupId = configuredRuntimeGroupId() || null;
   const groupReceiverReady = Boolean(isReady || baileysReady);
   const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
   const activeCaptains = userRoles.filter((user) => user.role === "captain" && user.is_bot !== 1 && user.active === 1 && user.account_status === "active").length;

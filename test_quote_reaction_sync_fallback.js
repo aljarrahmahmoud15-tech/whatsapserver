@@ -20,5 +20,8 @@ assert.match(source, /findPendingAcceptanceByMessage\(groupId, row\.id\)/);
 // acceptance row was stored with its core ID. The lookup must normalize both.
 assert.match(source, /function messageIdCore\(value\)/);
 assert.match(source, /function sourceMessageIdsEqual\(left, right\)/);
+assert.match(source, /function configuredRuntimeGroupId\(\)/);
+assert.match(source, /const groupId = configuredRuntimeGroupId\(\);/);
+assert.match(source, /ORDER BY updated_at DESC LIMIT 1/);
 
 console.log('quote/reaction synchronization fallback verified');
