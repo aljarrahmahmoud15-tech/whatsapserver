@@ -2733,6 +2733,23 @@ let whatsappSendDiagnostics = {
   pageEvents: [],
   lastPageProbe: null,
 };
+const INDEXEDDB_WARNING_RATIO = 0.80;
+const INDEXEDDB_CRITICAL_RATIO = 0.90;
+const INDEXEDDB_MONITOR_INTERVAL_MS = 5 * 60 * 1000;
+let whatsappStorageMonitorTimer = null;
+let whatsappStoragePressure = {
+  status: "unknown",
+  blocked: false,
+  reason: null,
+  usageBytes: null,
+  quotaBytes: null,
+  usageRatio: null,
+  databaseCount: null,
+  lastCheckedAt: null,
+  lastErrorAt: null,
+  alertState: null,
+  blockedAttempts: 0,
+};
 let baileysSocket = null;
 let baileysReady = false;
 let baileysQrCodeData = null;
@@ -2861,9 +2878,126 @@ async function readWhatsAppSendDiagnostics() {
     ready: Boolean(isReady),
     whatsappState,
     installed: Boolean(whatsappSendDiagnostics.installed),
+    storagePressure: { ...whatsappStoragePressure },
     runtime: { ...whatsappSendDiagnostics, pageEvents: whatsappSendDiagnostics.pageEvents.slice(-20) },
     page: pageState,
   };
+}
+
+function indexedDbErrorIsActive(pageState) {
+  const lastErrorAt = Date.parse(pageState?.lastError?.at || "");
+  const lastResultAt = Date.parse(pageState?.lastResult?.at || "");
+  if (!pageState?.lastError || !Number.isFinite(lastErrorAt)) return false;
+  return !Number.isFinite(lastResultAt) || lastErrorAt >= lastResultAt;
+}
+
+function recordStoragePressureAlert(status, reason) {
+  if (status !== "critical" || whatsappStoragePressure.alertState === "critical") return;
+  whatsappStoragePressure.alertState = "critical";
+  try {
+    const ownerPhone = ownerNotificationPhones()[0] || "system";
+    db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'owner',? ,? ,?,'pending',?)")
+      .run(ownerPhone, "whatsapp.indexeddb.quota", "تحذير مساحة WhatsApp Web", `تم إيقاف الإرسال الوقائيًا بسبب ضغط IndexedDB: ${reason}`, now());
+  } catch (error) {
+    console.warn("[WhatsApp][StoragePressure] could not persist owner alert:", error.message);
+  }
+}
+
+function updateWhatsAppStoragePressure(snapshot) {
+  const previousStatus = whatsappStoragePressure.status;
+  const usageRatio = Number.isFinite(Number(snapshot?.usageRatio)) ? Number(snapshot.usageRatio) : null;
+  const quotaError = indexedDbErrorIsActive(snapshot?.pageState);
+  let status = "unknown";
+  let reason = null;
+  if (quotaError) {
+    status = "critical";
+    reason = "QuotaExceededError/IndexedDB send failure";
+  } else if (usageRatio !== null && usageRatio >= INDEXEDDB_CRITICAL_RATIO) {
+    status = "critical";
+    reason = `IndexedDB usage ${(usageRatio * 100).toFixed(1)}%`;
+  } else if (usageRatio !== null && usageRatio >= INDEXEDDB_WARNING_RATIO) {
+    status = "warning";
+    reason = `IndexedDB usage ${(usageRatio * 100).toFixed(1)}%`;
+  } else if (usageRatio !== null) {
+    status = "normal";
+  }
+  const blocked = status === "critical";
+  whatsappStoragePressure = {
+    ...whatsappStoragePressure,
+    status,
+    blocked,
+    reason,
+    usageBytes: Number.isFinite(Number(snapshot?.usageBytes)) ? Number(snapshot.usageBytes) : null,
+    quotaBytes: Number.isFinite(Number(snapshot?.quotaBytes)) ? Number(snapshot.quotaBytes) : null,
+    usageRatio,
+    databaseCount: Number.isFinite(Number(snapshot?.databaseCount)) ? Number(snapshot.databaseCount) : null,
+    lastCheckedAt: now(),
+    lastErrorAt: snapshot?.pageState?.lastError?.at || null,
+  };
+  if (blocked && previousStatus !== "critical") {
+    console.error(`[WhatsApp][StoragePressure] send guard enabled: ${reason}`);
+    recordStoragePressureAlert(status, reason);
+  } else if (!blocked && previousStatus === "critical") {
+    whatsappStoragePressure.alertState = null;
+    console.warn(`[WhatsApp][StoragePressure] send guard cleared: ${status}`);
+  }
+  if (previousStatus !== status) audit("whatsapp.indexeddb.pressure", "system", "whatsapp", { status, reason, usageRatio });
+  return whatsappStoragePressure;
+}
+
+async function collectWhatsAppStoragePressure() {
+  if (!client?.pupPage || !isReady) return updateWhatsAppStoragePressure({ pageState: null });
+  const snapshot = await withTimeout(client.pupPage.evaluate(async () => {
+    const estimate = await navigator.storage?.estimate?.().catch?.(() => null);
+    const databases = typeof indexedDB.databases === "function" ? await indexedDB.databases().catch(() => []) : [];
+    const pageState = window.__waslniSendDiagnostics || null;
+    const usageBytes = Number(estimate?.usage || 0);
+    const quotaBytes = Number(estimate?.quota || 0);
+    return {
+      usageBytes,
+      quotaBytes,
+      usageRatio: quotaBytes > 0 ? usageBytes / quotaBytes : null,
+      databaseCount: Array.isArray(databases) ? databases.length : null,
+      pageState,
+    };
+  }), 8000, { pageState: null });
+  return updateWhatsAppStoragePressure(snapshot);
+}
+
+function isWhatsAppStorageSendBlocked() {
+  return Boolean(whatsappStoragePressure.blocked);
+}
+
+function installWhatsAppStorageSendGuard(instance) {
+  if (!instance || typeof instance.sendMessage !== "function" || instance.__waslniStorageSendGuard) return;
+  const originalSendMessage = instance.sendMessage.bind(instance);
+  instance.sendMessage = async (...args) => {
+    if (isWhatsAppStorageSendBlocked()) {
+      whatsappStoragePressure.blockedAttempts += 1;
+      const error = new Error("WhatsApp sending paused: IndexedDB storage pressure is critical");
+      error.code = "WHATSAPP_INDEXEDDB_SEND_PAUSED";
+      throw error;
+    }
+    return originalSendMessage(...args);
+  };
+  Object.defineProperty(instance, "__waslniStorageSendGuard", { value: true, configurable: false });
+}
+
+function stopWhatsAppStorageMonitor() {
+  if (whatsappStorageMonitorTimer) clearInterval(whatsappStorageMonitorTimer);
+  whatsappStorageMonitorTimer = null;
+}
+
+function startWhatsAppStorageMonitor(generation) {
+  stopWhatsAppStorageMonitor();
+  const check = async () => {
+    if (generation !== connectionGeneration || !isReady) return;
+    try { await collectWhatsAppStoragePressure(); }
+    catch (error) { recordWhatsAppPageDiagnostic("storage_monitor_failed", { message: boundedDiagnosticText(error?.message || error, 1200) }); }
+  };
+  void check();
+  whatsappStorageMonitorTimer = setInterval(check, INDEXEDDB_MONITOR_INTERVAL_MS);
+  whatsappStorageMonitorTimer.unref?.();
 }
 
 function findChromeExecutable(root) {
@@ -2967,6 +3101,7 @@ async function disposeClientInstance(instance, label = "client") {
   clearChromiumProfileLocks();
 }
 async function destroyClient() {
+  stopWhatsAppStorageMonitor();
   const current = client;
   client = null;
   isReady = false;
@@ -3298,9 +3433,12 @@ function createClient() {
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
-    void installWhatsAppSendDiagnostics(instance, generation).catch((error) => {
-      recordWhatsAppPageDiagnostic("install_unhandled_failure", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
-    });
+    void installWhatsAppSendDiagnostics(instance, generation)
+      .then(() => startWhatsAppStorageMonitor(generation))
+      .catch((error) => {
+        recordWhatsAppPageDiagnostic("install_unhandled_failure", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
+        startWhatsAppStorageMonitor(generation);
+      });
     setTimeout(() => {
       if (generation !== connectionGeneration || !isReady) return;
       void normalizeAllCaptains()
@@ -3321,6 +3459,7 @@ function createClient() {
     whatsappLastEvent = "auth_failure";
     whatsappLastError = String(message || "authentication failure");
     if (generation !== connectionGeneration) return;
+    stopWhatsAppStorageMonitor();
     isReady = false;
     if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
@@ -3332,6 +3471,7 @@ function createClient() {
     whatsappLastEvent = "disconnected";
     whatsappLastError = String(reason || "disconnected");
     if (generation !== connectionGeneration) return;
+    stopWhatsAppStorageMonitor();
     isReady = false;
     lastDisconnectAt = new Date().toISOString();
     qrCodeData = null;
@@ -3384,6 +3524,7 @@ function createClient() {
       }
     }
   });
+  installWhatsAppStorageSendGuard(instance);
   return instance;
 }
 
@@ -5578,6 +5719,7 @@ app.get("/status", (req, res) => {
     whatsappLastEvent,
     whatsappLastError,
     whatsappInitializing: Boolean(initializing),
+    whatsappStoragePressure: { ...whatsappStoragePressure },
     captains: {
       activeRegistered: activeCaptains,
       nonCaptainHumanAccounts: nonCaptainHumans,
@@ -8675,6 +8817,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });
   const to = String(req.body.to || "").trim();
   const message = String(req.body.message || "").trim();
   if (!to || !message) return res.status(400).json({ error: "to and message are required" });
