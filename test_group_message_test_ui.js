@@ -12,4 +12,7 @@ assert.match(admin, /السعر\\s\*\[0-9٠-٩\]\+/, 'يمنع صيغة السع
 assert.match(admin, /\^تم\$/, 'يمنع رسالة تم');
 assert.match(admin, /👍/, 'يمنع تفاعل الإعجاب كنص');
 assert.match(admin, /button\.disabled=!check\.valid/, 'الزر معطل حتى اجتياز التحقق');
+assert.match(admin, /const successText=response\.messageId\?/);
+assert.match(admin, /result\.className='notice ok';result\.textContent=successText/);
+assert.match(admin, /if\(!result\.classList\.contains\('ok'\)\)validateGroupTestMessage\(\)/);
 console.log('group message test UI guardrails verified');
