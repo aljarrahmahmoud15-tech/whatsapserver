@@ -2726,6 +2726,13 @@ let lastOfficialGroupEventGroupId = null;
 let lastOfficialGroupMessageTelemetry = null;
 let lastIgnoredGroupEventGroupId = null;
 let lastIgnoredGroupMessageTelemetry = null;
+let whatsappSendDiagnostics = {
+  installed: false,
+  installedAt: null,
+  generation: null,
+  pageEvents: [],
+  lastPageProbe: null,
+};
 let baileysSocket = null;
 let baileysReady = false;
 let baileysQrCodeData = null;
@@ -2733,6 +2740,131 @@ let baileysInitializing = false;
 let baileysReconnectTimer = null;
 let baileysConnectionGeneration = 0;
 let baileysModulePromise = null;
+
+function boundedDiagnosticText(value, limit = 2400) {
+  return String(value || "").replace(/\u0000/g, "").slice(0, limit);
+}
+
+function recordWhatsAppPageDiagnostic(type, payload = {}) {
+  const event = {
+    at: now(),
+    type: boundedDiagnosticText(type, 80),
+    ...payload,
+  };
+  whatsappSendDiagnostics.pageEvents.push(event);
+  if (whatsappSendDiagnostics.pageEvents.length > 40) whatsappSendDiagnostics.pageEvents.splice(0, whatsappSendDiagnostics.pageEvents.length - 40);
+  whatsappSendDiagnostics.lastPageProbe = event;
+  console.warn(`[WhatsApp][PageDiagnostic] ${event.type}: ${event.message || event.text || "event"}`);
+}
+
+async function installWhatsAppSendDiagnostics(instance, generation) {
+  const page = instance?.pupPage;
+  whatsappSendDiagnostics = {
+    installed: false,
+    installedAt: null,
+    generation,
+    pageEvents: [],
+    lastPageProbe: null,
+  };
+  if (!page || typeof page.evaluate !== "function") {
+    recordWhatsAppPageDiagnostic("install_unavailable", { message: "WhatsApp page is not available" });
+    return { installed: false, reason: "page_unavailable" };
+  }
+  const pageListener = (type, payload) => recordWhatsAppPageDiagnostic(type, payload);
+  try {
+    if (typeof page.on === "function") {
+      page.on("pageerror", (error) => pageListener("pageerror", {
+        name: boundedDiagnosticText(error?.name, 120),
+        message: boundedDiagnosticText(error?.message || error, 1200),
+        stack: boundedDiagnosticText(error?.stack, 2400),
+      }));
+      page.on("console", (message) => {
+        let level = "";
+        try { level = typeof message?.type === "function" ? message.type() : ""; } catch (_) { level = ""; }
+        if (level !== "error") return;
+        let text = "";
+        try { text = typeof message?.text === "function" ? message.text() : String(message || ""); } catch (_) { text = String(message || ""); }
+        pageListener("console_error", { text: boundedDiagnosticText(text, 1600) });
+      });
+    }
+    const result = await withTimeout(page.evaluate(() => {
+      const api = window.WWebJS;
+      if (!api || typeof api.sendMessage !== "function") return { installed: false, reason: "WWebJS.sendMessage unavailable" };
+      const existing = api.sendMessage.__waslniSendDiagnosticHook;
+      if (existing) return { installed: true, alreadyInstalled: true, hookVersion: existing.version };
+      const original = api.sendMessage;
+      const pageState = window.__waslniSendDiagnostics || {
+        hookVersion: 1,
+        installedAt: new Date().toISOString(),
+        calls: 0,
+        successes: 0,
+        failures: 0,
+        lastCall: null,
+        lastError: null,
+      };
+      window.__waslniSendDiagnostics = pageState;
+      const hooked = async function (...args) {
+        const chat = args[0];
+        const content = args[1];
+        const options = args[2];
+        const call = {
+          at: new Date().toISOString(),
+          chatId: String(chat?._serialized || chat?.id?._serialized || chat?.id || "").slice(0, 120),
+          contentType: content === null ? "null" : typeof content,
+          contentLength: typeof content === "string" ? content.length : null,
+          looksLikeOrder: typeof content === "string" && /(?:^|\s)السعر\s*[0-9٠-٩]+/i.test(content),
+          optionKeys: options && typeof options === "object" ? Object.keys(options).slice(0, 40) : [],
+        };
+        pageState.calls += 1;
+        pageState.lastCall = call;
+        try {
+          const result = await original.apply(this, args);
+          pageState.successes += 1;
+          pageState.lastResult = { at: new Date().toISOString(), hasResult: Boolean(result), resultType: typeof result };
+          return result;
+        } catch (error) {
+          pageState.failures += 1;
+          pageState.lastError = {
+            at: new Date().toISOString(),
+            name: String(error?.name || "").slice(0, 120),
+            message: String(error?.message || error || "").slice(0, 1600),
+            stack: String(error?.stack || "").slice(0, 3000),
+          };
+          throw error;
+        }
+      };
+      Object.defineProperty(hooked, "__waslniSendDiagnosticHook", { value: { version: 1 }, configurable: false });
+      Object.defineProperty(hooked, "__waslniOriginal", { value: original, configurable: false });
+      api.sendMessage = hooked;
+      return { installed: true, alreadyInstalled: false, hookVersion: 1 };
+    }), 8000, { installed: false, reason: "page evaluation timeout" });
+    whatsappSendDiagnostics.installed = Boolean(result?.installed);
+    whatsappSendDiagnostics.installedAt = now();
+    whatsappSendDiagnostics.installResult = result;
+    console.log(`[WhatsApp][PageDiagnostic] sendMessage hook installed=${whatsappSendDiagnostics.installed} generation=${generation}`);
+    return result;
+  } catch (error) {
+    recordWhatsAppPageDiagnostic("install_failed", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
+    return { installed: false, reason: boundedDiagnosticText(error?.message || error, 400) };
+  }
+}
+
+async function readWhatsAppSendDiagnostics() {
+  const pageState = client?.pupPage && typeof client.pupPage.evaluate === "function"
+    ? await withTimeout(client.pupPage.evaluate(() => {
+      const state = window.__waslniSendDiagnostics || null;
+      return state ? JSON.parse(JSON.stringify(state)) : null;
+    }), 5000, null)
+    : null;
+  return {
+    capturedAt: now(),
+    ready: Boolean(isReady),
+    whatsappState,
+    installed: Boolean(whatsappSendDiagnostics.installed),
+    runtime: { ...whatsappSendDiagnostics, pageEvents: whatsappSendDiagnostics.pageEvents.slice(-20) },
+    page: pageState,
+  };
+}
 
 function findChromeExecutable(root) {
   if (!root || !fs.existsSync(root)) return null;
@@ -3166,6 +3298,9 @@ function createClient() {
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
+    void installWhatsAppSendDiagnostics(instance, generation).catch((error) => {
+      recordWhatsAppPageDiagnostic("install_unhandled_failure", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
+    });
     setTimeout(() => {
       if (generation !== connectionGeneration || !isReady) return;
       void normalizeAllCaptains()
@@ -5461,6 +5596,15 @@ app.get("/status", (req, res) => {
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, health: runtimeHealth() });
+});
+app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, async (req, res) => {
+  try {
+    const diagnostics = await readWhatsAppSendDiagnostics();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, mutation: "none", ...diagnostics });
+  } catch (error) {
+    res.status(503).json({ success: false, mutation: "none", error: boundedDiagnosticText(error?.message || error, 500) });
+  }
 });
 app.post("/api/admin/change-password", requireAdmin, (req, res) => {
   const newToken = String(req.body?.newToken || "");
