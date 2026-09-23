@@ -5,6 +5,7 @@ const server = fs.readFileSync('./server.js', 'utf8');
 const admin = fs.readFileSync('./admin.html', 'utf8');
 
 assert.match(server, /app\.get\("\/api\/admin\/unconfirmed-bookings", requireAdmin/);
+assert.match(server, /app\.post\("\/api\/admin\/unconfirmed-bookings\/candidate\/:id\/reassign-acceptance", requireBotWalletOwner/);
 assert.match(server, /app\.post\("\/api\/admin\/unconfirmed-bookings\/candidate\/:id\/confirm", requireAdmin/);
 assert.match(server, /app\.post\("\/api\/admin\/unconfirmed-bookings\/:kind\/:id\/reject", requireAdmin/);
 assert.match(server, /if \(!configuredGroupId \|\| !isConfiguredGroup\(configuredGroupId\)\)/);

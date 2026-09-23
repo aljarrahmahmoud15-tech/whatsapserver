@@ -8798,6 +8798,56 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId: configuredGroupId, bookings: [...candidateBookings, ...openOrderBookings], counts: { candidates: candidateBookings.length, openOrders: openOrderBookings.length, total: candidateBookings.length + openOrderBookings.length } });
 });
+app.post("/api/admin/unconfirmed-bookings/candidate/:id/reassign-acceptance", requireBotWalletOwner, async (req, res) => {
+  const candidateId = Number(req.params.id);
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
+  const executorPhone = phoneWithCountry(String(req.body?.executorPhone || ""));
+  const reason = String(req.body?.reason || "تصحيح رسالة القبول المختارة بعد مطابقة دليل القروب").trim().slice(0, 240);
+  if (!Number.isInteger(candidateId) || candidateId <= 0 || !acceptanceMessageId || !executorPhone) {
+    return res.status(400).json({ error: "candidate id, acceptanceMessageId, and executorPhone are required", mutation: "none", financialMutation: false });
+  }
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) {
+    return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none", financialMutation: false });
+  }
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none", financialMutation: false });
+  const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='pending' LIMIT 1").get(candidateId, configuredGroupId);
+  if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none", financialMutation: false });
+  if (sourceMessageId && !sourceMessageIdsEqual(sourceMessageId, candidate.source_message_id)) {
+    return res.status(409).json({ error: "The supplied source message does not match the candidate", mutation: "none", financialMutation: false });
+  }
+  const exactMessages = await fetchExactGroupEvidenceMessages(configuredGroupId, candidate.source_message_id, acceptanceMessageId);
+  const acceptanceMessage = exactMessages.find((message) => sourceMessageIdsEqual(serializedMessageId(message), acceptanceMessageId));
+  if (!acceptanceMessage || acceptanceMessage.fromMe || resolveGroupChatId(acceptanceMessage) !== configuredGroupId || !isCaptainAcceptance(acceptanceMessage.body)) {
+    return res.status(409).json({ error: "The supplied acceptance message is not a valid quoted acceptance in the configured group", mutation: "none", financialMutation: false });
+  }
+  const evidence = await inspectConfirmedRecoveryMessage(acceptanceMessage, exactMessages, configuredGroupId);
+  const captain = findCaptainByPhone(executorPhone, { activeOnly: true });
+  if (!captain || !recoveryPhoneMatches(evidence?.captainPhone, executorPhone) || !sourceMessageIdsEqual(evidence?.orderMessageId, candidate.source_message_id)) {
+    return res.status(409).json({ error: "Acceptance evidence and executor identity do not match the candidate", evidence: recoveryEvidenceSummary(evidence), mutation: "none", financialMutation: false });
+  }
+  if (candidate.producer_phone_snapshot && evidence?.producerPhone && !recoveryPhoneMatches(candidate.producer_phone_snapshot, evidence.producerPhone)) {
+    return res.status(409).json({ error: "The acceptance quotes a different producer than the candidate", evidence: recoveryEvidenceSummary(evidence), mutation: "none", financialMutation: false });
+  }
+  const result = db.transaction(() => {
+    const conflicting = db.prepare("SELECT id,candidate_id,captain_user_id,status FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(acceptanceMessageId);
+    if (conflicting && Number(conflicting.candidate_id) !== candidateId) return { state: "acceptance_linked_to_other_candidate" };
+    const stamp = now();
+    if (!conflicting) {
+      db.prepare("INSERT INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidateId, captain.id, acceptanceMessageId, stamp, stamp);
+    } else if (Number(conflicting.captain_user_id) !== Number(captain.id)) {
+      return { state: "acceptance_identity_conflict" };
+    }
+    db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND acceptance_message_id<>? AND status IN ('pending','selected')").run(stamp, candidateId, acceptanceMessageId);
+    db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE candidate_id=? AND acceptance_message_id=? AND status IN ('pending','selected')").run(stamp, candidateId, acceptanceMessageId);
+    db.prepare("UPDATE order_candidates SET pending_captain_user_id=?,pending_message_id=?,pending_at=COALESCE(pending_at,?),lifecycle_stage='acceptance_pending',lifecycle_blocker='awaiting_authorized_thumb',lifecycle_updated_at=?,updated_at=? WHERE id=? AND group_id=? AND status='pending'").run(captain.id, acceptanceMessageId, stamp, stamp, stamp, candidateId, configuredGroupId);
+    audit("order.candidate.acceptance_reassigned", "order_candidate", candidateId, { sourceMessageId: candidate.source_message_id, acceptanceMessageId, executorPhone, reason, financialMutation: false });
+    return { state: "reassigned", candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId, executor: { id: captain.id, name: captain.name, phone: captain.phone } };
+  })();
+  if (result.state !== "reassigned") return res.status(409).json({ error: "Acceptance could not be reassigned safely", state: result.state, mutation: "none", financialMutation: false });
+  return res.json({ success: true, ...result, mutation: "reassigned_acceptance", financialMutation: false, settlement: "not_applied" });
+});
 app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, (req, res) => {
   const candidateId = Number(req.params.id);
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
