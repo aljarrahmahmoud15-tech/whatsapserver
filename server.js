@@ -963,15 +963,18 @@ async function sendBotText(to, text) {
 const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
 // Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
 const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
+const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
+const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set([123]);
 const captainStatusNotificationInFlight = new Set();
-async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null }) {
+async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null, testOverride = false, testCaptainId = null }) {
   const recipientPhone = phoneWithCountry(phone);
   const message = String(text || "").trim();
   const key = String(idempotencyKey || "").trim();
   if (!isValidJordanPhone(recipientPhone) || !event || !title || !message || message.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH || !key) {
     return { status: "invalid" };
   }
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED) {
+  const allowPausedTest = testOverride && event === "captain.approval_notification.test" && CAPTAIN_STATUS_TEST_ALLOWLIST.has(Number(testCaptainId));
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED && !allowPausedTest) {
     audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason: "captain_status_notifications_paused" });
     return { status: "suppressed", duplicate: false, reason: "captain_status_notifications_paused" };
   }
@@ -5433,8 +5436,9 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
 app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, async (req, res) => {
   const captainId = Number(req.params.id);
   const idempotencyKey = String(req.get("X-Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+  const confirmation = String(req.body?.confirmation || "").trim();
   if (!Number.isInteger(captainId) || captainId < 1 || req.body?.test !== true || idempotencyKey.length < 16 || idempotencyKey.length > 120) return res.status(400).json({ error: "معرف الكابتن ومفتاح الاختبار والتأكيد مطلوبون" });
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED) return res.status(503).json({ error: "إشعارات الكباتن موقوفة حاليًا لمنع التكرار", code: "CAPTAIN_STATUS_NOTIFICATIONS_PAUSED", mutation: "none", walletChanged: false });
+  if (confirmation !== CAPTAIN_STATUS_TEST_CONFIRMATION || !CAPTAIN_STATUS_TEST_ALLOWLIST.has(captainId)) return res.status(403).json({ error: "اختبار الإشعار محصور مؤقتًا بالكابتن المصرح له", code: "CAPTAIN_STATUS_TEST_NOT_ALLOWED", mutation: "none", walletChanged: false });
   if (!consumeRateLimit(adminActionRate, `approval-notification-test:${clientAddress(req)}:${captainId}`, 2)) return res.status(429).json({ error: "تم إرسال اختبارات كثيرة لهذا الكابتن؛ حاول بعد قليل" });
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status,approved_at FROM users WHERE id=? LIMIT 1").get(captainId);
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active" || !captain.approved_at) return res.status(409).json({ error: "يجب اختيار كابتن مسجل ومعتمد ونشط" });
@@ -5443,25 +5447,18 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للإرسال حاليًا" });
   const title = "إشعار اختبار الموافقة";
   const message = "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.";
-  const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,message_id,created_at) VALUES(?,?,?,?,?,'pending',?,?)").run(phoneWithCountry(captain.phone), "captain", "captain.approval_notification.test", title, message, idempotencyKey, now());
-  let deliveryStatus = "failed";
-  let sentMessageId = null;
-  try {
-    const recipient = await resolveWhatsAppRecipientId(captain.phone);
-    const recipients = [...new Set([recipient, `${phoneWithCountry(captain.phone)}@c.us`].filter(Boolean))];
-    let sent = false;
-    for (const candidate of recipients) {
-      if (await sendBotText(candidate, message)) {
-        sent = true;
-        break;
-      }
-    }
-    if (sent) { deliveryStatus = "sent"; sentMessageId = idempotencyKey; }
-  } catch (_) {}
-  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, sentMessageId, row.lastInsertRowid);
-  audit("captain.approval_notification.test", "user", captain.id, { deliveryStatus, idempotencyKey });
-  if (deliveryStatus !== "sent") return res.status(502).json({ error: "تعذر إرسال إشعار الاختبار", status: deliveryStatus });
-  res.json({ success: true, status: deliveryStatus, message: "تم إرسال إشعار الاختبار دون تغيير حالة الحساب أو الرصيد" });
+  const notice = await sendCaptainStatusText({
+    phone: captain.phone,
+    event: "captain.approval_notification.test",
+    title,
+    text: message,
+    idempotencyKey,
+    testOverride: true,
+    testCaptainId: captain.id,
+  });
+  audit("captain.approval_notification.test", "user", captain.id, { deliveryStatus: notice.status, idempotencyKey, duplicate: Boolean(notice.duplicate) });
+  if (!['sent', 'delivered'].includes(notice.status)) return res.status(502).json({ error: "تعذر إرسال إشعار الاختبار", status: notice.status, mutation: "none", walletChanged: false });
+  res.json({ success: true, status: notice.status, duplicate: Boolean(notice.duplicate), messageId: notice.messageId || null, message: "تم إرسال إشعار الاختبار دون تغيير حالة الحساب أو الرصيد" });
 });
 app.post("/api/captain/login", (req, res) => {
   const pin = String(req.body?.pin || "").trim();

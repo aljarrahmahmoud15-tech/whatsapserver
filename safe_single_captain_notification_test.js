@@ -136,7 +136,7 @@ async function main() {
     token,
     cookie,
     method: 'POST',
-    body: { test: true, idempotencyKey },
+    body: { test: true, idempotencyKey, confirmation: SEND_CONFIRMATION },
   });
   console.log(JSON.stringify({ ...result, idempotencyKey, mutation: 'none', walletChanged: false }, null, 2));
 }

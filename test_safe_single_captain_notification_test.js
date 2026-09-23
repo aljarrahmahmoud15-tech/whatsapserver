@@ -8,6 +8,7 @@ assert.match(script, /DRY_RUN_ONLY/);
 assert.match(script, /if \(!options\.send && options\.confirm\)/);
 assert.match(script, /if \(options\.send && options\.confirm !== SEND_CONFIRMATION\)/);
 assert.match(script, /approval-notification-test/);
+assert.match(script, /confirmation: SEND_CONFIRMATION/);
 assert.match(script, /idempotencyKey = `\$\{NOTIFICATION_KEY_PREFIX\}-\$\{preview\.id\}`/);
 assert.match(script, /walletChanged: false/);
 assert.match(script, /mutation: 'none'/);
