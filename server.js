@@ -8571,6 +8571,31 @@ app.get("/api/admin/notifications", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, notifications: rows });
 });
+app.get("/api/admin/captains/announcement-chat-check/:phone", requireAdmin, async (req, res) => {
+  const phone = phoneWithCountry(String(req.params.phone || ""));
+  if (!isValidJordanPhone(phone)) return res.status(400).json({ error: "رقم كابتن غير صالح" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  try {
+    const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
+    const chat = await withTimeout(client.getChatById(recipient), 20000, null);
+    if (!chat || typeof chat.fetchMessages !== "function") return res.json({ success: true, phone, found: false, reason: "chat_unavailable", matches: [] });
+    const messages = await withTimeout(chat.fetchMessages({ limit: 60, fromMe: true }), 30000, []);
+    const { title, caption } = captainCompletionAnnouncementContent();
+    const matches = (Array.isArray(messages) ? messages : []).filter((message) => {
+      const body = String(message?.body || "");
+      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن") || body === caption);
+    }).map((message) => ({
+      id: message?.id?._serialized || null,
+      timestamp: message?.timestamp || null,
+      type: message?.type || null,
+      hasMedia: Boolean(message?.hasMedia),
+      body: String(message?.body || "").slice(0, 240),
+    }));
+    res.json({ success: true, phone, found: matches.length > 0, matches });
+  } catch (error) {
+    res.status(502).json({ error: "تعذر قراءة محادثة الكابتن", detail: String(error?.message || error).slice(0, 240) });
+  }
+});
 app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (req, res) => {
   const ticketId = Number(req.params.id);
   const ticket = db.prepare("SELECT * FROM support_tickets WHERE id=? LIMIT 1").get(ticketId);
