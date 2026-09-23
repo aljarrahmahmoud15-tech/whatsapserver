@@ -7527,6 +7527,44 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
   audit("order.confirmation_duplicates_deleted", "order", order?.id || null, { groupId, orderNo, matched: matches.length, deleted, failed, keptMessageId });
   res.json({ success: failed.length === 0, mutation: "messages_deleted", groupId, orderNo, matched: matches.length, keptMessageId, deleted, failed });
 });
+app.post("/api/admin/group/delete-duplicate-text", requireBotWalletOwner, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const expectedBody = String(req.body?.expectedBody || "").trim();
+  const messageIds = Array.isArray(req.body?.messageIds) ? req.body.messageIds.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  const keepMessageId = String(req.body?.keepMessageId || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !expectedBody || !messageIds.length || messageIds.length > 50 || !keepMessageId || messageIds.includes(keepMessageId)) {
+    return res.status(400).json({ error: "configured groupId, expectedBody, messageIds, and a distinct keepMessageId are required", mutation: "none" });
+  }
+  const history = await fetchGroupHistory(groupId, Math.max(50, Math.min(Number(req.body?.limit || 200), 500)), { includeOutgoing: true });
+  if (!history.chat) return res.status(504).json({ error: "Unable to read configured group", mutation: "none" });
+  const requested = new Set(messageIds);
+  const isMatchingOutgoingText = (message) => message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").trim() === expectedBody;
+  const matches = history.messages.filter((message) => requested.has(serializedMessageId(message)) && isMatchingOutgoingText(message));
+  const matchedIds = new Set(matches.map((message) => serializedMessageId(message)));
+  const keep = history.messages.find((message) => serializedMessageId(message) === keepMessageId && isMatchingOutgoingText(message));
+  const missing = messageIds.filter((messageId) => !matchedIds.has(messageId));
+  if (missing.length || !keep) return res.status(409).json({ error: "Requested messages changed or failed validation; no messages were deleted", mutation: "none", groupId, expectedBody, missing, keepMessageId, keepValidated: Boolean(keep) });
+  const deleted = [];
+  const failed = [];
+  for (const message of matches) {
+    const messageId = serializedMessageId(message);
+    try {
+      const liveMessage = typeof message.delete === "function" ? message : await withTimeout(client.getMessageById(messageId), 12000, null);
+      if (!liveMessage || typeof liveMessage.delete !== "function") {
+        failed.push({ messageId, reason: "live_message_unavailable" });
+        continue;
+      }
+      const deletedForEveryone = await withTimeout(liveMessage.delete(true), 15000, false);
+      if (deletedForEveryone) deleted.push(messageId);
+      else failed.push({ messageId, reason: "delete_not_confirmed" });
+    } catch (error) {
+      failed.push({ messageId, reason: String(error?.message || error).slice(0, 160) });
+    }
+  }
+  audit("group.duplicate_text_messages_deleted", "group", groupId, { expectedBody, requested: messageIds, keepMessageId, deleted, failed });
+  res.json({ success: failed.length === 0, mutation: "messages_deleted", groupId, expectedBody, keptMessageId: keepMessageId, requested: messageIds.length, deleted, failed });
+});
 app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
