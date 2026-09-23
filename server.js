@@ -8561,7 +8561,7 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     }
     if (chat && typeof chat.sendMessage === "function") {
       try {
-        return await chat.sendMessage(message, { waitUntilMsgSent: false });
+        return await chat.sendMessage(message);
       } catch (chatError) {
         const detail = String(chatError?.stack || chatError?.message || chatError).slice(0, 500);
         console.warn(`[WhatsApp] admin send chat.sendMessage failed; retrying client.sendMessage: chat=${chatId} detail=${detail}`);
