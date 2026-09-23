@@ -110,6 +110,7 @@ const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
+const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
 const negativeBalanceWarningRuns = new Map();
@@ -1112,6 +1113,85 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
   }
   run.status = run.cancelled ? "cancelled" : "completed";
   run.completedAt = now();
+}
+const CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION = "company-completion-v1";
+const CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_ANNOUNCEMENT";
+function captainCompletionAnnouncementContent() {
+  const title = "إعلان اكتمال شركة وصلني الآن";
+  const lines = [
+    "تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن.",
+    "تم تفعيل مسار الطلبات والتأكيد والتسوية المالية.",
+    "طريقة العمل المعتمدة: يُنشر السعر في القروب الرسمي، ثم يرد الكابتن المنفّذ بكلمة «تم»، ويُستكمل اعتماد الحجز والتسوية حسب المسار المعتمد.",
+    "ستصلكم الإشعارات الرسمية عند تسجيل العمليات المهمة.",
+    `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
+    "شكرًا لتعاونكم مع وصلني الآن – Waslni Now.",
+  ];
+  return { title, lines, caption: brandedMessage(title, lines) };
+}
+async function runCaptainCompletionAnnouncement({ runKey, captains }) {
+  const run = captainAnnouncementBroadcasts.get(runKey);
+  if (!run) return;
+  const { title, lines, caption } = captainCompletionAnnouncementContent();
+  try {
+    if (!client || !isReady) throw new Error("WhatsApp غير جاهز حاليًا");
+    const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
+    if (!media) throw new Error("announcement card render returned no media");
+    for (const captain of captains) {
+      const phone = phoneWithCountry(captain.phone);
+      const event = `captain.company_completion.${runKey}`;
+      const idempotencyKey = `COMPANY-COMPLETION-${runKey}-${captain.id}`.slice(0, 100);
+      const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? LIMIT 1").get(phone, event);
+      if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) {
+        run.skipped += 1;
+        if (["sent", "delivered"].includes(existing.delivery_status)) run.sent += 1;
+        else if (existing.delivery_status === "uncertain") run.uncertain += 1;
+        continue;
+      }
+      let row;
+      if (existing) {
+        db.prepare("UPDATE notifications SET title=?,message=?,delivery_status='pending',idempotency_key=? WHERE id=?").run(title, caption, idempotencyKey, existing.id);
+        row = { lastInsertRowid: existing.id };
+      } else {
+        try {
+          row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?)").run(phone, event, title, caption, idempotencyKey, now());
+        } catch (error) {
+          const duplicate = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? LIMIT 1").get(phone, event);
+          if (duplicate) {
+            run.skipped += 1;
+            continue;
+          }
+          throw error;
+        }
+      }
+      let deliveryStatus = "failed";
+      let messageId = null;
+      try {
+        const recipient = await resolveWhatsAppRecipientId(phone);
+        const result = recipient ? await sendWhatsAppAtMostOnce(recipient, media, { caption }, 30000) : { status: "failed" };
+        if (result.status === "sent") {
+          deliveryStatus = "sent";
+          messageId = result.message?.id?._serialized || null;
+        } else if (result.status === "uncertain") {
+          deliveryStatus = "uncertain";
+          run.uncertain += 1;
+        }
+      } catch (error) {
+        run.lastError = String(error?.message || error).slice(0, 300);
+      }
+      db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid || row.id);
+      audit("captain.company_completion_announcement", "user", captain.id, { runKey, deliveryStatus, messageId });
+      run.processed += 1;
+      if (deliveryStatus === "sent") run.sent += 1;
+      else if (deliveryStatus === "failed") run.failed += 1;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    run.status = "completed";
+  } catch (error) {
+    run.status = "failed";
+    run.lastError = String(error?.message || error).slice(0, 300);
+  } finally {
+    run.completedAt = now();
+  }
 }
 async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
@@ -7319,6 +7399,30 @@ app.get("/api/admin/group/balance-notifications/:runKey", requireAdmin, (req, re
   const run = balanceNotificationBroadcasts.get(runKey);
   if (!run) return res.status(404).json({ error: "عملية البث غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run, cancelled: undefined });
+});
+app.post("/api/admin/captains/announce-completion", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const version = String(req.body?.version || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  const expectedCount = Number(req.body?.expectedCount);
+  if (confirmation !== CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION || version !== CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION || !/^[A-Z0-9-]{16,100}$/.test(runKey) || !Number.isInteger(expectedCount)) {
+    return res.status(400).json({ error: "تأكيد الإعلان والإصدار ومفتاح العملية والعدد المتوقع مطلوبة" });
+  }
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  if (captainAnnouncementBroadcasts.has(runKey)) return res.json({ success: true, started: true, runKey, ...captainAnnouncementBroadcasts.get(runKey) });
+  const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND account_status='active' AND phone IS NOT NULL AND phone<>'' ORDER BY id DESC").all();
+  if (captains.length !== expectedCount) return res.status(409).json({ error: "تغير عدد الكباتن النشطين منذ المعاينة؛ أعد المعاينة", expectedCount, currentCount: captains.length });
+  const run = { runKey, version, status: "running", total: captains.length, processed: 0, sent: 0, failed: 0, uncertain: 0, skipped: 0, startedAt: now(), completedAt: null, lastError: null };
+  captainAnnouncementBroadcasts.set(runKey, run);
+  audit("captain.company_completion_announcement_started", "system", runKey, { version, recipientCount: captains.length });
+  void runCaptainCompletionAnnouncement({ runKey, captains });
+  res.status(202).json({ success: true, started: true, ...run });
+});
+app.get("/api/admin/captains/announce-completion/:runKey", requireAdmin, (req, res) => {
+  const runKey = String(req.params.runKey || "").trim();
+  const run = captainAnnouncementBroadcasts.get(runKey);
+  if (!run) return res.status(404).json({ error: "عملية إعلان الكباتن غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...run });
 });
 app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).type("text/plain").send(Buffer.from(JSON.stringify({ error: "Bot not ready" }), "utf8").toString("base64"));
