@@ -6760,17 +6760,23 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const name = req.body.name === undefined ? captain.name : String(req.body.name).trim();
   const active = req.body.active === undefined ? captain.active : (req.body.active ? 1 : 0);
   if (!name || name.length > 100) return res.status(400).json({ error: "Captain name is invalid" });
-  db.prepare("UPDATE users SET name=?,active=?,account_status=?,updated_at=? WHERE id=? AND role='captain'").run(name, active, active ? "active" : "suspended", now(), id);
-  audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name });
+  const stamp = now();
+  const statusChange = db.prepare("UPDATE users SET name=?,active=?,account_status=?,updated_at=? WHERE id=? AND role='captain' AND active<>?").run(name, active, active ? "active" : "suspended", stamp, id, active);
+  if (!statusChange.changes) {
+    db.prepare("UPDATE users SET name=?,updated_at=? WHERE id=? AND role='captain'").run(name, stamp, id);
+    audit("captain.updated", "user", id, { phone: captain.phone, name, active, statusChanged: false, notificationSent: false });
+    return res.json({ success: true, id, active, name, statusChanged: false, notificationSent: false });
+  }
+  audit(active ? "captain.activated" : "captain.deactivated", "user", id, { phone: captain.phone, name, statusChanged: true });
   void sendCaptainStatusText({
     phone: captain.phone,
     event: active ? "captain.activated" : "captain.deactivated",
     title: active ? "تفعيل حساب الكابتن" : "إيقاف حساب الكابتن",
     text: active ? "تم تفعيل حسابك ويمكنك استخدام بوابة التشغيل." : "تم إيقاف حسابك مؤقتًا؛ راجع الشركة.",
-    idempotencyKey: `CAPTAIN-STATUS-${id}-${active ? "ACTIVE" : "SUSPENDED"}-${Date.now()}`,
+    idempotencyKey: `CAPTAIN-STATUS-${id}-${active ? "ACTIVE" : "SUSPENDED"}-${stamp}`,
   });
   void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`], ownersOnly: true });
-  res.json({ success: true, id, active, name });
+  res.json({ success: true, id, active, name, statusChanged: true, notificationSent: true });
 });
 app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
