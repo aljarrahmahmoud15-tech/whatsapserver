@@ -31,6 +31,8 @@ jobs:
         run: npm run check
       - name: Run full regression suite
         run: npm test
+      - name: Run IndexedDB 90% guard simulation
+        run: npm run test:indexeddb-guard
       - name: Run focused order confirmation suite
         run: |
           node test_price_confirmation_rule.js
@@ -67,3 +69,14 @@ jobs:
               (.orders.acceptedUnlinked >= 0)
             ' >/dev/null
           echo "WhatsApp, group receiver, and order counters are healthy."
+      - name: Check IndexedDB pressure guard state
+        run: |
+          set -euo pipefail
+          status=$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status")
+          printf '%s\n' "$status" | jq -e '
+            (.whatsappStoragePressure.status != null) and
+            (.whatsappStoragePressure.blocked == false) and
+            (.whatsappStoragePressure.status != "critical") and
+            (.whatsappStoragePressure.blockedAttempts >= 0)
+          ' >/dev/null
+          echo "IndexedDB pressure is below the critical send-blocking state."

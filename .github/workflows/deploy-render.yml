@@ -33,6 +33,14 @@ jobs:
       - name: Check formatting
         run: git diff --check
 
+      - name: Run IndexedDB 90% guard simulation
+        run: npm run test:indexeddb-guard
+
+      - name: Run IndexedDB guard assertions
+        run: |
+          node test_indexeddb_storage_guard.js
+          node test_whatsapp_send_diagnostics.js
+
       - name: Run test suite
         run: npm test
 
