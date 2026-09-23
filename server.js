@@ -8568,14 +8568,14 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
         audit("message.send_chat_failed", "chat", chatId, { operationId, error: detail });
         if (typeof client.sendMessage !== "function") throw chatError;
         try {
-          return await client.sendMessage(chatId, message, { waitUntilMsgSent: false });
+          return await client.sendMessage(chatId, message);
         } catch (clientError) {
           clientError.cause = chatError;
           throw clientError;
         }
       }
     }
-    return client.sendMessage(chatId, message, { waitUntilMsgSent: false });
+    return client.sendMessage(chatId, message);
   });
   const sendTimeoutMarker = {};
   try {
