@@ -961,6 +961,8 @@ async function sendBotText(to, text) {
   return sendCompanyOperationsCard(to, `رسالة رسمية من ${COMPANY_BRAND_NAME}`, lines);
 }
 const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
+// Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
+const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
 const captainStatusNotificationInFlight = new Set();
 async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null }) {
   const recipientPhone = phoneWithCountry(phone);
@@ -968,6 +970,10 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   const key = String(idempotencyKey || "").trim();
   if (!isValidJordanPhone(recipientPhone) || !event || !title || !message || message.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH || !key) {
     return { status: "invalid" };
+  }
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED) {
+    audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason: "captain_status_notifications_paused" });
+    return { status: "suppressed", duplicate: false, reason: "captain_status_notifications_paused" };
   }
   if (captainStatusNotificationInFlight.has(key)) return { status: "pending", duplicate: true };
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
@@ -1008,7 +1014,7 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   return { status: deliveryStatus, notificationId, messageId };
 }
 async function retryCaptainStatusNotifications() {
-  if (!client || !isReady) return { attempted: 0 };
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED };
   const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
   const placeholders = events.map(() => "?").join(",");
   const rows = db.prepare(`SELECT recipient_phone,event,title,message,idempotency_key,source_message_id FROM notifications WHERE recipient_role='captain' AND delivery_status IN ('pending','failed') AND event IN (${placeholders}) ORDER BY id DESC LIMIT 50`).all(...events);
