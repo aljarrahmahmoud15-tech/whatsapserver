@@ -8517,8 +8517,8 @@ app.get("/api/admin/order-lifecycle", requireAdmin, (req, res) => {
 app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
   if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", bookings: [] });
-  const requestedLimit = Number(req.query.limit || 200);
-  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 200;
+  const requestedLimit = Number(req.query.limit || 1000);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 1000)) : 1000;
   const candidates = db.prepare(`SELECT c.id AS candidate_id,c.source_message_id,c.group_id,c.raw_text,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.status,
       c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,c.created_at,c.updated_at,
       p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone,

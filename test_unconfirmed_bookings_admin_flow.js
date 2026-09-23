@@ -36,7 +36,7 @@ assert.match(admin, /اعتماد الحجز وتثبيت التسوية/);
 assert.match(admin, /class=\"settle-button\"/);
 assert.match(admin, /aria-label=\"اعتماد الحجز وتثبيت التسوية\"/);
 assert.match(admin, /عدم تأكيد الحجز/);
-assert.match(admin, /\/api\/admin\/unconfirmed-bookings\?limit=200/);
+assert.match(admin, /\/api\/admin\/unconfirmed-bookings\?limit=1000/);
 assert.match(admin, /function renderUnconfirmedBookings\(\)/);
 assert.match(admin, /function openUnconfirmedDecision\(index,action\)/);
 assert.match(admin, /function submitUnconfirmedDecision\(\)/);
