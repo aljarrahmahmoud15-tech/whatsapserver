@@ -12,11 +12,10 @@ assert.match(route, /req\.body\?\.confirm !== true/, 'المسار يتطلب ت
 assert.match(route, /X-Idempotency-Key/, 'المسار يستخدم مفتاح منع التكرار');
 assert.match(route, /registerAdminSend\(\{ operationId, chatId: groupId, message: caption \}\)/, 'المسار يسجل العملية idempotently');
 assert.match(route, /isWhatsAppStorageSendBlocked\(\)/, 'المسار يحترم حارس IndexedDB');
-assert.match(route, /new MessageMedia\("image\/png"/, 'المسار يرسل PNG فعلية');
-assert.match(route, /sharp\(Buffer\.from\(svg\)\)\.png\(\)\.toBuffer\(\)/, 'الصورة تُنشأ ثابتًا داخل الخادم');
+assert.match(route, /renderOperationsMessageMedia\("اختبار وسائط Waslni Now"/, 'المسار يعيد استخدام مولد بطاقة العمليات الإنتاجي');
 assert.match(route, /client\.sendMessage\(groupId, media/, 'المسار يرسل مباشرة إلى المعرّف الرسمي');
-assert.doesNotMatch(route, /chat\.sendMessage\(media/, 'لا يعيد المحاولة عبر كائن chat قد يكرر الوسائط');
-assert.match(route, /waitUntilMsgSent: false/, 'الإرسال لا يعيد المحاولة تلقائيًا من WhatsApp');
+assert.match(route, /client\.sendMessage\(groupId, media, \{ caption \}\)/, 'المسار يستخدم خيارات الإرسال الإنتاجية');
+assert.doesNotMatch(route, /waitUntilMsgSent/, 'لا يغيّر خيار انتظار الوسائط الإنتاجي');
 assert.match(route, /Only the verified official group is allowed/, 'لا يسمح بوجهة أخرى');
 assert.doesNotMatch(route, /req\.body\?\.(?:mediaUrl|file|base64)/, 'لا يقبل ملفًا أو رابطًا عشوائيًا من العميل');
 

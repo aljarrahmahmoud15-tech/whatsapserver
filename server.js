@@ -9057,12 +9057,11 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
     return res.status(existing.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(existing), mediaType: "image/png", filename: "waslni-now-media-test.png" });
   }
   audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500" viewBox="0 0 900 500"><rect width="900" height="500" rx="36" fill="#0b1f35"/><rect x="28" y="28" width="844" height="444" rx="28" fill="#123b5d" stroke="#38d39f" stroke-width="4"/><text x="450" y="215" text-anchor="middle" fill="#f3f7ff" font-size="42" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">اختبار وسائط Waslni Now</text><text x="450" y="285" text-anchor="middle" fill="#38d39f" font-size="30" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">لا يوجد حجز أو تسوية مالية</text><text x="450" y="390" text-anchor="middle" fill="#b9c9dc" font-size="22" font-family="Noto Sans Arabic, DejaVu Sans, sans-serif">اختبار صورة واحد فقط</text></svg>`;
   const sendPromise = Promise.resolve().then(async () => {
-    const png = await sharp(Buffer.from(svg)).png().toBuffer();
-    const media = new MessageMedia("image/png", png.toString("base64"), "waslni-now-media-test.png");
+    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Waslni Now", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
+    if (!media) throw new Error("media test card render returned no media");
     if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
-    return withTimeoutStrict(client.sendMessage(groupId, media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
+    return withTimeoutStrict(client.sendMessage(groupId, media, { caption }), ADMIN_SEND_TIMEOUT_MS, null);
   });
   try {
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
