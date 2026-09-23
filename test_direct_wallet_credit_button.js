@@ -10,6 +10,9 @@ assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/direct-credit", r
 assert.match(server, /delivery: "wallet_only"/);
 assert.match(server, /source: "company_direct"/);
 assert.match(server, /actor: "owner"/);
+assert.match(server, /DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS/);
+assert.match(server, /captain\.wallet\.large_credit_alert/);
+assert.match(server, /عتبة التنبيه/);
 assert.match(server, /WHERE id=\? AND role='captain' AND is_bot=0 AND account_status='active'/);
 
 const handlerStart = server.indexOf('function handleAdminDirectWalletCredit');

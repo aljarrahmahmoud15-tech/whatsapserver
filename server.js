@@ -56,6 +56,8 @@ const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWOR
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -200);
 const CAPTAIN_SUBSCRIPTION_CENTS = 100;
+const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
+const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
 const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
 const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -7084,7 +7086,22 @@ function handleAdminDirectWalletCredit(req, res) {
     audit("captain.wallet.credited_direct", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner", source: "company_direct", delivery: "wallet_only" });
     return result.lastInsertRowid;
   })();
-  void notifyOperations({ event: "captain.wallet.credited_direct", title: "تأكيد إضافة رصيد مباشرة", captainPhone: captain.phone, lines: ["الكابتن: " + captain.name, "تمت إضافة: " + money(amountCents) + " JOD", "الرصيد الحالي: " + money(nextBalance) + " JOD", "السبب: " + reason, "إضافة داخلية مباشرة دون إنشاء بطاقة أو إرسال WhatsApp للكابتن."], ownersOnly: true });
+  const isLargeDirectCredit = amountCents >= DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS;
+  void notifyOperations({
+    event: isLargeDirectCredit ? "captain.wallet.large_credit_alert" : "captain.wallet.credited_direct",
+    title: isLargeDirectCredit ? "تنبيه عاجل: إضافة رصيد كبيرة" : "تأكيد إضافة رصيد مباشرة",
+    captainPhone: captain.phone,
+    lines: [
+      isLargeDirectCredit ? "يرجى مراجعة هذه الحركة الكبيرة فورًا." : null,
+      "الكابتن: " + captain.name,
+      "تمت إضافة: " + money(amountCents) + " JOD",
+      isLargeDirectCredit ? "عتبة التنبيه: " + money(DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS) + " JOD" : null,
+      "الرصيد الحالي: " + money(nextBalance) + " JOD",
+      "السبب: " + reason,
+      "إضافة داخلية مباشرة دون إنشاء بطاقة أو إرسال WhatsApp للكابتن."
+    ],
+    ownersOnly: true
+  });
   return res.status(201).json({ success: true, mode: "direct", alreadyApplied: false, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance, credited: money(amountCents), delivery: "wallet_only" });
 }
 app.post("/api/admin/users/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
