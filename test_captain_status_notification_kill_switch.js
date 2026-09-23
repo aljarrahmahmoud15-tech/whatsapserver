@@ -3,7 +3,7 @@ const fs = require('node:fs');
 
 const server = fs.readFileSync('./server.js', 'utf8');
 assert.match(server, /const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;/);
-assert.match(server, /const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set\(\[123\]\);/);
+assert.match(server, /const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set\(\);/);
 assert.match(server, /const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";/);
 assert.match(server, /if \(!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED && !allowPausedTest\)/);
 assert.match(server, /reason: "captain_status_notifications_paused"/);

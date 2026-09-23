@@ -980,7 +980,8 @@ const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
 // Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
 const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
 const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
-const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set([123]);
+// No live test exception remains enabled after the controlled verification attempt.
+const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set();
 const captainStatusNotificationInFlight = new Set();
 async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null, testOverride = false, testCaptainId = null }) {
   const recipientPhone = phoneWithCountry(phone);
