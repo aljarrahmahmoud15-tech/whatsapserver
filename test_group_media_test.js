@@ -14,8 +14,8 @@ assert.match(route, /registerAdminSend\(\{ operationId, chatId: groupId, message
 assert.match(route, /isWhatsAppStorageSendBlocked\(\)/, 'المسار يحترم حارس IndexedDB');
 assert.match(route, /new MessageMedia\("image\/png"/, 'المسار يرسل PNG فعلية');
 assert.match(route, /sharp\(Buffer\.from\(svg\)\)\.png\(\)\.toBuffer\(\)/, 'الصورة تُنشأ ثابتًا داخل الخادم');
-assert.match(route, /resolveReadableGroupChat\(groupId\) \|\| await resolveGroupChat\(groupId\)/, 'المسار يحاول القروب المقروء أولًا');
-assert.match(route, /client\.sendMessage\(groupId, media/, 'المسار يملك fallback إرسالًا مقيدًا بالمعرّف الرسمي');
+assert.match(route, /client\.sendMessage\(groupId, media/, 'المسار يرسل مباشرة إلى المعرّف الرسمي');
+assert.doesNotMatch(route, /chat\.sendMessage\(media/, 'لا يعيد المحاولة عبر كائن chat قد يكرر الوسائط');
 assert.match(route, /waitUntilMsgSent: false/, 'الإرسال لا يعيد المحاولة تلقائيًا من WhatsApp');
 assert.match(route, /Only the verified official group is allowed/, 'لا يسمح بوجهة أخرى');
 assert.doesNotMatch(route, /req\.body\?\.(?:mediaUrl|file|base64)/, 'لا يقبل ملفًا أو رابطًا عشوائيًا من العميل');

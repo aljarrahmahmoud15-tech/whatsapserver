@@ -9061,14 +9061,8 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   const sendPromise = Promise.resolve().then(async () => {
     const png = await sharp(Buffer.from(svg)).png().toBuffer();
     const media = new MessageMedia("image/png", png.toString("base64"), "waslni-now-media-test.png");
-    const chat = await resolveReadableGroupChat(groupId) || await resolveGroupChat(groupId);
-    if (chat && typeof chat.sendMessage === "function") {
-      return withTimeoutStrict(chat.sendMessage(media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
-    }
-    if (typeof client.sendMessage === "function") {
-      return withTimeoutStrict(client.sendMessage(groupId, media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
-    }
-    throw new Error("Configured group is not available through a WhatsApp send path");
+    if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
+    return withTimeoutStrict(client.sendMessage(groupId, media, { caption, waitUntilMsgSent: false }), ADMIN_SEND_TIMEOUT_MS, null);
   });
   try {
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
