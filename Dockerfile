@@ -40,6 +40,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci --omit=dev
 COPY . .
 RUN mkdir -p /app/data && chown -R node:node /app

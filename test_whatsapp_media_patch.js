@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+const dockerfile = fs.readFileSync('./Dockerfile', 'utf8');
 const patchScriptPath = path.join('scripts', 'patch-whatsapp-web-media.js');
 const patchScript = fs.readFileSync(patchScriptPath, 'utf8');
 const server = fs.readFileSync('./server.js', 'utf8');
@@ -17,5 +18,6 @@ assert.equal((injectedUtils.match(/delete message\.\__x_id;/g) || []).length, 1,
 assert.ok(server.indexOf('applyWhatsAppMediaPatch()') < server.indexOf('require("whatsapp-web.js")'), 'patch startup يسبق تحميل مكتبة WhatsApp');
 assert.match(server, /mediaPatch: \{/, 'واجهة حالة المالك تعرض حالة patch الوسائط');
 assert.match(server, /remove-private-media-id-collision/, 'واجهة الحالة تعرض استراتيجية patch الصحيحة');
+assert.ok(dockerfile.indexOf('COPY scripts ./scripts') < dockerfile.indexOf('RUN npm ci --omit=dev'), 'Dockerfile ينسخ script قبل postinstall');
 
 console.log('whatsapp-web.js media id collision patch verified');
