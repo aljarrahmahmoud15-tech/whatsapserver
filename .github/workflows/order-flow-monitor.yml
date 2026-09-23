@@ -72,11 +72,42 @@ jobs:
       - name: Check IndexedDB pressure guard state
         run: |
           set -euo pipefail
-          status=$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status")
-          printf '%s\n' "$status" | jq -e '
-            (.whatsappStoragePressure.status != null) and
-            (.whatsappStoragePressure.blocked == false) and
-            (.whatsappStoragePressure.status != "critical") and
-            (.whatsappStoragePressure.blockedAttempts >= 0)
-          ' >/dev/null
-          echo "IndexedDB pressure is below the critical send-blocking state."
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+
+            # Never hide a real send-blocking condition. A critical state or an
+            # explicit block fails immediately; only an incomplete startup
+            # payload is retried while WhatsApp finishes initializing.
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
+              (.whatsappStoragePressure.status == "critical") or
+              (.whatsappStoragePressure.blocked == true)
+            ' >/dev/null 2>&1; then
+              echo "IndexedDB pressure guard is blocking sends." >&2
+              printf '%s\n' "$status" | jq '.whatsappStoragePressure' >&2
+              exit 1
+            fi
+
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
+              (.whatsappStoragePressure | type == "object") and
+              (.whatsappStoragePressure.status | type == "string") and
+              (.whatsappStoragePressure.blocked == false) and
+              (.whatsappStoragePressure.blockedAttempts | type == "number") and
+              (.whatsappStoragePressure.blockedAttempts >= 0) and
+              ((.whatsappStoragePressure.status == "normal") or (.whatsappStoragePressure.status == "warning"))
+            ' >/dev/null 2>&1; then
+              echo "IndexedDB pressure is below the critical send-blocking state."
+              printf '%s\n' "$status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}'
+              exit 0
+            fi
+
+            if [[ -n "$status" ]]; then
+              echo "IndexedDB pressure state is not measured yet (attempt $attempt/6); retrying."
+              printf '%s\n' "$status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}' 2>/dev/null || true
+            else
+              echo "Status endpoint was unavailable (attempt $attempt/6); retrying."
+            fi
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+
+          echo "IndexedDB pressure state remained unavailable or unmeasured after retries." >&2
+          exit 1

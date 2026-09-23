@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const server = fs.readFileSync('./server.js', 'utf8');
+const monitor = fs.readFileSync('./.github/workflows/order-flow-monitor.yml', 'utf8');
 
 assert.match(server, /const INDEXEDDB_WARNING_RATIO = 0\.80/);
 assert.match(server, /const INDEXEDDB_CRITICAL_RATIO = 0\.90/);
@@ -20,5 +21,11 @@ assert.match(server, /app\.post\("\/api\/admin\/send", requireAdmin/);
 assert.match(server, /storagePressure: \{ \.\.\.whatsappStoragePressure \}/);
 assert.doesNotMatch(server, /indexedDB\.deleteDatabase/);
 assert.doesNotMatch(server, /rmSync\([^\n]*wwebjs_auth/);
+assert.match(monitor, /for attempt in 1 2 3 4 5 6/);
+assert.match(monitor, /\.whatsappStoragePressure\.status == "critical"/);
+assert.match(monitor, /\.whatsappStoragePressure\.blocked == true/);
+assert.match(monitor, /\.whatsappStoragePressure\.status == "normal"/);
+assert.match(monitor, /\.whatsappStoragePressure\.status == "warning"/);
+assert.match(monitor, /IndexedDB pressure state is not measured yet/);
 
 console.log('IndexedDB storage monitoring and safe send guardrails verified');
