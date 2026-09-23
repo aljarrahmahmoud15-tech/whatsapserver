@@ -132,7 +132,7 @@ const context = {
   logSettlementCompleted: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
-  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✅ تم قبول الطلب وتثبيته\n💰 السعر: ${details.priceCents / 100} JOD (شامل العمولة)\n🚖 الكابتن المنفذ: ${details.executorName}\n📌 الحالة: مقبول ومعتمد\n\nتم تحويل الطلب للتسوية المالية حسب النظام.\nرقم الرحلة: #${details.orderNo}\nصاحب الطلب: ${details.downloaderName}` }); },
+  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✅ تم تثبيت الطلب #${details.orderNo}` }); },
   finalBookingCancellationText: () => "❌ تم رفض أو إلغاء الطلب",
   sendBotText: async () => true,
   console,
@@ -164,10 +164,6 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 60, "تضاف 3% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.match(messages[0].text, /✅ تم قبول الطلب وتثبيته/);
-  assert.match(messages[0].text, /شامل العمولة/);
-  assert.match(messages[0].text, /رقم الرحلة: #7/);
-  assert.match(messages[0].text, /صاحب الطلب: المنتج/);
-  assert.match(messages[0].text, /الكابتن المنفذ: الكابتن/);
+  assert.equal(messages[0].text, "✅ تم تثبيت الطلب #7");
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

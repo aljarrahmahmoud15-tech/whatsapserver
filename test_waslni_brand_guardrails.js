@@ -8,7 +8,7 @@ const captain = fs.readFileSync('public/captain.html', 'utf8');
 assert.match(server, /const COMPANY_BRAND_NAME = "وصلني الآن"/);
 assert.match(server, /const COMPANY_BRAND_ENGLISH = "WASLNI NOW"/);
 assert.match(server, /`┃ \$\{COMPANY_BRAND_NAME\} \| بوابة التشغيل الرسمية`/);
-assert.match(server, /✅ تم قبول الطلب وتثبيته/);
+assert.match(server, /✅ تم تثبيت الطلب/);
 assert.match(owner, /لوحة وصلني الآن/);
 assert.match(captain, /وصلني الآن/);
 assert.doesNotMatch(server, /شركة الجراح \| بوابة التشغيل الرسمية/);

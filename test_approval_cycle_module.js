@@ -48,10 +48,7 @@ class FakeClient {
   assert.equal(accepted.settled, true);
   assert.equal(settlements, 1);
   assert.equal(client.sent.length, 1);
-  assert.match(client.sent[0].body, /✅ تم قبول الطلب وتثبيته/);
-  assert.match(client.sent[0].body, /شامل العمولة/);
-  assert.match(client.sent[0].body, /تم تحويل الطلب للتسوية المالية حسب النظام/);
-  assert.match(client.sent[0].body, /صاحب الطلب/);
+  assert.equal(client.sent[0].body, "✅ تم تثبيت الطلب #1");
 
   const repeated = await cycle.onReaction({ reaction: "👍", msgId: "done-1", senderId: "962771111111@c.us" });
   assert.equal(repeated.alreadySettled, true);

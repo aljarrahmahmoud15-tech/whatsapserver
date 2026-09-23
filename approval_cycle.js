@@ -204,17 +204,7 @@ function createApprovalCycle({ client, db, groupId, isCaptainEligible = async ()
 
       let confirmationMessageId = null;
       if (sendConfirmation && typeof client.sendMessage === "function") {
-        const priceText = (acceptance.price_cents / 100).toFixed(2);
-        const text = [
-          "✅ تم قبول الطلب وتثبيته",
-          `💰 السعر: ${priceText} JOD (شامل العمولة)`,
-          `🚖 الكابتن المنفذ: ${acceptance.executor_name || acceptance.executor_phone}`,
-          "📌 الحالة: مقبول ومعتمد",
-          "",
-          "تم تحويل الطلب للتسوية المالية حسب النظام.",
-          `رقم الرحلة: #${orderId}`,
-          `صاحب الطلب: ${acceptance.producer_name || acceptance.producer_phone}`,
-        ].join("\n");
+        const text = `✅ تم تثبيت الطلب #${orderId}`;
         try {
           const sent = await client.sendMessage(groupId, text);
           confirmationMessageId = messageId(sent);

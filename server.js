@@ -2693,18 +2693,14 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
   }
 }
 function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents }) {
-  const firstCaptain = String(downloaderName ?? consumerName ?? "غير محدد").trim() || "غير محدد";
-  const secondCaptain = String(executorName || "غير محدد").trim() || "غير محدد";
-  return [
-    "✅ تم قبول الطلب وتثبيته",
-    `💰 السعر: ${money(Number(priceCents || 0))} JOD (شامل العمولة)`,
-    `🚖 الكابتن المنفذ: ${secondCaptain}`,
-    "📌 الحالة: مقبول ومعتمد",
-    "",
-    "تم تحويل الطلب للتسوية المالية حسب النظام.",
-    `رقم الرحلة: #${String(orderNo || "غير محدد")}`,
-    `صاحب الطلب: ${firstCaptain}`,
-  ].join("\n");
+  return `✅ تم تثبيت الطلب #${String(orderNo || "غير محدد")}`;
+}
+function finalBookingConfirmationOrderNo(body) {
+  const text = String(body || "").trim();
+  const shortMatch = text.match(/^✅ تم تثبيت الطلب\s*#(\d+)$/);
+  if (shortMatch) return Number(shortMatch[1]);
+  const legacyMatch = text.match(/رقم الرحلة:\s*#(\d+)/);
+  return Number(legacyMatch?.[1] || 0);
 }
 function finalBookingCancellationText() {
   return [
@@ -2757,9 +2753,9 @@ async function sendFinalBookingConfirmation(groupId, details) {
     console.error("[WhatsApp] final booking confirmation not sent:", error.message);
     if (orderId) {
       db.prepare("UPDATE order_confirmation_deliveries SET status='failed',last_error=?,updated_at=? WHERE order_id=?").run(String(error?.message || error).slice(0, 240), now(), orderId);
-      const alertEvent = `order.confirmation_card.failed.${orderId}`;
+      const alertEvent = `order.confirmation_message.failed.${orderId}`;
       if (!db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(alertEvent)) {
-        void notifyOperations({ event: alertEvent, title: "تعذر إرسال بطاقة تثبيت الطلب", lines: [`رقم الطلب: #${details?.orderNo || "غير محدد"}`, "تمت التسوية المالية بشكل ذري، لكن رسالة التثبيت لم تصل إلى القروب.", "سيعاد المحاولة تلقائيًا عند توفر الاتصال."], ownersOnly: true });
+        void notifyOperations({ event: alertEvent, title: "تعذر إرسال رسالة تثبيت الطلب", lines: [`رقم الطلب: #${details?.orderNo || "غير محدد"}`, "تمت التسوية المالية بشكل ذري، لكن رسالة التثبيت المختصرة لم تصل إلى القروب.", "سيعاد المحاولة تلقائيًا عند توفر الاتصال."], ownersOnly: true });
       }
     }
     return null;
@@ -2770,8 +2766,7 @@ async function sendFinalBookingConfirmation(groupId, details) {
 function observeFinalBookingConfirmationMessage(message) {
   if (!message?.fromMe || !message?.from || !isConfiguredGroup(String(message.from))) return null;
   const body = String(message.body || "").trim();
-  if (!body.startsWith("✅ تم قبول الطلب وتثبيته")) return null;
-  const orderNo = Number(body.match(/رقم الرحلة:\s*#(\d+)/)?.[1] || 0);
+  const orderNo = finalBookingConfirmationOrderNo(body);
   const messageId = serializedMessageId(message);
   if (!orderNo || !messageId) return null;
   const order = db.prepare("SELECT id FROM orders WHERE group_id=? AND order_no=? ORDER BY id DESC LIMIT 1").get(String(message.from), orderNo);
@@ -7798,8 +7793,8 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
   const matches = history.messages
     .filter((message) => {
       const body = String(message?.body || "").trim();
-      const messageOrderNo = Number(body.match(/رقم الرحلة:\s*#(\d+)/)?.[1] || 0);
-      return message?.fromMe === true && resolveGroupChatId(message) === groupId && body.startsWith("✅ تم قبول الطلب وتثبيته") && messageOrderNo === orderNo;
+      const messageOrderNo = finalBookingConfirmationOrderNo(body);
+      return message?.fromMe === true && resolveGroupChatId(message) === groupId && messageOrderNo === orderNo;
     })
     .sort((a, b) => Number(a.timestamp || a.__timestamp || 0) - Number(b.timestamp || b.__timestamp || 0));
   if (!matches.length) return res.status(404).json({ error: "No deletable confirmation messages found", groupId, orderNo, mutation: "none" });
