@@ -5485,11 +5485,14 @@ async function handleMessageReaction(reaction) {
   if (!acceptance) return;
   const pending = acceptance;
   const acceptanceMode = pending.acceptance_mode === "unquoted" ? "unquoted" : "quoted";
-  const quotedReply = pending.acceptance_message_id === messageId ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
+  const quotedReply = sourceMessageIdsEqual(pending.acceptance_message_id, messageId) ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
   const quotedReplyId = serializedMessageId(quotedReply);
+  const storedAcceptanceSourceEvidence = acceptanceMode === "quoted"
+    && Boolean(pending.acceptance_message_id && pending.source_message_id)
+    && sourceMessageIdsEqual(pending.acceptance_message_id, messageId);
   const quotedReplyIsOrder = acceptanceMode === "unquoted"
     ? (!quotedReply || sourceMessageIdsEqual(quotedReplyId, pending.source_message_id))
-    : Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && sourceMessageIdsEqual(quotedReplyId, pending.source_message_id));
+    : Boolean((quotedReply && parseOrder(quotedReply.body)?.isOrder && sourceMessageIdsEqual(quotedReplyId, pending.source_message_id)) || storedAcceptanceSourceEvidence);
   if (!quotedReplyIsOrder) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "quote_mismatch", { acceptanceMessageId: messageId, quotedMessageId: quotedReplyId || null });
     notifyOrderLifecycleBlocker(pending.candidate_id, "quote_mismatch", { acceptanceMessageId: messageId });
