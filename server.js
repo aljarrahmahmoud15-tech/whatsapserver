@@ -7861,9 +7861,22 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
+  const requestedMessageId = String(req.query.messageId || "").trim();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   await readGroupSnapshot(groupId);
-  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing });
+  let chat = null;
+  let messages = [];
+  if (requestedMessageId && typeof client.getMessageById === "function") {
+    const liveMessage = await withTimeout(client.getMessageById(requestedMessageId), 12000, null);
+    if (liveMessage && resolveGroupChatId(liveMessage) === groupId) {
+      chat = await withTimeout(resolveGroupChat(groupId), 12000, null);
+      messages = [liveMessage];
+    }
+  } else {
+    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });
+    chat = history.chat;
+    messages = history.messages;
+  }
   if (!chat) return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();

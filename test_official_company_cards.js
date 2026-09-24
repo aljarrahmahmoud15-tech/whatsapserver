@@ -74,8 +74,10 @@ assert(server.includes('app.post("/api/admin/group/send-guide-videos", requireAd
 assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), 'group diagnostic API is admin protected');
 assert(server.includes('app.get("/api/admin/group/live-messages", requireAdmin'), 'live group message inspection is admin protected');
 assert(server.includes('await readGroupSnapshot(groupId);'), 'live group message inspection hydrates the configured group first');
-assert(server.includes('const { chat, messages } = await fetchGroupHistory(groupId, limit);'), 'live group message inspection retries group resolution through the shared history reader');
+assert(server.includes('const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });'), 'live group message inspection retries group resolution through the shared history reader');
 assert(server.includes('fetchGroupHistory(groupId, limit)'), 'live group message inspection reads recent WhatsApp messages');
+assert(server.includes('const requestedMessageId = String(req.query.messageId || "").trim();'), 'live group message inspection supports exact message evidence lookup');
+assert(server.includes('client.getMessageById(requestedMessageId)'), 'exact message evidence lookup reads the requested WhatsApp message');
 assert(server.includes('parsedOrder: parseOrder(body)'), 'live group message inspection exposes order parsing results');
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
