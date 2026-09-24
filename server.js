@@ -4069,6 +4069,18 @@ async function getQuotedMessageWithFallback(message) {
       }, { messageId, quotedMessageId }), 15000, null);
     }
   }
+  const quotedMessageIdHint = String(
+    message?.quotedStanzaID ||
+    message?.quotedMessageId ||
+    message?._data?.quotedStanzaID ||
+    message?._data?.quotedMessageId ||
+    message?._data?.quotedMsgId ||
+    message?._data?.quotedMsg?.id?._serialized ||
+    ""
+  ).trim();
+  if (quoted && !serializedMessageId(quoted) && quotedMessageIdHint && typeof quoted === "object") {
+    try { quoted.__serializedId = quotedMessageIdHint; } catch (_) {}
+  }
   return quoted;
 }
 

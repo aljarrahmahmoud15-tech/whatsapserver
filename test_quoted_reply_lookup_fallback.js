@@ -9,5 +9,7 @@ assert.match(source, /message\?\._data\?\.quotedMessageId/);
 assert.match(source, /message\?\._data\?\.quotedMsgId/);
 assert.match(source, /client\.getMessageById\(quotedMessageId\)/);
 assert.match(source, /withTimeout\(client\.getMessageById\(quotedMessageId\), 12000, null\)/);
+assert.match(source, /const quotedMessageIdHint = String\(/);
+assert.match(source, /quoted\.__serializedId = quotedMessageIdHint/);
 
 console.log('quoted acceptance lookup fallback verified');
