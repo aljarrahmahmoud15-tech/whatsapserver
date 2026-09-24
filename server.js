@@ -7867,13 +7867,15 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   const requestedMessageId = String(req.query.messageId || "").trim();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
-  await readGroupSnapshot(groupId);
+  const groupSnapshot = await readGroupSnapshot(groupId);
   let chat = null;
   let messages = [];
   if (requestedMessageId && typeof client.getMessageById === "function") {
     const liveMessage = await withTimeout(client.getMessageById(requestedMessageId), 12000, null);
     if (liveMessage && resolveGroupChatId(liveMessage) === groupId) {
-      chat = await withTimeout(resolveGroupChat(groupId), 12000, null);
+      chat = groupSnapshot || { id: groupId, isGroup: true };
+      const internalReactions = await fetchInternalReactionRows(requestedMessageId);
+      if ((!Array.isArray(liveMessage.__reactions) || !liveMessage.__reactions.length) && internalReactions.length) liveMessage.__reactions = internalReactions;
       messages = [liveMessage];
     }
   } else {
