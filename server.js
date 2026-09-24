@@ -99,6 +99,8 @@ const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MA
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
+const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
+const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 50)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 60000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
 const WHATSAPP_LID_CACHE_MAX_ENTRIES = Math.max(100, Math.min(10000, Number(process.env.WHATSAPP_LID_CACHE_MAX_ENTRIES || 2000)));
@@ -228,6 +230,23 @@ CREATE TABLE IF NOT EXISTS messages (
   message_type TEXT,
   sent_at TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS unresolved_order_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL UNIQUE,
+  group_id TEXT NOT NULL,
+  author_id TEXT,
+  sender_phone TEXT,
+  sender_name TEXT,
+  body TEXT NOT NULL,
+  message_type TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  resolved_at TEXT,
+  candidate_id INTEGER,
+  last_error TEXT,
+  FOREIGN KEY(candidate_id) REFERENCES order_candidates(id)
 );
 CREATE TABLE IF NOT EXISTS reaction_evidence (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2536,6 +2555,45 @@ function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
   console.log(`[OrderCandidate] candidate created from ${groupId}`);
   return db.prepare("SELECT * FROM order_candidates WHERE id=?").get(result.lastInsertRowid);
 }
+function recordUnresolvedOrderMessage({ messageId, groupId, authorId = null, senderPhone = null, senderName = null, body, messageType = "chat", lastError = "producer_identity_unresolved" }) {
+  if (!messageId || !groupId || !body || !isConfiguredGroup(groupId)) return null;
+  const stamp = now();
+  db.prepare(`INSERT INTO unresolved_order_messages(message_id,group_id,author_id,sender_phone,sender_name,body,message_type,first_seen_at,last_seen_at,attempts,last_error)
+    VALUES(?,?,?,?,?,?,?, ?,?,1,?)
+    ON CONFLICT(message_id) DO UPDATE SET author_id=COALESCE(excluded.author_id,unresolved_order_messages.author_id),sender_phone=COALESCE(excluded.sender_phone,unresolved_order_messages.sender_phone),sender_name=COALESCE(excluded.sender_name,unresolved_order_messages.sender_name),body=excluded.body,message_type=excluded.message_type,last_seen_at=excluded.last_seen_at,attempts=unresolved_order_messages.attempts+1,last_error=excluded.last_error,resolved_at=NULL`).run(
+      messageId,
+      groupId,
+      authorId,
+      senderPhone,
+      senderName,
+      String(body),
+      messageType,
+      stamp,
+      stamp,
+      lastError,
+    );
+  return db.prepare("SELECT * FROM unresolved_order_messages WHERE message_id=? LIMIT 1").get(messageId);
+}
+async function recoverUnresolvedOrderMessages(groupId) {
+  if (!groupId || !isConfiguredGroup(groupId) || !client || !isReady) return { scanned: 0, resolved: 0, unresolved: 0 };
+  const rows = db.prepare("SELECT * FROM unresolved_order_messages WHERE group_id=? AND resolved_at IS NULL ORDER BY last_seen_at DESC,id DESC LIMIT ?").all(groupId, UNRESOLVED_ORDER_BACKLOG_LIMIT);
+  const recovery = { scanned: rows.length, resolved: 0, unresolved: 0 };
+  for (const row of rows) {
+    const phone = await resolveWhatsappUserPhone(row.sender_phone, row.author_id);
+    const producer = phone ? ensureProducerUser(phone, row.sender_name || displayPhone(phone)) : null;
+    const parsed = parseOrder(row.body);
+    if (!producer || producer.active === 0 || !parsed.isOrder) {
+      recovery.unresolved += 1;
+      db.prepare("UPDATE unresolved_order_messages SET sender_phone=COALESCE(?,sender_phone),attempts=attempts+1,last_seen_at=?,last_error=? WHERE id=? AND resolved_at IS NULL").run(phone || null, now(), !parsed.isOrder ? "message_no_longer_parses_as_order" : "producer_identity_unresolved", row.id);
+      continue;
+    }
+    const candidate = createOrderCandidate({ messageId: row.message_id, groupId, body: row.body, producer, parsed });
+    if (!candidate) continue;
+    recovery.resolved += 1;
+    db.prepare("UPDATE unresolved_order_messages SET sender_phone=?,resolved_at=?,candidate_id=?,last_seen_at=?,last_error=NULL WHERE id=?").run(phone, now(), candidate.id, now(), row.id);
+  }
+  return recovery;
+}
 function updateOrderCandidateLifecycle(candidateId, stage, blocker = null, extra = {}) {
   if (!candidateId) return null;
   const stamp = now();
@@ -3529,6 +3587,7 @@ let whatsappReactionScanRunning = false;
 let whatsappHistoricalCandidateRecoveryAttempted = false;
 let whatsappHistoricalCandidateRecoveryAt = 0;
 let lastHistoricalRecovery = null;
+let lastUnresolvedOrderRecovery = null;
 let lastAcceptanceRecovery = null;
 function setAcceptanceRecoveryStage(stage) {
   if (lastAcceptanceRecovery) lastAcceptanceRecovery.lastStage = String(stage || "");
@@ -3576,6 +3635,15 @@ async function recoverHistoricalOrderCandidates(groupId) {
       ? companyUser()
       : ensureProducerUser(senderPhone, senderName);
     if (!producer || producer.active === 0) {
+      recordUnresolvedOrderMessage({
+        messageId,
+        groupId,
+        authorId: serializedWhatsappUserId(message.author || message._data?.author || message.id?.participant || message._data?.id?.participant) || null,
+        senderPhone: senderPhone || null,
+        senderName,
+        body: String(message.body || ""),
+        messageType: message.type || "chat",
+      });
       unresolved += 1;
       recovery.unresolved += 1;
       logOrderTrace("historical_order_producer_unresolved", {
@@ -3594,13 +3662,13 @@ async function recoverHistoricalOrderCandidates(groupId) {
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+  const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT));
   lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
-  const scan = { messages: Array.isArray(fastScan.messages) ? fastScan.messages : [] };
+  const scan = { messages: (Array.isArray(fastScan.messages) ? fastScan.messages : []).slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT) };
   let recovered = 0;
   for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
     lastAcceptanceRecovery.scanned += 1;
@@ -3642,6 +3710,7 @@ async function scanPendingAcceptanceReactions() {
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
+    lastUnresolvedOrderRecovery = { startedAt: new Date().toISOString(), ...(await recoverUnresolvedOrderMessages(groupId)), finishedAt: new Date().toISOString() };
     await recoverHistoricalOrderCandidates(groupId);
     await recoverPendingAcceptanceMessages(groupId);
     const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
@@ -4430,7 +4499,18 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     const producer = botGenerated
       ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
       : ensureProducerUser(senderPhone, senderName);
-    if (!producer || producer.active === 0) return;
+    if (!producer || producer.active === 0) {
+      recordUnresolvedOrderMessage({
+        messageId,
+        groupId,
+        authorId: serializedWhatsappUserId(msg.author || msg._data?.author || msg.id?.participant || msg._data?.id?.participant) || null,
+        senderPhone: senderPhone || null,
+        senderName,
+        body,
+        messageType: msg.type || "chat",
+      });
+      return;
+    }
     const candidate = createOrderCandidate({ messageId, groupId, body, producer, parsed });
     if (!candidate) return;
     return;
@@ -6236,6 +6316,7 @@ app.get("/status", (req, res) => {
       pendingConfirmation: Number(orderLinkStats.pending_confirmation || 0),
       acceptedUnlinked: Number(orderLinkStats.accepted_unlinked || 0),
     },
+    unresolvedOrderRecovery: lastUnresolvedOrderRecovery,
     historicalRecovery: lastHistoricalRecovery,
     acceptanceRecovery: lastAcceptanceRecovery,
   });
