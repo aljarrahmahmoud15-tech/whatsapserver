@@ -31,5 +31,11 @@ assert.match(source, /MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2/);
 assert.match(source, /finalRecoveryAvailable = forceFinalRecovery/);
 assert.match(source, /findFinalBookingConfirmationInGroup/);
 assert.doesNotMatch(source, /manual_resend_only/);
+assert.match(source, /async function sendFinalBookingConfirmationViaConfiguredChat\(groupId, message\)/);
+assert.match(source, /client\.getChatById\(groupId\)/);
+assert.match(source, /return await chat\.sendMessage\(message\)/);
+assert.match(source, /retrying client\.sendMessage/);
+assert.match(source, /withTimeoutStrict\(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker\)/);
+assert.match(source, /status='pending',last_error=\?,updated_at=\?/);
 
 console.log('Confirmation retry guard tests passed');

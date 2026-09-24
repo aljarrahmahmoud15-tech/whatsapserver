@@ -2774,9 +2774,46 @@ const confirmationDeliveryInFlight = new Set();
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
+async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
+  if (!client || !isReady) throw new Error("whatsapp_not_ready");
+  let chat = null;
+  try {
+    chat = typeof client.getChatById === "function"
+      ? await withTimeout(client.getChatById(groupId), 12000, null)
+      : null;
+  } catch (error) {
+    console.warn(`[WhatsApp] confirmation getChatById failed for ${groupId}: ${String(error?.message || error)}`);
+  }
+  if (!chat && typeof client.getChats === "function") {
+    try {
+      const chats = await withTimeout(client.getChats(), 15000, []);
+      chat = (Array.isArray(chats) ? chats : []).find((item) => String(item?.id?._serialized || item?.id || "") === groupId && item.isGroup) || null;
+    } catch (error) {
+      console.warn(`[WhatsApp] confirmation getChats fallback failed for ${groupId}: ${String(error?.message || error)}`);
+    }
+  }
+  if (chat && typeof chat.sendMessage === "function") {
+    try {
+      return await chat.sendMessage(message);
+    } catch (chatError) {
+      const detail = String(chatError?.stack || chatError?.message || chatError).slice(0, 500);
+      console.warn(`[WhatsApp] confirmation chat.sendMessage failed; retrying client.sendMessage: chat=${groupId} detail=${detail}`);
+      if (typeof client.sendMessage !== "function") throw chatError;
+      try {
+        return await client.sendMessage(groupId, message);
+      } catch (clientError) {
+        clientError.cause = chatError;
+        throw clientError;
+      }
+    }
+  }
+  if (typeof client.sendMessage !== "function") throw new Error("WhatsApp text send path is unavailable");
+  return client.sendMessage(groupId, message);
+}
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
   const forceFinalRecovery = options.forceFinalRecovery === true;
+  let releaseInFlightAfterSendPromise = false;
   if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
   if (orderId) confirmationDeliveryInFlight.add(orderId);
   let delivery = null;
@@ -2812,8 +2849,26 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
     }
   }
   try {
-    const sent = await withTimeout(client.sendMessage(groupId, finalBookingConfirmationText(details)), 15000, null);
-    if (!sent) throw new Error("confirmation message was not acknowledged");
+    const sendPromise = sendFinalBookingConfirmationViaConfiguredChat(groupId, finalBookingConfirmationText(details));
+    const sendTimeoutMarker = {};
+    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
+    if (sent === sendTimeoutMarker) {
+      releaseInFlightAfterSendPromise = Boolean(orderId);
+      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_pending_waiting_message_create", now(), orderId);
+      void sendPromise.then((lateSent) => {
+        if (!orderId || !serializedMessageId(lateSent)) return;
+        db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(serializedMessageId(lateSent), now(), now(), orderId);
+      }).catch((error) => {
+        console.warn(`[WhatsApp] confirmation send completed after timeout with error: order=${details?.orderNo || "unknown"} error=${String(error?.message || error)}`);
+      }).finally(() => {
+        if (orderId) confirmationDeliveryInFlight.delete(orderId);
+      });
+      return null;
+    }
+    if (!sent) {
+      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_waiting_message_create", now(), orderId);
+      return null;
+    }
     if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
     return sent;
   } catch (error) {
@@ -2827,7 +2882,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
     }
     return null;
   } finally {
-    if (orderId) confirmationDeliveryInFlight.delete(orderId);
+    if (orderId && !releaseInFlightAfterSendPromise) confirmationDeliveryInFlight.delete(orderId);
   }
 }
 async function retryFailedBookingConfirmations() {
