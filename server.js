@@ -100,6 +100,7 @@ const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTER
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
 const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
+const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 15000)));
 const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 50)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 60000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
@@ -1929,7 +1930,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
 }
 async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false } = {}) {
   if (!client || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
-  const chat = await resolveReadableGroupChat(groupId);
+  const chat = await withTimeout(resolveReadableGroupChat(groupId), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, null);
   if (chat && !before) {
     const messages = await withTimeout(chat.fetchMessages({ limit: Math.min(batch, 10), ...(includeOutgoing ? {} : { fromMe: false }) }), 8000, []);
       const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -3606,7 +3607,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
   const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
   lastHistoricalRecovery = recovery;
-  const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
+  const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   const recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
   recovery.source = "order-scan";
   whatsappHistoricalCandidateRecoveryAttempted = true;
@@ -3673,8 +3674,13 @@ async function recoverPendingAcceptanceMessages(groupId) {
   let before = 0;
   const maxPages = 6;
   for (let page = 0; page < maxPages; page += 1) {
-    const fastScan = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true });
+    const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
     lastAcceptanceRecovery.pagesScanned += 1;
+    if (fastScan.timedOut) {
+      lastAcceptanceRecovery.lastError = "recovery_group_scan_timeout";
+      lastAcceptanceRecovery.lastStage = "group_scan_timeout";
+      break;
+    }
     const pageMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
     for (const message of pageMessages) {
       const messageId = serializedMessageId(message) || String(message?.id || "").trim();
