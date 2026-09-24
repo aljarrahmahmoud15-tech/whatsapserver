@@ -4741,8 +4741,12 @@ async function fetchInternalReactionRows(messageId) {
   return await withTimeout(client.pupPage.evaluate(async (targetId) => {
     try {
       const collections = window.require("WAWebCollections");
-      const rawId = String(targetId || "").split("_").slice(2).join("_");
-      const messageIds = [...new Set([String(targetId || ""), rawId].filter(Boolean))];
+      const fullId = String(targetId || "");
+      const parts = fullId.split("_");
+      const rawId = parts.slice(2).join("_");
+      const coreId = parts[2] || "";
+      const participantId = parts[parts.length - 1] || "";
+      const messageIds = [...new Set([fullId, rawId, coreId, participantId].filter(Boolean))];
       const asArray = (value) => {
         if (!value) return [];
         if (Array.isArray(value)) return value;
