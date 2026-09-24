@@ -7885,6 +7885,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   const requestedMessageId = String(req.query.messageId || "").trim();
+  const bodyIncludes = String(req.query.bodyIncludes || "").trim().slice(0, 200);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   const groupSnapshot = await readGroupSnapshot(groupId);
   let chat = null;
@@ -7924,8 +7925,9 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       captainAcceptance: isCaptainAcceptance(body),
     };
   });
+  const filteredRows = bodyIncludes ? rows.filter((row) => row.body.includes(bodyIncludes)) : rows;
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, groupId, includeOutgoing, count: rows.length, messages: rows });
+  res.json({ success: true, groupId, includeOutgoing, bodyIncludes: bodyIncludes || null, count: filteredRows.length, messages: filteredRows });
 });
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });

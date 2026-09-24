@@ -78,6 +78,8 @@ assert(server.includes('const history = await fetchGroupHistory(groupId, limit, 
 assert(server.includes('fetchGroupHistory(groupId, limit)'), 'live group message inspection reads recent WhatsApp messages');
 assert(server.includes('const requestedMessageId = String(req.query.messageId || "").trim();'), 'live group message inspection supports exact message evidence lookup');
 assert(server.includes('getWhatsAppMessageByIdVariants(requestedMessageId, 5000)'), 'exact message evidence lookup reads the requested WhatsApp message');
+assert(server.includes('const bodyIncludes = String(req.query.bodyIncludes || "").trim().slice(0, 200);'), 'live group message inspection supports bounded text lookup');
+assert(server.includes('const filteredRows = bodyIncludes ? rows.filter((row) => row.body.includes(bodyIncludes)) : rows;'), 'text lookup is read-only and filters the fetched history');
 assert(server.includes('parsedOrder: parseOrder(body)'), 'live group message inspection exposes order parsing results');
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
