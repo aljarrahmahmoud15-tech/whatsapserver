@@ -147,7 +147,8 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use("/api", (req, res, next) => {
-  if (!consumeRateLimit(apiRate, clientAddress(req), API_RATE_LIMIT_MAX)) {
+  const readOnlyRequest = ["GET", "HEAD", "OPTIONS"].includes(String(req.method || "").toUpperCase());
+  if (!readOnlyRequest && !consumeRateLimit(apiRate, clientAddress(req), API_RATE_LIMIT_MAX)) {
     return res.status(429).json({ error: "Too many API requests; try again later" });
   }
   next();
