@@ -2817,6 +2817,36 @@ async function sendFinalBookingConfirmation(groupId, details) {
     if (orderId) confirmationDeliveryInFlight.delete(orderId);
   }
 }
+async function retryFailedBookingConfirmations() {
+  if (!client || !isReady) return { attempted: 0, sent: 0, suppressed: 0 };
+  const rows = db.prepare(`
+    SELECT d.order_id,d.group_id,d.attempts,
+           o.order_no,o.price_cents,
+           executor.name AS executor_name,
+           downloader.name AS downloader_name
+    FROM order_confirmation_deliveries d
+    JOIN orders o ON o.id=d.order_id
+    LEFT JOIN users executor ON executor.id=o.captain_user_id
+    LEFT JOIN users downloader ON downloader.id=o.producer_user_id
+    WHERE d.status='failed' AND d.attempts < ?
+    ORDER BY d.updated_at ASC
+    LIMIT ?
+  `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, 20);
+  const result = { attempted: 0, sent: 0, suppressed: 0 };
+  for (const row of rows) {
+    result.attempted += 1;
+    const sent = await sendFinalBookingConfirmation(row.group_id, {
+      orderId: row.order_id,
+      orderNo: row.order_no,
+      executorName: row.executor_name,
+      downloaderName: row.downloader_name,
+      priceCents: row.price_cents,
+    });
+    if (sent) result.sent += 1;
+    else result.suppressed += 1;
+  }
+  return result;
+}
 function observeFinalBookingConfirmationMessage(message) {
   if (!message?.fromMe || !message?.from || !isConfiguredGroup(String(message.from))) return null;
   const body = String(message.body || "").trim();
@@ -3690,6 +3720,9 @@ function createClient() {
       void retryCaptainStatusNotifications()
         .then((result) => { if (result.attempted) console.log(`[Captains] retried pending status notifications: ${result.attempted}`); })
         .catch((error) => console.error("[Captains] status notification retry failed:", error.message));
+      void retryFailedBookingConfirmations()
+        .then((result) => { if (result.attempted) console.log(`[WhatsApp] retried failed booking confirmations: attempted=${result.attempted} sent=${result.sent} suppressed=${result.suppressed}`); })
+        .catch((error) => console.error("[WhatsApp] booking confirmation retry failed:", error.message));
     }, 3000);
   });
   instance.on("auth_failure", (message) => {
