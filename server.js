@@ -3607,7 +3607,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
     if (existing) continue;
-    const live = await withTimeout(client.getMessageById(row.id), 12000, null);
+    const live = await getWhatsAppMessageByIdVariants(row.id, 5000);
     const acceptance = live || row;
     if (!acceptance) continue;
     lastAcceptanceRecovery.quoteLookupAttempts += 1;
@@ -3958,6 +3958,22 @@ function messageIdCore(value) {
   const decorated = raw.match(/^(?:true|false)_([^_]+@g\.us)_([^_]+)(?:_|$)/i);
   return decorated ? decorated[2] : raw;
 }
+function messageIdLookupVariants(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  const parts = raw.split("_");
+  const rawWithoutDirection = parts.slice(2).join("_");
+  const core = messageIdCore(raw);
+  return [...new Set([raw, core, rawWithoutDirection].filter(Boolean))];
+}
+async function getWhatsAppMessageByIdVariants(value, timeoutMs = 6000) {
+  if (!client || typeof client.getMessageById !== "function") return null;
+  for (const candidate of messageIdLookupVariants(value)) {
+    const message = await withTimeout(client.getMessageById(candidate), timeoutMs, null);
+    if (message) return message;
+  }
+  return null;
+}
 function sourceMessageIdsEqual(left, right) {
   const leftCore = messageIdCore(left);
   const rightCore = messageIdCore(right);
@@ -4204,7 +4220,7 @@ async function handleBaileysUpsert(message) {
 
 async function reactToCaptainAcceptance(message, messageId) {
   const liveMessage = client && isReady && messageId
-    ? await withTimeout(client.getMessageById(messageId), 12000, null)
+    ? await getWhatsAppMessageByIdVariants(messageId, 5000)
     : null;
   const target = liveMessage || message;
   if (!target || typeof target.react !== "function") return false;
@@ -4264,7 +4280,7 @@ async function getQuotedMessageWithFallback(message) {
       ""
     ).trim();
     if (quotedMessageId && client && typeof client.getMessageById === "function") {
-      quoted = await withTimeout(client.getMessageById(quotedMessageId), 12000, null);
+      quoted = await getWhatsAppMessageByIdVariants(quotedMessageId, 5000);
     }
   }
   if (!quoted && typeof client !== "undefined" && client?.pupPage) {
@@ -5156,7 +5172,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const archivedQuoted = indexedQuoted || acceptance.__quoted || null;
   let liveQuoted = archivedQuoted;
   if (!liveQuoted && !storedRecovery && client && typeof client.getMessageById === "function") {
-    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
+    liveAcceptance = await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance;
     liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
       : liveAcceptance.__quoted || null;
@@ -5165,7 +5181,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
     await new Promise((resolve) => setTimeout(resolve, 750));
     const hydratedAcceptance = typeof client.getMessageById === "function"
-      ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null)
+      ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000)
       : null;
     if (hydratedAcceptance) liveAcceptance = hydratedAcceptance;
     liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
@@ -5191,7 +5207,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const archivedHasSenders = Array.isArray(archivedReactions)
     && archivedReactions.some((reaction) => Array.isArray(reaction?.senders) && reaction.senders.length);
   if (!storedRecovery && !botProducer && !archivedHasSenders && typeof client?.getMessageById === "function") {
-    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || liveAcceptance;
+    liveAcceptance = await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || liveAcceptance;
   }
   const liveReactions = !storedRecovery && !botProducer && !archivedHasSenders && typeof liveAcceptance.getReactions === "function"
     ? await withTimeout(liveAcceptance.getReactions(), 12000, null)
@@ -5340,7 +5356,7 @@ async function handleMessageReaction(reaction) {
   if (!reaction || (!removedThumb && !cancellationReaction && reactionValue !== "👍")) return;
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
-  const target = await withTimeout(client.getMessageById(messageId), 10000, null);
+  const target = await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
   if (!isCaptainAcceptance(target.body)) return;
@@ -5512,7 +5528,7 @@ async function handleMessageReaction(reaction) {
 
 async function reconcileStoredThumbReaction(messageId) {
   if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
-  const target = await withTimeout(client.getMessageById(messageId), 12000, null);
+  const target = await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!target || typeof target.getReactions !== "function") return;
   const targetGroupId = String(target.from || target._data?.from || "").trim();
   if (!targetGroupId.endsWith("@g.us") || !isConfiguredGroup(targetGroupId)) {
@@ -7871,7 +7887,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   let chat = null;
   let messages = [];
   if (requestedMessageId && typeof client.getMessageById === "function") {
-    const liveMessage = await withTimeout(client.getMessageById(requestedMessageId), 12000, null);
+    const liveMessage = await getWhatsAppMessageByIdVariants(requestedMessageId, 5000);
     if (liveMessage && resolveGroupChatId(liveMessage) === groupId) {
       chat = groupSnapshot || { id: groupId, isGroup: true };
       const internalReactions = await fetchInternalReactionRows(requestedMessageId);
@@ -8327,7 +8343,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
     const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
-    const liveAcceptance = (client && typeof client.getMessageById === "function") ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance : acceptance;
+    const liveAcceptance = (client && typeof client.getMessageById === "function") ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
     const quoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
       : acceptance.__quoted || null;

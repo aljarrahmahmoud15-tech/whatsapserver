@@ -77,7 +77,7 @@ assert(server.includes('const groupSnapshot = await readGroupSnapshot(groupId);'
 assert(server.includes('const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });'), 'live group message inspection retries group resolution through the shared history reader');
 assert(server.includes('fetchGroupHistory(groupId, limit)'), 'live group message inspection reads recent WhatsApp messages');
 assert(server.includes('const requestedMessageId = String(req.query.messageId || "").trim();'), 'live group message inspection supports exact message evidence lookup');
-assert(server.includes('client.getMessageById(requestedMessageId)'), 'exact message evidence lookup reads the requested WhatsApp message');
+assert(server.includes('getWhatsAppMessageByIdVariants(requestedMessageId, 5000)'), 'exact message evidence lookup reads the requested WhatsApp message');
 assert(server.includes('parsedOrder: parseOrder(body)'), 'live group message inspection exposes order parsing results');
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');

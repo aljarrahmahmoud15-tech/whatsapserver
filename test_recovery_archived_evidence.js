@@ -8,7 +8,7 @@ assert.match(source, /const quotedMessageIdHint = String\(/);
 assert.match(source, /messageId === quotedMessageIdHint \|\| messageId\.endsWith/);
 assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
 assert.match(source, /const archivedHasSenders = Array\.isArray\(archivedReactions\)/);
-assert.match(source, /liveAcceptance = await withTimeout\(client\.getMessageById\(acceptanceMessageId\)/);
+assert.match(source, /liveAcceptance = await getWhatsAppMessageByIdVariants\(acceptanceMessageId, 5000\)/);
 assert.match(source, /const liveReactions = !storedRecovery && !botProducer && !archivedHasSenders/);
 assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
 assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
