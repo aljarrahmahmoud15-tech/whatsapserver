@@ -123,7 +123,7 @@ const context = {
   SPECIAL_ORDER_RATE_BPS: 1200,
   COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   BOT_FINANCIAL_MODE: "company",
-  CAPTAIN_MIN_BALANCE_CENTS: -200,
+  CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
   companyUser: () => ({ ...users[1] }),
   now: () => "2026-01-01T00:00:00.000Z",

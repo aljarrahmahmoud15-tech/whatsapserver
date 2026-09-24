@@ -204,7 +204,7 @@ const context = {
   COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   BOT_FINANCIAL_MODE: "company",
-  CAPTAIN_MIN_BALANCE_CENTS: -200,
+  CAPTAIN_MIN_BALANCE_CENTS: -300,
   serializedMessageId: (msg) => msg?.id?._serialized || msg?.id || null,
   reactionId: (value) => typeof value === "string" ? value : value?._serialized || value?.id || null,
   serializedWhatsappUserId: (value) => typeof value === "string" ? value : value?._serialized || value?.id || "",
