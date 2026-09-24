@@ -4,7 +4,7 @@ const index = fs.readFileSync('./public/index.html', 'utf8');
 const captain = fs.readFileSync('./public/captain.html', 'utf8');
 for (const html of [index, captain]) {
   assert.match(html, /السعر \[القيمة\]/);
-  assert.match(html, /رد.*اقتباس|باختباس|باقتباس/);
+  assert.match(html, /اقتباس|بدونه/);
   assert.match(html, /تم/);
   assert.match(html, /👍/);
   assert.match(html, /لا حاجة لكتابة الوقت أو من وإلى|لا تكتب الوقت أو نقطة الانطلاق أو الوجهة/);

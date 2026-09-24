@@ -57,6 +57,10 @@ const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSW
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
+const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
+const UNQUOTED_ACCEPTANCE_WINDOW_MS = Number.isFinite(configuredUnquotedAcceptanceWindowMs)
+  ? Math.max(30 * 1000, Math.min(configuredUnquotedAcceptanceWindowMs, 60 * 60 * 1000))
+  : 10 * 60 * 1000;
 const CAPTAIN_SUBSCRIPTION_CENTS = 100;
 const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
 const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
@@ -302,6 +306,7 @@ CREATE TABLE IF NOT EXISTS order_candidate_acceptances (
   candidate_id INTEGER NOT NULL,
   captain_user_id INTEGER NOT NULL,
   acceptance_message_id TEXT NOT NULL UNIQUE,
+  acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted')),
   status TEXT NOT NULL CHECK(status IN ('pending','selected','rejected','cancelled')) DEFAULT 'pending',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -562,6 +567,8 @@ const existingCandidateColumns = db.prepare("PRAGMA table_info(order_candidates)
 if (!existingCandidateColumns.includes("lifecycle_stage")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created'");
 if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_blocker TEXT");
 if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
+const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
+if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 db.exec(`
   UPDATE order_candidates
   SET lifecycle_stage=CASE
@@ -2534,8 +2541,9 @@ function findPendingAcceptanceByMessage(groupId, acceptanceMessageId) {
   const rows = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.status IN ('pending','selected') ORDER BY a.updated_at DESC,a.id DESC LIMIT 200").all(groupId);
   return rows.find((row) => sourceMessageIdsEqual(row.acceptance_message_id, acceptanceMessageId)) || null;
 }
-function registerQuotedAcceptance({ groupId, messageId, senderPhone, senderName, candidate }) {
+function registerAcceptance({ groupId, messageId, senderPhone, senderName, candidate, acceptanceMode = "quoted" }) {
   if (!groupId || !messageId || !senderPhone || !candidate) return { state: "invalid" };
+  const normalizedAcceptanceMode = acceptanceMode === "unquoted" ? "unquoted" : "quoted";
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) {
     return { state: "captain_ineligible", captain: null };
@@ -2547,7 +2555,7 @@ function registerQuotedAcceptance({ groupId, messageId, senderPhone, senderName,
   }
   const recorded = db.transaction(() => {
     const stamp = now();
-    const inserted = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, stamp, stamp);
+    const inserted = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,acceptance_mode,status,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, normalizedAcceptanceMode, stamp, stamp);
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? LIMIT 1").get(candidate.id, messageId);
     if (!acceptance) return { state: "not_recorded", captain, producer };
     if (!inserted.changes) {
@@ -2565,7 +2573,7 @@ function registerQuotedAcceptance({ groupId, messageId, senderPhone, senderName,
   })();
   if (recorded.state !== "recorded") return recorded;
   const { acceptance } = recorded;
-  audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId });
+  audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, acceptanceMode: normalizedAcceptanceMode });
   return { state: "recorded", acceptance, captain, producer };
 }
 function latestEligibleGroupOrderMessage(messages, groupId) {
@@ -2595,8 +2603,36 @@ function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(groupId, serializedMessageId(quoted));
   return byId && byId.group_id === groupId ? byId : null;
 }
-function findLatestStandaloneAcceptanceCandidate(groupId) {
-  return db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='candidate' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
+function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs = Date.now()) {
+  const timestampMs = Math.max(0, Number(acceptanceTimestampMs || Date.now()));
+  const cutoff = new Date(Math.max(0, timestampMs - UNQUOTED_ACCEPTANCE_WINDOW_MS)).toISOString();
+  const upperBound = new Date(timestampMs + 60 * 1000).toISOString();
+  const rows = db.prepare(`
+    SELECT c.*,p.phone AS producer_phone
+    FROM order_candidates c
+    LEFT JOIN users p ON p.id=c.producer_user_id
+    WHERE c.group_id=? AND c.status='candidate' AND c.pending_message_id IS NULL
+      AND c.final_order_id IS NULL
+      AND datetime(c.created_at)>=datetime(?)
+      AND datetime(c.created_at)<=datetime(?)
+    ORDER BY c.created_at DESC,c.id DESC
+    LIMIT 20
+  `).all(groupId, cutoff, upperBound);
+  const normalizedSenderPhone = phoneWithCountry(senderPhone);
+  const candidates = rows.filter((row) => !row.producer_phone || !recoveryPhoneMatches(row.producer_phone, normalizedSenderPhone));
+  return { candidate: candidates.length === 1 ? candidates[0] : null, candidates };
+}
+function findUnquotedOrderMessage(messages, groupId, acceptance) {
+  const acceptanceTimestampMs = Number(acceptance?.timestamp || acceptance?.__timestamp || 0) * 1000 || Date.now();
+  const cutoff = acceptanceTimestampMs - UNQUOTED_ACCEPTANCE_WINDOW_MS;
+  const candidates = (Array.isArray(messages) ? messages : [])
+    .filter((message) => {
+      const timestampMs = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
+      return message && resolveGroupChatId(message) === groupId && parseOrder(message.body).isOrder
+        && timestampMs > 0 && timestampMs <= acceptanceTimestampMs && timestampMs >= cutoff;
+    })
+    .sort((a, b) => Number(b.timestamp || b.__timestamp || 0) - Number(a.timestamp || a.__timestamp || 0));
+  return candidates.length === 1 ? candidates[0] : null;
 }
 function brandedMessage(title, lines = []) {
   return [
@@ -4030,7 +4066,9 @@ async function getQuotedMessageWithFallback(message) {
       message?._data?.quotedMsg?.id?._serialized ||
       ""
     ).trim();
-    if (messageId || quotedMessageId) {
+    // An explicitly unquoted message must not trigger a 15-second page lookup.
+    // Only probe WhatsApp Web when quote metadata indicates that a quote exists.
+    if (message?.hasQuotedMsg || quotedMessageId) {
       quoted = await withTimeout(client.pupPage.evaluate(async ({ messageId: requestedMessageId, quotedMessageId: requestedQuotedId }) => {
         try {
           const collections = window.require("WAWebCollections");
@@ -4176,32 +4214,53 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     senderKey: orderTraceKey(senderPhone),
     hasQuotedMsg: Boolean(msg.hasQuotedMsg),
   });
-  // «تم» لا يُربط بآخر طلب بشكل تخميني؛ يجب أن يقتبس رسالة السعر نفسها.
+  // الاقتباس هو المسار الأقوى. عند غيابه، لا نربط «تم» إلا بمرشح سعر وحيد
+  // داخل نافذة زمنية قصيرة؛ الغموض يبقى معلّقًا ولا ينتج عنه اعتماد أو تسوية.
   const quoted = await getQuotedMessageWithFallback(msg);
-  if (!quoted) {
-    logOrderTrace("acceptance_missing_quote", {
+  const quoteMetadataPresent = Boolean(
+    msg.hasQuotedMsg || msg.quotedStanzaID || msg.quotedMessageId || msg._data?.quotedStanzaID
+      || msg._data?.quotedMessageId || msg._data?.quotedMsgId || msg._data?.quotedMsg
+  );
+  let acceptanceMode = "quoted";
+  let candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
+  if (!quoted && quoteMetadataPresent) {
+    logOrderTrace("acceptance_quote_lookup_failed", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
-      quotedLookupAttempted: Boolean(msg.hasQuotedMsg),
+      quotedLookupAttempted: true,
     });
     return;
   }
-  const candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
+  if (!quoted) {
+    const unquoted = findUnquotedAcceptanceCandidate(groupId, senderPhone, Number(msg.timestamp || 0) * 1000 || Date.now());
+    if (!unquoted.candidate) {
+      logOrderTrace(unquoted.candidates.length > 1 ? "acceptance_unquoted_ambiguous" : "acceptance_unquoted_candidate_not_found", {
+        groupKey: orderTraceKey(groupId),
+        acceptanceKey: orderTraceKey(messageId),
+        candidateIds: unquoted.candidates.map((row) => row.id).slice(0, 20),
+        windowMs: UNQUOTED_ACCEPTANCE_WINDOW_MS,
+      });
+      return;
+    }
+    candidate = unquoted.candidate;
+    acceptanceMode = "unquoted";
+  }
   if (!candidate) {
     logOrderTrace("acceptance_candidate_not_found", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
       quotedKey: orderTraceKey(serializedMessageId(quoted)),
-      quotedIsOrder: parseOrder(quoted.body).isOrder,
-      quotedBodyKey: orderTraceKey(quoted.body),
+      quotedIsOrder: Boolean(quoted && parseOrder(quoted.body).isOrder),
+      quotedBodyKey: orderTraceKey(quoted?.body),
     });
     return;
   }
-  const acceptanceResult = registerQuotedAcceptance({
+  const acceptanceResult = registerAcceptance({
     groupId,
     messageId,
     senderPhone,
     senderName,
+    acceptanceMode,
     candidate: {
       ...candidate,
       acceptance_author: msg?.author,
@@ -4241,7 +4300,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       .catch((error) => console.error(`[WhatsApp] bot-owned acceptance settlement failed: ${error.message}`));
     return;
   }
-  // Human-owned bookings still use the producer's 👍 on this exact quoted reply.
+  // Human-owned bookings still use the producer's 👍 on this exact «تم» reply.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
   }
@@ -4778,6 +4837,7 @@ function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000) {
       c.order_kind,
       c.created_at AS candidate_created_at,
       a.acceptance_message_id,
+      a.acceptance_mode,
       a.created_at AS acceptance_created_at,
       p.phone AS producer_phone,
       p.name AS producer_name,
@@ -4834,8 +4894,8 @@ function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000) {
       author: { _serialized: String(row.captain_phone || '') + '@c.us' },
       __authorPhone: row.captain_phone || null,
       timestamp: toTimestamp(row.acceptance_sent_at, row.acceptance_created_at),
-      __quoted: source,
-      __quotedMessageId: row.source_message_id,
+      __acceptanceMode: row.acceptance_mode === "unquoted" ? "unquoted" : "quoted",
+      ...(row.acceptance_mode === "unquoted" ? { __candidateSource: source, __candidateSourceMessageId: row.source_message_id } : { __quoted: source, __quotedMessageId: row.source_message_id }),
       __storedRecovery: true,
       __hasReaction: reactionRows.length > 0,
       __reactions: reactionRows.map((reaction) => ({
@@ -4897,12 +4957,17 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
       : null;
   }
   const quoted = liveQuoted || liveAcceptance.__quoted || archivedQuoted || acceptance.__quoted || null;
-  const parsed = quoted ? parseOrder(quoted.body) : null;
-  const orderMessageId = serializedMessageId(quoted);
-  if (!quoted || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(quoted) !== groupId) {
-    return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
+  const acceptanceMode = acceptance.__acceptanceMode === "unquoted" ? "unquoted" : (quoted ? "quoted" : "unquoted");
+  const unquotedSource = acceptanceMode === "unquoted"
+    ? (acceptance.__candidateSource || findUnquotedOrderMessage(messages, groupId, acceptance))
+    : null;
+  const sourceMessage = acceptanceMode === "unquoted" ? unquotedSource : quoted;
+  const parsed = sourceMessage ? parseOrder(sourceMessage.body) : null;
+  const orderMessageId = serializedMessageId(sourceMessage);
+  if (!sourceMessage || !parsed?.isOrder || !orderMessageId || resolveGroupChatId(sourceMessage) !== groupId) {
+    return { match: false, reason: acceptanceMode === "unquoted" ? "unquoted_order_not_found" : "not_a_quoted_order", acceptanceMessageId };
   }
-  const botProducer = (indexedQuoted?.fromMe || quoted.fromMe) && BOT_FINANCIAL_MODE === "company";
+  const botProducer = (indexedQuoted?.fromMe || sourceMessage.fromMe) && BOT_FINANCIAL_MODE === "company";
   const rawReactionHint = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
   const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || ((!botProducer || !rawReactionHint) && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
@@ -4962,8 +5027,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const botPhone = connectedBotPhone();
   if (reactionPhones.some((phone) => recoveryPhoneMatches(phone, botPhone))) reactedByBot = true;
   if (botProducer && reactionPresentOnAcceptance) reactedByBot = true;
-  const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
-  const producerPhone = (indexedQuoted?.fromMe || quoted.fromMe) ? botPhone : await resolveMessageSenderPhone(quoted, quotedContact);
+  const sourceContact = !sourceMessage.fromMe && typeof sourceMessage.getContact === "function" ? await withTimeout(sourceMessage.getContact(), 8000, null) : null;
+  const producerPhone = (indexedQuoted?.fromMe || sourceMessage.fromMe) ? botPhone : await resolveMessageSenderPhone(sourceMessage, sourceContact);
   const captainPhone = await resolveWhatsappUserPhone(
     acceptance.__authorPhone,
     acceptance.author,
@@ -4980,8 +5045,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  // Policy: human-owned bookings require a 👍 on the exact quoted «تم» reply.
-  // Bot/company-owned bookings are approved by the valid quoted «تم» itself;
+  // Policy: human-owned bookings require a 👍 on the selected «تم» reply.
+  // Bot/company-owned bookings are approved by the valid «تم» itself;
   // any bot 👍 is presentation-only and never becomes a settlement gate.
   const authorizedThumb = botProducer ? true : Boolean(reactionPresentOnAcceptance);
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
@@ -5000,7 +5065,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     acceptanceMessageId,
     orderMessageId,
     acceptedAt: new Date(acceptanceTimestamp * 1000 || Date.now()).toISOString(),
-    rawText: String(quoted.body || ""),
+    rawText: String(sourceMessage.body || ""),
     parsed,
     producerPhone,
     captainPhone,
@@ -5164,7 +5229,7 @@ async function handleMessageReaction(reaction) {
       : null;
     if (candidate) {
       const captainPhone = await resolveMessageSenderPhone(target);
-      const recovered = registerQuotedAcceptance({
+      const recovered = registerAcceptance({
         groupId: target.from,
         messageId,
         senderPhone: captainPhone,
@@ -5181,15 +5246,18 @@ async function handleMessageReaction(reaction) {
     const legacy = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
     if (legacy?.pending_captain_user_id) {
       const captain = db.prepare("SELECT * FROM users WHERE id=?").get(legacy.pending_captain_user_id);
-      registerQuotedAcceptance({ groupId: target.from, messageId, senderPhone: captain?.phone, senderName: captain?.name, candidate: legacy });
+      registerAcceptance({ groupId: target.from, messageId, senderPhone: captain?.phone, senderName: captain?.name, candidate: legacy });
       acceptance = findPendingAcceptanceByMessage(target.from, messageId);
     }
   }
   if (!acceptance) return;
   const pending = acceptance;
+  const acceptanceMode = pending.acceptance_mode === "unquoted" ? "unquoted" : "quoted";
   const quotedReply = pending.acceptance_message_id === messageId ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
   const quotedReplyId = serializedMessageId(quotedReply);
-  const quotedReplyIsOrder = Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && quotedReplyId === pending.source_message_id);
+  const quotedReplyIsOrder = acceptanceMode === "unquoted"
+    ? (!quotedReply || quotedReplyId === pending.source_message_id)
+    : Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && quotedReplyId === pending.source_message_id);
   if (!quotedReplyIsOrder) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "quote_mismatch", { acceptanceMessageId: messageId, quotedMessageId: quotedReplyId || null });
     notifyOrderLifecycleBlocker(pending.candidate_id, "quote_mismatch", { acceptanceMessageId: messageId });
@@ -5200,6 +5268,7 @@ async function handleMessageReaction(reaction) {
       hasQuotedMsg: Boolean(target.hasQuotedMsg),
       quotedKey: orderTraceKey(quotedReplyId),
       sourceKey: orderTraceKey(pending.source_message_id),
+      acceptanceMode,
     });
     return;
   }
@@ -5210,7 +5279,7 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Policy: any captain's 👍 on the exact quoted «تم» reply confirms the booking.
+  // Policy: any captain's 👍 on the selected «تم» reply confirms the booking.
   // The reply captain is the executor; the reaction owner is not an authorization gate.
   const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
   const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone);
@@ -5252,7 +5321,7 @@ async function reconcileStoredThumbReaction(messageId) {
 	      await handleMessageReaction({ reaction: "👍", msgId: messageId, __senderPhone: phone });
 	    }
 	  } else {
-	    // The business signal is the visible 👍 on the exact quoted «تم» reply;
+    // The business signal is the visible 👍 on the exact «تم» reply;
 	    // WhatsApp may omit the reaction owner's phone from the collection.
 	    await handleMessageReaction({ reaction: "👍", msgId: messageId });
 	  }
@@ -8722,7 +8791,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
   const candidates = db.prepare(`SELECT c.id AS candidate_id,c.source_message_id,c.group_id,c.raw_text,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.status,
       c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,c.created_at,c.updated_at,
       p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone,
-      a.acceptance_message_id,a.status AS acceptance_status,e.name AS executor_name,e.registration_name AS executor_registration_name,
+      a.acceptance_message_id,a.acceptance_mode,a.status AS acceptance_status,e.name AS executor_name,e.registration_name AS executor_registration_name,
       e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
     FROM order_candidates c
     LEFT JOIN users p ON p.id=c.producer_user_id
@@ -8752,7 +8821,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
     const producerPhone = row.producer_phone ? phoneWithCountry(row.producer_phone) : null;
     const executorActive = Number(row.executor_active) === 1 && row.executor_account_status === "active";
     const canConfirm = row.status === "pending" && Boolean(row.acceptance_message_id) && Boolean(executorPhone) && executorActive;
-    const reason = canConfirm ? null : row.status === "candidate" ? "awaiting_quoted_acceptance" : !row.acceptance_message_id ? "acceptance_message_missing" : !executorActive ? "executor_inactive" : "evidence_incomplete";
+    const reason = canConfirm ? null : row.status === "candidate" ? "awaiting_acceptance" : !row.acceptance_message_id ? "acceptance_message_missing" : !executorActive ? "executor_inactive" : "evidence_incomplete";
     return {
       kind: "candidate",
       id: Number(row.candidate_id),
@@ -8760,6 +8829,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
       groupId: row.group_id,
       sourceMessageId: row.source_message_id,
       acceptanceMessageId: row.acceptance_message_id || null,
+      acceptanceMode: row.acceptance_mode === "unquoted" ? "unquoted" : row.acceptance_message_id ? "quoted" : null,
       rawText: row.raw_text,
       price: money(row.price_cents),
       origin: row.origin || null,
@@ -8797,7 +8867,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
     status: row.status,
     acceptanceStatus: null,
     lifecycleStage: "awaiting_acceptance",
-    lifecycleBlocker: "awaiting_quoted_acceptance",
+    lifecycleBlocker: "awaiting_acceptance",
     pendingAt: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -8805,7 +8875,7 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
     executor: { name: null, phone: null, active: false },
     canConfirm: false,
     canReject: true,
-    reason: "awaiting_quoted_acceptance",
+    reason: "awaiting_acceptance",
   }));
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId: configuredGroupId, bookings: [...candidateBookings, ...openOrderBookings], counts: { candidates: candidateBookings.length, openOrders: openOrderBookings.length, total: candidateBookings.length + openOrderBookings.length } });
@@ -8873,11 +8943,11 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, 
     const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='pending' LIMIT 1").get(candidateId, configuredGroupId);
     if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none" });
     const expectedMessageId = String(candidate.pending_message_id || "").trim();
-    if (!expectedMessageId) return res.status(409).json({ error: "A quoted acceptance message is required before confirmation", state: "acceptance_missing", mutation: "none" });
+    if (!expectedMessageId) return res.status(409).json({ error: "A captain acceptance message is required before confirmation", state: "acceptance_missing", mutation: "none" });
     const acceptance = db.prepare(`SELECT a.*,e.name AS executor_name,e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
       FROM order_candidate_acceptances a JOIN users e ON e.id=a.captain_user_id
       WHERE a.candidate_id=? AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1`).get(candidateId, expectedMessageId);
-    if (!acceptance) return res.status(409).json({ error: "The pending quoted acceptance could not be found", state: "acceptance_missing", mutation: "none" });
+    if (!acceptance) return res.status(409).json({ error: "The pending captain acceptance could not be found", state: "acceptance_missing", mutation: "none" });
     if (Number(acceptance.executor_active) !== 1 || acceptance.executor_account_status !== "active") return res.status(409).json({ error: "The executor account is not active", state: "executor_inactive", mutation: "none" });
     const result = settlePendingOrder(candidate.id, acceptance.acceptance_message_id, connectedBotPhone(), { adminApproval: true });
     if (result.state !== "accepted") {

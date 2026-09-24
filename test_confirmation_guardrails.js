@@ -31,8 +31,9 @@ assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "تم تسجيل 
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "بانتظار اعتماد كابتن تنزيل الطلب"/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
 assert.match(server, /typeof raw === "string" \? raw : ""/);
-assert.match(server, /const candidate = quoted/);
-assert.match(server, /findLatestStandaloneAcceptanceCandidate\(groupId\)/);
+assert.match(server, /let candidate = quoted/);
+assert.match(server, /findUnquotedAcceptanceCandidate\(groupId, senderPhone/);
+assert.doesNotMatch(server, /findLatestStandaloneAcceptanceCandidate\(groupId\)/, "لا يربط تم غير المقتبس بآخر طلب بشكل تخميني");
 assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);

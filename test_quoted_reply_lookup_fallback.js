@@ -11,5 +11,6 @@ assert.match(source, /client\.getMessageById\(quotedMessageId\)/);
 assert.match(source, /withTimeout\(client\.getMessageById\(quotedMessageId\), 12000, null\)/);
 assert.match(source, /const quotedMessageIdHint = String\(/);
 assert.match(source, /quoted\.__serializedId = quotedMessageIdHint/);
+assert.match(source, /if \(message\?\.hasQuotedMsg \|\| quotedMessageId\)/, 'لا يفحص Puppeteer رسالة تم غير المقتبسة');
 
 console.log('quoted acceptance lookup fallback verified');

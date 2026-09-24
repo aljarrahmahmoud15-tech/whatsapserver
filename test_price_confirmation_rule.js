@@ -29,8 +29,10 @@ assert.equal(acceptanceContext.isCaptainAcceptance("تمم"), false, "تمم ل�
 const handlerStart = source.indexOf("async function handleIncomingMessage(");
 const handlerEnd = source.indexOf("function reactionId(", handlerStart);
 const handler = source.slice(handlerStart, handlerEnd);
-assert.match(handler, /const candidate = quoted \? findOrderByQuotedMessage\(groupId, quoted\) : null/);
-assert.doesNotMatch(handler, /: findLatestStandaloneAcceptanceCandidate\(groupId\)/, "تم غير المقتبس لا يجوز ربطه بآخر طلب");
+assert.match(handler, /findOrderByQuotedMessage\(groupId, quoted\)/, "الاقتباس يظل مسار المطابقة الأقوى");
+assert.match(handler, /findUnquotedAcceptanceCandidate\(groupId, senderPhone/, "تم غير المقتبس يستخدم مطابقة زمنية آمنة");
+assert.match(handler, /acceptanceMode = "unquoted"/);
+assert.doesNotMatch(handler, /findLatestStandaloneAcceptanceCandidate\(groupId\)/, "تم غير المقتبس لا يجوز ربطه بآخر طلب بشكل تخميني");
 assert.match(handler, /const quoted = await getQuotedMessageWithFallback\(msg\)/);
 
 console.log("price confirmation rule verified");
