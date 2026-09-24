@@ -307,6 +307,7 @@ CREATE TABLE IF NOT EXISTS order_confirmation_deliveries (
   sent_at TEXT,
   updated_at TEXT NOT NULL,
   final_recovery_attempted_at TEXT,
+  final_recovery_attempts INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
 CREATE TABLE IF NOT EXISTS order_candidate_acceptances (
@@ -579,6 +580,8 @@ const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
 if (!existingConfirmationDeliveryColumns.includes("final_recovery_attempted_at")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN final_recovery_attempted_at TEXT");
+if (!existingConfirmationDeliveryColumns.includes("final_recovery_attempts")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN final_recovery_attempts INTEGER NOT NULL DEFAULT 0");
+db.exec("UPDATE order_confirmation_deliveries SET final_recovery_attempts=1 WHERE final_recovery_attempted_at IS NOT NULL AND COALESCE(final_recovery_attempts,0)=0");
 db.exec(`
   UPDATE order_candidates
   SET lifecycle_stage=CASE
@@ -2770,6 +2773,7 @@ function finalBookingCancellationText() {
 const confirmationDeliveryInFlight = new Set();
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
+const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
   const forceFinalRecovery = options.forceFinalRecovery === true;
@@ -2783,13 +2787,13 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       if (existing?.status === "sent") return existing;
       const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
       const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
-      const finalRecoveryAvailable = forceFinalRecovery && !existing?.final_recovery_attempted_at;
+      const finalRecoveryAvailable = forceFinalRecovery && Number(existing?.final_recovery_attempts || 0) < MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS;
       if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
         return { ...existing, retrySuppressed: true };
       }
       if (existing) {
         if (finalRecoveryAvailable) {
-          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,final_recovery_attempted_at=?,last_error=NULL,updated_at=? WHERE order_id=? AND status<>'sent' AND final_recovery_attempted_at IS NULL").run(stamp, stamp, orderId);
+          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,final_recovery_attempted_at=?,final_recovery_attempts=final_recovery_attempts+1,last_error=NULL,updated_at=? WHERE order_id=? AND status<>'sent' AND final_recovery_attempts < ?").run(stamp, stamp, orderId, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS);
         } else {
           db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
         }
@@ -2829,7 +2833,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
 async function retryFailedBookingConfirmations() {
   if (!client || !isReady) return { attempted: 0, sent: 0, suppressed: 0 };
   const rows = db.prepare(`
-    SELECT d.order_id,d.group_id,d.attempts,
+    SELECT d.order_id,d.group_id,d.status,d.attempts,
            o.order_no,o.price_cents,
            executor.name AS executor_name,
            downloader.name AS downloader_name
@@ -2838,14 +2842,20 @@ async function retryFailedBookingConfirmations() {
     LEFT JOIN users executor ON executor.id=o.captain_user_id
     LEFT JOIN users downloader ON downloader.id=o.producer_user_id
     WHERE d.status IN ('failed','pending')
-      AND (d.attempts < ? OR d.final_recovery_attempted_at IS NULL)
+      AND (d.attempts < ? OR d.final_recovery_attempts < ?)
       AND julianday(d.updated_at) <= julianday('now', '-120 seconds')
     ORDER BY d.updated_at ASC
     LIMIT ?
-  `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, 20);
+  `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS, 20);
   const result = { attempted: 0, sent: 0, suppressed: 0 };
   for (const row of rows) {
     result.attempted += 1;
+    const observed = await findFinalBookingConfirmationInGroup(row.group_id, row.order_no);
+    if (observed) {
+      db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(observed.messageId, now(), now(), row.order_id);
+      result.sent += 1;
+      continue;
+    }
     const sent = await sendFinalBookingConfirmation(row.group_id, {
       orderId: row.order_id,
       orderNo: row.order_no,
@@ -2857,6 +2867,22 @@ async function retryFailedBookingConfirmations() {
     else result.suppressed += 1;
   }
   return result;
+}
+async function findFinalBookingConfirmationInGroup(groupId, orderNo) {
+  if (!client || !isReady || !groupId || !Number(orderNo)) return null;
+  try {
+    const { chat, messages } = await fetchGroupHistory(groupId, 100, { includeOutgoing: true });
+    if (!chat) return null;
+    const match = (Array.isArray(messages) ? messages : []).find((message) => {
+      if (!message?.fromMe) return false;
+      const body = String(message.body || message.caption || message?._data?.body || message?._data?.caption || "").trim();
+      return finalBookingConfirmationOrderNo(body) === Number(orderNo);
+    });
+    return match ? { messageId: serializedMessageId(match) } : null;
+  } catch (error) {
+    console.warn("[WhatsApp] confirmation readback failed:", error.message);
+    return null;
+  }
 }
 function observeFinalBookingConfirmationMessage(message) {
   if (!message?.fromMe || !message?.from || !isConfiguredGroup(String(message.from))) return null;
