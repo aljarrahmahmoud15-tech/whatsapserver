@@ -15,6 +15,8 @@ assert.ok(server.includes('app.patch("/api/admin/system/settings", requireAdmin'
 assert.ok(server.includes('reconnect scheduled in'), 'reconnect backoff is logged');
 assert.ok(server.includes('initialize_timeout'), 'initialization timeout is surfaced');
 assert.ok(server.includes('disposeClientInstance(client, "initialize_timeout")'), 'timed out clients are disposed');
+assert.ok(server.includes('destroyTimeoutMarker'), 'client cleanup has a bounded timeout');
+assert.ok(server.includes('cleanup timed out; continuing with controlled reconnect'), 'cleanup timeout keeps reconnect path alive');
 assert.ok(server.includes('Attempted to use detached Frame'), 'detached Puppeteer frames are treated as recoverable lifecycle errors');
 assert.ok(index.includes('ops-drawer-overlay'), 'admin glass overlay exists');
 assert.ok(index.includes('LIVE SYSTEM HEALTH'), 'admin health panel exists');

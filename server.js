@@ -3272,8 +3272,12 @@ function clearChromiumProfileLocks() {
 }
 async function disposeClientInstance(instance, label = "client") {
   if (!instance) return;
+  const destroyTimeoutMarker = Symbol("whatsapp_destroy_timeout");
   try {
-    await instance.destroy();
+    const destroyed = await withTimeoutStrict(instance.destroy(), 12000, destroyTimeoutMarker);
+    if (destroyed === destroyTimeoutMarker) {
+      console.warn(`[WhatsApp] ${label} cleanup timed out; continuing with controlled reconnect`);
+    }
   } catch (error) {
     // whatsapp-web.js may already have closed Chromium after LOGOUT.
     console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
