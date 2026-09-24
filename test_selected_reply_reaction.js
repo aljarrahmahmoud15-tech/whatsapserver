@@ -6,7 +6,7 @@ assert.match(source, /const quotedReply = pending\.acceptance_message_id === mes
 assert.match(source, /getQuotedMessageWithFallback\(target\)/);
 assert.match(source, /if \(!isCaptainAcceptance\(target\.body\)\) return;/);
 assert.match(source, /const quotedReplyIsOrder = acceptanceMode === "unquoted"/);
-assert.match(source, /!quotedReply \|\| quotedReplyId === pending\.source_message_id/);
+assert.match(source, /!quotedReply \|\| sourceMessageIdsEqual\(quotedReplyId, pending\.source_message_id\)/);
 assert.match(source, /if \(!quotedReplyIsOrder\)/);
 assert.match(source, /reaction_target_not_selected_quoted_reply/);
 assert.doesNotMatch(source, /void sendBotText\(target\.from, finalBookingCancellationText\(\)\)/, 'لا ترسل رسالة إلغاء قبل تثبيت الحجز');

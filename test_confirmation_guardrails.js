@@ -71,6 +71,6 @@ assert.match(server, /if \(!insertedMessage\.changes && !captainAcceptance\) ret
 assert.match(server, /acceptance_message_replayed_after_duplicate_guard/);
 assert.match(server, /const authorizedThumb = botProducer \? true : Boolean\(reactionPresentOnAcceptance\)/);
 assert.match(server, /reaction_target_not_selected_quoted_reply/);
-assert.match(server, /quotedReplyId === pending\.source_message_id/);
+assert.match(server, /sourceMessageIdsEqual\(quotedReplyId, pending\.source_message_id\)/);
 assert.match(server, /confirmingCaptainFeeCents/);
 console.log("hidden candidate confirmation guardrails verified");

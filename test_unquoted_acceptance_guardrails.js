@@ -42,7 +42,7 @@ const reactionStart = source.indexOf('async function handleMessageReaction(');
 const reactionEnd = source.indexOf('async function reconcileStoredThumbReaction(', reactionStart);
 const reactionBody = source.slice(reactionStart, reactionEnd);
 assert.match(reactionBody, /const acceptanceMode = pending\.acceptance_mode === "unquoted"/);
-assert.match(reactionBody, /!quotedReply \|\| quotedReplyId === pending\.source_message_id/);
+assert.match(reactionBody, /!quotedReply \|\| sourceMessageIdsEqual\(quotedReplyId, pending\.source_message_id\)/);
 assert.match(source, /acceptanceMode,\n    candidate:/);
 
 console.log('unquoted acceptance guardrails verified');

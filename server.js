@@ -5488,8 +5488,8 @@ async function handleMessageReaction(reaction) {
   const quotedReply = pending.acceptance_message_id === messageId ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
   const quotedReplyId = serializedMessageId(quotedReply);
   const quotedReplyIsOrder = acceptanceMode === "unquoted"
-    ? (!quotedReply || quotedReplyId === pending.source_message_id)
-    : Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && quotedReplyId === pending.source_message_id);
+    ? (!quotedReply || sourceMessageIdsEqual(quotedReplyId, pending.source_message_id))
+    : Boolean(quotedReply && parseOrder(quotedReply.body)?.isOrder && sourceMessageIdsEqual(quotedReplyId, pending.source_message_id));
   if (!quotedReplyIsOrder) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "quote_mismatch", { acceptanceMessageId: messageId, quotedMessageId: quotedReplyId || null });
     notifyOrderLifecycleBlocker(pending.candidate_id, "quote_mismatch", { acceptanceMessageId: messageId });

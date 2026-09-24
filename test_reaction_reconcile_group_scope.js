@@ -30,5 +30,10 @@ assert(
   beforeReactionRead.indexOf("isConfiguredGroup(targetGroupId)") >= 0,
   "فحص القروب المعتمد يسبق استدعاء getReactions"
 );
+assert.match(
+  source,
+  /sourceMessageIdsEqual\(quotedReplyId, pending\.source_message_id\)/,
+  "مطابقة الاقتباس تستخدم core message id ولا تعتمد على الصيغة المركبة حرفيًا"
+);
 
 console.log("reaction reconcile approved-group scope guard verified");
