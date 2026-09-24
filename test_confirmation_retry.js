@@ -9,12 +9,14 @@ assert.ok(end > start, 'confirmation retry helper must end before the observer')
 const retry = source.slice(start, end);
 
 assert.match(retry, /FROM order_confirmation_deliveries d\s+JOIN orders o/);
-assert.match(retry, /d\.status='failed'/);
+assert.match(retry, /d\.status IN \('failed','pending'\)/);
 assert.match(retry, /d\.attempts < \?/);
 assert.match(retry, /d\.final_recovery_attempted_at IS NULL/);
+assert.match(retry, /julianday\(d\.updated_at\) <= julianday\('now', '-120 seconds'\)/);
 assert.match(retry, /MAX_CONFIRMATION_DELIVERY_ATTEMPTS/);
 assert.match(retry, /sendFinalBookingConfirmation\(row\.group_id/);
 assert.match(retry, /forceFinalRecovery:/);
+assert.match(retry, /row\.status === 'pending'/);
 assert.match(retry, /orderId: row\.order_id/);
 assert.doesNotMatch(retry, /settlePendingOrder/);
 assert.doesNotMatch(retry, /applySettlement|wallet_ledger|INSERT INTO settlements/);

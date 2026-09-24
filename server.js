@@ -2837,7 +2837,9 @@ async function retryFailedBookingConfirmations() {
     JOIN orders o ON o.id=d.order_id
     LEFT JOIN users executor ON executor.id=o.captain_user_id
     LEFT JOIN users downloader ON downloader.id=o.producer_user_id
-    WHERE d.status='failed' AND (d.attempts < ? OR d.final_recovery_attempted_at IS NULL)
+    WHERE d.status IN ('failed','pending')
+      AND (d.attempts < ? OR d.final_recovery_attempted_at IS NULL)
+      AND julianday(d.updated_at) <= julianday('now', '-120 seconds')
     ORDER BY d.updated_at ASC
     LIMIT ?
   `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, 20);
@@ -2850,7 +2852,7 @@ async function retryFailedBookingConfirmations() {
       executorName: row.executor_name,
       downloaderName: row.downloader_name,
       priceCents: row.price_cents,
-    }, { forceFinalRecovery: Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
+    }, { forceFinalRecovery: row.status === 'pending' || Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
     if (sent) result.sent += 1;
     else result.suppressed += 1;
   }
