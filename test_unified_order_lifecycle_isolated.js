@@ -201,8 +201,8 @@ const context = {
   PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1200,
   SPECIAL_ORDER_PRODUCER_RATE_BPS: 1200,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 300,
-  SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 300,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 400,
+  SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 400,
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   serializedMessageId: (msg) => msg?.id?._serialized || msg?.id || null,
@@ -245,8 +245,8 @@ async function approve(doneId = "done-1") {
   assert.equal(state.candidate.status, "finalized");
   assert.equal(state.ledgers.length, 3, "التسوية الذرية تسجل 3 حركات فقط");
   assert.equal(users.producer.wallet_cents, 240, "يُضاف 12% للمنتج");
-  assert.equal(users.company.wallet_cents, 60, "يُضاف 3% للشركة");
-  assert.equal(users.executor.wallet_cents, 4700, "يُخصم 15% من المنفذ");
+  assert.equal(users.company.wallet_cents, 80, "يُضاف 4% للشركة");
+  assert.equal(users.executor.wallet_cents, 4680, "يُخصم 16% من المنفذ");
   await approve();
   assert.equal(state.ledgers.length, 3, "التفاعل المكرر لا يكرر التسوية");
   assert.equal(state.confirmations.length, 1, "بطاقة واحدة فقط");
@@ -273,8 +273,8 @@ async function approve(doneId = "done-1") {
   assert.equal(state.candidate.status, "finalized", "هوية صاحب 👍 غير المطلوبة لا تمنع التثبيت");
   assert.equal(state.ledgers.length, 3);
   assert.equal(users.producer.wallet_cents, 240);
-  assert.equal(users.company.wallet_cents, 60);
-  assert.equal(users.executor.wallet_cents, 4700);
+  assert.equal(users.company.wallet_cents, 80);
+  assert.equal(users.executor.wallet_cents, 4680);
 
   reset({ executorBalance: -199 });
   await ingestPrice();
