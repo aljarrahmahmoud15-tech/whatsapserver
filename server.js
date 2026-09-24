@@ -100,6 +100,12 @@ const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTER
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 60000));
+const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
+const WHATSAPP_LID_CACHE_MAX_ENTRIES = Math.max(100, Math.min(10000, Number(process.env.WHATSAPP_LID_CACHE_MAX_ENTRIES || 2000)));
+const RUNTIME_RUN_COMPLETED_TTL_MS = Math.max(10 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.RUNTIME_RUN_COMPLETED_TTL_MS || 2 * 60 * 60 * 1000)));
+const RUNTIME_RUN_STALE_TTL_MS = Math.max(RUNTIME_RUN_COMPLETED_TTL_MS, Math.min(48 * 60 * 60 * 1000, Number(process.env.RUNTIME_RUN_STALE_TTL_MS || 12 * 60 * 60 * 1000)));
+const RUNTIME_RUN_MAX_ENTRIES = Math.max(20, Math.min(500, Number(process.env.RUNTIME_RUN_MAX_ENTRIES || 100)));
+const RATE_LIMIT_MAX_KEYS = Math.max(100, Math.min(10000, Number(process.env.RATE_LIMIT_MAX_KEYS || 5000)));
 const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -864,8 +870,19 @@ function captainAuthCodeHash(phone, code) {
 function createCaptainWhatsappCode() {
   return String(crypto.randomInt(100000, 1000000));
 }
+function pruneRateLimitStore(store, atMs = Date.now()) {
+  for (const [storedKey, entry] of store) {
+    if (!entry || atMs - Number(entry.startedAt || 0) >= RATE_LIMIT_WINDOW_MS) store.delete(storedKey);
+  }
+  while (store.size > RATE_LIMIT_MAX_KEYS) {
+    const oldestKey = store.keys().next().value;
+    if (oldestKey === undefined) break;
+    store.delete(oldestKey);
+  }
+}
 function consumeRateLimit(store, key, maxAttempts) {
   const current = Date.now();
+  pruneRateLimitStore(store, current);
   const entry = store.get(key);
   if (!entry || current - entry.startedAt >= RATE_LIMIT_WINDOW_MS) {
     store.set(key, { startedAt: current, count: 1 });
@@ -3555,6 +3572,56 @@ async function handleCaptainAccessCardAck(messageOrId, ack) {
   captainAccessCardAckCache.delete(messageId);
 }
 
+function pruneTimestampedMap(store, { atMs = Date.now(), ttlMs, maxEntries, getAt }) {
+  for (const [key, value] of store) {
+    const stamp = Number(getAt(value));
+    if (Number.isFinite(stamp) && atMs - stamp > ttlMs) store.delete(key);
+  }
+  while (store.size > maxEntries) {
+    const oldestKey = store.keys().next().value;
+    if (oldestKey === undefined) break;
+    store.delete(oldestKey);
+  }
+}
+
+function pruneCompletedRunMap(store, atMs = Date.now()) {
+  for (const [key, run] of store) {
+    const completedAt = Date.parse(String(run?.completedAt || ""));
+    const startedAt = Date.parse(String(run?.startedAt || ""));
+    if (Number.isFinite(completedAt) && atMs - completedAt > RUNTIME_RUN_COMPLETED_TTL_MS) store.delete(key);
+    else if (run?.status !== "running" && Number.isFinite(startedAt) && atMs - startedAt > RUNTIME_RUN_STALE_TTL_MS) store.delete(key);
+  }
+  while (store.size > RUNTIME_RUN_MAX_ENTRIES) {
+    const oldestKey = [...store.entries()].find(([, run]) => run?.status !== "running")?.[0];
+    if (oldestKey === undefined) break;
+    store.delete(oldestKey);
+  }
+}
+
+let runtimeMemoryCleanupTimer = null;
+function pruneRuntimeMemoryCaches(atMs = Date.now()) {
+  pruneAdminSendState(atMs);
+  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
+  pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
+  pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
+  [balanceNotificationBroadcasts, captainAnnouncementBroadcasts, bulkTopupRuns, bulkPinRuns, negativeBalanceWarningRuns, dailyDebitCancellationRuns].forEach((store) => pruneCompletedRunMap(store, atMs));
+}
+
+function startRuntimeMemoryCleanup() {
+  if (runtimeMemoryCleanupTimer) return;
+  pruneRuntimeMemoryCaches();
+  runtimeMemoryCleanupTimer = setInterval(() => {
+    try { pruneRuntimeMemoryCaches(); } catch (error) { console.warn("[Runtime] memory cache cleanup failed:", error.message); }
+  }, 5 * 60 * 1000);
+  runtimeMemoryCleanupTimer.unref?.();
+}
+
+function stopRuntimeMemoryCleanup() {
+  if (runtimeMemoryCleanupTimer) clearInterval(runtimeMemoryCleanupTimer);
+  runtimeMemoryCleanupTimer = null;
+}
+
 function createClient() {
   const generation = ++connectionGeneration;
   const instance = new Client({
@@ -3798,6 +3865,19 @@ function logOrderTrace(event, details = {}) {
 }
 
 const whatsappLidPhoneCache = new Map();
+function cacheWhatsappLidPhone(lid, phone, atMs = Date.now()) {
+  const key = serializedWhatsappUserId(lid);
+  const normalizedPhone = phoneWithCountry(phone);
+  const maxEntries = typeof WHATSAPP_LID_CACHE_MAX_ENTRIES === "number" ? WHATSAPP_LID_CACHE_MAX_ENTRIES : 2000;
+  if (!/@lid$/i.test(key) || !isValidJordanPhone(normalizedPhone)) return;
+  whatsappLidPhoneCache.delete(key);
+  whatsappLidPhoneCache.set(key, { phone: normalizedPhone, cachedAt: atMs });
+  while (whatsappLidPhoneCache.size > maxEntries) {
+    const oldestKey = whatsappLidPhoneCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    whatsappLidPhoneCache.delete(oldestKey);
+  }
+}
 function serializedWhatsappUserId(value) {
   if (!value) return "";
   if (typeof value === "string") return value.trim();
@@ -3862,11 +3942,13 @@ async function resolveWhatsappUserPhone(...values) {
   for (const lid of lidIds) {
     const persisted = typeof findPersistedWhatsappPhone === "function" ? findPersistedWhatsappPhone(lid) : "";
     if (persisted) {
-      whatsappLidPhoneCache.set(lid, persisted);
+      cacheWhatsappLidPhone(lid, persisted);
       return persisted;
     }
     const cached = whatsappLidPhoneCache.get(lid);
-    if (cached && isValidJordanPhone(cached)) return cached;
+    const cacheTtlMs = typeof WHATSAPP_LID_CACHE_TTL_MS === "number" ? WHATSAPP_LID_CACHE_TTL_MS : 24 * 60 * 60 * 1000;
+    if (cached && Date.now() - Number(cached.cachedAt || 0) <= cacheTtlMs && isValidJordanPhone(cached.phone)) return cached.phone;
+    if (cached) whatsappLidPhoneCache.delete(lid);
   }
   if (!client || !isReady || !lidIds.length) return "";
   if (typeof client.getContactLidAndPhone === "function") {
@@ -3877,8 +3959,8 @@ async function resolveWhatsappUserPhone(...values) {
         const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
         if (!phone) continue;
         const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
-        whatsappLidPhoneCache.set(lid, phone);
-        whatsappLidPhoneCache.set(lidIds[index], phone);
+        cacheWhatsappLidPhone(lid, phone);
+        cacheWhatsappLidPhone(lidIds[index], phone);
         if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "getContactLidAndPhone");
         return phone;
       }
@@ -3891,7 +3973,7 @@ async function resolveWhatsappUserPhone(...values) {
     const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
     const lid = serializedWhatsappUserId(mapping?.lid);
     if (!phone || !lidIds.includes(lid)) continue;
-    whatsappLidPhoneCache.set(lid, phone);
+    cacheWhatsappLidPhone(lid, phone);
     if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "direct_toPn");
     console.log(`[WhatsApp] LID resolved directly with toPn: ${orderTraceKey(lid)}`);
     return phone;
@@ -3901,7 +3983,7 @@ async function resolveWhatsappUserPhone(...values) {
     const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
     const lid = serializedWhatsappUserId(mapping?.lid);
     if (!phone || !lidIds.includes(lid)) continue;
-    whatsappLidPhoneCache.set(lid, phone);
+    cacheWhatsappLidPhone(lid, phone);
     if (typeof persistWhatsappIdentity === "function") persistWhatsappIdentity(lid, phone, "configured_group_toPn");
     console.log(`[WhatsApp] LID resolved from configured group membership: ${orderTraceKey(lid)}`);
     return phone;
@@ -9454,6 +9536,7 @@ reconcileConfiguredGroupFromEnvironment();
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
+  startRuntimeMemoryCleanup();
   startCaptainSubscriptionScheduler();
   initializeWhatsApp();
   startWhatsAppWatchdog();
@@ -9490,5 +9573,5 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { await destroyClient(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { await destroyClient(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
