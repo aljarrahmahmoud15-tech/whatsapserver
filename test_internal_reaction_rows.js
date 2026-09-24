@@ -11,4 +11,11 @@ assert.match(source, /if \(Array\.isArray\(value\.models\)\) return value\.model
 assert.match(source, /collections\.Msg\?\.getMessagesById/);
 assert.match(source, /const internalReactions =/);
 assert.match(source, /internalReactions\.length && !archivedHasSenders/);
+const reconcileStart = source.indexOf('async function reconcileStoredThumbReaction(');
+const reconcileEnd = source.indexOf('function parseCookies(', reconcileStart);
+assert.ok(reconcileStart >= 0 && reconcileEnd > reconcileStart, 'reconcile function must be present');
+const reconcileSource = source.slice(reconcileStart, reconcileEnd);
+assert.match(reconcileSource, /let reactions = await withTimeout\(target\.getReactions\(\), 12000, \[\]\);/);
+assert.match(reconcileSource, /const internalReactions = await fetchInternalReactionRows\(messageId\)/);
+assert.match(reconcileSource, /reactions = internalReactions/);
 console.log('internal reaction rows guard: ok');

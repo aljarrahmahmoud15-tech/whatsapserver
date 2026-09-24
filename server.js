@@ -5520,6 +5520,10 @@ async function reconcileStoredThumbReaction(messageId) {
   }
   let reactions = await withTimeout(target.getReactions(), 12000, []);
   if (!Array.isArray(reactions) || !reactions.length) {
+    const internalReactions = await fetchInternalReactionRows(messageId);
+    if (Array.isArray(internalReactions) && internalReactions.length) reactions = internalReactions;
+  }
+  if (!Array.isArray(reactions) || !reactions.length) {
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 500));
