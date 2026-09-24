@@ -51,14 +51,26 @@ jobs:
       - name: Check public health endpoint
         run: |
           set -euo pipefail
-          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/health" \
-            | jq -e '(.ok == true) and (.ready == true) and (.whatsapp == "ready")' >/dev/null
-          echo "Health endpoint is ready."
+          for attempt in 1 2 3 4 5 6; do
+            health="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/health" || true)"
+            if [[ -n "$health" ]] && printf '%s\n' "$health" | jq -e '(.ok == true) and (.ready == true) and (.whatsapp == "ready")' >/dev/null 2>&1; then
+              echo "Health endpoint is ready."
+              exit 0
+            fi
+            echo "Health endpoint was unavailable, non-JSON, or not ready (attempt $attempt/6); retrying."
+            if [[ -n "$health" ]]; then
+              printf '%s\n' "$health" | jq '.' >&2 2>/dev/null || printf '%s\n' "${health:0:240}" >&2
+            fi
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+          echo "Health endpoint did not return a ready JSON payload after retries." >&2
+          exit 1
       - name: Check WhatsApp group receiver and order counters
         run: |
           set -euo pipefail
-          curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" \
-            | jq -e '
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
               (.ready == true) and
               (.whatsappState == "ready") and
               (.groupConfigured == true) and
@@ -67,8 +79,15 @@ jobs:
               (.orders.openUnassigned >= 0) and
               (.orders.pendingConfirmation >= 0) and
               (.orders.acceptedUnlinked >= 0)
-            ' >/dev/null
-          echo "WhatsApp, group receiver, and order counters are healthy."
+            ' >/dev/null 2>&1; then
+              echo "WhatsApp, group receiver, and order counters are healthy."
+              exit 0
+            fi
+            echo "WhatsApp/group status was unavailable, non-JSON, or not ready (attempt $attempt/6); retrying."
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+          echo "WhatsApp/group status did not return a healthy JSON payload after retries." >&2
+          exit 1
       - name: Check IndexedDB pressure guard state
         run: |
           set -euo pipefail
