@@ -4,7 +4,7 @@ const path = require("path");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const start = source.indexOf("async function reconcileStoredThumbReaction(");
-const end = source.indexOf("async function retryFailedBookingConfirmations(", start);
+const end = source.indexOf("function parseCookies(", start);
 assert(start >= 0 && end > start, "مسار مصالحة التفاعل موجود مرة واحدة وبنهاية واضحة");
 const reconcileSource = source.slice(start, end);
 

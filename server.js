@@ -5502,12 +5502,6 @@ async function reconcileStoredThumbReaction(messageId) {
     }
   }
 }
-async function retryFailedBookingConfirmations(groupId) {
-  // Do not replay historical failed cards automatically after a reconnect.
-  // New confirmations still use sendFinalBookingConfirmation exactly once;
-  // any failed delivery must be retried explicitly by an owner action.
-  return { status: "disabled", reason: "manual_resend_only", groupId };
-}
 
 function parseCookies(header = "") {
   return String(header).split(";").reduce((cookies, part) => {

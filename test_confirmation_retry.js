@@ -6,6 +6,7 @@ const start = source.indexOf('async function retryFailedBookingConfirmations');
 const end = source.indexOf('function observeFinalBookingConfirmationMessage', start);
 assert.ok(start >= 0, 'confirmation retry helper must exist');
 assert.ok(end > start, 'confirmation retry helper must end before the observer');
+assert.equal([...source.matchAll(/async function retryFailedBookingConfirmations/g)].length, 1, 'confirmation retry helper must have one runtime definition');
 const retry = source.slice(start, end);
 
 assert.match(retry, /FROM order_confirmation_deliveries d\s+JOIN orders o/);
@@ -29,5 +30,6 @@ assert.match(source, /final_recovery_attempts INTEGER NOT NULL DEFAULT 0/);
 assert.match(source, /MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2/);
 assert.match(source, /finalRecoveryAvailable = forceFinalRecovery/);
 assert.match(source, /findFinalBookingConfirmationInGroup/);
+assert.doesNotMatch(source, /manual_resend_only/);
 
 console.log('Confirmation retry guard tests passed');
