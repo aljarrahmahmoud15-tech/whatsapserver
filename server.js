@@ -1930,7 +1930,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
 async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false } = {}) {
   if (!client || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
   const chat = await resolveReadableGroupChat(groupId);
-  if (chat) {
+  if (chat && !before) {
     const messages = await withTimeout(chat.fetchMessages({ limit: Math.min(batch, 10), ...(includeOutgoing ? {} : { fromMe: false }) }), 8000, []);
       const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
         id: serializedMessageId(message),
@@ -3664,14 +3664,31 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT));
-  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
+  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, pagesScanned: 0, messagesFetched: 0, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
-  const fastScan = await fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true });
-  const scan = { messages: (Array.isArray(fastScan.messages) ? fastScan.messages : []).slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT) };
+  const scanMessages = [];
+  const scanMessageIds = new Set();
+  let before = 0;
+  const maxPages = 6;
+  for (let page = 0; page < maxPages; page += 1) {
+    const fastScan = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true });
+    lastAcceptanceRecovery.pagesScanned += 1;
+    const pageMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
+    for (const message of pageMessages) {
+      const messageId = serializedMessageId(message) || String(message?.id || "").trim();
+      if (!messageId || scanMessageIds.has(messageId)) continue;
+      scanMessageIds.add(messageId);
+      scanMessages.push(message);
+    }
+    if (!fastScan.nextCursor || !pageMessages.length) break;
+    before = Number(fastScan.nextCursor) || 0;
+    if (!before) break;
+  }
+  lastAcceptanceRecovery.messagesFetched = scanMessages.length;
   let recovered = 0;
-  for (const row of Array.isArray(scan.messages) ? scan.messages : []) {
+  for (const row of scanMessages.slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT * 6)) {
     lastAcceptanceRecovery.scanned += 1;
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);

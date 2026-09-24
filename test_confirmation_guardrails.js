@@ -60,7 +60,9 @@ assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ cutoff, batch: 50, i
 assert.match(server, /recovery\.source = "order-scan"/);
 assert.doesNotMatch(server, /await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
-assert.match(server, /const scan = \{ messages: \(Array\.isArray\(fastScan\.messages\) \? fastScan\.messages : \[\]\)\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT\) \}/);
+assert.match(server, /const maxPages = 6/);
+assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
+assert.match(server, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* 6\)/);
 assert.match(server, /message\?\._data\?\.quotedMsg\?\.id\?\._serialized/);
 assert.match(server, /async function getQuotedMessageWithFallback\(message\)/);
 assert.match(server, /const quoted = await getQuotedMessageWithFallback\(msg\)/);

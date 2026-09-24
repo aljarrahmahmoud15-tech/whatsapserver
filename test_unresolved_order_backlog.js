@@ -10,7 +10,12 @@ assert.match(source, /recordUnresolvedOrderMessage\(\{\n        messageId,/);
 assert.match(source, /lastUnresolvedOrderRecovery = \{ startedAt/);
 assert.match(source, /unresolvedOrderRecovery: lastUnresolvedOrderRecovery/);
 assert.match(source, /Math\.min\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)/);
-assert.match(source, /slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT\)/);
+assert.match(source, /pagesScanned: 0/);
+assert.match(source, /messagesFetched: 0/);
+assert.match(source, /const maxPages = 6/);
+assert.match(source, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
+assert.match(source, /if \(!fastScan\.nextCursor \|\| !pageMessages\.length\) break/);
+assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* 6\)/);
 assert.doesNotMatch(source, /recordUnresolvedOrderMessage\(\{[\s\S]{0,500}financial/);
 
 console.log('unresolved order backlog and bounded recovery guardrails verified');
