@@ -19,7 +19,7 @@ assert.match(
   "مسار المصالحة يتوقف للقروب غير الجماعي أو غير المعتمد قبل قراءة التفاعلات"
 );
 
-const guardEnd = reconcileSource.indexOf("let reactions = await");
+const guardEnd = reconcileSource.indexOf("let reactions = typeof");
 assert(guardEnd > 0, "قراءة التفاعلات موجودة بعد الحارس");
 const beforeReactionRead = reconcileSource.slice(0, guardEnd);
 assert(

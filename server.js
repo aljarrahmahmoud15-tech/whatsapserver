@@ -3589,6 +3589,7 @@ let whatsappHistoricalCandidateRecoveryAt = 0;
 let lastHistoricalRecovery = null;
 let lastUnresolvedOrderRecovery = null;
 let lastAcceptanceRecovery = null;
+let whatsappRecoveryBackgroundRunning = false;
 function setAcceptanceRecoveryStage(stage) {
   if (lastAcceptanceRecovery) lastAcceptanceRecovery.lastStage = String(stage || "");
 }
@@ -3704,20 +3705,33 @@ async function recoverPendingAcceptanceMessages(groupId) {
   lastAcceptanceRecovery.finishedAt = new Date().toISOString();
   if (recovered) console.log(`[WhatsApp] recovered ${recovered} quoted pending acceptance message(s)`);
 }
+function startBackgroundOrderRecovery(groupId) {
+  if (whatsappRecoveryBackgroundRunning) return;
+  whatsappRecoveryBackgroundRunning = true;
+  void (async () => {
+    try {
+      lastUnresolvedOrderRecovery = { startedAt: new Date().toISOString(), ...(await recoverUnresolvedOrderMessages(groupId)), finishedAt: new Date().toISOString() };
+      await recoverHistoricalOrderCandidates(groupId);
+      await recoverPendingAcceptanceMessages(groupId);
+    } catch (error) {
+      console.warn(`[WhatsApp] background order recovery failed: ${String(error?.message || error).slice(0, 240)}`);
+    } finally {
+      whatsappRecoveryBackgroundRunning = false;
+    }
+  })();
+}
 async function scanPendingAcceptanceReactions() {
   if (!client || !isReady || whatsappReactionScanRunning) return;
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
-    lastUnresolvedOrderRecovery = { startedAt: new Date().toISOString(), ...(await recoverUnresolvedOrderMessages(groupId)), finishedAt: new Date().toISOString() };
-    await recoverHistoricalOrderCandidates(groupId);
-    await recoverPendingAcceptanceMessages(groupId);
     const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
     for (const row of rows) {
       try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
     }
     await retryFailedBookingConfirmations(groupId);
+    startBackgroundOrderRecovery(groupId);
     if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} pending acceptance message(s)`);
   } finally {
     whatsappReactionScanRunning = false;
@@ -4619,7 +4633,18 @@ function reactionId(value) {
   if (typeof value === "string") return value;
   return value._serialized || value.id || null;
 }
-
+function buildStoredAcceptanceMessageById(messageId) {
+  if (!messageId) return null;
+  const rows = db.prepare(`SELECT c.group_id,c.source_message_id,a.acceptance_message_id
+    FROM order_candidate_acceptances a
+    JOIN order_candidates c ON c.id=a.candidate_id
+    WHERE c.status='pending' AND a.status IN ('pending','selected')
+    ORDER BY a.updated_at DESC,a.id DESC LIMIT 200`).all();
+  const row = rows.find((candidate) => sourceMessageIdsEqual(candidate.acceptance_message_id, messageId));
+  if (!row) return null;
+  return buildStoredRecoveryMessagesByIds(row.group_id, row.source_message_id, row.acceptance_message_id)
+    .find((message) => sourceMessageIdsEqual(serializedMessageId(message), messageId)) || null;
+}
 function reactionEvidenceSenderKey(reaction, senderPhone = "") {
   const values = reactionSenderValues(reaction);
   return String(values[0] || senderPhone || "anonymous").trim() || "anonymous";
@@ -5436,7 +5461,7 @@ async function handleMessageReaction(reaction) {
   if (!reaction || (!removedThumb && !cancellationReaction && reactionValue !== "👍")) return;
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
-  const target = await getWhatsAppMessageByIdVariants(messageId, 5000);
+  const target = await getWhatsAppMessageByIdVariants(messageId, 5000) || buildStoredAcceptanceMessageById(messageId);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
   if (!isCaptainAcceptance(target.body)) return;
@@ -5611,8 +5636,8 @@ async function handleMessageReaction(reaction) {
 
 async function reconcileStoredThumbReaction(messageId) {
   if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
-  const target = await getWhatsAppMessageByIdVariants(messageId, 5000);
-  if (!target || typeof target.getReactions !== "function") return;
+  const target = await getWhatsAppMessageByIdVariants(messageId, 5000) || buildStoredAcceptanceMessageById(messageId);
+  if (!target) return;
   const targetGroupId = String(target.from || target._data?.from || "").trim();
   if (!targetGroupId.endsWith("@g.us") || !isConfiguredGroup(targetGroupId)) {
     logOrderTrace("reaction_scan_ignored_unconfigured_group", {
@@ -5621,7 +5646,9 @@ async function reconcileStoredThumbReaction(messageId) {
     });
     return;
   }
-  let reactions = await withTimeout(target.getReactions(), 12000, []);
+  let reactions = typeof target.getReactions === "function"
+    ? await withTimeout(target.getReactions(), 12000, [])
+    : (Array.isArray(target.__reactions) ? target.__reactions : []);
   if (!Array.isArray(reactions) || !reactions.length) {
     const internalReactions = await fetchInternalReactionRows(messageId);
     if (Array.isArray(internalReactions) && internalReactions.length) reactions = internalReactions;
