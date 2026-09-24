@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS order_confirmation_deliveries (
   created_at TEXT NOT NULL,
   sent_at TEXT,
   updated_at TEXT NOT NULL,
+  final_recovery_attempted_at TEXT,
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
 CREATE TABLE IF NOT EXISTS order_candidate_acceptances (
@@ -576,6 +577,8 @@ if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABL
 if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
+const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
+if (!existingConfirmationDeliveryColumns.includes("final_recovery_attempted_at")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN final_recovery_attempted_at TEXT");
 db.exec(`
   UPDATE order_candidates
   SET lifecycle_stage=CASE
@@ -2767,8 +2770,9 @@ function finalBookingCancellationText() {
 const confirmationDeliveryInFlight = new Set();
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
-async function sendFinalBookingConfirmation(groupId, details) {
+async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
+  const forceFinalRecovery = options.forceFinalRecovery === true;
   if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
   if (orderId) confirmationDeliveryInFlight.add(orderId);
   let delivery = null;
@@ -2779,11 +2783,16 @@ async function sendFinalBookingConfirmation(groupId, details) {
       if (existing?.status === "sent") return existing;
       const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
       const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
-      if (existing && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
+      const finalRecoveryAvailable = forceFinalRecovery && !existing?.final_recovery_attempted_at;
+      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
         return { ...existing, retrySuppressed: true };
       }
       if (existing) {
-        db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
+        if (finalRecoveryAvailable) {
+          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,final_recovery_attempted_at=?,last_error=NULL,updated_at=? WHERE order_id=? AND status<>'sent' AND final_recovery_attempted_at IS NULL").run(stamp, stamp, orderId);
+        } else {
+          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
+        }
         return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
       }
       db.prepare("INSERT INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',1,?,?)").run(orderId, groupId, stamp, stamp);
@@ -2828,7 +2837,7 @@ async function retryFailedBookingConfirmations() {
     JOIN orders o ON o.id=d.order_id
     LEFT JOIN users executor ON executor.id=o.captain_user_id
     LEFT JOIN users downloader ON downloader.id=o.producer_user_id
-    WHERE d.status='failed' AND d.attempts < ?
+    WHERE d.status='failed' AND (d.attempts < ? OR d.final_recovery_attempted_at IS NULL)
     ORDER BY d.updated_at ASC
     LIMIT ?
   `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, 20);
@@ -2841,7 +2850,7 @@ async function retryFailedBookingConfirmations() {
       executorName: row.executor_name,
       downloaderName: row.downloader_name,
       priceCents: row.price_cents,
-    });
+    }, { forceFinalRecovery: Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
     if (sent) result.sent += 1;
     else result.suppressed += 1;
   }
