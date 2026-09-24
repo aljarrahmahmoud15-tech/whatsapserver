@@ -13,6 +13,7 @@ assert.match(source, /const messageIds = \[\.\.\.new Set\(\[fullId, rawId, coreI
 assert.match(source, /function messageIdLookupVariants\(value\)/);
 assert.match(source, /async function getWhatsAppMessageByIdVariants\(value, timeoutMs = 6000\)/);
 assert.match(source, /getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
+assert.match(source, /reaction\.emoji \|\| reaction\?\._data\?\.emoji/);
 assert.match(source, /if \(Array\.isArray\(value\)\) return value/);
 assert.match(source, /if \(Array\.isArray\(value\.models\)\) return value\.models/);
 assert.match(source, /collections\.Msg\?\.getMessagesById/);

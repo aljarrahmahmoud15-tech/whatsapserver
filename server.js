@@ -5568,7 +5568,7 @@ async function reconcileStoredThumbReaction(messageId) {
   }
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     if (!reaction) continue;
-    const reactionEmoji = reaction.aggregateEmoji || reaction.reaction || "";
+    const reactionEmoji = reaction.aggregateEmoji || reaction.reaction || reaction.emoji || reaction?._data?.emoji || "";
     if (reactionEmoji !== "👍" && reactionEmoji !== "❌") continue;
     const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;
     const senders = Array.isArray(reaction.senders) ? reaction.senders : [];
