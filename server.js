@@ -1254,13 +1254,13 @@ async function runCaptainCompletionAnnouncement({ runKey, captains }) {
     run.completedAt = now();
   }
 }
-async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference }) {
+async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference, removalContext = null }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || captain.account_status !== "active") return { status: "ineligible" };
   const title = "إشعار رصيد مستحق من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
-  const removal = await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }));
+  const removal = await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }));
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
@@ -1333,10 +1333,10 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
   audit("captain.wallet.low_balance_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, warningThresholdCents: CAPTAIN_LOW_BALANCE_WARNING_CENTS });
   return { status: deliveryStatus, notificationId: row.lastInsertRowid };
 }
-async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference }) {
+async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference, removalContext = null }) {
   const balance = Number(balanceCents);
   if (!Number.isFinite(balance)) return { status: "invalid_balance" };
-  if (balance < 0) return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference });
+  if (balance < 0) return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext });
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
@@ -1353,9 +1353,10 @@ async function enforceCaptainWalletThresholdsForAll(run = null) {
   progress.alreadyRemoved = 0;
   progress.failed = 0;
   try {
+    const removalContext = await readGroupRemovalContext(configuredRuntimeGroupId()).catch(() => null);
     for (let index = 0; index < captains.length; index += 1) {
       const captain = captains[index];
-      const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}` }).catch(() => null);
+      const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}`, removalContext }).catch(() => null);
       progress.scanned = index + 1;
       progress.lastCaptainId = captain.id;
       if (Number(captain.wallet_cents) < 0) {
@@ -1688,7 +1689,44 @@ function companyWalletSummary() {
     recentLedger,
   };
 }
-async function suspendMemberForDebt(groupId, phone, balanceCents) {
+async function readGroupRemovalContext(groupId) {
+  const officialGroupId = String(groupId || "").trim();
+  if (!client || !isReady || !officialGroupId || !isConfiguredGroup(officialGroupId)) return null;
+  const chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+  if (!chat || !Array.isArray(chat.participants)) return null;
+  const participants = chat.participants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
+  const phoneToParticipantId = new Map();
+  const lidIds = [];
+  for (const entry of participants) {
+    const phone = directJordanPhoneFromWhatsappValue(entry.id);
+    if (phone) phoneToParticipantId.set(phone, entry.id);
+    else if (/@lid$/i.test(entry.id)) lidIds.push(entry.id);
+  }
+  if (lidIds.length && typeof client.getContactLidAndPhone === "function") {
+    try {
+      const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 15000, []);
+      for (let index = 0; index < lidIds.length; index += 1) {
+        const mapping = Array.isArray(mappings) ? mappings[index] : null;
+        const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+        if (phone) {
+          phoneToParticipantId.set(phone, lidIds[index]);
+          cacheWhatsappLidPhone(lidIds[index], phone);
+        }
+      }
+    } catch (_) {}
+  }
+  if (lidIds.length && [...phoneToParticipantId.values()].filter((id) => /@lid$/i.test(id)).length < lidIds.length) {
+    const mappings = await resolveWhatsappLidsDirectFromPage(lidIds);
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+      const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+      const lid = serializedWhatsappUserId(mapping?.lid);
+      if (phone && lid) phoneToParticipantId.set(phone, lid);
+    }
+  }
+  return { chat, participantIds: participants.map((entry) => entry.id), phoneToParticipantId };
+}
+
+async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext = null) {
   const normalized = phoneWithCountry(phone);
   const officialGroupId = String(groupId || "").trim();
   if (!isValidJordanPhone(normalized) || Number(balanceCents) >= 0) return { status: "not_required" };
@@ -1697,15 +1735,18 @@ async function suspendMemberForDebt(groupId, phone, balanceCents) {
   db.prepare("UPDATE users SET active=0,account_status='suspended',updated_at=? WHERE phone=?").run(stamp, normalized);
   audit("member.suspended_for_negative_balance", "user", normalized, { groupId: officialGroupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "remove_any_negative_balance" });
   if (!client || !isReady) return { status: "account_suspended_whatsapp_unavailable" };
-  const chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+  const context = removalContext || await readGroupRemovalContext(officialGroupId);
+  const chat = context?.chat || await withTimeout(client.getChatById(officialGroupId), 20000, null);
   if (!chat || typeof chat.removeParticipants !== "function") return { status: "group_unavailable" };
-  const participantIds = Array.isArray(chat.participants)
+  const participantIds = context?.participantIds || (Array.isArray(chat.participants)
     ? chat.participants.map((participant) => serializedWhatsappUserId(participant?.id || participant)).filter(Boolean)
-    : [];
+    : []);
   const directId = `${normalized}@c.us`;
   const targetIds = new Set();
+  const mappedParticipantId = context?.phoneToParticipantId?.get(normalized);
+  if (mappedParticipantId) targetIds.add(mappedParticipantId);
   if (participantIds.includes(directId)) targetIds.add(directId);
-  try {
+  if (!targetIds.size && !removalContext) try {
     const numberId = await withTimeout(client.getNumberId(normalized), 12000, null);
     const serializedNumberId = serializedWhatsappUserId(numberId);
     if (serializedNumberId && participantIds.includes(serializedNumberId)) targetIds.add(serializedNumberId);
@@ -1713,7 +1754,7 @@ async function suspendMemberForDebt(groupId, phone, balanceCents) {
     const contactId = serializedWhatsappUserId(contact?.id || contact?._data?.id || contact);
     if (contactId && participantIds.includes(contactId)) targetIds.add(contactId);
   } catch (_) {}
-  if (!targetIds.size) {
+  if (!targetIds.size && !removalContext) {
     const lidIds = participantIds.filter((participantId) => /@lid$/i.test(participantId));
     try {
       const mappings = typeof client.getContactLidAndPhone === "function"
