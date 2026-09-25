@@ -130,6 +130,7 @@ const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
 const negativeBalanceWarningRuns = new Map();
+let captainWalletPolicySweepInFlight = false;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -1339,15 +1340,21 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   return { status: "not_required" };
 }
 async function enforceCaptainWalletThresholdsForAll() {
+  if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
+  captainWalletPolicySweepInFlight = true;
   const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='active' AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
   let negative = 0;
   let warned = 0;
-  for (const captain of captains) {
-    const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}` }).catch(() => null);
-    if (Number(captain.wallet_cents) < 0) negative += 1;
-    else if (result && result.status !== "not_required") warned += 1;
+  try {
+    for (const captain of captains) {
+      const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}` }).catch(() => null);
+      if (Number(captain.wallet_cents) < 0) negative += 1;
+      else if (result && result.status !== "not_required") warned += 1;
+    }
+    return { status: "completed", scanned: captains.length, negative, warned };
+  } finally {
+    captainWalletPolicySweepInFlight = false;
   }
-  return { scanned: captains.length, negative, warned };
 }
 function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
   if (!captain?.phone) return;
@@ -9022,6 +9029,13 @@ app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmi
   const run = negativeBalanceWarningRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية التحذير غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run });
+});
+app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, res) => {
+  if (String(req.body?.confirmation || "") !== "REMOVE_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_NEGATIVE_CAPTAINS_NOW مطلوب" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  const result = await enforceCaptainWalletThresholdsForAll();
+  audit("captain.wallet_policy.enforced", "system", "captains", { ...result, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  res.json({ success: true, ...result, mutation: "negative_captains_removed_and_notified", financialMutation: false });
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
