@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 
 const server = fs.readFileSync("./server.js", "utf8");
+const admin = fs.readFileSync("./admin.html", "utf8");
 
 assert.match(server, /const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number\(process\.env\.CAPTAIN_LOW_BALANCE_WARNING_CENTS \|\| 100\)/);
 assert.match(server, /async function notifyCaptainLowBalance\(/);
@@ -11,6 +12,9 @@ assert.match(server, /async function enforceCaptainWalletThresholdsForAll\(/);
 assert.match(server, /app\.post\("\/api\/admin\/captains\/enforce-wallet-policy", requireAdmin/);
 assert.match(server, /REMOVE_NEGATIVE_CAPTAINS_NOW/);
 assert.match(server, /captainWalletPolicySweepInFlight/);
+assert.match(admin, /enforceNegativeWalletPolicy/);
+assert.match(admin, /REMOVE_NEGATIVE_CAPTAINS_NOW/);
+assert.match(admin, /دون تغيير الرصيد/);
 assert.match(server, /CAPTAIN_BALANCE_POLICY_INTERVAL_MS/);
 assert.match(server, /async function suspendMemberForDebt\(/);
 assert.match(server, /Number\(balanceCents\) >= 0/);
