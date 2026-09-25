@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const workflow = fs.readFileSync('.github/workflows/order-flow-monitor.yml', 'utf8');
-assert.match(workflow, /cron: "\*\/15 \* \* \* \*"/, 'الفحص مجدول كل 15 دقيقة');
+assert.match(workflow, /cron: "0 \* \* \* \*"/, 'الفحص مجدول في بداية كل ساعة');
 assert.match(workflow, /workflow_dispatch:/, 'يوجد تشغيل يدوي');
 assert.match(workflow, /cancel-in-progress: false/, 'لا يلغي الفحص السابق أثناء التداخل');
 assert.match(workflow, /npm test/, 'يشغل مجموعة الاختبارات الكاملة');
