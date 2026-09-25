@@ -1257,7 +1257,7 @@ async function runCaptainCompletionAnnouncement({ runKey, captains }) {
 async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference, removalContext = null }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
-  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || captain.account_status !== "active") return { status: "ineligible" };
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && Number(balanceCents) >= 0)) return { status: "ineligible" };
   const title = "إشعار رصيد مستحق من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const removal = await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }));
@@ -1343,7 +1343,7 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
 async function enforceCaptainWalletThresholdsForAll(run = null) {
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
-  const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='active' AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
+  const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
   const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   progress.total = captains.length;
   progress.scanned = 0;
