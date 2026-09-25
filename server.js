@@ -1709,13 +1709,29 @@ async function suspendMemberForDebt(groupId, phone, balanceCents) {
     const numberId = await withTimeout(client.getNumberId(normalized), 12000, null);
     const serializedNumberId = serializedWhatsappUserId(numberId);
     if (serializedNumberId && participantIds.includes(serializedNumberId)) targetIds.add(serializedNumberId);
+    const contact = await withTimeout(client.getContactById(serializedNumberId || directId), 12000, null);
+    const contactId = serializedWhatsappUserId(contact?.id || contact?._data?.id || contact);
+    if (contactId && participantIds.includes(contactId)) targetIds.add(contactId);
   } catch (_) {}
-  if (!targetIds.size && Array.isArray(chat.participants)) {
-    for (const participant of chat.participants) {
-      const participantId = serializedWhatsappUserId(participant?.id || participant);
-      if (!participantId) continue;
-      const participantPhone = await withTimeout(resolveGroupParticipantPhone(participant), 10000, "");
-      if (participantPhone === normalized) targetIds.add(participantId);
+  if (!targetIds.size) {
+    const lidIds = participantIds.filter((participantId) => /@lid$/i.test(participantId));
+    try {
+      const mappings = typeof client.getContactLidAndPhone === "function"
+        ? await withTimeout(client.getContactLidAndPhone(lidIds), 12000, [])
+        : [];
+      for (let index = 0; index < lidIds.length; index += 1) {
+        const mapping = Array.isArray(mappings) ? mappings[index] : null;
+        const mappedPhone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+        if (mappedPhone === normalized) targetIds.add(lidIds[index]);
+      }
+    } catch (_) {}
+    if (!targetIds.size && lidIds.length) {
+      const mappings = await resolveWhatsappLidsDirectFromPage(lidIds);
+      for (const mapping of Array.isArray(mappings) ? mappings : []) {
+        const mappedPhone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+        const lid = serializedWhatsappUserId(mapping?.lid);
+        if (mappedPhone === normalized && lid && participantIds.includes(lid)) targetIds.add(lid);
+      }
     }
   }
   if (!targetIds.size) return { status: "not_in_group" };
