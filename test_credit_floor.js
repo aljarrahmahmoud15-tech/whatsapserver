@@ -15,6 +15,6 @@ assert.match(server, /existing\.active === 0/);
 assert.match(server, /producer\.active === 0/);
 assert.match(server, /suspendMemberForDebt/);
 assert.match(server, /process\.env\.CAPTAIN_MIN_BALANCE_CENTS \|\| -300/);
-assert.match(server, /debtLimit: `\$\{money\(CAPTAIN_MIN_BALANCE_CENTS\)\} JOD`/);
+assert.match(server, /debtLimit: `\$\{money\(CAPTAIN_MIN_BALANCE_CENTS\)\} JOD للخصومات اليدوية والاشتراكات فقط/);
 
 console.log("credit floor and suspension guard verified");

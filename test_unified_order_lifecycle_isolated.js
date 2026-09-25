@@ -214,6 +214,7 @@ const context = {
   updateOrderCandidateLifecycle: () => ({ changes: 1 }),
   notifyOrderLifecycleBlocker: () => {},
   notifyOperations: () => Promise.resolve([]),
+  notifyCaptainNegativeBalance: async () => {},
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },
   sendFinalBookingCancellation: async () => { state.cancellations.push(true); return { id: { _serialized: "cancellation-1" } }; },
   findPendingAcceptanceByMessage: null,
@@ -280,9 +281,10 @@ async function approve(doneId = "done-1") {
   await ingestPrice();
   await ingestAcceptance("done-debt");
   await approve("done-debt");
-  assert.equal(state.candidate.status, "pending", "حد الدين يمنع التسوية");
-  assert.equal(state.ledgers.length, 0);
-  assert.equal(state.candidate.lifecycle_stage, "debt_limit");
+  assert.equal(state.candidate.status, "finalized", "الرصيد السالب لا يمنع تثبيت الطلب");
+  assert.equal(state.ledgers.length, 3, "تُسجل التسوية حتى مع الرصيد السالب");
+  assert.equal(users.executor.wallet_cents, -499, "يُخصم 15% مع تسجيل الرصيد السالب");
+  assert.equal(state.candidate.lifecycle_stage, "settled");
 
   reset({ archived: true });
   await context.handleIncomingMessage(message("price-archived", "السعر 20", PRODUCER));
