@@ -139,9 +139,14 @@ function renderNegativeWallets(){const q=($('negativeWalletSearch')?.value||'').
 async function enforceNegativeWalletPolicy(force=false){
   if(!force && !confirm('سيتم إزالة كل كابتن رصيده أقل من صفر من القروب الرسمي وإرسال رسالة بالمبلغ المستحق دون تغيير الرصيد. هل تريد المتابعة؟'))return;
   try{
-    const result=await api('/api/admin/captains/enforce-wallet-policy',{method:'POST',body:JSON.stringify({confirmation:'REMOVE_NEGATIVE_CAPTAINS_NOW'})});
+    const runKey='NEG-REMOVE-'+Date.now().toString(36).toUpperCase();
+    let result=await api('/api/admin/captains/enforce-wallet-policy',{method:'POST',body:JSON.stringify({confirmation:'REMOVE_NEGATIVE_CAPTAINS_NOW',runKey})});
+    while(result.status==='running'){
+      await new Promise(resolve=>setTimeout(resolve,2000));
+      result=await api('/api/admin/captains/enforce-wallet-policy/'+encodeURIComponent(runKey));
+    }
     await loadCaptains();
-    alert(`تم فحص ${result.scanned||0} حسابًا: إزالة ${result.negative||0} حساب سالب وإرسال ${result.warned||0} تحذيرًا. لم يتغير أي رصيد.`);
+    alert(`اكتمل الفحص: ${result.negative||0} حسابًا سالبًا، أزيل فعليًا من القروب: ${result.removed||0}، كان خارج القروب أصلًا: ${result.alreadyRemoved||0}، تعذر: ${result.failed||0}. لم يتغير أي رصيد.`);
   }catch(e){alert('تعذر تنفيذ الإزالة: '+e.message)}
 }
 async function loadCaptains(){try{const data=await api('/api/admin/captains');allCaptains=data.captains||[];renderCaptains()}catch(e){$('captains').innerHTML=`<tr><td colspan="10">تعذر تحميل الكباتن: ${esc(e.message)}</td></tr>`}}

@@ -130,6 +130,7 @@ const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
 const negativeBalanceWarningRuns = new Map();
+const captainWalletPolicyRuns = new Map();
 let captainWalletPolicySweepInFlight = false;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1339,19 +1340,40 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
-async function enforceCaptainWalletThresholdsForAll() {
+async function enforceCaptainWalletThresholdsForAll(run = null) {
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
   const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='active' AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
-  let negative = 0;
-  let warned = 0;
+  const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
+  progress.total = captains.length;
+  progress.scanned = 0;
+  progress.negative = 0;
+  progress.warned = 0;
+  progress.removed = 0;
+  progress.alreadyRemoved = 0;
+  progress.failed = 0;
   try {
-    for (const captain of captains) {
+    for (let index = 0; index < captains.length; index += 1) {
+      const captain = captains[index];
       const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}` }).catch(() => null);
-      if (Number(captain.wallet_cents) < 0) negative += 1;
-      else if (result && result.status !== "not_required") warned += 1;
+      progress.scanned = index + 1;
+      progress.lastCaptainId = captain.id;
+      if (Number(captain.wallet_cents) < 0) {
+        progress.negative += 1;
+        const removalStatus = result?.removalStatus;
+        if (removalStatus === "removed") progress.removed += 1;
+        else if (removalStatus === "already_removed" || removalStatus === "not_in_group") progress.alreadyRemoved += 1;
+        else progress.failed += 1;
+      } else if (result && result.status !== "not_required") progress.warned += 1;
     }
-    return { status: "completed", scanned: captains.length, negative, warned };
+    progress.status = "completed";
+    progress.completedAt = now();
+    return progress;
+  } catch (error) {
+    progress.status = "failed";
+    progress.error = String(error?.message || error).slice(0, 300);
+    progress.completedAt = now();
+    return progress;
   } finally {
     captainWalletPolicySweepInFlight = false;
   }
@@ -1672,19 +1694,34 @@ async function suspendMemberForDebt(groupId, phone, balanceCents) {
   if (!isValidJordanPhone(normalized) || Number(balanceCents) >= 0) return { status: "not_required" };
   if (!officialGroupId || !officialGroupId.endsWith("@g.us") || !isConfiguredGroup(officialGroupId)) return { status: "group_not_configured" };
   const stamp = now();
-  db.prepare("UPDATE users SET active=0,updated_at=? WHERE phone=?").run(stamp, normalized);
+  db.prepare("UPDATE users SET active=0,account_status='suspended',updated_at=? WHERE phone=?").run(stamp, normalized);
   audit("member.suspended_for_negative_balance", "user", normalized, { groupId: officialGroupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "remove_any_negative_balance" });
   if (!client || !isReady) return { status: "account_suspended_whatsapp_unavailable" };
   const chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
   if (!chat || typeof chat.removeParticipants !== "function") return { status: "group_unavailable" };
   const participantIds = Array.isArray(chat.participants)
-    ? chat.participants.map((participant) => String(participant?.id?._serialized || participant?.id || participant?._serialized || "")).filter(Boolean)
+    ? chat.participants.map((participant) => serializedWhatsappUserId(participant?.id || participant)).filter(Boolean)
     : [];
   const directId = `${normalized}@c.us`;
-  if (participantIds.length && !participantIds.includes(directId)) return { status: "already_removed" };
+  const targetIds = new Set();
+  if (participantIds.includes(directId)) targetIds.add(directId);
   try {
-    await chat.removeParticipants([directId]);
-    return { status: "removed" };
+    const numberId = await withTimeout(client.getNumberId(normalized), 12000, null);
+    const serializedNumberId = serializedWhatsappUserId(numberId);
+    if (serializedNumberId && participantIds.includes(serializedNumberId)) targetIds.add(serializedNumberId);
+  } catch (_) {}
+  if (!targetIds.size && Array.isArray(chat.participants)) {
+    for (const participant of chat.participants) {
+      const participantId = serializedWhatsappUserId(participant?.id || participant);
+      if (!participantId) continue;
+      const participantPhone = await withTimeout(resolveGroupParticipantPhone(participant), 10000, "");
+      if (participantPhone === normalized) targetIds.add(participantId);
+    }
+  }
+  if (!targetIds.size) return { status: "not_in_group" };
+  try {
+    await chat.removeParticipants([...targetIds]);
+    return { status: "removed", participantIds: [...targetIds] };
   } catch (error) {
     console.error("[WhatsApp] negative balance removal:", error.message);
     return { status: "remove_failed", error: String(error?.message || error).slice(0, 200) };
@@ -3941,7 +3978,7 @@ function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
-  [balanceNotificationBroadcasts, captainAnnouncementBroadcasts, bulkTopupRuns, bulkPinRuns, negativeBalanceWarningRuns, dailyDebitCancellationRuns].forEach((store) => pruneCompletedRunMap(store, atMs));
+  [balanceNotificationBroadcasts, captainAnnouncementBroadcasts, bulkTopupRuns, bulkPinRuns, negativeBalanceWarningRuns, dailyDebitCancellationRuns, captainWalletPolicyRuns].forEach((store) => pruneCompletedRunMap(store, atMs));
 }
 
 function startRuntimeMemoryCleanup() {
@@ -9033,9 +9070,21 @@ app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmi
 app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, res) => {
   if (String(req.body?.confirmation || "") !== "REMOVE_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_NEGATIVE_CAPTAINS_NOW مطلوب" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
-  const result = await enforceCaptainWalletThresholdsForAll();
-  audit("captain.wallet_policy.enforced", "system", "captains", { ...result, mutation: "negative_captains_removed_and_notified", financialMutation: false });
-  res.json({ success: true, ...result, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  const runKey = String(req.body?.runKey || `NEG-REMOVE-${Date.now().toString(36).toUpperCase()}`).trim();
+  if (!/^NEG-REMOVE-[A-Z0-9-]{8,80}$/.test(runKey)) return res.status(400).json({ error: "مفتاح العملية غير صالح" });
+  if (captainWalletPolicyRuns.has(runKey)) return res.json({ success: true, started: true, ...captainWalletPolicyRuns.get(runKey), mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  if (captainWalletPolicySweepInFlight) return res.status(409).json({ error: "توجد عملية إزالة أخرى قيد التنفيذ؛ لا تُكرر الطلب" });
+  const run = { runKey, status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
+  captainWalletPolicyRuns.set(runKey, run);
+  void enforceCaptainWalletThresholdsForAll(run).then((result) => {
+    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  });
+  res.status(202).json({ success: true, started: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+});
+app.get("/api/admin/captains/enforce-wallet-policy/:runKey", requireAdmin, (req, res) => {
+  const run = captainWalletPolicyRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية إزالة المحافظ غير موجودة أو انتهت من الذاكرة" });
+  res.json({ success: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
