@@ -1716,7 +1716,7 @@ async function readGroupRemovalContext(groupId) {
     } catch (_) {}
   }
   if (lidIds.length && [...phoneToParticipantId.values()].filter((id) => /@lid$/i.test(id)).length < lidIds.length) {
-    const mappings = await resolveWhatsappLidsDirectFromPage(lidIds);
+    const mappings = await resolveWhatsappLidsFromConfiguredGroup(lidIds);
     for (const mapping of Array.isArray(mappings) ? mappings : []) {
       const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
       const lid = serializedWhatsappUserId(mapping?.lid);
