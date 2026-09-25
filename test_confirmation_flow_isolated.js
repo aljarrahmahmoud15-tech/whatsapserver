@@ -135,6 +135,7 @@ const context = {
   sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✅ تم تثبيت الطلب #${details.orderNo}` }); },
   finalBookingCancellationText: () => "❌ تم رفض أو إلغاء الطلب",
   sendBotText: async () => true,
+  enforceCaptainWalletThresholds: async () => {},
   console,
 };
 

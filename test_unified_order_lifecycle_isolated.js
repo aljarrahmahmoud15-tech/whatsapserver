@@ -215,6 +215,7 @@ const context = {
   notifyOrderLifecycleBlocker: () => {},
   notifyOperations: () => Promise.resolve([]),
   notifyCaptainNegativeBalance: async () => {},
+  enforceCaptainWalletThresholds: async () => {},
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },
   sendFinalBookingCancellation: async () => { state.cancellations.push(true); return { id: { _serialized: "cancellation-1" } }; },
   findPendingAcceptanceByMessage: null,

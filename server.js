@@ -58,6 +58,8 @@ const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSW
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
+const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
+const CAPTAIN_BALANCE_POLICY_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CAPTAIN_BALANCE_POLICY_INTERVAL_MS || 5 * 60 * 1000));
 const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
 const UNQUOTED_ACCEPTANCE_WINDOW_MS = Number.isFinite(configuredUnquotedAcceptanceWindowMs)
   ? Math.max(30 * 1000, Math.min(configuredUnquotedAcceptanceWindowMs, 60 * 60 * 1000))
@@ -1253,34 +1255,99 @@ async function runCaptainCompletionAnnouncement({ runKey, captains }) {
 async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
-  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active") return { status: "ineligible" };
-  const title = "تنبيه من وصلني الآن";
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || captain.account_status !== "active") return { status: "ineligible" };
+  const title = "إشعار رصيد مستحق من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
+  const removal = await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }));
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
-    `يرجى شحن مبلغ ${money(Math.abs(Number(balanceCents)))} JOD لتصفير الرصيد ومتابعة تنفيذ الطلبات.`,
+    `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
+    "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق.",
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
     "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
   ];
   const message = brandedMessage(title, lines);
-  const existing = db.prepare("SELECT id,delivery_status FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phoneWithCountry(captain.phone), title, message);
-  if (existing) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
-  const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.negative',?,?,'pending',?)").run(phoneWithCountry(captain.phone), title, message, now());
+  const phone = phoneWithCountry(captain.phone);
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phone, title, message);
+  if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.negative',?,?,'pending',?)").run(phone, title, message, now());
+  if (existing) db.prepare("UPDATE notifications SET delivery_status='pending',message_id=NULL WHERE id=?").run(existing.id);
   let deliveryStatus = "failed";
   let messageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(captain.phone);
-    const sent = recipient ? await withTimeout(client.sendMessage(recipient, message), 30000, null) : null;
-    if (sent) {
+    const result = recipient ? await sendWhatsAppAtMostOnce(recipient, message, undefined, 30000) : { status: "failed" };
+    if (result.status === "sent") {
       deliveryStatus = "sent";
-      messageId = sent.id?._serialized || null;
+      messageId = result.message?.id?._serialized || null;
+    } else if (result.status === "uncertain") {
+      deliveryStatus = "uncertain";
     }
   } catch (_) {}
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
-  audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus });
+  audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, removalStatus: removal.status });
+  return { status: deliveryStatus, notificationId: row.lastInsertRowid, removalStatus: removal.status };
+}
+async function notifyCaptainLowBalance({ captainId, balanceCents, reason, reference }) {
+  if (!Number.isInteger(Number(captainId)) || Number(balanceCents) < 0 || Number(balanceCents) >= CAPTAIN_LOW_BALANCE_WARNING_CENTS) return { status: "not_required" };
+  const captain = db.prepare("SELECT id,phone,name,role,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || captain.account_status !== "active") return { status: "ineligible" };
+  const title = "تحذير انخفاض رصيد المحفظة";
+  const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
+  const topupCents = Math.max(0, CAPTAIN_LOW_BALANCE_WARNING_CENTS - Number(balanceCents));
+  const lines = [
+    `عزيزي الكابتن ${captain.name}،`,
+    `رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
+    `الحد الأدنى للتشغيل هو ${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD.`,
+    `يرجى شحن ${money(topupCents)} JOD على الأقل لتجنب توقف الحساب عند دخول الرصيد في السالب.`,
+    `سبب التنبيه: ${String(reason || "انخفاض الرصيد").trim().slice(0, 160)}`,
+    `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
+  ];
+  const message = brandedMessage(title, lines);
+  const phone = phoneWithCountry(captain.phone);
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.low_balance' AND title=? AND message=? LIMIT 1").get(phone, title, message);
+  if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.low_balance',?,?,'pending',?)").run(phone, title, message, now());
+  if (existing) db.prepare("UPDATE notifications SET delivery_status='pending',message_id=NULL WHERE id=?").run(existing.id);
+  let deliveryStatus = "failed";
+  let messageId = null;
+  try {
+    const recipient = await resolveWhatsAppRecipientId(captain.phone);
+    const result = recipient ? await sendWhatsAppAtMostOnce(recipient, message, undefined, 30000) : { status: "failed" };
+    if (result.status === "sent") {
+      deliveryStatus = "sent";
+      messageId = result.message?.id?._serialized || null;
+    } else if (result.status === "uncertain") {
+      deliveryStatus = "uncertain";
+    }
+  } catch (_) {}
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
+  audit("captain.wallet.low_balance_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, warningThresholdCents: CAPTAIN_LOW_BALANCE_WARNING_CENTS });
   return { status: deliveryStatus, notificationId: row.lastInsertRowid };
+}
+async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference }) {
+  const balance = Number(balanceCents);
+  if (!Number.isFinite(balance)) return { status: "invalid_balance" };
+  if (balance < 0) return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference });
+  if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
+  return { status: "not_required" };
+}
+async function enforceCaptainWalletThresholdsForAll() {
+  const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='active' AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
+  let negative = 0;
+  let warned = 0;
+  for (const captain of captains) {
+    const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}` }).catch(() => null);
+    if (Number(captain.wallet_cents) < 0) negative += 1;
+    else if (result && result.status !== "not_required") warned += 1;
+  }
+  return { scanned: captains.length, negative, warned };
 }
 function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
   if (!captain?.phone) return;
@@ -1594,13 +1661,27 @@ function companyWalletSummary() {
 }
 async function suspendMemberForDebt(groupId, phone, balanceCents) {
   const normalized = phoneWithCountry(phone);
-  if (!isValidJordanPhone(normalized) || balanceCents >= CAPTAIN_MIN_BALANCE_CENTS) return;
+  const officialGroupId = String(groupId || "").trim();
+  if (!isValidJordanPhone(normalized) || Number(balanceCents) >= 0) return { status: "not_required" };
+  if (!officialGroupId || !officialGroupId.endsWith("@g.us") || !isConfiguredGroup(officialGroupId)) return { status: "group_not_configured" };
   const stamp = now();
   db.prepare("UPDATE users SET active=0,updated_at=? WHERE phone=?").run(stamp, normalized);
-  audit("member.suspended_for_debt", "user", normalized, { groupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS });
-  if (!client || !isReady) return;
-  const chat = await withTimeout(client.getChatById(groupId), 20000, null);
-  if (chat && typeof chat.removeParticipants === "function") await chat.removeParticipants([`${normalized}@c.us`]).catch((error) => console.error("[WhatsApp] debt suspension:", error.message));
+  audit("member.suspended_for_negative_balance", "user", normalized, { groupId: officialGroupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "remove_any_negative_balance" });
+  if (!client || !isReady) return { status: "account_suspended_whatsapp_unavailable" };
+  const chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+  if (!chat || typeof chat.removeParticipants !== "function") return { status: "group_unavailable" };
+  const participantIds = Array.isArray(chat.participants)
+    ? chat.participants.map((participant) => String(participant?.id?._serialized || participant?.id || participant?._serialized || "")).filter(Boolean)
+    : [];
+  const directId = `${normalized}@c.us`;
+  if (participantIds.length && !participantIds.includes(directId)) return { status: "already_removed" };
+  try {
+    await chat.removeParticipants([directId]);
+    return { status: "removed" };
+  } catch (error) {
+    console.error("[WhatsApp] negative balance removal:", error.message);
+    return { status: "remove_failed", error: String(error?.message || error).slice(0, 200) };
+  }
 }
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
@@ -1753,6 +1834,7 @@ function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
   if (existing && (existing.is_bot === 1 || existing.role === "company")) return { status: "skipped_system", phone: normalized, userId: existing.id };
   if (existing) {
     if (existing.account_status === "merged") return { status: "skipped_merged", phone: normalized, userId: existing.id };
+    if (Number(existing.wallet_cents || 0) < 0) return { status: "skipped_negative_balance", phone: normalized, userId: existing.id, balanceCents: Number(existing.wallet_cents || 0) };
     if (!reactivate && (existing.active !== 1 || existing.account_status === "suspended")) return { status: "skipped_suspended", phone: normalized, userId: existing.id };
     const resolvedName = existing.name && !/^\+?\d+$/.test(String(existing.name).trim()) ? existing.name : displayName;
     db.prepare("UPDATE users SET name=?,role='captain',active=1,is_bot=0,account_status='active',captain_auth_method=COALESCE(NULLIF(captain_auth_method,''),'whatsapp'),approved_at=COALESCE(approved_at,?),activated_at=COALESCE(activated_at,?),updated_at=? WHERE id=?")
@@ -2429,7 +2511,7 @@ function applyCaptainSubscriptionCharges(stamp = now()) {
       })();
       if (result.state === "applied") {
         applied.push({ ...captain, ...result, reference });
-        if (Number(result.balanceAfterCents) < 0) void notifyCaptainNegativeBalance({ captainId: captain.id, balanceCents: result.balanceAfterCents, reason: "خصم الاشتراك الأسبوعي", reference });
+        void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents, reason: "خصم الاشتراك الأسبوعي", reference });
       }
       else if (result.state === "skipped_debt_limit") skipped.push({ ...captain, ...result, reference });
     } catch (error) {
@@ -2462,7 +2544,10 @@ function applyCaptainDailyCharges(stamp = now()) {
         audit("captain.daily_charge.applied", "user", captain.id, { amountCents: CAPTAIN_DAILY_CHARGE_CENTS, chargeDate, balanceAfterCents: nextBalance, reference }, null);
         return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceAfterCents: nextBalance };
       })();
-      if (result.state === "applied") applied.push({ ...captain, ...result, reference });
+      if (result.state === "applied") {
+        applied.push({ ...captain, ...result, reference });
+        void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents, reason: "الخصم اليومي من محفظة الكابتن", reference });
+      }
     } catch (error) {
       console.error(`[DailyCharge] failed for captain ${captain.id}:`, error.message);
     }
@@ -2477,6 +2562,12 @@ function startCaptainSubscriptionScheduler() {
     applyCaptainDailyCharges();
     setInterval(() => applyCaptainDailyCharges(), CAPTAIN_DAILY_CHARGE_INTERVAL_MS).unref();
   }
+}
+function startCaptainBalancePolicyScheduler() {
+  void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] initial sweep failed:", error.message));
+  setInterval(() => {
+    void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] sweep failed:", error.message));
+  }, CAPTAIN_BALANCE_POLICY_INTERVAL_MS).unref();
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
@@ -4366,6 +4457,7 @@ async function approveBotOwnedAcceptance({ groupId, message, candidateId, accept
       confirmedBy: connectedBotPhone(),
       confirmationText: finalBookingConfirmationText(confirmationDetails),
     });
+    if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية طلب", reference: `ORDER-${result.order.order_no}` });
     console.log(`[Order] bot-owned booking accepted directly #${result.order?.order_no || "?"}`);
   } else if (result.state !== "stale") {
     console.warn(`[Order] bot-owned booking approval blocked candidate=${candidateId} state=${result.state}`);
@@ -5130,7 +5222,9 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
     logSettlementCompleted({ mode: "historical", orderId, orderNo: current.order_no, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
-    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id) };
+    const chargedWallet = db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id);
+    void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: chargedWallet?.wallet_cents, reason: "خصم حصة تسوية طلب تاريخي", reference: `ORDER-${current.order_no}` });
+    return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet };
   })();
 }
 
@@ -5580,7 +5674,7 @@ async function handleMessageReaction(reaction) {
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
     if (result.state === "cancelled" && result.reversed && result.producer) {
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
-      if (Number(producerBalance) < 0) void notifyCaptainNegativeBalance({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
+      void enforceCaptainWalletThresholds({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
     }
     return;
   }
@@ -5660,7 +5754,7 @@ async function handleMessageReaction(reaction) {
     return;
   }
   void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, orderId: result.order?.id, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
-  if (result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
+  if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
 }
 
 async function reconcileStoredThumbReaction(messageId) {
@@ -6324,7 +6418,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15% (12% downloader + 3% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", idempotent: true },
+    policy: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15% (12% downloader + 3% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
   });
 });
 
@@ -6761,7 +6855,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
     audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
     return result.lastInsertRowid;
   })();
-  if (direction === "debit" && nextBalance < 0) void notifyCaptainNegativeBalance({ captainId: id, balanceCents: nextBalance, reason, reference });
+  void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
   void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
@@ -7596,7 +7690,7 @@ async function handleAdminWalletAdjustment(req, res) {
     return result.lastInsertRowid;
   });
   const ledgerId = apply();
-  if (nextBalance < 0) void notifyCaptainNegativeBalance({ captainId: id, balanceCents: nextBalance, reason, reference });
+  void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
   void notifyOperations({ event: "captain.wallet.debited", title: "تأكيد خصم من محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `تم خصم: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 }
@@ -9131,7 +9225,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "15% (12% لصاحب تنزيل الطلب + 3% للشركة)", companyWalletCredit: "3% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 15% حتى مع الرصيد السالب", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "15% (12% لصاحب تنزيل الطلب + 3% للشركة)", companyWalletCredit: "3% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
@@ -9430,7 +9524,7 @@ app.post("/api/admin/orders/reconcile-captains", requireAdmin, (req, res) => {
       const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain.id, acceptedMessageId: order.accepted_message_id, acceptedAt: order.accepted_at || now(), confirmedByPhone: order.confirmed_by_phone || order.producer_phone_snapshot || "" });
       if (["accepted", "already_settled"].includes(result.state)) {
         settled.push({ orderNo: order.order_no, captainId: captain.id, state: result.state });
-        if (result.state === "accepted" && result.chargedWallet && Number(result.chargedWallet.wallet_cents) < 0) void notifyCaptainNegativeBalance({ captainId: captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية طلب تاريخي", reference: `ORDER-${order.order_no}` });
+        if (result.state === "accepted" && result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية طلب تاريخي", reference: `ORDER-${order.order_no}` });
       } else skipped.push({ orderNo: order.order_no, reason: result.state });
     } else {
       db.prepare("UPDATE orders SET captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,settlement_state=CASE WHEN settlement_state='unlinked' THEN 'pending' ELSE settlement_state END,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, now(), order.id);
@@ -9842,6 +9936,7 @@ app.listen(PORT, () => {
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   startRuntimeMemoryCleanup();
   startCaptainSubscriptionScheduler();
+  startCaptainBalancePolicyScheduler();
   initializeWhatsApp();
   startWhatsAppWatchdog();
   startWhatsAppReactionScanner();

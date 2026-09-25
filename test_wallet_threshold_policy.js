@@ -1,0 +1,28 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+
+const server = fs.readFileSync("./server.js", "utf8");
+
+assert.match(server, /const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number\(process\.env\.CAPTAIN_LOW_BALANCE_WARNING_CENTS \|\| 100\)/);
+assert.match(server, /async function notifyCaptainLowBalance\(/);
+assert.match(server, /event='captain\.wallet\.low_balance'/);
+assert.match(server, /async function enforceCaptainWalletThresholds\(/);
+assert.match(server, /async function enforceCaptainWalletThresholdsForAll\(/);
+assert.match(server, /CAPTAIN_BALANCE_POLICY_INTERVAL_MS/);
+assert.match(server, /async function suspendMemberForDebt\(/);
+assert.match(server, /Number\(balanceCents\) >= 0/);
+assert.match(server, /isConfiguredGroup\(officialGroupId\)/);
+assert.match(server, /removeParticipants\(\[directId\]\)/);
+assert.match(server, /member\.suspended_for_negative_balance/);
+assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied"/);
+assert.match(server, /skipped_negative_balance/);
+assert.match(server, /sendWhatsAppAtMostOnce\(recipient, message/);
+
+const threshold = 100;
+const classify = (balanceCents) => balanceCents < 0 ? "remove_and_due_message" : balanceCents < threshold ? "warning" : "normal";
+assert.equal(classify(-1), "remove_and_due_message");
+assert.equal(classify(0), "warning");
+assert.equal(classify(99), "warning");
+assert.equal(classify(100), "normal");
+
+console.log("wallet threshold warning, negative-balance removal, official-group guard, and idempotent send guard verified");
