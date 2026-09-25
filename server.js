@@ -1340,10 +1340,12 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
-async function enforceCaptainWalletThresholdsForAll(run = null) {
+async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false } = {}) {
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
-  const captains = db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
+  const captains = negativeOnly
+    ? db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < 0 ORDER BY id").all()
+    : db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
   const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   progress.total = captains.length;
   progress.scanned = 0;
@@ -9133,7 +9135,7 @@ app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, 
   if (captainWalletPolicySweepInFlight) return res.status(409).json({ error: "توجد عملية إزالة أخرى قيد التنفيذ؛ لا تُكرر الطلب" });
   const run = { runKey, status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   captainWalletPolicyRuns.set(runKey, run);
-  void enforceCaptainWalletThresholdsForAll(run).then((result) => {
+  void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true }).then((result) => {
     audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false });
   });
   res.status(202).json({ success: true, started: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
