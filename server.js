@@ -43,7 +43,8 @@ const QR_PUBLIC = process.env.QR_PUBLIC === "true";
 const QR_START_TIME = Date.now();
 const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
-const PUBLIC_REPORT_ORIGIN = process.env.PUBLIC_REPORT_ORIGIN || "https://jrahreport-nkgxsmah.manus.space";
+const DEFAULT_PUBLIC_REPORT_ORIGIN = "https://waslni-stab-ndpp5c4k.manus.space";
+const PUBLIC_REPORT_ORIGIN = String(process.env.PUBLIC_REPORT_ORIGIN || DEFAULT_PUBLIC_REPORT_ORIGIN).replace(/\/$/, "");
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
@@ -137,14 +138,19 @@ if (!activeAdminToken) {
   } catch {}
 }
 app.disable("x-powered-by");
-app.use(cors({
+const publicStatusCors = cors({
   credentials: false,
+  methods: ["GET", "HEAD", "OPTIONS"],
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    const allowed = [CORS_ORIGIN, PUBLIC_REPORT_ORIGIN].filter(Boolean);
+    const allowed = [CORS_ORIGIN, PUBLIC_REPORT_ORIGIN, DEFAULT_PUBLIC_REPORT_ORIGIN].filter(Boolean);
     return callback(null, allowed.includes(origin) ? origin : false);
   },
-}));
+});
+app.use((req, res, next) => {
+  if (!["/health", "/status"].includes(req.path)) return next();
+  return publicStatusCors(req, res, next);
+});
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
