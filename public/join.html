@@ -26,7 +26,7 @@
     }
     *{box-sizing:border-box}
     html{min-height:100%;background:var(--night)}
-    body{margin:0;min-height:100vh;color:var(--ink);font-family:'Cairo','IBM Plex Sans Arabic',sans-serif;background:var(--night) url('./aljarah-group-banner-v2.png') center/cover fixed no-repeat;overflow-x:hidden}
+    body{margin:0;min-height:100vh;color:var(--ink);font-family:'Cairo','IBM Plex Sans Arabic',sans-serif;background:var(--night) url('./aljarah-group-banner-v2.webp') center/cover fixed no-repeat;overflow-x:hidden}
     body:before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(180deg,rgba(6,8,10,.26),rgba(6,8,10,.72) 74%,#080b0e 100%);z-index:-2}
     body:after{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 17% 18%,rgba(35,212,201,.11),transparent 26%),radial-gradient(circle at 83% 11%,rgba(215,173,91,.13),transparent 30%);mix-blend-mode:screen;z-index:-1}
     a{text-decoration:none;color:inherit}
@@ -45,7 +45,7 @@
     .back:hover{background:rgba(215,173,91,.12);transform:translateY(-2px)}
     .stage{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 390px;min-height:600px;border:1px solid var(--line);border-radius:34px;background:linear-gradient(125deg,rgba(8,12,14,.72),rgba(11,18,20,.38));box-shadow:var(--shadow);overflow:hidden;isolation:isolate}
     .stage:before{content:"";position:absolute;inset:12px;border:1px solid rgba(215,173,91,.14);border-radius:25px;pointer-events:none}
-    .stage:after{content:"";position:absolute;inset:0;background:url('./aljarah-group-banner-v2.png') center/cover no-repeat;opacity:.22;mix-blend-mode:screen;pointer-events:none;z-index:-1}
+    .stage:after{content:"";position:absolute;inset:0;background:url('./aljarah-group-banner-v2.webp') center/cover no-repeat;opacity:.22;mix-blend-mode:screen;pointer-events:none;z-index:-1}
     .copy{position:relative;padding:72px 70px 64px;z-index:2;display:flex;flex-direction:column;justify-content:center;max-width:770px}
     .kicker{display:flex;align-items:center;gap:12px;color:var(--teal);font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin-bottom:23px}
     .kicker:before{content:"";width:44px;height:1px;background:linear-gradient(90deg,transparent,var(--teal))}
@@ -70,7 +70,7 @@
     .emblem-frame{position:relative;width:min(315px,78%);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,rgba(255,226,161,.92),rgba(121,90,36,.62) 42%,rgba(35,212,201,.55));padding:2px;box-shadow:0 0 0 14px rgba(215,173,91,.035),0 28px 75px rgba(0,0,0,.6),0 0 55px rgba(35,212,201,.08)}
     .emblem-frame:after{content:"";position:absolute;inset:15px;border:1px solid rgba(255,226,161,.42);border-radius:50%;pointer-events:none}
     .emblem-inner{width:100%;height:100%;border-radius:50%;background:radial-gradient(circle at 42% 27%,#2b3233,#101518 62%,#080b0e);display:grid;place-items:center;overflow:hidden}
-    .emblem-inner:before{content:"";position:absolute;width:245px;height:245px;border-radius:50%;background:url('./aljarah-logo-mark-clean.png') center/contain no-repeat;opacity:.20;filter:sepia(1) saturate(.8);transform:rotate(-9deg)}
+    .emblem-inner:before{content:"";position:absolute;width:245px;height:245px;border-radius:50%;background:url('./aljarah-logo-mark-clean.webp') center/contain no-repeat;opacity:.20;filter:sepia(1) saturate(.8);transform:rotate(-9deg)}
     .emblem-inner img{position:relative;width:74%;height:74%;object-fit:contain;filter:drop-shadow(0 16px 20px rgba(0,0,0,.42));animation:float 7s ease-in-out infinite}
     .orbit{position:absolute;inset:-27px;border:2px solid rgba(98,223,153,.34);border-left-color:transparent;border-bottom-color:transparent;border-radius:50%;transform:rotate(26deg);animation:spin 6s linear infinite;will-change:transform}
     .orbit:after{content:"";position:absolute;right:17%;top:-5px;width:9px;height:9px;border-radius:50%;background:#62df99;box-shadow:0 0 8px #62df99,0 0 22px #62df99}
@@ -94,7 +94,7 @@
     .access-links{display:grid;gap:10px}.access-link{display:flex;align-items:center;gap:13px;padding:14px;border:1px solid rgba(255,255,255,.11);border-radius:17px;background:linear-gradient(135deg,rgba(255,255,255,.065),rgba(255,255,255,.018));transition:transform .2s,border-color .2s,background .2s}.access-link:hover{transform:translateX(-4px);border-color:rgba(215,173,91,.5);background:linear-gradient(135deg,rgba(215,173,91,.14),rgba(255,255,255,.03))}.access-link-icon{width:42px;height:42px;display:grid;place-items:center;border:1px solid rgba(215,173,91,.23);border-radius:13px;color:var(--gold-hi);background:rgba(215,173,91,.08);font-size:16px;flex:none}.access-link-copy{min-width:0;flex:1}.access-link-copy strong{display:block;color:#f1e8d8;font-size:12px;margin-bottom:3px}.access-link-copy span{display:block;color:#87918e;font-size:10px;line-height:1.6}.access-arrow{color:var(--gold-hi);font-size:18px}.drawer-section-label{color:#73807c;font-size:9px;font-weight:800;letter-spacing:1.4px;margin:22px 0 10px}.group-link-box{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid rgba(215,173,91,.16);border-radius:14px;background:rgba(0,0,0,.2)}.group-link-box input{min-width:0;flex:1;border:0;background:transparent;color:#c9beb0;direction:ltr;text-align:left;font:10px ui-monospace,monospace;padding:7px;outline:0}.copy-link{border:1px solid rgba(215,173,91,.27);border-radius:10px;background:rgba(215,173,91,.1);color:var(--gold-hi);font:inherit;font-size:10px;font-weight:700;padding:9px 10px;cursor:pointer;white-space:nowrap}.drawer-foot{margin-top:22px;padding-top:17px;border-top:1px solid rgba(255,255,255,.09);color:#697572;font-size:9px;line-height:1.8}.drawer-foot strong{color:#aeb8b2}
     @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
     @keyframes spin{to{transform:rotate(360deg)}}
-    @media(max-width:940px){body{background-image:url('./aljarah-portal-bg-mobile-v2.png');background-attachment:scroll}.portal{padding:15px 13px 28px}.nav{padding-bottom:17px}.stage{grid-template-columns:1fr;min-height:auto;border-radius:27px}.copy{padding:46px 27px 27px;max-width:none}.emblem-zone{min-height:360px;padding:18px 28px 55px}.emblem-frame{width:min(260px,65vw)}.rail{grid-template-columns:repeat(3,1fr);position:absolute;bottom:15px;left:24px;right:24px;margin:0}.rail-card{padding:10px;display:block;text-align:center}.rail-icon{margin:0 auto 6px;width:31px;height:31px;border-radius:9px}.rail-card strong{font-size:10px}.rail-card span{font-size:8px}.below{grid-template-columns:1fr}.footer{flex-direction:column;align-items:flex-start}.stage:after{background-image:url('./aljarah-portal-bg-mobile-v2.png')}}
+    @media(max-width:940px){body{background-image:url('./aljarah-portal-bg-mobile-v2.webp');background-attachment:scroll}.portal{padding:15px 13px 28px}.nav{padding-bottom:17px}.stage{grid-template-columns:1fr;min-height:auto;border-radius:27px}.copy{padding:46px 27px 27px;max-width:none}.emblem-zone{min-height:360px;padding:18px 28px 55px}.emblem-frame{width:min(260px,65vw)}.rail{grid-template-columns:repeat(3,1fr);position:absolute;bottom:15px;left:24px;right:24px;margin:0}.rail-card{padding:10px;display:block;text-align:center}.rail-icon{margin:0 auto 6px;width:31px;height:31px;border-radius:9px}.rail-card strong{font-size:10px}.rail-card span{font-size:8px}.below{grid-template-columns:1fr}.footer{flex-direction:column;align-items:flex-start}.stage:after{background-image:url('./aljarah-portal-bg-mobile-v2.webp')}}
     @media(max-width:560px){.brand-mark{width:44px;height:44px}.brand-name b{font-size:15px}.brand-name small{font-size:8px}.live{font-size:9px;padding:8px 10px}.back{width:36px;height:36px}.nav-right{gap:7px}.copy{padding:39px 21px 23px}.kicker{font-size:9px;letter-spacing:1.4px;margin-bottom:17px}.kicker:before{width:28px}h1{font-size:45px;letter-spacing:-2px;line-height:1.08}.intro{font-size:13px;line-height:2;margin-bottom:24px}.quick{gap:7px;margin-bottom:25px}.chip{font-size:9px;padding:7px 9px}.actions{display:grid;grid-template-columns:1fr;gap:9px}.btn{width:100%;font-size:12px;padding:14px 16px}.emblem-zone{min-height:330px;padding-bottom:74px}.emblem-frame{width:220px}.emblem-caption{bottom:44px;font-size:8px}.rail{left:13px;right:13px;gap:7px}.rail-card{border-radius:13px;padding:9px 4px}.rail-card strong{font-size:8px}.rail-card span{font-size:7px}.panel{padding:19px 16px;border-radius:19px}.steps{grid-template-columns:1fr}.step{min-height:auto;padding:13px}.panel-head h2{font-size:15px}.footer{font-size:9px}.access-drawer{padding:18px 14px}.drawer-top h2{font-size:22px}.access-link{padding:12px}.group-link-box input{font-size:8px}.copy-link{font-size:9px;padding:8px}}
   </style>
   <style>
@@ -107,7 +107,7 @@
   <main class="portal">
     <header class="nav">
       <a class="brand" href="/" aria-label="لوحة الجراح">
-        <img class="brand-mark" src="./aljarah-logo-mark-clean.png" alt="علامة الجراح" />
+        <img class="brand-mark" src="./aljarah-logo-mark-clean.webp" alt="علامة الجراح" />
         <span class="brand-name"><b>الجراح</b><small>شبكة النقل والخدمات اللوجستية</small></span>
       </a>
       <div class="nav-right">
@@ -135,7 +135,7 @@
 
       <div class="emblem-zone" aria-label="العلامة الرسمية">
         <div class="emblem-frame">
-          <div class="emblem-inner"><img src="./aljarah-logo-mark-clean.png" alt="الشعار الرسمي لشركة الجراح" /></div>
+          <div class="emblem-inner"><img src="./aljarah-logo-mark-clean.webp" alt="الشعار الرسمي لشركة الجراح" /></div>
           <div class="orbit"></div>
         </div>
         <div class="emblem-caption">MOVE WITH PRECISION</div>

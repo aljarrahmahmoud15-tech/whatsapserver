@@ -6,6 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const v8 = require("v8");
 const Database = require("better-sqlite3");
+const compression = require("compression");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pino = require("pino");
@@ -144,6 +145,7 @@ if (!activeAdminToken) {
   } catch {}
 }
 app.disable("x-powered-by");
+app.use(compression({ threshold: 1024, level: 6 }));
 const publicStatusCors = cors({
   credentials: false,
   methods: ["GET", "HEAD", "OPTIONS"],
@@ -184,6 +186,7 @@ app.get("/captain/register", (req, res) => {
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
 app.get("/admin.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/owner-direct", (req, res) => {
@@ -195,7 +198,26 @@ app.get("/owner-direct", (req, res) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   res.redirect(302, "/");
 });
-app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
+// Brand artwork used to be re-downloaded on every page view because the previous
+// configuration sent "Cache-Control: public, max-age=0". Images are now cached by
+// browsers and the CDN for a week, while pages and scripts still revalidate so that
+// dashboard updates are picked up immediately.
+const PUBLIC_STATIC_DIR = path.join(__dirname, "public");
+const CACHEABLE_STATIC_ASSET = /\.(png|jpe?g|webp|avif|svg|ico|gif|woff2?|ttf|otf|mp4|webm)$/i;
+function applyStaticCacheHeaders(res, filePath) {
+  if (CACHEABLE_STATIC_ASSET.test(filePath)) {
+    res.setHeader("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+  } else {
+    res.setHeader("Cache-Control", "no-cache");
+  }
+}
+app.use(
+  express.static(PUBLIC_STATIC_DIR, {
+    extensions: ["html"],
+    setHeaders: applyStaticCacheHeaders,
+    maxAge: 0,
+  })
+);
 
 const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
 db.pragma("journal_mode = WAL");
@@ -3049,7 +3071,7 @@ function escapeXml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
 }
 async function renderTopupCardMedia({ cardId, code, valueCents, captainName, appUrl }) {
-  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
+  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(captainName || `كابتن شبكة ${COMPANY_BRAND_NAME}`);
@@ -3082,8 +3104,8 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
   return new MessageMedia("image/png", png.toString("base64"), `aljarah-topup-card-${cardId}.png`);
 }
 async function renderOperationsMessageMedia(title, lines = []) {
-  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-clean.png");
-  const portalPath = path.join(__dirname, "public", "aljarah-portal-bg-desktop-v2.png");
+  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
+  const portalPath = path.join(__dirname, "public", "aljarah-portal-bg-card.png");
   let logoData = "";
   let portalData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
