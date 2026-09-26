@@ -14,7 +14,11 @@ assert.ok(server.includes('protectedPaths'), 'storage inventory marks protected 
 assert.ok(server.includes('app.patch("/api/admin/system/settings", requireAdmin'), 'settings API is admin protected');
 assert.ok(server.includes('reconnect scheduled in'), 'reconnect backoff is logged');
 assert.ok(server.includes('initialize_timeout'), 'initialization timeout is surfaced');
-assert.ok(server.includes('disposeClientInstance(client, "initialize_timeout")'), 'timed out clients are disposed');
+assert.ok(server.includes('disposeClientInstance(currentClient, "initialize_timeout")'), 'timed out clients are disposed');
+assert.ok(server.includes('let initializationRunId = 0;'), 'initialization runs have a generation guard');
+assert.ok(server.includes('const runId = ++initializationRunId;'), 'each initialization receives a unique run id');
+assert.ok(server.includes('if (runId !== initializationRunId)'), 'stale initialization results are discarded');
+assert.ok(server.includes('if (generation !== connectionGeneration || client !== instance) return;'), 'stale ready events cannot mark the current client ready');
 assert.ok(server.includes('destroyTimeoutMarker'), 'client cleanup has a bounded timeout');
 assert.ok(server.includes('cleanup timed out; continuing with controlled reconnect'), 'cleanup timeout keeps reconnect path alive');
 assert.ok(server.includes('Attempted to use detached Frame'), 'detached Puppeteer frames are treated as recoverable lifecycle errors');

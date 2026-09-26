@@ -3385,6 +3385,7 @@ let lastDisconnectAt = null;
 let lastInitializationStartedAt = null;
 let lastInitializationFinishedAt = null;
 let initializing = false;
+let initializationRunId = 0;
 let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
 let groupInviteInFlight = false;
@@ -3795,6 +3796,7 @@ async function destroyClient() {
 
 async function restartWhatsApp(reason = "manual restart") {
   connectionGeneration += 1;
+  initializationRunId += 1;
   reconnectAttempts = 0;
   lastReconnectReason = reason;
   if (reconnectTimer) {
@@ -4192,10 +4194,10 @@ function createClient() {
     console.log(`[WhatsApp] authenticated (clientId=${WHATSAPP_CLIENT_ID})`);
   });
   instance.on("ready", () => {
+    if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "ready";
     whatsappLastEvent = "ready";
     whatsappLastError = null;
-    if (generation !== connectionGeneration) return;
     const connectedPhone = instance.info && instance.info.wid ? phoneWithCountry(instance.info.wid.user) : null;
     const expectedPhone = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
     if (connectedPhone && expectedPhone && connectedPhone !== expectedPhone) {
@@ -4325,13 +4327,22 @@ function createClient() {
 
 async function initializeWhatsApp() {
   if (initializing || isReady) return;
+  const runId = ++initializationRunId;
   initializing = true;
   lastInitializationStartedAt = new Date().toISOString();
+  let currentClient = null;
   try {
     await destroyClient();
-    client = createClient();
+    if (runId !== initializationRunId) return;
+    currentClient = createClient();
+    client = currentClient;
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
-    const initialized = await withTimeoutStrict(client.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
+    const initialized = await withTimeoutStrict(currentClient.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
+    if (runId !== initializationRunId) {
+      await withTimeout(disposeClientInstance(currentClient, "stale_initialize"), 15000, null);
+      if (client === currentClient) client = null;
+      return;
+    }
     if (initialized === initTimeoutMarker) {
       console.error(`[WhatsApp] initialize timeout after ${operationalSettings().initTimeoutMs}ms; scheduling controlled retry`);
       isReady = false;
@@ -4339,8 +4350,8 @@ async function initializeWhatsApp() {
       whatsappState = "initialize_timeout";
       whatsappLastEvent = "initialize_timeout";
       whatsappLastError = "WhatsApp initialization timed out; controlled retry scheduled";
-      await withTimeout(disposeClientInstance(client, "initialize_timeout"), 15000, null);
-      client = null;
+      await withTimeout(disposeClientInstance(currentClient, "initialize_timeout"), 15000, null);
+      if (client === currentClient) client = null;
       scheduleReconnect();
     }
   } catch (error) {
@@ -4351,8 +4362,10 @@ async function initializeWhatsApp() {
     isReady = false;
     scheduleReconnect();
   } finally {
-    initializing = false;
-    lastInitializationFinishedAt = new Date().toISOString();
+    if (runId === initializationRunId) {
+      initializing = false;
+      lastInitializationFinishedAt = new Date().toISOString();
+    }
   }
 }
 
