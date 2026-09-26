@@ -1730,28 +1730,31 @@ async function readGroupRemovalContext(groupId) {
   const officialGroupId = String(groupId || "").trim();
   if (!client || !isReady || !officialGroupId || !isConfiguredGroup(officialGroupId)) return null;
   let chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+  let snapshotParticipants = [];
   if (!chat || !Array.isArray(chat.participants)) {
     const chats = await withTimeout(client.getChats(), 30000, []);
     const matchingGroup = Array.isArray(chats)
-      ? chats.find((candidate) => serializedWhatsappUserId(candidate?.id || candidate) === officialGroupId && candidate?.isGroup)
+      ? chats.find((candidate) => serializedWhatsappUserId(candidate?.id || candidate) === officialGroupId && (candidate?.isGroup || /@g\.us$/i.test(officialGroupId)))
       : null;
     if (matchingGroup) chat = matchingGroup;
   }
   if (!chat || !Array.isArray(chat.participants)) {
     const snapshot = await readGroupSnapshot(officialGroupId).catch(() => null);
-    if (snapshot?.isGroup) {
+    if (snapshot?.isGroup && Array.isArray(snapshot.participants)) {
+      snapshotParticipants = snapshot.participants;
       chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
       if (!chat || !Array.isArray(chat.participants)) {
         const chats = await withTimeout(client.getChats(), 30000, []);
         const matchingGroup = Array.isArray(chats)
-          ? chats.find((candidate) => serializedWhatsappUserId(candidate?.id || candidate) === officialGroupId && candidate?.isGroup)
+          ? chats.find((candidate) => serializedWhatsappUserId(candidate?.id || candidate) === officialGroupId && (candidate?.isGroup || /@g\.us$/i.test(officialGroupId)))
           : null;
         if (matchingGroup) chat = matchingGroup;
       }
     }
   }
-  if (!chat || !Array.isArray(chat.participants)) return null;
-  const participants = chat.participants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
+  const rawParticipants = Array.isArray(chat?.participants) ? chat.participants : snapshotParticipants;
+  if (!chat || typeof chat.removeParticipants !== "function" || !rawParticipants.length) return null;
+  const participants = rawParticipants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
   const phoneToParticipantId = new Map();
   const lidIds = [];
   for (const entry of participants) {
