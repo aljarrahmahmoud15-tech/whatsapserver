@@ -132,6 +132,7 @@ const bulkPinRuns = new Map();
 const negativeBalanceWarningRuns = new Map();
 const captainWalletPolicyRuns = new Map();
 let captainWalletPolicySweepInFlight = false;
+let officialGroupWalletSweepTimer = null;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -2744,6 +2745,14 @@ function startCaptainBalancePolicyScheduler() {
     runSweepWhenReady();
   }, CAPTAIN_BALANCE_POLICY_INTERVAL_MS).unref();
 }
+function scheduleOfficialGroupWalletSweep(trigger = "official_group_message") {
+  if (officialGroupWalletSweepTimer) clearTimeout(officialGroupWalletSweepTimer);
+  officialGroupWalletSweepTimer = setTimeout(() => {
+    officialGroupWalletSweepTimer = null;
+    if (!client || !isReady) return;
+    void enforceCaptainWalletThresholdsForAll().catch((error) => console.error(`[BalancePolicy] ${trigger} sweep failed:`, error.message));
+  }, 5000).unref();
+}
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
   const startsWithPriceKeyword = /^السعر(?:\s|[:：]|$)/u.test(normalized);
@@ -4243,7 +4252,10 @@ function createClient() {
     observeAdminSentMessage(msg);
     observeFinalBookingConfirmationMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
-    if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message_create");
+    if (isConfiguredGroup(msg.from)) {
+      scheduleConfiguredGroupCaptainSync("message_create");
+      scheduleOfficialGroupWalletSweep("message_create");
+    }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
   });
   instance.on("message_ack", async (msg, ack) => {
@@ -4253,7 +4265,10 @@ function createClient() {
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
-    if (isConfiguredGroup(msg.from)) scheduleConfiguredGroupCaptainSync("message");
+    if (isConfiguredGroup(msg.from)) {
+      scheduleConfiguredGroupCaptainSync("message");
+      scheduleOfficialGroupWalletSweep("message");
+    }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
   instance.on("message_reaction", async (reaction) => {
