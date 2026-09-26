@@ -24,6 +24,7 @@ assert.match(server, /client\.getChats\(\)/);
 assert.match(server, /readGroupSnapshot\(officialGroupId\)/);
 assert.match(server, /snapshotParticipants/);
 assert.match(server, /typeof chat\.removeParticipants !== "function"/);
+assert.match(server, /const hydratedChat = await resolveGroupChat\(officialGroupId\)/);
 assert.match(server, /const runSweepWhenReady = \(\) =>/);
 assert.match(server, /if \(!client \|\| !isReady\) return false/);
 assert.match(server, /ready-triggered sweep/);

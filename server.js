@@ -1756,6 +1756,10 @@ async function readGroupRemovalContext(groupId) {
       }
     }
   }
+  if (!chat || !Array.isArray(chat.participants) || typeof chat.removeParticipants !== "function") {
+    const hydratedChat = await resolveGroupChat(officialGroupId);
+    if (hydratedChat) chat = hydratedChat;
+  }
   const rawParticipants = Array.isArray(chat?.participants) ? chat.participants : snapshotParticipants;
   if (!chat || typeof chat.removeParticipants !== "function" || !rawParticipants.length) return null;
   const participants = rawParticipants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
