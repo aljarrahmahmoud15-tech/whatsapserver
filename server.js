@@ -1737,6 +1737,19 @@ async function readGroupRemovalContext(groupId) {
       : null;
     if (matchingGroup) chat = matchingGroup;
   }
+  if (!chat || !Array.isArray(chat.participants)) {
+    const snapshot = await readGroupSnapshot(officialGroupId).catch(() => null);
+    if (snapshot?.isGroup) {
+      chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+      if (!chat || !Array.isArray(chat.participants)) {
+        const chats = await withTimeout(client.getChats(), 30000, []);
+        const matchingGroup = Array.isArray(chats)
+          ? chats.find((candidate) => serializedWhatsappUserId(candidate?.id || candidate) === officialGroupId && candidate?.isGroup)
+          : null;
+        if (matchingGroup) chat = matchingGroup;
+      }
+    }
+  }
   if (!chat || !Array.isArray(chat.participants)) return null;
   const participants = chat.participants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
   const phoneToParticipantId = new Map();
