@@ -101,18 +101,31 @@ const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_B
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
-const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 15000);
+// Render kills an instance that exceeds the plan memory limit (repeated "Ran out of
+// memory (used over 2GB)" events), and every kill restarts the container and loses the
+// WhatsApp pairing. The scan cadence below is deliberately conservative: it keeps order
+// pickup responsive while avoiding the accumulation that pushed the instance over 2GB.
+const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 30000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
 const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
-const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 15000)));
-const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 50)));
-const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 60000));
+const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 12000)));
+const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 25)));
+const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 180000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
 const WHATSAPP_LID_CACHE_MAX_ENTRIES = Math.max(100, Math.min(10000, Number(process.env.WHATSAPP_LID_CACHE_MAX_ENTRIES || 2000)));
 const RUNTIME_RUN_COMPLETED_TTL_MS = Math.max(10 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.RUNTIME_RUN_COMPLETED_TTL_MS || 2 * 60 * 60 * 1000)));
 const RUNTIME_RUN_STALE_TTL_MS = Math.max(RUNTIME_RUN_COMPLETED_TTL_MS, Math.min(48 * 60 * 60 * 1000, Number(process.env.RUNTIME_RUN_STALE_TTL_MS || 12 * 60 * 60 * 1000)));
 const RUNTIME_RUN_MAX_ENTRIES = Math.max(20, Math.min(500, Number(process.env.RUNTIME_RUN_MAX_ENTRIES || 100)));
 const RATE_LIMIT_MAX_KEYS = Math.max(100, Math.min(10000, Number(process.env.RATE_LIMIT_MAX_KEYS || 5000)));
+// Render terminated this instance repeatedly with "Ran out of memory (used over 2GB)".
+// Each termination restarts the container and forces a fresh WhatsApp pairing, so the
+// runtime now keeps an explicit memory budget and recycles the browser before the
+// platform limit is reached.
+const RENDER_MEMORY_LIMIT_MB = Math.max(512, Number(process.env.RENDER_MEMORY_LIMIT_MB || 2048));
+const NODE_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - 512, Number(process.env.NODE_HEAP_MB || 768)));
+const CHROMIUM_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - NODE_HEAP_MB - 256, Number(process.env.CHROMIUM_HEAP_MB || 512)));
+const MEMORY_RECYCLE_TRIGGER_MB = Math.max(512, Number(process.env.MEMORY_RECYCLE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.8)));
+const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
 const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -1625,6 +1638,12 @@ function runtimeHealth() {
       heapTotalBytes: memory.heapTotal,
       externalBytes: memory.external,
       heapLimitBytes: heap.heap_size_limit,
+      rssLimitMb: RENDER_MEMORY_LIMIT_MB,
+      nodeHeapLimitMb: NODE_HEAP_MB,
+      chromiumHeapLimitMb: CHROMIUM_HEAP_MB,
+      recycleTriggerMb: MEMORY_RECYCLE_TRIGGER_MB,
+      lastSample: lastMemoryUsageMb,
+      lastRecycleAt: lastMemoryRecycleAt,
     },
     storage: {
       dataDir: DATA_DIR,
@@ -3765,6 +3784,13 @@ const puppeteerConfig = {
     "--disable-extensions",
     "--disable-features=IsolateOrigins,site-per-process",
     "--window-size=1280,900",
+    // Bound the browser's own heap. Without a cap Chromium grows past the container
+    // memory limit and Render kills the instance, which drops the WhatsApp pairing.
+    `--js-flags=--max-old-space-size=${Math.max(256, Number(process.env.CHROMIUM_HEAP_MB) || 512)}`,
+    "--renderer-process-limit=1",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
   ],
 };
 
@@ -4191,6 +4217,45 @@ function startRuntimeMemoryCleanup() {
 function stopRuntimeMemoryCleanup() {
   if (runtimeMemoryCleanupTimer) clearInterval(runtimeMemoryCleanupTimer);
   runtimeMemoryCleanupTimer = null;
+}
+// The WhatsApp browser is the largest memory consumer. Recycling it while the session
+// stays on disk is far cheaper than being killed by the platform: the pairing survives,
+// so no QR rescan is needed.
+let runtimeMemoryWatchdogTimer = null;
+let runtimeMemoryWatchdogRunning = false;
+let lastMemoryRecycleAt = null;
+let lastMemoryUsageMb = null;
+async function recycleBrowserForMemory(reason) {
+  if (runtimeMemoryWatchdogRunning) return;
+  runtimeMemoryWatchdogRunning = true;
+  try {
+    console.warn(`[Runtime] memory watchdog recycling WhatsApp browser: ${reason}`);
+    pruneRuntimeMemoryCaches();
+    if (global.gc) { try { global.gc(); } catch {} }
+    lastMemoryRecycleAt = new Date().toISOString();
+    await restartWhatsApp(`memory watchdog: ${reason}`);
+  } catch (error) {
+    console.error("[Runtime] memory watchdog recycle failed:", error.message);
+  } finally {
+    runtimeMemoryWatchdogRunning = false;
+  }
+}
+function startRuntimeMemoryWatchdog() {
+  if (runtimeMemoryWatchdogTimer || MEMORY_RECYCLE_INTERVAL_MS <= 0) return;
+  runtimeMemoryWatchdogTimer = setInterval(() => {
+    const usage = process.memoryUsage();
+    const rssMb = Math.round(usage.rss / (1024 * 1024));
+    const heapMb = Math.round(usage.heapUsed / (1024 * 1024));
+    lastMemoryUsageMb = { rssMb, heapMb, at: new Date().toISOString() };
+    if (rssMb < MEMORY_RECYCLE_TRIGGER_MB) return;
+    if (runtimeMemoryWatchdogRunning || initializing) return;
+    void recycleBrowserForMemory(`rss ${rssMb}MB >= ${MEMORY_RECYCLE_TRIGGER_MB}MB (heap ${heapMb}MB)`);
+  }, MEMORY_RECYCLE_INTERVAL_MS);
+  runtimeMemoryWatchdogTimer.unref?.();
+}
+function stopRuntimeMemoryWatchdog() {
+  if (runtimeMemoryWatchdogTimer) clearInterval(runtimeMemoryWatchdogTimer);
+  runtimeMemoryWatchdogTimer = null;
 }
 
 function createClient() {
@@ -10223,6 +10288,7 @@ app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   startRuntimeMemoryCleanup();
+  startRuntimeMemoryWatchdog();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
   initializeWhatsApp();
@@ -10260,5 +10326,5 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
