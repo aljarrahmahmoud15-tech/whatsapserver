@@ -25,6 +25,8 @@ assert.match(server, /readGroupSnapshot\(officialGroupId\)/);
 assert.match(server, /snapshotParticipants/);
 assert.match(server, /typeof chat\.removeParticipants !== "function"/);
 assert.match(server, /const hydratedChat = await resolveGroupChat\(officialGroupId\)/);
+assert.match(server, /window\.WWebJS\.getChat/);
+assert.match(server, /WAWebModifyParticipantsGroupAction/);
 assert.match(server, /const runSweepWhenReady = \(\) =>/);
 assert.match(server, /if \(!client \|\| !isReady\) return false/);
 assert.match(server, /ready-triggered sweep/);

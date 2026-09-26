@@ -1761,6 +1761,24 @@ async function readGroupRemovalContext(groupId) {
     if (hydratedChat) chat = hydratedChat;
   }
   const rawParticipants = Array.isArray(chat?.participants) ? chat.participants : snapshotParticipants;
+  if ((!chat || typeof chat.removeParticipants !== "function") && rawParticipants.length && client?.pupPage) {
+    const page = client.pupPage;
+    const originalChat = chat;
+    chat = {
+      ...(originalChat || {}),
+      isGroup: true,
+      participants: rawParticipants,
+      removeParticipants: (participantIds) => withTimeout(page.evaluate(async (requestedGroupId, requestedParticipantIds) => {
+        const loadedChat = await window.WWebJS.getChat(requestedGroupId, { getAsModel: false });
+        const participants = (await Promise.all(requestedParticipantIds.map(async (participantId) => {
+          const { lid, phone } = await window.WWebJS.enforceLidAndPnRetrieval(participantId);
+          return loadedChat.groupMetadata.participants.get(lid?._serialized) || loadedChat.groupMetadata.participants.get(phone?._serialized);
+        }))).filter(Boolean);
+        await window.require("WAWebModifyParticipantsGroupAction").removeParticipants(loadedChat, participants);
+        return { status: 200, matched: participants.length };
+      }, officialGroupId, participantIds), 60000, null),
+    };
+  }
   if (!chat || typeof chat.removeParticipants !== "function" || !rawParticipants.length) return null;
   const participants = rawParticipants.map((participant) => ({ participant, id: serializedWhatsappUserId(participant?.id || participant) })).filter((entry) => entry.id);
   const phoneToParticipantId = new Map();
