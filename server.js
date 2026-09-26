@@ -2726,9 +2726,19 @@ function startCaptainSubscriptionScheduler() {
   }
 }
 function startCaptainBalancePolicyScheduler() {
-  void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] initial sweep failed:", error.message));
-  setInterval(() => {
+  const runSweepWhenReady = () => {
+    if (!client || !isReady) return false;
     void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] sweep failed:", error.message));
+    return true;
+  };
+  if (!runSweepWhenReady()) {
+    const waitForReady = setInterval(() => {
+      if (runSweepWhenReady()) clearInterval(waitForReady);
+    }, 15000);
+    waitForReady.unref();
+  }
+  setInterval(() => {
+    runSweepWhenReady();
   }, CAPTAIN_BALANCE_POLICY_INTERVAL_MS).unref();
 }
 function parseOrder(text) {
