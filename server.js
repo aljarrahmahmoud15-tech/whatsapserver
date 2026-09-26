@@ -1371,11 +1371,35 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
     }
     progress.status = "completed";
     progress.completedAt = now();
+    setSetting("wallet_policy_last_run", JSON.stringify({
+      status: progress.status,
+      total: progress.total,
+      scanned: progress.scanned,
+      negative: progress.negative,
+      removed: progress.removed,
+      alreadyRemoved: progress.alreadyRemoved,
+      failed: progress.failed,
+      startedAt: progress.startedAt,
+      completedAt: progress.completedAt,
+      negativeOnly: Boolean(negativeOnly),
+    }));
     return progress;
   } catch (error) {
     progress.status = "failed";
     progress.error = String(error?.message || error).slice(0, 300);
     progress.completedAt = now();
+    setSetting("wallet_policy_last_run", JSON.stringify({
+      status: progress.status,
+      total: progress.total,
+      scanned: progress.scanned,
+      negative: progress.negative,
+      removed: progress.removed,
+      alreadyRemoved: progress.alreadyRemoved,
+      failed: progress.failed,
+      startedAt: progress.startedAt,
+      completedAt: progress.completedAt,
+      negativeOnly: Boolean(negativeOnly),
+    }));
     return progress;
   } finally {
     captainWalletPolicySweepInFlight = false;
@@ -6533,6 +6557,9 @@ app.get("/status", (req, res) => {
   const configuredGroupId = configuredRuntimeGroupId() || null;
   const groupReceiverReady = Boolean(isReady || baileysReady);
   const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
+  const negativeWalletCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND wallet_cents < 0").get();
+  let walletPolicyLastRun = null;
+  try { walletPolicyLastRun = JSON.parse(getSetting("wallet_policy_last_run", "null")); } catch (_) { walletPolicyLastRun = null; }
   const activeCaptains = userRoles.filter((user) => user.role === "captain" && user.is_bot !== 1 && user.active === 1 && user.account_status === "active").length;
   const nonCaptainHumans = userRoles.filter((user) => user.is_bot !== 1 && user.role !== "company" && user.role !== "captain" && !isProtectedOwnerIdentity(user.phone)).length;
   const orderLinkStats = db.prepare(`SELECT
@@ -6565,6 +6592,8 @@ app.get("/status", (req, res) => {
     captains: {
       activeRegistered: activeCaptains,
       nonCaptainHumanAccounts: nonCaptainHumans,
+      negativeWalletCount: Number(negativeWalletCount?.count || 0),
+      walletPolicyLastRun,
       normalizationVersion: getSetting("captain_normalization_version", null),
       normalizedAt: getSetting("captain_normalization_at", null),
     },
