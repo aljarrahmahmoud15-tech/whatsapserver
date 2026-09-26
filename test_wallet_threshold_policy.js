@@ -24,6 +24,7 @@ assert.match(server, /client\.getChats\(\)/);
 assert.match(server, /readGroupSnapshot\(officialGroupId\)/);
 assert.match(server, /const runSweepWhenReady = \(\) =>/);
 assert.match(server, /if \(!client \|\| !isReady\) return false/);
+assert.match(server, /ready-triggered sweep/);
 assert.match(server, /account_status='suspended'/);
 assert.match(server, /getNumberId\(normalized\)/);
 assert.match(server, /removeParticipants\(\[\.\.\.targetIds\]\)/);

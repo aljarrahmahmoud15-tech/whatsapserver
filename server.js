@@ -4168,6 +4168,11 @@ function createClient() {
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
+    const readyGeneration = generation;
+    setTimeout(() => {
+      if (readyGeneration !== connectionGeneration || !isReady || client !== instance) return;
+      void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] ready-triggered sweep failed:", error.message));
+    }, 30000).unref();
     void installWhatsAppSendDiagnostics(instance, generation)
       .then(() => startWhatsAppStorageMonitor(generation))
       .catch((error) => {
