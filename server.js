@@ -133,6 +133,7 @@ const negativeBalanceWarningRuns = new Map();
 const captainWalletPolicyRuns = new Map();
 let captainWalletPolicySweepInFlight = false;
 let officialGroupWalletSweepTimer = null;
+let officialGroupChatCache = null;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
@@ -1730,7 +1731,9 @@ function companyWalletSummary() {
 async function readGroupRemovalContext(groupId) {
   const officialGroupId = String(groupId || "").trim();
   if (!client || !isReady || !officialGroupId || !isConfiguredGroup(officialGroupId)) return null;
-  let chat = await withTimeout(client.getChatById(officialGroupId), 20000, null);
+  let chat = officialGroupChatCache && officialGroupChatCache.instance === client && officialGroupChatCache.groupId === officialGroupId
+    ? officialGroupChatCache.chat
+    : await withTimeout(client.getChatById(officialGroupId), 20000, null);
   let snapshotParticipants = [];
   if (!chat || !Array.isArray(chat.participants)) {
     const chats = await withTimeout(client.getChats(), 30000, []);
@@ -1789,6 +1792,15 @@ async function readGroupRemovalContext(groupId) {
     }
   }
   return { chat, participantIds: participants.map((entry) => entry.id), phoneToParticipantId };
+}
+
+async function cacheOfficialGroupChatFromMessage(msg) {
+  const groupId = resolveGroupChatId(msg);
+  if (!groupId || !isConfiguredGroup(groupId) || typeof msg?.getChat !== "function") return null;
+  const chat = await withTimeout(msg.getChat(), 12000, null);
+  if (!chat || !chat.isGroup || typeof chat.removeParticipants !== "function") return null;
+  officialGroupChatCache = { instance: client, groupId, chat, cachedAt: Date.now() };
+  return chat;
 }
 
 async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext = null) {
@@ -4254,7 +4266,7 @@ function createClient() {
     recordGroupMessageTelemetry("message_create", msg);
     if (isConfiguredGroup(msg.from)) {
       scheduleConfiguredGroupCaptainSync("message_create");
-      scheduleOfficialGroupWalletSweep("message_create");
+      void cacheOfficialGroupChatFromMessage(msg).finally(() => scheduleOfficialGroupWalletSweep("message_create"));
     }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
   });
@@ -4267,7 +4279,7 @@ function createClient() {
     recordGroupMessageTelemetry("message", msg);
     if (isConfiguredGroup(msg.from)) {
       scheduleConfiguredGroupCaptainSync("message");
-      scheduleOfficialGroupWalletSweep("message");
+      void cacheOfficialGroupChatFromMessage(msg).finally(() => scheduleOfficialGroupWalletSweep("message"));
     }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });

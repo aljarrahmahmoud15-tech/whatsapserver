@@ -28,6 +28,8 @@ assert.match(server, /const runSweepWhenReady = \(\) =>/);
 assert.match(server, /if \(!client \|\| !isReady\) return false/);
 assert.match(server, /ready-triggered sweep/);
 assert.match(server, /function scheduleOfficialGroupWalletSweep/);
+assert.match(server, /function cacheOfficialGroupChatFromMessage/);
+assert.match(server, /cacheOfficialGroupChatFromMessage\(msg\)\.finally/);
 assert.match(server, /scheduleOfficialGroupWalletSweep\("message"\)/);
 assert.match(server, /account_status='suspended'/);
 assert.match(server, /getNumberId\(normalized\)/);
