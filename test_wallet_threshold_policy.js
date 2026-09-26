@@ -24,6 +24,8 @@ assert.match(server, /account_status='suspended'/);
 assert.match(server, /getNumberId\(normalized\)/);
 assert.match(server, /removeParticipants\(\[\.\.\.targetIds\]\)/);
 assert.match(server, /getContactLidAndPhone\(lidIds\)/);
+assert.match(server, /findPersistedWhatsappPhone\(entry\.id\)/);
+assert.match(server, /if \(!targetIds\.size\) try/);
 assert.match(server, /account_status IN \('active','suspended'\)/);
 assert.match(server, /negativeOnly: true/);
 assert.match(server, /app\.get\("\/api\/admin\/captains\/enforce-wallet-policy\/:runKey"/);

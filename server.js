@@ -1702,7 +1702,11 @@ async function readGroupRemovalContext(groupId) {
   for (const entry of participants) {
     const phone = directJordanPhoneFromWhatsappValue(entry.id);
     if (phone) phoneToParticipantId.set(phone, entry.id);
-    else if (/@lid$/i.test(entry.id)) lidIds.push(entry.id);
+    else if (/@lid$/i.test(entry.id)) {
+      lidIds.push(entry.id);
+      const persistedPhone = typeof findPersistedWhatsappPhone === "function" ? findPersistedWhatsappPhone(entry.id) : "";
+      if (persistedPhone) phoneToParticipantId.set(persistedPhone, entry.id);
+    }
   }
   if (lidIds.length && typeof client.getContactLidAndPhone === "function") {
     try {
@@ -1748,7 +1752,7 @@ async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext
   const mappedParticipantId = context?.phoneToParticipantId?.get(normalized);
   if (mappedParticipantId) targetIds.add(mappedParticipantId);
   if (participantIds.includes(directId)) targetIds.add(directId);
-  if (!targetIds.size && !removalContext) try {
+  if (!targetIds.size) try {
     const numberId = await withTimeout(client.getNumberId(normalized), 12000, null);
     const serializedNumberId = serializedWhatsappUserId(numberId);
     if (serializedNumberId && participantIds.includes(serializedNumberId)) targetIds.add(serializedNumberId);
@@ -1756,7 +1760,7 @@ async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext
     const contactId = serializedWhatsappUserId(contact?.id || contact?._data?.id || contact);
     if (contactId && participantIds.includes(contactId)) targetIds.add(contactId);
   } catch (_) {}
-  if (!targetIds.size && !removalContext) {
+  if (!targetIds.size) {
     const lidIds = participantIds.filter((participantId) => /@lid$/i.test(participantId));
     try {
       const mappings = typeof client.getContactLidAndPhone === "function"
