@@ -1273,7 +1273,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phone, title, message);
-  if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status };
+  if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status, removalError: removal.error || null };
   const row = existing
     ? { lastInsertRowid: existing.id }
     : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.negative',?,?,'pending',?)").run(phone, title, message, now());
@@ -1292,7 +1292,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   } catch (_) {}
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
   audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, removalStatus: removal.status });
-  return { status: deliveryStatus, notificationId: row.lastInsertRowid, removalStatus: removal.status };
+  return { status: deliveryStatus, notificationId: row.lastInsertRowid, removalStatus: removal.status, removalError: removal.error || null };
 }
 async function notifyCaptainLowBalance({ captainId, balanceCents, reason, reference }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) < 0 || Number(balanceCents) >= CAPTAIN_LOW_BALANCE_WARNING_CENTS) return { status: "not_required" };
@@ -1354,6 +1354,8 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
   progress.removed = 0;
   progress.alreadyRemoved = 0;
   progress.failed = 0;
+  progress.failureStatuses = {};
+  progress.firstFailure = null;
   try {
     const removalContext = await readGroupRemovalContext(configuredRuntimeGroupId()).catch(() => null);
     for (let index = 0; index < captains.length; index += 1) {
@@ -1366,7 +1368,12 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
         const removalStatus = result?.removalStatus;
         if (removalStatus === "removed") progress.removed += 1;
         else if (removalStatus === "already_removed" || removalStatus === "not_in_group") progress.alreadyRemoved += 1;
-        else progress.failed += 1;
+        else {
+          progress.failed += 1;
+          const failureStatus = String(removalStatus || "unknown");
+          progress.failureStatuses[failureStatus] = Number(progress.failureStatuses[failureStatus] || 0) + 1;
+          if (!progress.firstFailure) progress.firstFailure = { status: failureStatus, error: String(result?.removalError || "").slice(0, 200) || null };
+        }
       } else if (result && result.status !== "not_required") progress.warned += 1;
     }
     progress.status = "completed";
@@ -1379,6 +1386,8 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       removed: progress.removed,
       alreadyRemoved: progress.alreadyRemoved,
       failed: progress.failed,
+      failureStatuses: progress.failureStatuses,
+      firstFailure: progress.firstFailure,
       startedAt: progress.startedAt,
       completedAt: progress.completedAt,
       negativeOnly: Boolean(negativeOnly),
@@ -1396,6 +1405,8 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       removed: progress.removed,
       alreadyRemoved: progress.alreadyRemoved,
       failed: progress.failed,
+      failureStatuses: progress.failureStatuses,
+      firstFailure: progress.firstFailure,
       startedAt: progress.startedAt,
       completedAt: progress.completedAt,
       negativeOnly: Boolean(negativeOnly),
