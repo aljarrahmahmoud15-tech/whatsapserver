@@ -20,6 +20,7 @@ assert.match(server, /async function suspendMemberForDebt\(/);
 assert.match(server, /async function readGroupRemovalContext\(/);
 assert.match(server, /Number\(balanceCents\) >= 0/);
 assert.match(server, /isConfiguredGroup\(officialGroupId\)/);
+assert.match(server, /client\.getChats\(\)/);
 assert.match(server, /account_status='suspended'/);
 assert.match(server, /getNumberId\(normalized\)/);
 assert.match(server, /removeParticipants\(\[\.\.\.targetIds\]\)/);
