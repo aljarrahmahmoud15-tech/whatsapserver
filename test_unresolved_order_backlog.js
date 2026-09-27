@@ -12,14 +12,14 @@ assert.match(source, /unresolvedOrderRecovery: lastUnresolvedOrderRecovery/);
 assert.match(source, /Math\.min\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)/);
 assert.match(source, /pagesScanned: 0/);
 assert.match(source, /messagesFetched: 0/);
-assert.match(source, /const maxPages = 6/);
+assert.match(source, /const maxPages = WHATSAPP_RECOVERY_MAX_PAGES/);
 assert.match(source, /const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS =/);
 assert.match(source, /withTimeout\(resolveReadableGroupChat\(groupId\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, null\)/);
 assert.match(source, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
 assert.match(source, /withTimeout\(fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 10000/);
 assert.match(source, /if \(!fastScan\.nextCursor \|\| !pageMessages\.length\) break/);
 assert.match(source, /lastAcceptanceRecovery\.lastStage = "group_scan_timeout"/);
-assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* 6\)/);
+assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/);
 assert.doesNotMatch(source, /recordUnresolvedOrderMessage\(\{[\s\S]{0,500}financial/);
 
 console.log('unresolved order backlog and bounded recovery guardrails verified');
