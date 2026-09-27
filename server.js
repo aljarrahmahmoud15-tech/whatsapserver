@@ -9929,6 +9929,58 @@ app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req,
     actions.delete(actionKey);
   }
 });
+app.post("/api/admin/unconfirmed-bookings/archive-all", requireAdmin, (req, res) => {
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (confirmation !== "ARCHIVE_ALL_UNCONFIRMED") {
+    return res.status(400).json({ error: "Explicit full archive confirmation is required", mutation: "none", financialMutation: false });
+  }
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) {
+    return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none", financialMutation: false });
+  }
+  const reason = String(req.body?.reason || "تنظيف شاشة الحجوزات: أرشفة جميع الحجوزات غير المؤكدة الحالية").trim().slice(0, 240);
+  const stamp = now();
+  const candidates = db.prepare(`SELECT id,source_message_id,group_id,status
+    FROM order_candidates
+    WHERE group_id=? AND status IN ('candidate','pending')
+      AND COALESCE(archive_state,'active')='active'
+    ORDER BY id`).all(configuredGroupId);
+  const orders = db.prepare(`SELECT id,order_no,source_message_id,group_id,status,settlement_state
+    FROM orders
+    WHERE group_id=? AND status='open' AND captain_user_id IS NULL
+      AND COALESCE(archive_state,'active')='active'
+    ORDER BY id`).all(configuredGroupId);
+  db.transaction(() => {
+    for (const candidate of candidates) {
+      db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE candidate_id=? AND status IN ('pending','selected')").run(stamp, candidate.id);
+      db.prepare(`UPDATE order_candidates
+        SET archive_state='archived',archived_at=?,archive_reason=?,status='cancelled',
+            pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,
+            lifecycle_stage='archived',lifecycle_blocker='admin_archived',lifecycle_updated_at=?,updated_at=?
+        WHERE id=? AND group_id=? AND status IN ('candidate','pending')
+          AND COALESCE(archive_state,'active')='active'`).run(stamp, reason, stamp, stamp, candidate.id, configuredGroupId);
+      audit("order.candidate.archived", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, reason, scope: "all_unconfirmed", financialMutation: false });
+    }
+    for (const order of orders) {
+      db.prepare(`UPDATE orders
+        SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+        WHERE id=? AND group_id=? AND status='open' AND captain_user_id IS NULL
+          AND COALESCE(archive_state,'active')='active'`).run(stamp, reason, stamp, order.id, configuredGroupId);
+      audit("order.archived", "order", order.id, { orderNo: order.order_no, sourceMessageId: order.source_message_id, reason, scope: "all_unconfirmed", financialMutation: false, settlementState: order.settlement_state });
+    }
+  })();
+  return res.json({
+    success: true,
+    mutation: "archive_all_unconfirmed",
+    financialMutation: false,
+    archivedCandidateCount: candidates.length,
+    archivedOrderCount: orders.length,
+    candidateIds: candidates.map((candidate) => candidate.id),
+    orderNos: orders.map((order) => order.order_no),
+    archivedAt: stamp,
+    reason,
+  });
+});
 app.post("/api/admin/unconfirmed-bookings/archive-before", requireAdmin, (req, res) => {
   const confirmation = String(req.body?.confirmation || "").trim();
   if (confirmation !== "ARCHIVE_OLD_UNCONFIRMED_ONLY") {
