@@ -7924,6 +7924,31 @@ app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
     return { ...order, ...settlementFinancials(order), producer_name: order.producer_name || 'غير مسجل', captain_name: order.captain_name || 'غير مسجل', earnings: money(postedShareCents), captainFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role: postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant', orderType: order.order_kind === "order" ? "أوردر محدد" : "طلب عادي" };
   }), ledger });
 });
+app.get("/api/admin/audit/order/:orderId", requireAdmin, (req, res) => {
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) return res.status(400).json({ error: "Invalid order id" });
+  const order = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone,c.name AS captain_name,c.phone AS captain_phone
+    FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id LEFT JOIN users c ON c.id=o.captain_user_id WHERE o.id=?`).get(orderId);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  const candidates = db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? OR final_order_id=? ORDER BY id DESC").all(order.source_message_id, orderId);
+  const candidateIds = candidates.map((candidate) => candidate.id);
+  const acceptances = candidateIds.length
+    ? db.prepare(`SELECT a.*,u.name AS captain_name,u.phone AS captain_phone FROM order_candidate_acceptances a LEFT JOIN users u ON u.id=a.captain_user_id WHERE a.candidate_id IN (${candidateIds.map(() => "?").join(",")}) ORDER BY a.id ASC`).all(...candidateIds)
+    : [];
+  const auditRows = db.prepare(`SELECT a.id,a.actor_user_id,a.action,a.entity_type,a.entity_id,a.details,a.created_at,u.name AS actor_name,u.phone AS actor_phone
+    FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_user_id
+    WHERE (a.entity_type='order' AND a.entity_id=?) OR (a.entity_type='order_candidate' AND a.entity_id IN (${candidateIds.length ? candidateIds.map(() => "?").join(",") : "NULL"}))
+    ORDER BY a.id ASC`).all(String(orderId), ...candidateIds.map(String));
+  const acceptedMessageId = String(order.accepted_message_id || "").trim();
+  const reactionMessageId = acceptedMessageId ? reactionEvidenceMessageKey(acceptedMessageId) : "";
+  const reactions = acceptedMessageId
+    ? db.prepare("SELECT id,message_id,group_id,emoji,sender_key,sender_id,sender_phone,active,source,captured_at FROM reaction_evidence WHERE group_id=? AND message_id IN (?,?) ORDER BY id ASC").all(order.group_id, acceptedMessageId, reactionMessageId)
+    : [];
+  const ledger = db.prepare(`SELECT l.id,l.order_id,l.user_id,l.type,l.amount_cents,l.balance_after_cents,l.reference,l.note,l.created_at,l.details_json,u.name AS user_name,u.phone AS user_phone
+    FROM wallet_ledger l LEFT JOIN users u ON u.id=l.user_id WHERE l.order_id=? ORDER BY l.id ASC`).all(orderId);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, readOnly: true, order, candidates, acceptances, audit: auditRows.map((row) => ({ ...row, details: row.details ? JSON.parse(row.details) : null })), reactions, ledger });
+});
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,active FROM users WHERE id=? AND role='captain'").get(id);
