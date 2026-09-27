@@ -663,6 +663,9 @@ const existingCandidateColumns = db.prepare("PRAGMA table_info(order_candidates)
 if (!existingCandidateColumns.includes("lifecycle_stage")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created'");
 if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_blocker TEXT");
 if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
+if (!existingCandidateColumns.includes("archive_state")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_state TEXT NOT NULL DEFAULT 'active'");
+if (!existingCandidateColumns.includes("archived_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN archived_at TEXT");
+if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_reason TEXT");
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
@@ -9925,6 +9928,88 @@ app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req,
   } finally {
     actions.delete(actionKey);
   }
+});
+app.post("/api/admin/unconfirmed-bookings/archive-before", requireAdmin, (req, res) => {
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (confirmation !== "ARCHIVE_OLD_UNCONFIRMED_ONLY") {
+    return res.status(400).json({ error: "Explicit archive confirmation is required", mutation: "none", financialMutation: false });
+  }
+  const keepSince = String(req.body?.keepSince || "").trim();
+  const keepSinceMs = Date.parse(keepSince);
+  if (!keepSince || !Number.isFinite(keepSinceMs) || keepSinceMs > Date.now()) {
+    return res.status(400).json({ error: "A valid past keepSince boundary is required", mutation: "none", financialMutation: false });
+  }
+  const jordanToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Amman" }).format(new Date());
+  const expectedKeepSinceMs = Date.parse(`${jordanToday}T00:00:00+03:00`);
+  if (keepSinceMs !== expectedKeepSinceMs) {
+    return res.status(400).json({ error: "Only the start of the current Jordan day may be used; today's bookings are protected", mutation: "none", financialMutation: false, expectedKeepSince: new Date(expectedKeepSinceMs).toISOString() });
+  }
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) {
+    return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none", financialMutation: false });
+  }
+  const reason = String(req.body?.reason || "أرشفة الحجوزات غير المؤكدة الأقدم من بداية اليوم مع إبقاء حجوزات اليوم").trim().slice(0, 240);
+  const stamp = now();
+  const candidates = db.prepare(`SELECT id,source_message_id,group_id,status
+    FROM order_candidates
+    WHERE group_id=? AND status IN ('candidate','pending')
+      AND COALESCE(archive_state,'active')='active'
+      AND datetime(created_at)<datetime(?)
+    ORDER BY id`).all(configuredGroupId, new Date(keepSinceMs).toISOString());
+  const orders = db.prepare(`SELECT id,order_no,source_message_id,group_id,status,settlement_state
+    FROM orders
+    WHERE group_id=? AND status='open' AND captain_user_id IS NULL
+      AND COALESCE(archive_state,'active')='active'
+      AND datetime(created_at)<datetime(?)
+    ORDER BY id`).all(configuredGroupId, new Date(keepSinceMs).toISOString());
+  const archive = db.transaction(() => {
+    for (const candidate of candidates) {
+      db.prepare("UPDATE order_candidate_acceptances SET status='cancelled',updated_at=? WHERE candidate_id=? AND status IN ('pending','selected')").run(stamp, candidate.id);
+      db.prepare(`UPDATE order_candidates
+        SET archive_state='archived',archived_at=?,archive_reason=?,status='cancelled',
+            pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,
+            lifecycle_stage='archived',lifecycle_blocker='admin_archived',lifecycle_updated_at=?,updated_at=?
+        WHERE id=? AND group_id=? AND status IN ('candidate','pending')
+          AND COALESCE(archive_state,'active')='active' AND datetime(created_at)<datetime(?)`).run(
+        stamp, reason, stamp, stamp, candidate.id, configuredGroupId, new Date(keepSinceMs).toISOString(),
+      );
+      audit("order.candidate.archived", "order_candidate", candidate.id, {
+        sourceMessageId: candidate.source_message_id,
+        reason,
+        keepSince,
+        financialMutation: false,
+      });
+    }
+    for (const order of orders) {
+      db.prepare(`UPDATE orders
+        SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+        WHERE id=? AND group_id=? AND status='open' AND captain_user_id IS NULL
+          AND COALESCE(archive_state,'active')='active' AND datetime(created_at)<datetime(?)`).run(
+        stamp, reason, stamp, order.id, configuredGroupId, new Date(keepSinceMs).toISOString(),
+      );
+      audit("order.archived", "order", order.id, {
+        orderNo: order.order_no,
+        sourceMessageId: order.source_message_id,
+        reason,
+        keepSince,
+        financialMutation: false,
+        settlementState: order.settlement_state,
+      });
+    }
+  });
+  archive();
+  return res.json({
+    success: true,
+    mutation: "archive_old_unconfirmed_only",
+    financialMutation: false,
+    keepSince,
+    archivedCandidateCount: candidates.length,
+    archivedOrderCount: orders.length,
+    candidateIds: candidates.map((candidate) => candidate.id),
+    orderNos: orders.map((order) => order.order_no),
+    archivedAt: stamp,
+    reason,
+  });
 });
 app.post("/api/admin/orders/archive-open", requireAdmin, (req, res) => {
   const reason = String(req.body?.reason || "أرشفة نهائية للطلبات المفتوحة القديمة غير الموزعة").trim().slice(0, 240);
