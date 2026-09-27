@@ -33,6 +33,12 @@ assert.match(server, /app\.locals\.unconfirmedBookingActions/);
 
 assert.match(admin, /id="unconfirmedBookingsCard"/);
 assert.match(admin, /id="unconfirmedBookings"/);
+assert.match(admin, /id="unconfirmedBookingSearch"/);
+assert.match(admin, /function unconfirmedBookingSearchText\(b\)/);
+assert.match(admin, /function searchUnconfirmedBookings\(\)/);
+assert.match(admin, /function clearUnconfirmedBookingSearch\(\)/);
+assert.match(admin, /b\.producer\?\.phone/);
+assert.match(admin, /b\.executor\?\.phone/);
 assert.match(admin, /اعتماد الحجز وتثبيت التسوية/);
 assert.match(admin, /class=\"settle-button\"/);
 assert.match(admin, /aria-label=\"اعتماد الحجز وتثبيت التسوية\"/);
