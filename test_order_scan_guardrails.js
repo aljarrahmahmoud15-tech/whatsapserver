@@ -17,5 +17,7 @@ assert.match(source, /readOnly: true/);
 assert.match(source, /evidence: "price_message_only"/);
 assert.match(source, /evidence: "acceptance_message_only"/);
 assert.match(source, /loadEarlierMsgs/);
-assert.match(source, /loads < 1/);
+assert.match(source, /loads < earlierLoadLimit/);
+assert.match(source, /const WHATSAPP_RECOVERY_EARLIER_LOADS = Math\.max\(1, Math\.min\(12,/);
+assert.match(source, /earlierLoadLimit = Math\.max\(1, Math\.min\(12,/);
 console.log('order-scan guardrails: OK');

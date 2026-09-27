@@ -109,6 +109,13 @@ const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
 const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
 const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 12000)));
+// The acceptance scan used to look back only 12 hours over 6 pages and expanded the
+// in-page WhatsApp collection a single time per page. In a busy group the «تم» replies
+// of pending bookings sit deeper than that window, so the scan reported zero matches and
+// the bookings stayed unconfirmed. These bounds keep the scan cheap but reach far enough.
+const WHATSAPP_RECOVERY_SCAN_HOURS = Math.max(1, Math.min(168, Number(process.env.WHATSAPP_RECOVERY_SCAN_HOURS || 72)));
+const WHATSAPP_RECOVERY_MAX_PAGES = Math.max(1, Math.min(40, Number(process.env.WHATSAPP_RECOVERY_MAX_PAGES || 12)));
+const WHATSAPP_RECOVERY_EARLIER_LOADS = Math.max(1, Math.min(12, Number(process.env.WHATSAPP_RECOVERY_EARLIER_LOADS || 6)));
 const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 25)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 180000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
@@ -2295,11 +2302,12 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
       let loads = 0;
+      const earlierLoadLimit = Math.max(1, Math.min(12, Number(options.earlierLoadLimit || WHATSAPP_RECOVERY_EARLIER_LOADS || 6)));
       const eligible = () => models.filter((message) => {
         const timestamp = Number(message.t || 0);
         return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
       });
-      while (loader?.loadEarlierMsgs && loads < 1 && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
+      while (loader?.loadEarlierMsgs && loads < earlierLoadLimit && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
         const earlier = await loader.loadEarlierMsgs({ chat });
         loads += 1;
         if (!earlier?.length) break;
@@ -2328,7 +2336,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     } catch (error) {
       return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
     }
-  }, groupId, { before, cutoff, batch, includeOutgoing }), 9000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  }, groupId, { before, cutoff, batch, includeOutgoing }), Math.max(9000, WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS), { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
@@ -3969,7 +3977,7 @@ function startWhatsAppReactionScanner() {
 }
 async function recoverHistoricalOrderCandidates(groupId) {
   if ((whatsappHistoricalCandidateRecoveryAttempted && Date.now() - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS) || !client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const cutoff = Date.now() - WHATSAPP_RECOVERY_SCAN_HOURS * 60 * 60 * 1000;
   const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
   lastHistoricalRecovery = recovery;
   const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
@@ -4033,11 +4041,11 @@ async function recoverPendingAcceptanceMessages(groupId) {
   lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, pagesScanned: 0, messagesFetched: 0, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
-  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const cutoff = Date.now() - WHATSAPP_RECOVERY_SCAN_HOURS * 60 * 60 * 1000;
   const scanMessages = [];
   const scanMessageIds = new Set();
   let before = 0;
-  const maxPages = 6;
+  const maxPages = WHATSAPP_RECOVERY_MAX_PAGES;
   for (let page = 0; page < maxPages; page += 1) {
     const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
     lastAcceptanceRecovery.pagesScanned += 1;
@@ -4059,7 +4067,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
   }
   lastAcceptanceRecovery.messagesFetched = scanMessages.length;
   let recovered = 0;
-  for (const row of scanMessages.slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT * 6)) {
+  for (const row of scanMessages.slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES)) {
     lastAcceptanceRecovery.scanned += 1;
     if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
     const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
