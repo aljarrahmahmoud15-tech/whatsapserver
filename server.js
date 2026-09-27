@@ -91,6 +91,19 @@ const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
+// How long an admin-issued QR access link stays valid. The page it opens refreshes
+// the code every 30s, so a longer validity means the operator can open the page once
+// and scan a live code at their own pace instead of racing a short window.
+// The previous hard cap of 180s expired before a scan could realistically complete.
+const QR_ACCESS_MIN_DURATION_SECONDS = Math.max(30, Number(process.env.QR_ACCESS_MIN_DURATION_SECONDS || 60));
+const QR_ACCESS_MAX_DURATION_SECONDS = Math.max(
+  QR_ACCESS_MIN_DURATION_SECONDS,
+  Number(process.env.QR_ACCESS_MAX_DURATION_SECONDS || 600),
+);
+const QR_ACCESS_DEFAULT_DURATION_SECONDS = Math.min(
+  QR_ACCESS_MAX_DURATION_SECONDS,
+  Math.max(QR_ACCESS_MIN_DURATION_SECONDS, Number(process.env.QR_ACCESS_DEFAULT_DURATION_SECONDS || 600)),
+);
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
@@ -6360,7 +6373,11 @@ function hasTemporaryQrGrant(req) {
   return constantTimeEquals(provided, temporaryQrGrant.token);
 }
 function issueTemporaryQrGrant(req) {
-  const durationSeconds = Math.max(60, Math.min(180, Number(req.body?.durationSeconds || 120)));
+  const requested = Number(req.body?.durationSeconds) || QR_ACCESS_DEFAULT_DURATION_SECONDS;
+  const durationSeconds = Math.max(
+    QR_ACCESS_MIN_DURATION_SECONDS,
+    Math.min(QR_ACCESS_MAX_DURATION_SECONDS, requested),
+  );
   const token = crypto.randomBytes(32).toString("base64url");
   temporaryQrGrant = { token, expiresAt: Date.now() + durationSeconds * 1000 };
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
