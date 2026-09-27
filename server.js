@@ -1651,6 +1651,10 @@ function runtimeHealth() {
       recycleTriggerMb: MEMORY_RECYCLE_TRIGGER_MB,
       lastSample: lastMemoryUsageMb,
       lastRecycleAt: lastMemoryRecycleAt,
+      // Live reading of the whole process tree (Node + Chromium). This is what the
+      // watchdog compares against recycleTriggerMb; the fields above report Node only.
+      instanceRssMb: processTreeRssMb(),
+      measuredScope: "process-tree (node + chromium)",
     },
     storage: {
       dataDir: DATA_DIR,
@@ -4248,16 +4252,79 @@ async function recycleBrowserForMemory(reason) {
     runtimeMemoryWatchdogRunning = false;
   }
 }
+// The platform enforces its memory limit on the WHOLE container, but
+// process.memoryUsage() reports only the Node process. Chromium runs as child
+// processes and is the single largest consumer, so measuring Node alone left the
+// watchdog blind to exactly the pressure it exists to prevent: the instance was
+// killed by the platform while the guard still read a comfortable ~150MB, and
+// lastRecycleAt stayed null because the Node-only threshold was never approached.
+// Measure the full process tree instead.
+function readProcMemoryKb(pid) {
+  // Pss (proportional set size) is preferred over VmRSS: Chromium processes share
+  // libraries, so summing raw RSS would double-count them and recycle too eagerly.
+  try {
+    const rollup = fs.readFileSync(`/proc/${pid}/smaps_rollup`, "utf8");
+    const pss = rollup.match(/^Pss:\s+(\d+)\s+kB/m);
+    if (pss) return Number(pss[1]);
+  } catch {}
+  try {
+    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    const rss = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
+    if (rss) return Number(rss[1]);
+  } catch {}
+  return 0;
+}
+function readProcParentPid(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return Number(tail[1]) || 0;
+  } catch {
+    return 0;
+  }
+}
+// Resident memory of this process plus every descendant, in MB. Returns null on
+// platforms without /proc so callers can fall back to the Node-only reading.
+function processTreeRssMb(rootPid = process.pid) {
+  let entries;
+  try {
+    entries = fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name));
+  } catch {
+    return null;
+  }
+  const memoryKb = new Map();
+  const parentPid = new Map();
+  for (const name of entries) {
+    const pid = Number(name);
+    const kb = readProcMemoryKb(pid);
+    if (kb > 0) memoryKb.set(pid, kb);
+    parentPid.set(pid, readProcParentPid(pid));
+  }
+  let totalKb = 0;
+  for (const pid of memoryKb.keys()) {
+    let cursor = pid;
+    for (let hops = 0; cursor && hops < 64; hops += 1) {
+      if (cursor === rootPid) {
+        totalKb += memoryKb.get(pid);
+        break;
+      }
+      cursor = parentPid.get(cursor) || 0;
+    }
+  }
+  return totalKb > 0 ? Math.round(totalKb / 1024) : null;
+}
 function startRuntimeMemoryWatchdog() {
   if (runtimeMemoryWatchdogTimer || MEMORY_RECYCLE_INTERVAL_MS <= 0) return;
   runtimeMemoryWatchdogTimer = setInterval(() => {
     const usage = process.memoryUsage();
-    const rssMb = Math.round(usage.rss / (1024 * 1024));
+    const nodeRssMb = Math.round(usage.rss / (1024 * 1024));
     const heapMb = Math.round(usage.heapUsed / (1024 * 1024));
-    lastMemoryUsageMb = { rssMb, heapMb, at: new Date().toISOString() };
+    const treeRssMb = processTreeRssMb();
+    const rssMb = treeRssMb || nodeRssMb;
+    lastMemoryUsageMb = { rssMb, nodeRssMb, treeRssMb, heapMb, at: new Date().toISOString() };
     if (rssMb < MEMORY_RECYCLE_TRIGGER_MB) return;
     if (runtimeMemoryWatchdogRunning || initializing) return;
-    void recycleBrowserForMemory(`rss ${rssMb}MB >= ${MEMORY_RECYCLE_TRIGGER_MB}MB (heap ${heapMb}MB)`);
+    void recycleBrowserForMemory(`instance rss ${rssMb}MB >= ${MEMORY_RECYCLE_TRIGGER_MB}MB (node ${nodeRssMb}MB, heap ${heapMb}MB)`);
   }, MEMORY_RECYCLE_INTERVAL_MS);
   runtimeMemoryWatchdogTimer.unref?.();
 }
