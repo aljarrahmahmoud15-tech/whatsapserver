@@ -82,12 +82,12 @@ const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
 // Approved immutable settlement policy: the value after "السعر" is external;
-// 12% goes to the captain who posted the order, 4% to the company, and both
-// are charged to the confirming captain (16% total). The fare never credits B.
-const COMPANY_RATE_BPS = 400;
+// 12% goes to the captain who posted the order, 3% to the company, and both
+// are charged to the confirming captain (15% total). The fare never credits B.
+const COMPANY_RATE_BPS = 300;
 const PRODUCER_RATE_BPS = 1200;
 const SPECIAL_ORDER_RATE_BPS = 1200;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -810,7 +810,7 @@ function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, 
   const companyShare = money(settlement.companyCents);
   const executorDebit = money(settlement.confirmingCaptainFeeCents);
   console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} external_order_value=${price} JOD executor_wallet_credit=0.00 JOD`);
-  console.log(`[Settlement] CONFIRMED 12% downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | 4% company=${companyShare} JOD | 16% executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
+  console.log(`[Settlement] CONFIRMED 12% downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | 3% company=${companyShare} JOD | 15% executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
 }
 
 function serializeSettlement(row, includeLedger = true) {
@@ -1717,7 +1717,7 @@ function ensureSystemUsers() {
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
-  // Normalize legacy deployments that still contain the former 16% settings.
+  // Normalize legacy deployments that still contain the former 16% settings to 15%.
   setSetting("company_rate_bps", COMPANY_RATE_BPS);
   setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
   setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
@@ -3195,12 +3195,21 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents }) {
-  return `✅ تم تثبيت الطلب #${String(orderNo || "غير محدد")}`;
+function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime }) {
+  const normalizedOrderNo = String(orderNo || "غير محدد");
+  return [
+    `✅ تم تثبيت الطلب #${normalizedOrderNo}`,
+    `🧾 رقم الرحلة: #${normalizedOrderNo}`,
+    `👤 كابتن تنزيل الطلب: ${String(downloaderName || "غير مسجل")}`,
+    `🚕 الكابتن المنفذ: ${String(executorName || "غير مسجل")}`,
+    Number.isFinite(Number(priceCents)) ? `💰 القيمة: ${money(priceCents)} JOD` : "",
+    origin || destination ? `🛣️ المسار: ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
+    tripTime ? `🕒 الموعد: ${tripTime}` : "",
+  ].filter(Boolean).join("\n");
 }
 function finalBookingConfirmationOrderNo(body) {
   const text = String(body || "").trim();
-  const shortMatch = text.match(/^✅ تم تثبيت الطلب\s*#(\d+)$/);
+  const shortMatch = text.match(/^✅ تم تثبيت الطلب\s*#(\d+)/m);
   if (shortMatch) return Number(shortMatch[1]);
   const legacyMatch = text.match(/رقم الرحلة:\s*#(\d+)/);
   return Number(legacyMatch?.[1] || 0);
@@ -3332,7 +3341,7 @@ async function retryFailedBookingConfirmations() {
   if (!client || !isReady) return { attempted: 0, sent: 0, suppressed: 0 };
   const rows = db.prepare(`
     SELECT d.order_id,d.group_id,d.status,d.attempts,
-           o.order_no,o.price_cents,
+           o.order_no,o.price_cents,o.origin,o.destination,o.trip_time,
            executor.name AS executor_name,
            downloader.name AS downloader_name
     FROM order_confirmation_deliveries d
@@ -3360,6 +3369,9 @@ async function retryFailedBookingConfirmations() {
       executorName: row.executor_name,
       downloaderName: row.downloader_name,
       priceCents: row.price_cents,
+      origin: row.origin,
+      destination: row.destination,
+      tripTime: row.trip_time,
     }, { forceFinalRecovery: row.status === 'pending' || Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
     if (sent) result.sent += 1;
     else result.suppressed += 1;
@@ -4867,6 +4879,9 @@ async function approveBotOwnedAcceptance({ groupId, message, candidateId, accept
       executorName: result.captain?.name,
       downloaderName: result.producer?.name,
       priceCents: result.order?.price_cents,
+      origin: result.order?.origin,
+      destination: result.order?.destination,
+      tripTime: result.order?.trip_time,
     };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch((error) => {
       console.warn(`[Order] bot-owned confirmation card failed: ${String(error?.message || error)}`);
@@ -5176,15 +5191,47 @@ function reactionId(value) {
 }
 function buildStoredAcceptanceMessageById(messageId) {
   if (!messageId) return null;
-  const rows = db.prepare(`SELECT c.group_id,c.source_message_id,a.acceptance_message_id
+  const exact = db.prepare(`SELECT a.*,c.*
+    FROM order_candidate_acceptances a
+    JOIN order_candidates c ON c.id=a.candidate_id
+    WHERE c.status='pending' AND a.acceptance_message_id=? AND a.status IN ('pending','selected')
+    LIMIT 1`).get(messageId);
+  const pending = exact || db.prepare(`SELECT a.*,c.*
     FROM order_candidate_acceptances a
     JOIN order_candidates c ON c.id=a.candidate_id
     WHERE c.status='pending' AND a.status IN ('pending','selected')
-    ORDER BY a.updated_at DESC,a.id DESC LIMIT 200`).all();
-  const row = rows.find((candidate) => sourceMessageIdsEqual(candidate.acceptance_message_id, messageId));
-  if (!row) return null;
-  return buildStoredRecoveryMessagesByIds(row.group_id, row.source_message_id, row.acceptance_message_id)
-    .find((message) => sourceMessageIdsEqual(serializedMessageId(message), messageId)) || null;
+    ORDER BY a.updated_at DESC,a.id DESC LIMIT 200`).all().find((row) => sourceMessageIdsEqual(row.acceptance_message_id, messageId));
+  if (!pending || !pending.group_id || !pending.source_message_id || !pending.acceptance_message_id) return null;
+  const source = db.prepare("SELECT body,sent_at FROM messages WHERE message_id=? AND group_id=? LIMIT 1").get(pending.source_message_id, pending.group_id);
+  const acceptanceMessage = db.prepare("SELECT body,sent_at FROM messages WHERE message_id=? AND group_id=? LIMIT 1").get(pending.acceptance_message_id, pending.group_id);
+  const producer = pending.producer_user_id ? db.prepare("SELECT phone,is_bot FROM users WHERE id=? LIMIT 1").get(pending.producer_user_id) : null;
+  const captain = pending.captain_user_id ? db.prepare("SELECT phone FROM users WHERE id=? LIMIT 1").get(pending.captain_user_id) : null;
+  const sourceMessage = {
+    id: { _serialized: pending.source_message_id },
+    __serializedId: pending.source_message_id,
+    from: pending.group_id,
+    to: pending.group_id,
+    fromMe: Boolean(producer?.is_bot) || String(pending.source_message_id).startsWith("true_"),
+    body: String(source?.body || pending.raw_text || ""),
+    __authorPhone: producer?.phone || null,
+    timestamp: Number.isFinite(Date.parse(String(source?.sent_at || ""))) ? Math.floor(Date.parse(source.sent_at) / 1000) : Math.floor(Date.now() / 1000),
+  };
+  return {
+    id: { _serialized: pending.acceptance_message_id },
+    __serializedId: pending.acceptance_message_id,
+    from: pending.group_id,
+    to: pending.group_id,
+    fromMe: false,
+    body: String(acceptanceMessage?.body || "تم"),
+    author: { _serialized: String(captain?.phone || "") + "@c.us" },
+    __authorPhone: captain?.phone || null,
+    timestamp: Number.isFinite(Date.parse(String(acceptanceMessage?.sent_at || ""))) ? Math.floor(Date.parse(acceptanceMessage.sent_at) / 1000) : Math.floor(Date.now() / 1000),
+    __acceptanceMode: pending.acceptance_mode === "unquoted" ? "unquoted" : "quoted",
+    ...(pending.acceptance_mode === "unquoted"
+      ? { __candidateSource: sourceMessage, __candidateSourceMessageId: pending.source_message_id }
+      : { __quoted: sourceMessage, __quotedMessageId: pending.source_message_id }),
+    __storedRecovery: true,
+  };
 }
 function reactionEvidenceSenderKey(reaction, senderPhone = "") {
   const values = reactionSenderValues(reaction);
@@ -5576,7 +5623,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% + 4% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم (16% إجمالًا)", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% + 3% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن الذي وضع تم (15% إجمالًا)", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
@@ -5587,7 +5634,16 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     console.log(`[Order] accepted #${orderNo} group=${current.group_id} captain=${maskSettlementPhone(captain.phone)} confirmedBy=${maskSettlementPhone(confirmer.phone)}`);
     return {
       state: "accepted",
-      order: { id: orderId, order_no: orderNo, price_cents: current.price_cents, status: "accepted", settlement_state: "settled" },
+      order: {
+        id: orderId,
+        order_no: orderNo,
+        price_cents: current.price_cents,
+        origin: current.origin,
+        destination: current.destination,
+        trip_time: current.trip_time,
+        status: "accepted",
+        settlement_state: "settled",
+      },
       captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id),
       chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id),
       producer: db.prepare("SELECT * FROM users WHERE id=?").get(producer.id),
@@ -5637,7 +5693,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 4% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن المنفذ (16% إجمالًا)", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 3% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن المنفذ (15% إجمالًا)", now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
@@ -6004,7 +6060,12 @@ async function handleMessageReaction(reaction) {
   if (!reaction || (!removedThumb && !cancellationReaction && reactionValue !== "👍")) return;
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
-  const target = await getWhatsAppMessageByIdVariants(messageId, 5000) || buildStoredAcceptanceMessageById(messageId);
+  // The acceptance row and its quoted source are already persisted when «تم» arrives.
+  // Use that local evidence first so a live 👍 never waits for WhatsApp Web hydration.
+  const storedAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"
+    ? buildStoredAcceptanceMessageById(messageId)
+    : null;
+  const target = storedAcceptanceTarget || await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
   if (!isCaptainAcceptance(target.body)) return;
@@ -6162,8 +6223,27 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Policy: any captain's 👍 on the selected «تم» reply confirms the booking.
-  // The reply captain is the executor; the reaction owner is not an authorization gate.
+  const producerApproved = Boolean(
+    approverPhone && (
+      phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone)
+      || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")
+    )
+  );
+  if (!producerApproved || isBlockedPhone(approverPhone)) {
+    updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {
+      acceptanceMessageId: pending.acceptance_message_id,
+      reaction: "👍",
+      reactionOwnerResolved: Boolean(approverPhone),
+    });
+    logOrderTrace("reaction_approver_not_original_producer", {
+      groupKey: orderTraceKey(target.from),
+      reactionKey: orderTraceKey(messageId),
+      candidateId: pending.candidate_id,
+      approverKey: orderTraceKey(approverPhone),
+      producerKey: orderTraceKey(producer.phone),
+    });
+    return;
+  }
   const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
   const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone);
   if (result.state !== "accepted") {
@@ -6173,7 +6253,16 @@ async function handleMessageReaction(reaction) {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
   }
-  void sendFinalBookingConfirmation(target.from, { orderNo: result.order?.order_no, orderId: result.order?.id, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+  void sendFinalBookingConfirmation(target.from, {
+    orderNo: result.order?.order_no,
+    orderId: result.order?.id,
+    executorName: result.captain?.name,
+    downloaderName: result.producer?.name,
+    priceCents: result.order?.price_cents,
+    origin: result.order?.origin,
+    destination: result.order?.destination,
+    tripTime: result.order?.trip_time,
+  }).catch(() => null);
   if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
 }
 
@@ -6710,7 +6799,7 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
-    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } },
+    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { postedRate: '12%', companyRate: '3%', executorDebit: '15%' } },
     entries,
     trips,
     topupCards,
@@ -6842,7 +6931,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12%", companyWalletRate: "4%", confirmingCaptainWalletRate: "-16% (12% downloader + 4% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
+    policy: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15% (12% downloader + 3% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
   });
 });
 
@@ -8937,7 +9026,16 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
   const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
-    const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+    const confirmationDetails = {
+      orderId: result.order?.id,
+      orderNo: result.order?.order_no,
+      executorName: result.captain?.name,
+      downloaderName: result.producer?.name,
+      priceCents: result.order?.price_cents,
+      origin: result.order?.origin,
+      destination: result.order?.destination,
+      tripTime: result.order?.trip_time,
+    };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
     audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
@@ -8988,7 +9086,16 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         audit("order.verified_bot_booking.blocked", "order", order.id, { state: result.state, sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
         return;
       }
-      const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+      const confirmationDetails = {
+        orderId: result.order?.id,
+        orderNo: result.order?.order_no,
+        executorName: result.captain?.name,
+        downloaderName: result.producer?.name,
+        priceCents: result.order?.price_cents,
+        origin: result.order?.origin,
+        destination: result.order?.destination,
+        tripTime: result.order?.trip_time,
+      };
       void sendFinalBookingConfirmation(verified.groupId, confirmationDetails).catch(() => null);
       audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     } catch (error) {
@@ -9700,7 +9807,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "أي مستخدم مسجل ونشط يضع تم", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "15% (12% لصاحب تنزيل الطلب + 3% للشركة)", companyWalletCredit: "3% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
@@ -9910,7 +10017,16 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, 
       const status = result.state === "unauthorized" ? 403 : result.state === "debt_limit" ? 409 : 422;
       return res.status(status).json({ success: false, state: result.state, mutation: "none", financialMutation: false, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id } });
     }
-    const confirmationDetails = { orderId: result.order?.id, orderNo: result.order?.order_no, executorName: result.captain?.name, downloaderName: result.producer?.name, priceCents: result.order?.price_cents };
+    const confirmationDetails = {
+      orderId: result.order?.id,
+      orderNo: result.order?.order_no,
+      executorName: result.captain?.name,
+      downloaderName: result.producer?.name,
+      priceCents: result.order?.price_cents,
+      origin: result.order?.origin,
+      destination: result.order?.destination,
+      tripTime: result.order?.trip_time,
+    };
     void sendFinalBookingConfirmation(candidate.group_id, confirmationDetails).catch(() => null);
     audit("order.admin_unconfirmed.confirmed", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, orderNo: result.order?.order_no, financialMutation: true });
     return res.status(201).json({ success: true, state: "accepted", mutation: "applied_once", order: result.order, chargedWallet: result.chargedWallet, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, executorPhone: phoneWithCountry(acceptance.executor_phone) }, cardSent: false });

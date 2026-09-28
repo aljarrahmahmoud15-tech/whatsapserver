@@ -116,12 +116,13 @@ const context = {
   updateOrderCandidateLifecycle: () => ({ changes: 1 }),
   notifyOrderLifecycleBlocker: () => {},
   logOrderTrace: () => {},
+  orderTraceKey: (value) => String(value || ""),
   connectedBotPhone: () => "0775696880",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
   getSetting: (_key, fallback) => fallback,
   PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1200,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 400,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
@@ -132,7 +133,12 @@ const context = {
   logSettlementCompleted: () => {},
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
-  sendFinalBookingConfirmation: async (groupId, details) => { messages.push({ groupId, text: `✅ تم تثبيت الطلب #${details.orderNo}` }); },
+  sendFinalBookingConfirmation: async (groupId, details) => {
+    messages.push({
+      groupId,
+      text: `✅ تم تثبيت الطلب #${details.orderNo}\n🧾 رقم الرحلة: #${details.orderNo}\n👤 كابتن تنزيل الطلب: ${details.downloaderName}\n🚕 الكابتن المنفذ: ${details.executorName}`,
+    });
+  },
   finalBookingCancellationText: () => "❌ تم رفض أو إلغاء الطلب",
   sendBotText: async () => true,
   enforceCaptainWalletThresholds: async () => {},
@@ -145,8 +151,14 @@ assert.strictEqual(candidate.status, "pending");
 assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لايك");
 
 (async () => {
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[3].phone });
+  assert.strictEqual(candidate.status, "pending", "إعجاب المنفذ لا يعتمد الطلب قبل إعجاب المنتج الأصلي");
+  assert.strictEqual(ledgers.length, 0, "لا توجد تسوية عند إعجاب غير المنتج");
+
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
-  assert.strictEqual(candidate.status, "finalized", "أي كابتن يضع 👍 على رد تم يثبت المرشح");
+  assert.strictEqual(candidate.status, "pending", "هوية غير مرتبطة بالمنتج لا تعتمد الطلب");
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
+  assert.strictEqual(candidate.status, "finalized", "إعجاب المنتج الأصلي يثبت المرشح");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث عند أول 👍");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة عند أول 👍");
 
@@ -161,10 +173,12 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
   assert.strictEqual(candidate.status, "finalized", "التفاعل المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
-  assert.strictEqual(users[3].wallet_cents, 80, "يُخصم 16% من محفظة الكابتن المنفذ");
+  assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
-  assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
+  assert.strictEqual(users[1].wallet_cents, 60, "تضاف 3% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.equal(messages[0].text, "✅ تم تثبيت الطلب #7");
+  assert.match(messages[0].text, /✅ تم تثبيت الطلب #7/);
+  assert.match(messages[0].text, /👤 كابتن تنزيل الطلب: المنتج/);
+  assert.match(messages[0].text, /🚕 الكابتن المنفذ: الكابتن/);
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

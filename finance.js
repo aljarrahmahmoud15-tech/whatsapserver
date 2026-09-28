@@ -2,12 +2,12 @@
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
 // - 12% is credited to the captain who posted the order.
-// - 4% is credited to the company.
-// - 16% total is debited from the confirming executor wallet.
+// - 3% is credited to the company.
+// - 15% total is debited from the confirming executor wallet.
 const REGULAR_PRODUCER_RATE_BPS = 1200;
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1200;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 
 function calculateSettlement({
   priceCents,

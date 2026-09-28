@@ -8,8 +8,8 @@ assert.match(source, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(source, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\);/);
 assert.match(source, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
 assert.match(source, /const reactionPresentOnAcceptance = Boolean\(thumbs\.length \|\| visibleThumbReaction \|\| persistedThumbEvidence\.length\);/);
-assert.doesNotMatch(source, /const producerApproved =/);
-assert.doesNotMatch(source, /approver_ineligible.*return/);
-assert.doesNotMatch(source, /reaction_owner_unresolved/);
+assert.match(source, /const producerApproved = Boolean\(/);
+assert.match(source, /reaction_approver_not_original_producer/);
+assert.match(source, /isBlockedPhone\(approverPhone\)/);
 
-console.log('any-captain thumbs-up on quoted تم policy verified');
+console.log('original-producer thumbs-up on selected quoted تم policy verified');
