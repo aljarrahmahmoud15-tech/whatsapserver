@@ -72,6 +72,7 @@ assert.match(server, /cutoff = Date\.now\(\) - WHATSAPP_RECOVERY_SCAN_HOURS \* 6
 assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
 assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true \}\)/);
 assert.match(server, /source: "history-fallback"/);
+assert.match(server, /if \(normalizedMessages\.length\) return \{ chat, messages: normalizedMessages \};/);
 assert.match(server, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/);
 assert.match(server, /message\?\._data\?\.quotedMsg\?\.id\?\._serialized/);
 assert.match(server, /async function getQuotedMessageWithFallback\(message\)/);

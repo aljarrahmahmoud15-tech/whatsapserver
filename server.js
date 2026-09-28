@@ -2220,7 +2220,10 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   if (!chat) chat = await resolveGroupChat(groupId);
   if (chat) {
     const messages = await withTimeout(chat.fetchMessages(includeOutgoing ? { limit } : { limit, fromMe: false }), 90000, []);
-    return { chat, messages: Array.isArray(messages) ? messages : [] };
+    const normalizedMessages = Array.isArray(messages) ? messages : [];
+    if (normalizedMessages.length) return { chat, messages: normalizedMessages };
+    // WhatsApp Web can expose the chat object while its high-level cache is empty
+    // immediately after reconnect. Fall through to the in-page collection loader.
   }
   if (!client?.pupPage) return { chat: null, messages: [] };
   const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit, includeOutgoingMessages) => {
@@ -4084,7 +4087,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     // chat.fetchMessages can read the same recent history. Use that bounded fallback
     // so stored «تم» replies are not left as candidate-only bookings indefinitely.
     const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
-    if (!before && !fastScan?.timedOut && fastMessages.length === 0) {
+    if (!before && fastMessages.length === 0) {
       const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
       if (Array.isArray(history?.messages) && history.messages.length) {
         fastScan = { ...history, nextCursor: null, exhausted: true, source: "history-fallback" };
