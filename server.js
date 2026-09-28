@@ -145,7 +145,11 @@ const RENDER_MEMORY_LIMIT_MB = Math.max(512, Number(process.env.RENDER_MEMORY_LI
 const NODE_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - 512, Number(process.env.NODE_HEAP_MB || 768)));
 const CHROMIUM_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - NODE_HEAP_MB - 256, Number(process.env.CHROMIUM_HEAP_MB || 512)));
 const MEMORY_RECYCLE_TRIGGER_MB = Math.max(512, Number(process.env.MEMORY_RECYCLE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.8)));
+const MEMORY_PRUNE_TRIGGER_MB = Math.max(384, Math.min(MEMORY_RECYCLE_TRIGGER_MB - 128, Number(process.env.MEMORY_PRUNE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.7))));
+const MEMORY_PRUNE_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.MEMORY_PRUNE_COOLDOWN_MS || 5 * 60 * 1000));
 const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
+const RUNTIME_TEMP_CLEANUP_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.RUNTIME_TEMP_CLEANUP_INTERVAL_MS || 15 * 60 * 1000));
+const RUNTIME_TEMP_FILE_MAX_AGE_MS = Math.max(15 * 60 * 1000, Number(process.env.RUNTIME_TEMP_FILE_MAX_AGE_MS || 60 * 60 * 1000));
 const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
@@ -170,6 +174,33 @@ let officialGroupWalletSweepTimer = null;
 let officialGroupChatCache = null;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+let lastRuntimeTempCleanupAt = 0;
+function cleanupStaleRuntimeTempFiles(force = false) {
+  const currentTime = Date.now();
+  if (!force && currentTime - lastRuntimeTempCleanupAt < RUNTIME_TEMP_CLEANUP_INTERVAL_MS) return 0;
+  lastRuntimeTempCleanupAt = currentTime;
+  let entries;
+  try { entries = fs.readdirSync(DATA_DIR, { withFileTypes: true }); } catch (error) {
+    console.warn("[Runtime] temporary-file cleanup scan failed:", error.message);
+    return 0;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^\.guide-video-\d+-\d+-\d+\.mp4$/.test(entry.name)) continue;
+    const temporaryPath = path.join(DATA_DIR, entry.name);
+    try {
+      const stat = fs.statSync(temporaryPath);
+      if (currentTime - stat.mtimeMs < RUNTIME_TEMP_FILE_MAX_AGE_MS) continue;
+      fs.unlinkSync(temporaryPath);
+      removed += 1;
+    } catch (error) {
+      if (error.code !== "ENOENT") console.warn(`[Runtime] temporary-file cleanup failed for ${entry.name}:`, error.message);
+    }
+  }
+  if (removed) console.warn(`[Runtime] removed ${removed} stale guide-video temporary file(s)`);
+  return removed;
+}
+cleanupStaleRuntimeTempFiles(true);
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
 let activeAdminToken = ADMIN_TOKEN;
 if (!activeAdminToken) {
@@ -1677,8 +1708,10 @@ function runtimeHealth() {
       rssLimitMb: RENDER_MEMORY_LIMIT_MB,
       nodeHeapLimitMb: NODE_HEAP_MB,
       chromiumHeapLimitMb: CHROMIUM_HEAP_MB,
+      pruneTriggerMb: MEMORY_PRUNE_TRIGGER_MB,
       recycleTriggerMb: MEMORY_RECYCLE_TRIGGER_MB,
       lastSample: lastMemoryUsageMb,
+      lastPruneAt: lastMemoryPruneAt,
       lastRecycleAt: lastMemoryRecycleAt,
       // Live reading of the whole process tree (Node + Chromium). This is what the
       // watchdog compares against recycleTriggerMb; the fields above report Node only.
@@ -1687,6 +1720,8 @@ function runtimeHealth() {
     },
     storage: {
       dataDir: DATA_DIR,
+      lastTempCleanupAt: lastRuntimeTempCleanupAt ? new Date(lastRuntimeTempCleanupAt).toISOString() : null,
+      tempFileMaxAgeMs: RUNTIME_TEMP_FILE_MAX_AGE_MS,
       dataDirHealth: safePathHealth(DATA_DIR),
       authPathHealth: safePathHealth(AUTH_PATH),
       databaseFileHealth: safePathHealth(path.join(DATA_DIR, "aljarah.sqlite")),
@@ -3500,6 +3535,7 @@ let qrCodeData = null;
 let lastQrTime = null;
 let temporaryQrGrant = null;
 let reconnectTimer = null;
+let whatsappRestartInFlight = null;
 let reconnectAttempts = 0;
 let whatsappWatchdogTimer = null;
 let lastReconnectReason = null;
@@ -3531,6 +3567,8 @@ let whatsappSendDiagnostics = {
   pageEvents: [],
   lastPageProbe: null,
 };
+let lastPageDiagnosticKey = null;
+let lastPageDiagnosticAt = 0;
 const INDEXEDDB_WARNING_RATIO = 0.80;
 const INDEXEDDB_CRITICAL_RATIO = 0.90;
 const INDEXEDDB_MONITOR_INTERVAL_MS = 5 * 60 * 1000;
@@ -3569,6 +3607,10 @@ function recordWhatsAppPageDiagnostic(type, payload = {}) {
     type: boundedDiagnosticText(type, 80),
     ...payload,
   };
+  const diagnosticKey = `${event.type}:${boundedDiagnosticText(event.message || event.text || "", 240)}`;
+  if (diagnosticKey === lastPageDiagnosticKey && Date.now() - lastPageDiagnosticAt < 30000) return;
+  lastPageDiagnosticKey = diagnosticKey;
+  lastPageDiagnosticAt = Date.now();
   whatsappSendDiagnostics.pageEvents.push(event);
   if (whatsappSendDiagnostics.pageEvents.length > 40) whatsappSendDiagnostics.pageEvents.splice(0, whatsappSendDiagnostics.pageEvents.length - 40);
   whatsappSendDiagnostics.lastPageProbe = event;
@@ -3595,6 +3637,10 @@ async function installWhatsAppSendDiagnostics(instance, generation) {
         name: boundedDiagnosticText(error?.name, 120),
         message: boundedDiagnosticText(error?.message || error, 1200),
         stack: boundedDiagnosticText(error?.stack, 2400),
+      }));
+      page.on("error", (error) => pageListener("browser_page_error", {
+        name: boundedDiagnosticText(error?.name, 120),
+        message: boundedDiagnosticText(error?.message || error, 1200),
       }));
       page.on("console", (message) => {
         let level = "";
@@ -3882,6 +3928,12 @@ const puppeteerConfig = {
     "--no-zygote",
     "--disable-gpu",
     "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--no-pings",
+    "--metrics-recording-only",
     "--disable-features=IsolateOrigins,site-per-process",
     "--window-size=1280,900",
     // Bound the browser's own heap. Without a cap Chromium grows past the container
@@ -4032,20 +4084,24 @@ async function destroyClient() {
 }
 
 async function restartWhatsApp(reason = "manual restart") {
-  connectionGeneration += 1;
-  initializationRunId += 1;
-  reconnectAttempts = 0;
-  lastReconnectReason = reason;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  await withTimeout(destroyClient(), 15000, null);
-  qrCodeData = null;
-  lastQrTime = null;
-  initializing = false;
-  console.warn(`[WhatsApp] restarting session: ${reason}`);
-  scheduleReconnect();
+  if (whatsappRestartInFlight) return whatsappRestartInFlight;
+  whatsappRestartInFlight = (async () => {
+    connectionGeneration += 1;
+    initializationRunId += 1;
+    reconnectAttempts = 0;
+    lastReconnectReason = reason;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    await withTimeout(destroyClient(), 15000, null);
+    qrCodeData = null;
+    lastQrTime = null;
+    initializing = false;
+    console.warn(`[WhatsApp] restarting session: ${reason}`);
+    scheduleReconnect();
+  })().finally(() => { whatsappRestartInFlight = null; });
+  return whatsappRestartInFlight;
 }
 
 async function loadBaileys() {
@@ -4409,9 +4465,13 @@ function pruneRuntimeMemoryCaches(atMs = Date.now()) {
 function startRuntimeMemoryCleanup() {
   if (runtimeMemoryCleanupTimer) return;
   pruneRuntimeMemoryCaches();
+  cleanupStaleRuntimeTempFiles();
   runtimeMemoryCleanupTimer = setInterval(() => {
-    try { pruneRuntimeMemoryCaches(); } catch (error) { console.warn("[Runtime] memory cache cleanup failed:", error.message); }
-  }, 5 * 60 * 1000);
+    try {
+      pruneRuntimeMemoryCaches();
+      cleanupStaleRuntimeTempFiles();
+    } catch (error) { console.warn("[Runtime] memory/temp cleanup failed:", error.message); }
+  }, Math.min(5 * 60 * 1000, RUNTIME_TEMP_CLEANUP_INTERVAL_MS));
   runtimeMemoryCleanupTimer.unref?.();
 }
 
@@ -4426,6 +4486,7 @@ let runtimeMemoryWatchdogTimer = null;
 let runtimeMemoryWatchdogRunning = false;
 let lastMemoryRecycleAt = null;
 let lastMemoryUsageMb = null;
+let lastMemoryPruneAt = null;
 async function recycleBrowserForMemory(reason) {
   if (runtimeMemoryWatchdogRunning) return;
   runtimeMemoryWatchdogRunning = true;
@@ -4481,24 +4542,27 @@ function processTreeRssMb(rootPid = process.pid) {
   } catch {
     return null;
   }
-  const memoryKb = new Map();
-  const parentPid = new Map();
+  const children = new Map();
   for (const name of entries) {
     const pid = Number(name);
-    const kb = readProcMemoryKb(pid);
-    if (kb > 0) memoryKb.set(pid, kb);
-    parentPid.set(pid, readProcParentPid(pid));
+    const parent = readProcParentPid(pid);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(pid);
+  }
+  const tree = new Set([Number(rootPid)]);
+  const pending = [Number(rootPid)];
+  while (pending.length) {
+    const parent = pending.shift();
+    for (const child of children.get(parent) || []) {
+      if (tree.has(child)) continue;
+      tree.add(child);
+      pending.push(child);
+    }
   }
   let totalKb = 0;
-  for (const pid of memoryKb.keys()) {
-    let cursor = pid;
-    for (let hops = 0; cursor && hops < 64; hops += 1) {
-      if (cursor === rootPid) {
-        totalKb += memoryKb.get(pid);
-        break;
-      }
-      cursor = parentPid.get(cursor) || 0;
-    }
+  for (const pid of tree) {
+    const kb = readProcMemoryKb(pid);
+    if (kb > 0) totalKb += kb;
   }
   return totalKb > 0 ? Math.round(totalKb / 1024) : null;
 }
@@ -4511,6 +4575,14 @@ function startRuntimeMemoryWatchdog() {
     const treeRssMb = processTreeRssMb();
     const rssMb = treeRssMb || nodeRssMb;
     lastMemoryUsageMb = { rssMb, nodeRssMb, treeRssMb, heapMb, at: new Date().toISOString() };
+    if (rssMb >= MEMORY_PRUNE_TRIGGER_MB && Date.now() - Number(lastMemoryPruneAt || 0) >= MEMORY_PRUNE_COOLDOWN_MS) {
+      try {
+        pruneRuntimeMemoryCaches();
+        cleanupStaleRuntimeTempFiles();
+      } catch (error) { console.warn("[Runtime] threshold cleanup failed:", error.message); }
+      lastMemoryPruneAt = Date.now();
+      if (global.gc) { try { global.gc(); } catch {} }
+    }
     if (rssMb < MEMORY_RECYCLE_TRIGGER_MB) return;
     if (runtimeMemoryWatchdogRunning || initializing) return;
     void recycleBrowserForMemory(`instance rss ${rssMb}MB >= ${MEMORY_RECYCLE_TRIGGER_MB}MB (node ${nodeRssMb}MB, heap ${heapMb}MB)`);
