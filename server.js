@@ -3534,7 +3534,10 @@ let whatsappSendDiagnostics = {
 const INDEXEDDB_WARNING_RATIO = 0.80;
 const INDEXEDDB_CRITICAL_RATIO = 0.90;
 const INDEXEDDB_MONITOR_INTERVAL_MS = 5 * 60 * 1000;
+const INDEXEDDB_RECOVERY_COOLDOWN_MS = Math.max(5 * 60 * 1000, Number(process.env.INDEXEDDB_RECOVERY_COOLDOWN_MS || 15 * 60 * 1000));
 let whatsappStorageMonitorTimer = null;
+let indexedDbRecoveryInFlight = false;
+let lastIndexedDbRecoveryAt = 0;
 let whatsappStoragePressure = {
   status: "unknown",
   blocked: false,
@@ -3747,6 +3750,18 @@ function updateWhatsAppStoragePressure(snapshot) {
   return whatsappStoragePressure;
 }
 
+function scheduleIndexedDbBrowserRecovery(pressure) {
+  if (!pressure?.blocked || !/QuotaExceededError|IndexedDB|storage\s+quota|database\s+full/i.test(String(pressure.reason || ""))) return;
+  const currentTime = Date.now();
+  if (indexedDbRecoveryInFlight || currentTime - lastIndexedDbRecoveryAt < INDEXEDDB_RECOVERY_COOLDOWN_MS) return;
+  indexedDbRecoveryInFlight = true;
+  lastIndexedDbRecoveryAt = currentTime;
+  console.warn(`[WhatsApp][StoragePressure] scheduling one controlled Chromium recycle: ${pressure.reason}`);
+  void recycleBrowserForMemory(`IndexedDB storage recovery: ${pressure.reason}`)
+    .catch((error) => console.error("[WhatsApp][StoragePressure] browser recycle failed:", error.message))
+    .finally(() => { indexedDbRecoveryInFlight = false; });
+}
+
 async function collectWhatsAppStoragePressure() {
   if (!client?.pupPage || !isReady) return updateWhatsAppStoragePressure({ pageState: null });
   const snapshot = await withTimeout(client.pupPage.evaluate(async () => {
@@ -3763,7 +3778,9 @@ async function collectWhatsAppStoragePressure() {
       pageState,
     };
   }), 8000, { pageState: null });
-  return updateWhatsAppStoragePressure(snapshot);
+  const pressure = updateWhatsAppStoragePressure(snapshot);
+  scheduleIndexedDbBrowserRecovery(pressure);
+  return pressure;
 }
 
 function isWhatsAppStorageSendBlocked() {
@@ -3898,6 +3915,73 @@ function clearChromiumProfileLocks() {
     }
   }
 }
+function chromiumCommandLine(pid) {
+  try { return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\u0000/g, " "); } catch { return ""; }
+}
+function listOwnedChromiumPids() {
+  const authMarker = path.resolve(AUTH_PATH);
+  let entries;
+  try { entries = fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name)); } catch { return []; }
+  return entries.map(Number).filter((pid) => {
+    if (!pid || pid === process.pid) return false;
+    const commandLine = chromiumCommandLine(pid);
+    return /(?:chrome|chromium)/i.test(commandLine) && commandLine.includes(authMarker);
+  });
+}
+function descendantPids(rootPid) {
+  const descendants = [];
+  const pending = [Number(rootPid)];
+  let entries;
+  try { entries = fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name)); } catch { return descendants; }
+  const children = new Map();
+  for (const name of entries) {
+    const pid = Number(name);
+    const parent = readProcParentPid(pid);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(pid);
+  }
+  while (pending.length) {
+    const parent = pending.shift();
+    for (const child of children.get(parent) || []) {
+      if (child === process.pid || descendants.includes(child)) continue;
+      descendants.push(child);
+      pending.push(child);
+    }
+  }
+  return descendants;
+}
+async function terminateChromiumPids(pids, label = "client") {
+  const uniquePids = [...new Set((Array.isArray(pids) ? pids : []).map(Number))]
+    .filter((pid) => pid > 1 && pid !== process.pid);
+  if (!uniquePids.length) return false;
+  let signalled = false;
+  for (const pid of uniquePids) {
+    const commandLine = chromiumCommandLine(pid);
+    if (!/(?:chrome|chromium)/i.test(commandLine)) continue;
+    try {
+      process.kill(pid, "SIGTERM");
+      signalled = true;
+    } catch (error) {
+      if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium SIGTERM failed for ${pid}:`, error.message);
+    }
+  }
+  if (signalled) console.warn(`[WhatsApp] ${label} Chromium cleanup sent SIGTERM to ${uniquePids.length} owned process(es)`);
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  for (const pid of uniquePids) {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium SIGKILL failed for ${pid}:`, error.message);
+    }
+  }
+  return signalled;
+}
+async function cleanupOwnedChromiumProcesses(label = "orphan cleanup") {
+  const ownedPids = listOwnedChromiumPids();
+  if (!ownedPids.length) return false;
+  return terminateChromiumPids(ownedPids, label);
+}
 function getChromiumBrowserProcess(instance) {
   try {
     const browser = instance?.pupBrowser;
@@ -3910,26 +3994,9 @@ function getChromiumBrowserProcess(instance) {
 }
 async function forceTerminateChromiumProcess(browserProcess, label = "client") {
   const pid = Number(browserProcess?.pid || 0);
-  if (!pid || pid <= 1 || pid === process.pid) return false;
   const executable = String(browserProcess?.spawnfile || browserProcess?.spawnargs?.[0] || "").toLowerCase();
-  if (!executable || !/(?:chrome|chromium)/i.test(executable)) return false;
-  let signalled = false;
-  try {
-    process.kill(pid, "SIGTERM");
-    signalled = true;
-    console.warn(`[WhatsApp] ${label} Chromium process ${pid} received SIGTERM after destroy failure`);
-  } catch (error) {
-    if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium SIGTERM failed:`, error.message);
-  }
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  try {
-    process.kill(pid, 0);
-    process.kill(pid, "SIGKILL");
-    console.warn(`[WhatsApp] ${label} Chromium process ${pid} required SIGKILL`);
-  } catch (error) {
-    if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium liveness check failed:`, error.message);
-  }
-  return signalled;
+  if (!pid || pid <= 1 || pid === process.pid || !executable || !/(?:chrome|chromium)/i.test(executable)) return cleanupOwnedChromiumProcesses(label);
+  return terminateChromiumPids([pid, ...descendantPids(pid), ...listOwnedChromiumPids()], label);
 }
 async function disposeClientInstance(instance, label = "client") {
   if (!instance) return;
@@ -3957,6 +4024,7 @@ async function destroyClient() {
   client = null;
   isReady = false;
   if (!current) {
+    await cleanupOwnedChromiumProcesses("orphan cleanup");
     clearChromiumProfileLocks();
     return;
   }

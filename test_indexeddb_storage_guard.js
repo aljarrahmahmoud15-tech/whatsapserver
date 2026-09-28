@@ -7,6 +7,7 @@ const monitor = fs.readFileSync('./.github/workflows/order-flow-monitor.yml', 'u
 assert.match(server, /const INDEXEDDB_WARNING_RATIO = 0\.80/);
 assert.match(server, /const INDEXEDDB_CRITICAL_RATIO = 0\.90/);
 assert.match(server, /const INDEXEDDB_MONITOR_INTERVAL_MS = 5 \* 60 \* 1000/);
+assert.match(server, /const INDEXEDDB_RECOVERY_COOLDOWN_MS/);
 assert.match(server, /async function collectWhatsAppStoragePressure\(\)/);
 assert.match(server, /navigator\.storage\?\.estimate/);
 assert.match(server, /indexedDB\.databases/);
@@ -14,6 +15,9 @@ assert.match(server, /function updateWhatsAppStoragePressure\(snapshot\)/);
 assert.match(server, /function indexedDbErrorIsActive\(pageState\)/);
 assert.match(server, /QuotaExceededError\|quota\(\?:\\s\|_\|-\)\?exceeded\|IndexedDB/);
 assert.match(server, /QuotaExceededError\/IndexedDB send failure/);
+assert.match(server, /function scheduleIndexedDbBrowserRecovery\(pressure\)/);
+assert.match(server, /IndexedDB storage recovery/);
+assert.match(server, /scheduleIndexedDbBrowserRecovery\(pressure\)/);
 assert.match(server, /function isWhatsAppStorageSendBlocked\(\)/);
 assert.match(server, /function installWhatsAppStorageSendGuard\(instance\)/);
 assert.match(server, /WHATSAPP_INDEXEDDB_SEND_PAUSED/);
