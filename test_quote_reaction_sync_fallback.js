@@ -14,7 +14,7 @@ assert.match(source, /const quoted = await getQuotedMessageWithFallback\(accepta
 assert.match(source, /acceptance\.__quoted = quoted/);
 assert.match(source, /sourceMessageIdsEqual\(pendingSourceId, sourceId\)/);
 assert.match(source, /rows\.find\(\(row\) => sourceMessageIdsEqual\(row\.acceptance_message_id, acceptanceMessageId\)\)/);
-assert.match(source, /findPendingAcceptanceByMessage\(groupId, row\.id\)/);
+assert.match(source, /findPendingAcceptanceByMessage\(groupId, rowMessageId\)/);
 
 // A reaction can arrive with a decorated WhatsApp ID while the original
 // acceptance row was stored with its core ID. The lookup must normalize both.

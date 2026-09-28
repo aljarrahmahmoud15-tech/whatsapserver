@@ -4079,7 +4079,18 @@ async function recoverPendingAcceptanceMessages(groupId) {
   let before = 0;
   const maxPages = WHATSAPP_RECOVERY_MAX_PAGES;
   for (let page = 0; page < maxPages; page += 1) {
-    const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+    let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+    // The lightweight scanner can return an empty page after a reconnect even while
+    // chat.fetchMessages can read the same recent history. Use that bounded fallback
+    // so stored «تم» replies are not left as candidate-only bookings indefinitely.
+    const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
+    if (!before && !fastScan?.timedOut && fastMessages.length === 0) {
+      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+      if (Array.isArray(history?.messages) && history.messages.length) {
+        fastScan = { ...history, nextCursor: null, exhausted: true, source: "history-fallback" };
+        lastAcceptanceRecovery.lastStage = "history_fallback";
+      }
+    }
     lastAcceptanceRecovery.pagesScanned += 1;
     if (fastScan.timedOut) {
       lastAcceptanceRecovery.lastError = "recovery_group_scan_timeout";
@@ -4101,10 +4112,11 @@ async function recoverPendingAcceptanceMessages(groupId) {
   let recovered = 0;
   for (const row of scanMessages.slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES)) {
     lastAcceptanceRecovery.scanned += 1;
-    if (!row || row.fromMe || !row.id || !isCaptainAcceptance(row.body)) continue;
-    const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(row.id);
+    const rowMessageId = serializedMessageId(row) || String(row?.id || "").trim();
+    if (!row || row.fromMe || !rowMessageId || resolveGroupChatId(row) !== groupId || !isCaptainAcceptance(row.body)) continue;
+    const existing = db.prepare("SELECT 1 FROM order_candidate_acceptances WHERE acceptance_message_id=? LIMIT 1").get(rowMessageId);
     if (existing) continue;
-    const live = await getWhatsAppMessageByIdVariants(row.id, 5000);
+    const live = await getWhatsAppMessageByIdVariants(rowMessageId, 5000);
     const acceptance = live || row;
     if (!acceptance) continue;
     lastAcceptanceRecovery.quoteLookupAttempts += 1;
@@ -4127,7 +4139,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
       lastAcceptanceRecovery.lastError = String(error?.message || error).slice(0, 180);
       setAcceptanceRecoveryStage("handle_incoming_message_error");
     }
-    const recorded = findPendingAcceptanceByMessage(groupId, row.id);
+    const recorded = findPendingAcceptanceByMessage(groupId, rowMessageId);
     if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; }
   }
   lastAcceptanceRecovery.finishedAt = new Date().toISOString();
@@ -4614,6 +4626,29 @@ function sourceMessageIdsEqual(left, right) {
   const rightCore = messageIdCore(right);
   return Boolean(leftCore && rightCore && leftCore === rightCore);
 }
+function buildStoredQuotedMessageById(groupId, messageId) {
+  if (!groupId || !messageId || !isConfiguredGroup(groupId)) return null;
+  const variants = messageIdLookupVariants(messageId);
+  if (!variants.length) return null;
+  const rows = db.prepare(`SELECT message_id,group_id,sender_phone,sender_name,body,message_type,sent_at
+    FROM messages WHERE group_id=? AND message_id IN (${variants.map(() => "?").join(",")}) LIMIT 5`).all(groupId, ...variants);
+  const row = rows.find((candidate) => sourceMessageIdsEqual(candidate.message_id, messageId));
+  if (!row) return null;
+  const timestampMs = Date.parse(String(row.sent_at || ""));
+  return {
+    id: { _serialized: row.message_id },
+    __serializedId: row.message_id,
+    from: row.group_id,
+    to: row.group_id,
+    fromMe: String(row.message_id || "").startsWith("true_"),
+    author: { _serialized: row.sender_phone ? `${row.sender_phone}@c.us` : "" },
+    __authorPhone: row.sender_phone || null,
+    body: String(row.body || ""),
+    type: row.message_type || "chat",
+    timestamp: Number.isFinite(timestampMs) ? Math.floor(timestampMs / 1000) : Math.floor(Date.now() / 1000),
+    __storedRecovery: true,
+  };
+}
 function findEquivalentCandidate(groupId, messageId, statuses = ["candidate", "pending"]) {
   if (!groupId || !messageId) return null;
   const placeholders = statuses.map(() => "?").join(",");
@@ -4904,12 +4939,7 @@ async function approveBotOwnedAcceptance({ groupId, message, candidateId, accept
 }
 
 async function getQuotedMessageWithFallback(message) {
-  let quoted = message?.hasQuotedMsg && typeof message.getQuotedMessage === "function"
-    ? await withTimeout(message.getQuotedMessage(), 8000, null)
-    : null;
-  if (!quoted) quoted = message?.__quoted || message?.quotedMsg || message?._data?.quotedMsg || null;
-  if (!quoted) {
-    const quotedMessageId = String(
+  const quotedMessageIdHint = String(
       message?.quotedStanzaID ||
       message?.quotedMessageId ||
       message?._data?.quotedStanzaID ||
@@ -4917,25 +4947,26 @@ async function getQuotedMessageWithFallback(message) {
       message?._data?.quotedMsgId ||
       message?._data?.quotedMsg?.id?._serialized ||
       ""
-    ).trim();
-    if (quotedMessageId && client && typeof client.getMessageById === "function") {
-      quoted = await getWhatsAppMessageByIdVariants(quotedMessageId, 5000);
+  ).trim();
+  let quoted = message?.__quoted || message?.quotedMsg || message?._data?.quotedMsg || null;
+  // The incoming message and its quoted source are persisted before this helper runs.
+  // Prefer that exact local evidence so a valid «تم» is not blocked by a slow Web hydration.
+  if (!quoted && quotedMessageIdHint) {
+    quoted = buildStoredQuotedMessageById(resolveGroupChatId(message), quotedMessageIdHint);
+  }
+  if (!quoted && message?.hasQuotedMsg && typeof message.getQuotedMessage === "function") {
+    quoted = await withTimeout(message.getQuotedMessage(), 8000, null);
+  }
+  if (!quoted) {
+    if (quotedMessageIdHint && client && typeof client.getMessageById === "function") {
+      quoted = await getWhatsAppMessageByIdVariants(quotedMessageIdHint, 5000);
     }
   }
   if (!quoted && typeof client !== "undefined" && client?.pupPage) {
     const messageId = serializedMessageId(message);
-    const quotedMessageId = String(
-      message?.quotedStanzaID ||
-      message?.quotedMessageId ||
-      message?._data?.quotedStanzaID ||
-      message?._data?.quotedMessageId ||
-      message?._data?.quotedMsgId ||
-      message?._data?.quotedMsg?.id?._serialized ||
-      ""
-    ).trim();
     // An explicitly unquoted message must not trigger a 15-second page lookup.
     // Only probe WhatsApp Web when quote metadata indicates that a quote exists.
-    if (message?.hasQuotedMsg || quotedMessageId) {
+    if (message?.hasQuotedMsg || quotedMessageIdHint) {
       quoted = await withTimeout(client.pupPage.evaluate(async ({ messageId: requestedMessageId, quotedMessageId: requestedQuotedId }) => {
         try {
           const collections = window.require("WAWebCollections");
@@ -4971,18 +5002,9 @@ async function getQuotedMessageWithFallback(message) {
         } catch (_) {
           return null;
         }
-      }, { messageId, quotedMessageId }), 15000, null);
+      }, { messageId, quotedMessageId: quotedMessageIdHint }), 15000, null);
     }
   }
-  const quotedMessageIdHint = String(
-    message?.quotedStanzaID ||
-    message?.quotedMessageId ||
-    message?._data?.quotedStanzaID ||
-    message?._data?.quotedMessageId ||
-    message?._data?.quotedMsgId ||
-    message?._data?.quotedMsg?.id?._serialized ||
-    ""
-  ).trim();
   if (quoted && !serializedMessageId(quoted) && quotedMessageIdHint && typeof quoted === "object") {
     try { quoted.__serializedId = quotedMessageIdHint; } catch (_) {}
   }
