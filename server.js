@@ -3858,18 +3858,56 @@ function clearChromiumProfileLocks() {
     }
   }
 }
+function getChromiumBrowserProcess(instance) {
+  try {
+    const browser = instance?.pupBrowser;
+    if (!browser) return null;
+    if (typeof browser.process === "function") return browser.process();
+    return browser._process || null;
+  } catch (_) {
+    return null;
+  }
+}
+async function forceTerminateChromiumProcess(browserProcess, label = "client") {
+  const pid = Number(browserProcess?.pid || 0);
+  if (!pid || pid <= 1 || pid === process.pid) return false;
+  const executable = String(browserProcess?.spawnfile || browserProcess?.spawnargs?.[0] || "").toLowerCase();
+  if (!executable || !/(?:chrome|chromium)/i.test(executable)) return false;
+  let signalled = false;
+  try {
+    process.kill(pid, "SIGTERM");
+    signalled = true;
+    console.warn(`[WhatsApp] ${label} Chromium process ${pid} received SIGTERM after destroy failure`);
+  } catch (error) {
+    if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium SIGTERM failed:`, error.message);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
+    console.warn(`[WhatsApp] ${label} Chromium process ${pid} required SIGKILL`);
+  } catch (error) {
+    if (error?.code !== "ESRCH") console.warn(`[WhatsApp] ${label} Chromium liveness check failed:`, error.message);
+  }
+  return signalled;
+}
 async function disposeClientInstance(instance, label = "client") {
   if (!instance) return;
+  const browserProcess = getChromiumBrowserProcess(instance);
   const destroyTimeoutMarker = Symbol("whatsapp_destroy_timeout");
+  let destroyFailed = false;
   try {
     const destroyed = await withTimeoutStrict(instance.destroy(), 12000, destroyTimeoutMarker);
     if (destroyed === destroyTimeoutMarker) {
+      destroyFailed = true;
       console.warn(`[WhatsApp] ${label} cleanup timed out; continuing with controlled reconnect`);
     }
   } catch (error) {
+    destroyFailed = true;
     // whatsapp-web.js may already have closed Chromium after LOGOUT.
     console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
   }
+  if (destroyFailed) await forceTerminateChromiumProcess(browserProcess, label);
   await new Promise((resolve) => setTimeout(resolve, 1000));
   clearChromiumProfileLocks();
 }
