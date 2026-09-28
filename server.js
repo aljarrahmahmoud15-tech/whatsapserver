@@ -3913,7 +3913,9 @@ const detectedChromePath = [
   (typeof fs !== "undefined" ? ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((candidate) => fs.existsSync(candidate)) : null);
 if (detectedChromePath) console.log(`[WhatsApp] using Chrome executable: ${detectedChromePath}`);
 else console.warn(`[WhatsApp] Chrome executable not found at startup; searched ${puppeteerCacheDir}`);
-
+const chromiumHeapForPuppeteer = typeof CHROMIUM_HEAP_MB === "number"
+  ? CHROMIUM_HEAP_MB
+  : Math.max(256, Number(process.env.CHROMIUM_HEAP_MB) || 512);
 const puppeteerConfig = {
   headless: true,
   executablePath: detectedChromePath || undefined,
@@ -3928,17 +3930,11 @@ const puppeteerConfig = {
     "--no-zygote",
     "--disable-gpu",
     "--disable-extensions",
-    "--disable-background-networking",
-    "--disable-component-update",
-    "--disable-default-apps",
-    "--disable-sync",
-    "--no-pings",
-    "--metrics-recording-only",
     "--disable-features=IsolateOrigins,site-per-process",
     "--window-size=1280,900",
     // Bound the browser's own heap. Without a cap Chromium grows past the container
     // memory limit and Render kills the instance, which drops the WhatsApp pairing.
-    `--js-flags=--max-old-space-size=${Math.max(256, Number(process.env.CHROMIUM_HEAP_MB) || 512)}`,
+    `--js-flags=--max-old-space-size=${chromiumHeapForPuppeteer}`,
     "--renderer-process-limit=1",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
