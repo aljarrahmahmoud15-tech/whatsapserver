@@ -7773,12 +7773,14 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   const duplicate = db.prepare("SELECT id FROM users WHERE phone=? AND id<>? LIMIT 1").get(phone, id);
   if (duplicate) return res.status(409).json({ error: "رقم الهاتف مستخدم لحساب آخر" });
   if (pin && !validCaptainPin(pin)) return res.status(400).json({ error: "الرمز السري يجب أن يكون 5 أرقام" });
+  const requestedAuthMethod = req.body.authMethod === undefined ? null : String(req.body.authMethod || "").trim().toLowerCase();
+  if (requestedAuthMethod && !["pin", "whatsapp"].includes(requestedAuthMethod)) return res.status(400).json({ error: "طريقة الدخول يجب أن تكون pin أو whatsapp" });
   const stamp = now();
   const pinHash = pin ? bcrypt.hashSync(pin, 10) : user.captain_pin_hash;
-  const authMethod = user.captain_auth_method || "pin";
+  const authMethod = requestedAuthMethod || normalizeCaptainAuthMethod(user.captain_auth_method);
   db.prepare("UPDATE users SET phone=?,name=?,role=?,active=?,account_status=?,captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method=?,updated_at=? WHERE id=?")
     .run(phone, name, role, active, active ? "active" : "suspended", pinHash, authMethod, stamp, id);
-  audit("admin.user.updated", "user", id, { phone, name, role, active, pinChanged: Boolean(pin) });
+  audit("admin.user.updated", "user", id, { phone, name, role, active, pinChanged: Boolean(pin), authMethod, authMethodChanged: requestedAuthMethod !== null });
   res.json({ success: true, user: db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,captain_auth_method,created_at,updated_at FROM users WHERE id=?").get(id) });
 });
 app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {

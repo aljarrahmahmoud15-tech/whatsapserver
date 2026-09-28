@@ -6,6 +6,9 @@ const admin = fs.readFileSync("admin.html", "utf8");
 
 assert.match(server, /app\.get\("\/api\/admin\/users", requireAdmin/);
 assert.match(server, /app\.patch\("\/api\/admin\/users\/:id", requireAdmin/);
+assert.match(server, /requestedAuthMethod = req\.body\.authMethod/);
+assert.match(server, /const authMethod = requestedAuthMethod \|\| normalizeCaptainAuthMethod/);
+assert.match(server, /authMethodChanged: requestedAuthMethod !== null/);
 assert.match(server, /app\.delete\("\/api\/admin\/users\/:id", requireAdmin/);
 assert.match(server, /admin\.user\.updated/);
 assert.match(server, /admin\.user\.deleted/);
