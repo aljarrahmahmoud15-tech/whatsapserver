@@ -1026,6 +1026,7 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
 }
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
+  if (!isServer2OutboundTargetAllowed(to)) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
   if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready" };
   try {
     const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
@@ -1053,6 +1054,17 @@ async function mediaFromRemoteVideoUrl(url, index = 0) {
     try { fs.rmSync(temporaryPath, { force: true }); } catch {}
   }
 }
+async function sendServer2DirectAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
+  if (!isServer2OutboundTargetAllowed(to)) return null;
+  if (!client || !isReady || typeof client.sendMessage !== "function") return null;
+  try {
+    const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
+    return await withTimeout(promise, timeoutMs, null);
+  } catch (error) {
+    console.error(`[WhatsApp] guarded direct send blocked/failed for ${String(to || "")}:`, error.message);
+    return null;
+  }
+}
 function normalizeCustomerText(value) {
   return String(value || "").trim().toLowerCase().replace(/[إأآ]/g, "ا").replace(/ى/g, "ي").replace(/\s+/g, " ");
 }
@@ -1064,6 +1076,7 @@ function ensureCustomerLead(phone, chatId, name, messageId, body) {
   return db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
 }
 async function sendBotTextRaw(to, text) {
+  if (!isServer2OutboundTargetAllowed(to)) return false;
   if (!client || !isReady) return false;
   try {
     const sent = await withTimeout(client.sendMessage(to, text), 20000, null);
@@ -1223,7 +1236,7 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
     let messageId = null;
     try {
       const recipient = member.recipientId && /@(c\.us|lid)$/.test(String(member.recipientId)) ? String(member.recipientId) : await resolveWhatsAppRecipientId(phone);
-      const sent = recipient && client && isReady ? await withTimeout(client.sendMessage(recipient, message), 15000, null) : null;
+      const sent = recipient && client && isReady ? await sendServer2DirectAtMostOnce(recipient, message, undefined, 15000) : null;
       if (sent) { deliveryStatus = "sent"; messageId = sent.id?._serialized || null; }
     } catch (_) {}
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
@@ -1954,6 +1967,13 @@ async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
+  const normalizedGroupId = String(groupId || "").trim();
+  if (WHATSAPP_GROUP_ID && normalizedGroupId !== WHATSAPP_GROUP_ID) {
+    audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID });
+    console.warn(`[Isolation] refused Server 2 group reconfiguration: ${normalizedGroupId}`);
+    return false;
+  }
+  groupId = normalizedGroupId;
   const stamp = now();
   db.transaction(() => {
     db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?").run(stamp, groupId);
@@ -1974,6 +1994,24 @@ function configuredRuntimeGroupId() {
     db.prepare("SELECT group_id FROM groups_config WHERE active=1 ORDER BY updated_at DESC LIMIT 1").get()?.group_id,
   ];
   return candidates.map((value) => String(value || "").trim()).find((value) => value && isConfiguredGroup(value)) || "";
+}
+function isServer2OutboundTargetAllowed(target) {
+  const value = String(target || "").trim();
+  if (!value) return false;
+  if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
+  if (value.endsWith("@lid")) return true;
+  if (!value.endsWith("@c.us")) return false;
+  const phone = phoneWithCountry(value.slice(0, -5));
+  if (!phone) return false;
+  return Boolean(
+    db.prepare("SELECT 1 FROM users WHERE phone=? AND active=1 AND account_status='active' LIMIT 1").get(phone)
+      || db.prepare("SELECT 1 FROM customer_leads WHERE phone=? AND state NOT IN ('cancelled') LIMIT 1").get(phone)
+  );
+}
+function isServer2AdminTargetAllowed(target) {
+  const value = String(target || "").trim();
+  if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
+  return value.endsWith("@c.us") && isServer2OutboundTargetAllowed(value);
 }
 function findActiveRegisteredUser(phone) {
   const normalized = phoneWithCountry(phone);
@@ -3189,6 +3227,7 @@ async function renderOperationsMessageMedia(title, lines = []) {
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
 async function sendGroupBrandedMessage(groupId, title, lines) {
+  if (!isServer2OutboundTargetAllowed(groupId)) return null;
   try {
     const media = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
     if (!media) throw new Error("group operations card render returned no media");
@@ -3230,6 +3269,7 @@ const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
 async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
+  if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
   if (!client || !isReady) throw new Error("whatsapp_not_ready");
   let chat = null;
   try {
@@ -3412,7 +3452,7 @@ function observeFinalBookingConfirmationMessage(message) {
 async function sendFinalBookingCancellation(groupId) {
   if (!client || !groupId) return null;
   try {
-    const sent = await withTimeout(client.sendMessage(groupId, finalBookingCancellationText()), 15000, null);
+    const sent = await sendServer2DirectAtMostOnce(groupId, finalBookingCancellationText(), undefined, 15000);
     if (!sent) throw new Error("cancellation message was not acknowledged");
     return sent;
   } catch (error) {
@@ -6680,7 +6720,7 @@ async function issueApprovalTopupCard({ captain, approvalId, req }) {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const text = topupCardTextMessage({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
-    const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+    const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
     if (!sent) return { status: "pending", cardId: card.id, reason: "delivery_timeout" };
     const deliveryIdempotencyKey = `APPROVAL-TOPUP-DELIVERY-${approvalId}`.slice(0, 100);
     const updated = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, card.id);
@@ -7176,8 +7216,8 @@ app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
 app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
   const videoUrl = String(req.body?.videoUrl || "").trim();
-  const officialGroupId = "120363426604560611@g.us";
-  if (groupId !== officialGroupId) return res.status(403).json({ error: "Only the verified official group is allowed" });
+  const officialGroupId = configuredRuntimeGroupId();
+  if (!officialGroupId || groupId !== officialGroupId || !isServer2OutboundTargetAllowed(groupId)) return res.status(403).json({ error: "Only Server 2's configured group is allowed" });
   if (!/^https:\/\//i.test(videoUrl)) return res.status(400).json({ error: "A secure video URL is required" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   try {
@@ -7199,7 +7239,7 @@ app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req,
 app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) => {
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const videos = Array.isArray(req.body?.videos) ? req.body.videos.slice(0, 3).filter((url) => /^https:\/\//i.test(String(url || ""))) : [];
-  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
+  if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(404).json({ error: "Configured Server 2 group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (!videos.length) return res.status(400).json({ error: "At least one secure video URL is required" });
   const snapshot = await readGroupSnapshot(groupId);
@@ -7280,7 +7320,7 @@ app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) 
     const chatId = await resolveWhatsAppRecipientId(card.captain_phone);
     if (!chatId) return res.status(409).json({ error: "Captain WhatsApp account could not be resolved; card remains unsent" });
     const message = brandedMessage("بطاقة شحن مخصصة", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "هذه البطاقة مخصصة لهذا الرقم فقط وتُستخدم مرة واحدة.", "للاسترداد أرسل الرمز عبر قناة البوت المعتمدة."]);
-    const sent = await withTimeout(client.sendMessage(chatId, message), 20000, null);
+    const sent = await sendServer2DirectAtMostOnce(chatId, message, undefined, 20000);
     if (!sent) return res.status(504).json({ error: "WhatsApp delivery timed out; card remains unsent" });
     const stamp = now();
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(stamp, deliveryIdempotencyKey, cardId);
@@ -7411,7 +7451,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
       const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
       const recipient = await resolveWhatsAppRecipientId(captain.phone);
       if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
-      const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
+      const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
@@ -7802,7 +7842,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
       if (previous) { result.status = "already_invited"; continue; }
       const notification = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,? ,?,?, 'pending',?)").run(result.phone, "captain", "group.member.invite", title, lines.join("\n"), now());
       try {
-        const sent = await withTimeout(client.sendMessage(`${result.phone}@c.us`, inviteCardMedia, { caption: brandedMessage(title, lines) }), 30000, null);
+        const sent = await sendServer2DirectAtMostOnce(`${result.phone}@c.us`, inviteCardMedia, { caption: brandedMessage(title, lines) }, 30000);
         result.status = sent ? "invite_card_sent" : "failed";
         result.error = sent ? null : "official invite card was not sent";
         db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(sent ? "sent" : "failed", notification.lastInsertRowid);
@@ -7835,8 +7875,9 @@ app.get("/api/admin/group/invite-status", requireAdmin, (req, res) => {
 app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupInviteInFlight) return res.status(409).json({ error: "Group invite delivery is already in progress", operationId: groupInviteState.operationId });
-  const sourceGroupId = String(req.query.sourceGroupId || "120363426604560611@g.us").trim();
-  const groupId = String(req.query.groupId || getSetting("group_id", "120363413760988742@g.us")).trim();
+  const sourceGroupId = String(req.query.sourceGroupId || WHATSAPP_GROUP_ID).trim();
+  const groupId = String(req.query.groupId || "").trim();
+  if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
   const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
@@ -7850,8 +7891,9 @@ app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
 app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
-  const sourceGroupId = String(req.body?.sourceGroupId || "120363426604560611@g.us").trim();
-  const groupId = String(req.body?.groupId || "120363413760988742@g.us").trim();
+  const sourceGroupId = String(req.body?.sourceGroupId || WHATSAPP_GROUP_ID).trim();
+  const groupId = String(req.body?.groupId || "").trim();
+  if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
   const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
@@ -7865,8 +7907,9 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   if (String(req.query.execute || "") !== "1") return res.status(405).json({ error: "Use POST or provide the explicit execute=1 confirmation" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
-  const sourceGroupId = String(req.query.sourceGroupId || "120363426604560611@g.us").trim();
-  const groupId = String(req.query.groupId || "120363413760988742@g.us").trim();
+  const sourceGroupId = String(req.query.sourceGroupId || WHATSAPP_GROUP_ID).trim();
+  const groupId = String(req.query.groupId || "").trim();
+  if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
   const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
@@ -8269,7 +8312,7 @@ async function handleAdminWalletAdjustment(req, res) {
       const recipient = await resolveWhatsAppRecipientId(captain.phone);
       if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
       const text = topupCardTextMessage({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
-      const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+      const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       const deliveryIdempotencyKey = `ADMIN-WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100);
       const updated = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, card.id);
@@ -8363,6 +8406,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
+  if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Only Server 2's configured environment group may be active" });
   configureGroupId(groupId, groupName);
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
@@ -8370,7 +8414,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
 
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const groupId = "120363426604560611@g.us";
+  const groupId = WHATSAPP_GROUP_ID;
   const groupName = "🔥 وصلني الآن 🔥 🔥Waslni Now🔥";
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
@@ -8384,7 +8428,7 @@ app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
 
 app.post("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
-  const originalGroupId = "120363426604560611@g.us";
+  const originalGroupId = WHATSAPP_GROUP_ID;
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null) || isConfiguredGroup(groupId)) return res.status(409).json({ error: "The configured production group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -8397,7 +8441,7 @@ app.post("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) =
 });
 app.get("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) => {
   const groupId = String(req.query.groupId || "").trim();
-  const originalGroupId = "120363426604560611@g.us";
+  const originalGroupId = WHATSAPP_GROUP_ID;
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null) || isConfiguredGroup(groupId)) return res.status(409).json({ error: "The configured production group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -8411,8 +8455,8 @@ app.get("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) =>
 
 app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => {
   const groupId = String(req.query.groupId || "").trim();
-  const newGroupId = "120363413760988742@g.us";
-  const originalGroupId = "120363426604560611@g.us";
+  const newGroupId = "";
+  const originalGroupId = WHATSAPP_GROUP_ID;
   const expectedName = "وصلني الآن — شبكة التشغيل الرسمية";
   if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
@@ -9107,7 +9151,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
 });
 app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
   const verified = {
-    groupId: "120363426604560611@g.us",
+    groupId: WHATSAPP_GROUP_ID,
     sourceMessageId: "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid",
     acceptanceMessageId: "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid",
     downloaderPhone: "962779110123",
@@ -9386,10 +9430,10 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
     let sent = null;
     if (deliveryMode === "text") {
       const text = topupCardTextMessage({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
-      sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+      sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
     } else {
       const media = await renderTopupCardMedia({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
-      sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
+      sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
     }
     if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
@@ -9443,7 +9487,7 @@ app.post("/api/admin/bulk-topup/zero-balance-5", requireAdmin, async (req, res) 
           const code = decryptCardCode(card.code_ciphertext);
           const recipient = captain.recipientId && /@(c\.us|lid)$/.test(captain.recipientId) ? captain.recipientId : await resolveWhatsAppRecipientId(captain.phone);
           const text = topupCardTextMessage({ cardId: card.id, code, valueCents: 500, captainName: captain.name, appUrl });
-          const sent = recipient ? await withTimeout(client.sendMessage(recipient, text), 30000, null) : null;
+          const sent = recipient ? await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000) : null;
           if (!sent) throw new Error("delivery_failed");
           db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `BULK-${runKey}-${captain.id}`, card.id);
           run.sent += 1;
@@ -9500,7 +9544,7 @@ app.post("/api/admin/bulk-topup/negative-one-3", requireAdmin, async (req, res) 
         try {
           const code = decryptCardCode(card.code_ciphertext);
           const text = topupCardTextMessage({ cardId: card.id, code, valueCents: 300, captainName: captain.name, appUrl });
-          const sent = await withTimeout(client.sendMessage(captain.recipientId, text), 30000, null);
+          const sent = await sendServer2DirectAtMostOnce(captain.recipientId, text, undefined, 30000);
           if (!sent) throw new Error("delivery_failed");
           db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `BULK-${runKey}-${captain.id}`, card.id);
           run.sent += 1;
@@ -9550,7 +9594,7 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
           `رابط الدخول الفوري: ${appUrl}`,
           "يرجى تغيير الرقم السري بعد أول دخول وعدم مشاركته مع أي شخص.",
         ]);
-        const sent = await withTimeout(client.sendMessage(captain.recipientId, text), 30000, null);
+        const sent = await sendServer2DirectAtMostOnce(captain.recipientId, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
         audit("captain.pin_reset.bulk", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
         run.sent += 1;
@@ -9593,7 +9637,7 @@ app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, asyn
           "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
           "وصلني الآن — الإدارة",
         ]);
-        const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+        const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
         audit("captain.daily_debit_cancellation_notice.sent", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
         run.sent += 1;
@@ -9632,7 +9676,7 @@ app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, asyn
           "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.",
           "يرجى التواصل مع الإدارة لشحن الرصيد.",
         ]);
-        const sent = await withTimeout(client.sendMessage(recipient, text), 30000, null);
+        const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
         audit("captain.negative_balance_warning.sent", "user", captain.id, { bulkRunKey: runKey, messageId: sent.id?._serialized || null });
         run.sent += 1;
@@ -9832,7 +9876,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
     const recipient = await resolveWhatsAppRecipientId(phone);
     if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
-    const sent = await withTimeout(client.sendMessage(recipient, media, { caption }), 30000, null);
+    const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
     if (!sent) throw new Error("send timeout");
     db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
@@ -10560,13 +10604,14 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   if (req.body.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = getSetting("group_id", null);
-  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured group" });
+  if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "No configured Server 2 group" });
   try {
     const chat = await withTimeout(client.getChatById(groupId), 25000, null);
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
     const media = await withTimeout(MessageMedia.fromUrl(GROUP_BRAND_IMAGE_URL, { unsafeMime: true }), 30000, null);
     if (!media) return res.status(502).json({ error: "Unable to load group identity image" });
     const updated = { picture: await chat.setPicture(media), subject: await chat.setSubject(GROUP_BRAND_NAME), description: await chat.setDescription(GROUP_BRAND_DESCRIPTION) };
+    if (!isServer2OutboundTargetAllowed(groupId)) return res.status(403).json({ error: "Group is outside Server 2 allowlist" });
     const sent = await chat.sendMessage(GROUP_BRAND_WELCOME);
     audit("group.identity_applied", "group", groupId, { messageId: sent.id._serialized });
     res.json({ success: true, updated: { ...updated, welcomeMessageId: sent.id._serialized } });
@@ -10576,7 +10621,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   }
 });
 app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
-  const officialGroupId = "120363426604560611@g.us";
+  const officialGroupId = configuredRuntimeGroupId();
   const groupId = String(req.body?.groupId || "").trim();
   const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || crypto.randomUUID()).slice(0, 120);
   const caption = "اختبار إرسال صورة فقط — لا ينشئ طلبًا ولا يغيّر أي رصيد.";
@@ -10618,6 +10663,10 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const message = String(req.body.message || "").trim();
   if (!to || !message) return res.status(400).json({ error: "to and message are required" });
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
+  if (!isServer2AdminTargetAllowed(chatId)) {
+    audit("message.send_blocked_cross_boundary", "chat", chatId, { source: "admin_send", reason: "target_not_in_server2_allowlist" });
+    return res.status(403).json({ error: "Target is outside Server 2 allowlist" });
+  }
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const operationId = String(req.body.operationId || crypto.randomUUID()).slice(0, 120);
   const registration = registerAdminSend({ operationId, chatId, message });
