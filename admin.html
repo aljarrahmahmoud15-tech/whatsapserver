@@ -9,6 +9,23 @@
     *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 20% 0,#15365a 0,#08111f 45%);font-family:Tahoma,Arial,sans-serif;color:var(--text);min-height:100vh}.wrap{max-width:1400px;margin:auto;padding:24px 18px}.card{background:rgba(16,29,49,.94);border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 14px 45px #0004;margin-bottom:18px}.card>h2,.card .row h2{letter-spacing:.1px}h1,h2{margin-top:0}h1{font-size:28px}.muted{color:var(--muted)}label{display:block;margin:12px 0 6px;color:var(--muted)}input,select{width:100%;border:1px solid var(--line);background:#0a1628;color:var(--text);border-radius:10px;padding:12px;font-size:15px}button{border:0;border-radius:10px;padding:11px 15px;font-weight:700;cursor:pointer;background:var(--accent);color:#062218;margin-top:14px;transition:transform .15s,filter .15s}button:hover{filter:brightness(1.08);transform:translateY(-1px)}button.secondary{background:#223650;color:var(--text);margin-right:8px}.hidden{display:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}.metric{border:1px solid var(--line);border-radius:14px;padding:16px;background:#0d1a2d}.metric b{display:block;font-size:22px;margin-top:8px}.ok{color:var(--accent)}.bad{color:var(--danger)}.warn{color:var(--warn)}table{width:100%;border-collapse:separate;border-spacing:0;min-width:980px}th,td{text-align:right;border-bottom:1px solid var(--line);padding:11px 8px;vertical-align:top}th{color:var(--muted);font-size:13px;white-space:nowrap;background:#0d1a2d;position:sticky;top:0;z-index:1}tbody tr:hover{background:#17283f}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;margin-top:12px}pre{white-space:pre-wrap;background:#081423;border:1px solid var(--line);border-radius:10px;padding:12px;direction:ltr;text-align:left}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.notice{padding:11px;border-radius:10px;background:#17283f;color:var(--muted);margin-top:12px}.error{color:var(--danger)}a{color:#77cfff}.filters{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px;align-items:end}.filters button{margin:0}.booking-search-filters{grid-template-columns:minmax(250px,2fr) auto auto}.pill{display:inline-block;border-radius:999px;padding:5px 9px;font-size:12px;background:#223650}.pill.open{color:var(--warn)}.pill.accepted,.pill.completed{color:var(--accent)}.pill.cancelled,.pill.rejected{color:var(--danger)}.small{font-size:12px;color:var(--muted)}.detail{white-space:pre-wrap;max-width:360px;line-height:1.6}.captain-management-table{min-width:1800px}.captain-management-table .row-name{min-width:190px;background:#fff;color:#142238;border-color:#8ea1b8}.captain-actions{display:flex;flex-wrap:wrap;gap:6px;min-width:430px;max-width:520px}.captain-actions button{margin:0;padding:8px 10px;font-size:12px}.captain-actions .danger-button{background:#522737;color:#ffdbe3;border:1px solid #9f536d}.admin-nav{position:sticky;top:10px;z-index:5;display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px;margin:0 0 18px;background:rgba(8,17,31,.92);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(12px)}.admin-nav a{padding:8px 11px;border-radius:9px;background:#17283f;color:var(--text);text-decoration:none;font-size:13px}.admin-nav a:hover{background:#244362}.section-tag{display:inline-block;color:var(--accent);font-size:12px;font-weight:700;margin-bottom:7px}
     @media(max-width:760px){.filters{grid-template-columns:1fr}.card{padding:16px}.wrap{padding:16px 10px}.admin-nav{top:4px}.admin-nav a{flex:1 1 auto;text-align:center}.captain-actions{min-width:300px}.table-wrap{margin-left:-4px;margin-right:-4px}h1{font-size:23px}h2{font-size:19px}}
   .negative-wallet-card{border-color:#7d394f;background:linear-gradient(135deg,rgba(66,25,42,.96),rgba(16,29,49,.96))}.negative-wallet-card h2{color:#ffd2da}.negative-wallet-summary .metric{border-color:#7d394f}.negative-wallet-summary .metric b{color:var(--danger)}.negative-wallet-table{min-width:900px}.negative-wallet-table tbody tr:hover{background:#3a2030}.negative-wallet-value{font-weight:800;color:var(--danger);direction:ltr;unicode-bidi:plaintext}.negative-wallet-action{white-space:nowrap}
+
+#mergeCaptainModal[hidden]{display:none}
+#mergeCaptainModal{position:fixed;inset:0;z-index:10001;display:grid;place-items:center;direction:rtl;padding:16px}
+#mergeCaptainModal .merge-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(3px)}
+#mergeCaptainModal .merge-dialog{position:relative;z-index:1;width:min(94vw,560px);max-height:90vh;overflow:auto;padding:24px;border:1px solid var(--line);border-radius:18px;background:var(--card);color:var(--text);box-shadow:0 20px 70px rgba(0,0,0,.45)}
+#mergeCaptainModal .merge-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:var(--text);font-size:28px;line-height:1;cursor:pointer;margin:0;padding:4px 8px}
+#mergeCaptainModal .merge-dialog h2{color:var(--text);margin:5px 0 8px}
+#mergeCaptainModal .merge-dialog p{color:var(--muted);line-height:1.8;margin:0 0 14px}
+#mergeCaptainModal .merge-context{padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#0d1a2d;color:var(--text);line-height:1.8;margin-bottom:14px}
+#mergeCaptainModal .merge-dialog label{color:var(--text);margin:12px 0 6px}
+#mergeCaptainModal .merge-dialog input{width:100%;background:#0a1628;color:var(--text);caret-color:var(--accent);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:16px;direction:ltr;text-align:left}
+#mergeCaptainModal .merge-dialog input::placeholder{color:var(--muted);opacity:1}
+#mergeCaptainModal .merge-dialog input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+#mergeCaptainModal .merge-message{padding:10px 12px;border-radius:10px;margin-top:12px;line-height:1.7;color:var(--danger);background:#4b2028;border:1px solid #8d4554}
+#mergeCaptainModal .merge-message.success{color:#8ff0cf;background:#123f35;border-color:#278b70}
+#mergeCaptainModal .merge-actions{display:flex;gap:10px;justify-content:flex-start;margin-top:18px}
+#mergeCaptainModal .merge-actions button{margin:0}
 </style>
 </head>
 <body>
@@ -162,8 +179,7 @@ async function toggleCaptain(id,active){try{await api('/api/admin/captains/'+id,
 async function adjustCaptainWallet(id,direction){const amount=prompt(direction==='credit'?'قيمة الإضافة بالدينار:':'قيمة الخصم بالدينار:','1');if(amount===null)return;let creditMode='card';if(direction==='credit'){const selected=(prompt('طريقة الإضافة: اكتب card لإصدار بطاقة، أو direct لإضافة مباشرة من الشركة:','card')||'').trim().toLowerCase();if(!['card','direct'].includes(selected)){alert('اختر card أو direct فقط.');return}creditMode=selected}const reason=prompt('سبب الحركة:','تعديل رصيد من لوحة الإدارة');if(reason===null||!reason.trim())return;const idempotencyKey='UI-'+(creditMode==='direct'?'DIRECT-':'')+direction.toUpperCase()+'-'+id+'-'+Date.now();try{const result=await api('/api/admin/captains/'+id+'/wallet-adjustment',{method:'POST',body:JSON.stringify({direction,amount:Number(amount),reason:reason.trim(),idempotencyKey,creditMode})});await loadCaptains();alert(result.message||(direction==='credit'?(creditMode==='direct'?'تمت الإضافة المباشرة.':'تم إصدار بطاقة الشحن.'):'تم تنفيذ الخصم.'))}catch(e){alert(e.message)}}
 function openCaptainWhatsApp(phone){const clean=String(phone||'').replace(/[^0-9]/g,'');if(clean)window.open('https://wa.me/'+clean,'_blank','noopener,noreferrer')}
 async function resendCaptainAccess(id){const captain=allCaptains.find(c=>Number(c.id)===Number(id));if(!captain)return;try{const result=await api('/api/admin/captains/resend-access-card',{method:'POST',body:JSON.stringify({phone:captain.phone,deletePreviousPlain:true})});alert(result.cardSent?'تم إرسال بطاقة الدخول عبر WhatsApp.':'تعذر إرسال بطاقة الدخول.')}catch(e){alert(e.message)}}
-async function mergeCaptain(id,name){const targetId=prompt(`أدخل ID الحساب الهدف لدمج «${name}»:`);if(targetId===null||!/^\d+$/.test(targetId)||Number(targetId)===Number(id))return;const reason=prompt('سبب الدمج:','توحيد حساب مكرر');if(reason===null||!reason.trim())return;const confirmation=prompt(`اكتب حرفيًا: MERGE ${id} INTO ${targetId}`);if(confirmation!==`MERGE ${id} INTO ${targetId}`)return;try{await api('/api/admin/captains/'+id+'/merge',{method:'POST',body:JSON.stringify({targetId:Number(targetId),reason:reason.trim(),confirmation})});await loadCaptains();alert('تم دمج الحساب مع حفظ الحركات والرصيد.')}catch(e){alert(e.message)}}
-async function secureDeleteCaptain(id,name){if(!confirm(`حذف آمن لحساب «${name}»؟ لن يُحذف الحساب إذا كان مرتبطًا برصيد أو رحلات أو حركات مالية.`))return;try{await api('/api/admin/captains/'+id,{method:'DELETE'});await loadCaptains();alert('تم حذف الحساب.')}catch(e){alert(e.message)}}
+function mergeCaptain(id,name){openMergeCaptainModal(id,name)}async function secureDeleteCaptain(id,name){if(!confirm(`حذف آمن لحساب «${name}»؟ لن يُحذف الحساب إذا كان مرتبطًا برصيد أو رحلات أو حركات مالية.`))return;try{await api('/api/admin/captains/'+id,{method:'DELETE'});await loadCaptains();alert('تم حذف الحساب.')}catch(e){alert(e.message)}}
 async function syncCaptainNames(){try{$('subscriptionReportMsg').textContent='جاري قراءة أسماء الكباتن المسجلين من القروب المعتمد…';const data=await api('/api/admin/captains/sync-names',{method:'POST'});$('subscriptionReportMsg').textContent=`تمت مزامنة ${data.updated?.length||0} اسمًا حقيقيًا، وتعذر تحديث ${data.skipped?.length||0} حسابًا لعدم توفر اسم في WhatsApp.`;await loadSubscriptionReport();const caps=await api('/api/admin/captains');allCaptains=caps.captains||[];renderCaptains()}catch(e){$('subscriptionReportMsg').textContent='تعذرت مزامنة الأسماء: '+e.message;$('subscriptionReportMsg').classList.add('error')}}
 async function loadCaptainInvites(){try{const data=await api('/api/admin/captain-invites');pendingCaptainInvites=data.invites||[];const pending=pendingCaptainInvites.filter(i=>i.status==='pending');$('captainInvitesMsg').textContent=`تم تحميل ${pendingCaptainInvites.length} طلبًا · بانتظار القرار: ${pending.length}`;$('captainInvitesMsg').classList.remove('error');$('captainInvites').innerHTML=pendingCaptainInvites.map(i=>{const status=i.status==='pending'?'بانتظار الموافقة':i.status==='approved'?'تمت الموافقة':i.status==='rejected'?'مرفوض':i.status==='expired'?'منتهي':'مُصدر';const method=i.auth_method==='pin'?'PIN من 5 أرقام':'WhatsApp';const action=i.status==='pending'?`<button onclick="decideCaptainInvite(${Number(i.id)},'approve')">موافقة وإنشاء الحساب</button><button class="secondary" onclick="decideCaptainInvite(${Number(i.id)},'reject')">رفض</button>`:'لا إجراء';return `<tr><td>#${esc(i.id)}<br><span class="small" dir="ltr">${esc(i.token_last8||'—')}</span></td><td>${esc(i.name||'—')}</td><td dir="ltr">${esc(i.phone||'—')}</td><td>${method}</td><td>${esc(i.submitted_at||i.created_at||'—')}</td><td>${status}<br><span class="small">${esc(i.decision_note||'')}</span></td><td>${action}</td></tr>`}).join('')||'<tr><td colspan="7">لا توجد طلبات تسجيل</td></tr>'}catch(e){$('captainInvitesMsg').textContent='تعذر تحميل طلبات التسجيل: '+e.message;$('captainInvitesMsg').classList.add('error');$('captainInvites').innerHTML='<tr><td colspan="7">تعذر تحميل البيانات</td></tr>'}}
 async function decideCaptainInvite(id,decision){const invite=pendingCaptainInvites.find(i=>Number(i.id)===Number(id));if(!invite||invite.status!=='pending')return;let note='';if(decision==='reject'){note=prompt('سبب الرفض (اختياري):','')??'';if(!confirm(`تأكيد رفض طلب ${invite.name||'الكابتن'}؟`))return}else if(!confirm(`تأكيد الموافقة على ${invite.name||'الكابتن'}؟\nسيُنشأ الحساب ويُفعّل الدخول ويُرسل رابط الدخول.`))return;try{$('captainInvitesMsg').textContent=decision==='approve'?'جاري إنشاء الحساب بعد موافقة المالك…':'جاري تسجيل الرفض…';const result=await api('/api/admin/captain-invites/'+id+'/decision',{method:'POST',body:JSON.stringify({decision,note})});$('captainInvitesMsg').textContent=result.status==='approved'?'تمت الموافقة وإنشاء حساب الكابتن وإرسال بطاقة الدخول.':'تم رفض طلب التسجيل دون إنشاء حساب.';await Promise.all([loadCaptainInvites(),loadCaptains(),loadUsers()])}catch(e){$('captainInvitesMsg').textContent='لم يُنفذ القرار: '+e.message;$('captainInvitesMsg').classList.add('error')}}
@@ -205,6 +221,23 @@ if(token){$('login').classList.add('hidden');$('app').classList.remove('hidden')
 #approvalTestModal[hidden]{display:none}#approvalTestModal{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;direction:rtl}#approvalTestModal .approval-test-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.65)}#approvalTestModal .approval-test-dialog{position:relative;z-index:1;width:min(94vw,620px);max-height:90vh;overflow:auto;padding:24px;border-radius:18px;background:#101d2e;color:#f5f7fa;box-shadow:0 20px 70px rgba(0,0,0,.35)}#approvalTestModal .approval-test-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:#fff;font-size:28px;cursor:pointer}#approvalTestModal pre{white-space:pre-wrap;line-height:1.8;background:#091321;border:1px solid #29415d;border-radius:12px;padding:14px;max-height:300px;overflow:auto}#approvalTestModal .approval-test-actions{display:flex;gap:10px;margin-top:18px}.approval-test-result{margin-top:12px;padding:12px;border-radius:10px}.approval-test-result.ok{background:#123f35;color:#8ff0cf}.approval-test-result.bad{background:#4b2028;color:#ffc1c9}
 #recoveryConfirmModal[hidden]{display:none}#recoveryConfirmModal{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;direction:rtl}#recoveryConfirmModal .recovery-confirm-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.68)}#recoveryConfirmModal .recovery-confirm-dialog{position:relative;z-index:1;width:min(94vw,620px);max-height:90vh;overflow:auto;padding:24px;border-radius:18px;background:#101d2e;color:#f5f7fa;box-shadow:0 20px 70px rgba(0,0,0,.35)}#recoveryConfirmModal .recovery-confirm-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:#fff;font-size:28px;cursor:pointer}#recoveryConfirmModal .recovery-confirm-preview{white-space:pre-wrap;line-height:1.8;background:#091321;border:1px solid #29415d;border-radius:12px;padding:14px;max-height:300px;overflow:auto;direction:rtl}#recoveryConfirmModal .recovery-confirm-actions{display:flex;gap:10px;margin-top:18px}</style>
 <style>#unconfirmedDecisionModal[hidden]{display:none}#unconfirmedDecisionModal{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;direction:rtl}#unconfirmedDecisionModal .recovery-confirm-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.68)}#unconfirmedDecisionModal .recovery-confirm-dialog{position:relative;z-index:1;width:min(94vw,620px);max-height:90vh;overflow:auto;padding:24px;border-radius:18px;background:#101d2e;color:#f5f7fa;box-shadow:0 20px 70px rgba(0,0,0,.35)}#unconfirmedDecisionSubmit.danger-button{background:#522737;color:#ffdbe3;border:1px solid #9f536d}.unconfirmed-actions{min-width:260px;display:flex;flex-direction:column;gap:8px}.unconfirmed-actions button{display:block;width:100%;margin:0;padding:9px 10px;font-size:12px;font-weight:700}.unconfirmed-actions button:disabled{opacity:.5;cursor:not-allowed;transform:none}</style>
+<div id="mergeCaptainModal" hidden>
+  <div class="merge-backdrop" onclick="closeMergeCaptainModal()"></div>
+  <section class="merge-dialog" role="dialog" aria-modal="true" aria-labelledby="mergeCaptainTitle">
+    <button type="button" class="merge-close" onclick="closeMergeCaptainModal()" aria-label="إغلاق">×</button>
+    <span class="section-tag">إدارة الحسابات</span>
+    <h2 id="mergeCaptainTitle">دمج حساب كابتن</h2>
+    <p id="mergeCaptainHint">أدخل البيانات داخل هذه البطاقة لإكمال الدمج بأمان.</p>
+    <div id="mergeCaptainContext" class="merge-context"></div>
+    <label id="mergeCaptainInputLabel" for="mergeCaptainInput">ID الحساب الهدف</label>
+    <input id="mergeCaptainInput" type="text" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();submitMergeCaptainStep()}" />
+    <div id="mergeCaptainError" class="merge-message" hidden></div>
+    <div class="merge-actions">
+      <button type="button" class="secondary" onclick="closeMergeCaptainModal()">إلغاء</button>
+      <button type="button" id="mergeCaptainSubmit" onclick="submitMergeCaptainStep()">التالي</button>
+    </div>
+  </section>
+</div>
 <div id="approvalTestModal" hidden>
   <div class="approval-test-backdrop" onclick="closeApprovalTest()"></div>
   <section class="approval-test-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalTestTitle">
@@ -239,6 +272,83 @@ if(token){$('login').classList.add('hidden');$('app').classList.remove('hidden')
   </section>
 </div>
 <script>
+let mergeCaptainFlow=null;
+function setMergeCaptainMessage(message,kind='error'){
+  const node=$('mergeCaptainError');
+  if(!node)return;
+  node.textContent=message||'';
+  node.className='merge-message'+(kind==='success'?' success':'');
+  node.hidden=!message;
+}
+function renderMergeCaptainStep(step){
+  if(!mergeCaptainFlow)return;
+  mergeCaptainFlow.step=step;
+  const input=$('mergeCaptainInput');
+  const title=$('mergeCaptainTitle');
+  const hint=$('mergeCaptainHint');
+  const label=$('mergeCaptainInputLabel');
+  const context=$('mergeCaptainContext');
+  const submit=$('mergeCaptainSubmit');
+  setMergeCaptainMessage('');
+  if(step==='target'){
+    title.textContent='دمج حساب كابتن';
+    hint.textContent='أدخل ID الحساب الهدف داخل البطاقة. سيُنقل الحساب المصدر مع حفظ الرصيد والحركات المالية.';
+    label.textContent='ID الحساب الهدف';
+    context.innerHTML='<b>الحساب المصدر:</b> '+esc(mergeCaptainFlow.sourceName||'غير محدد')+' · <span dir="ltr">#'+esc(mergeCaptainFlow.sourceId)+'</span>';
+    input.type='text';input.inputMode='numeric';input.placeholder='مثال: 134';input.value='';submit.textContent='التالي';
+  }else if(step==='reason'){
+    title.textContent='سبب دمج الحساب';
+    hint.textContent='اكتب سببًا واضحًا ليظهر في سجل التدقيق للمالك.';
+    label.textContent='سبب الدمج';
+    context.innerHTML='<b>الحساب المصدر:</b> '+esc(mergeCaptainFlow.sourceName||'غير محدد')+' · <span dir="ltr">#'+esc(mergeCaptainFlow.sourceId)+'</span><br><b>الحساب الهدف:</b> <span dir="ltr">#'+esc(mergeCaptainFlow.targetId)+'</span>';
+    input.type='text';input.inputMode='text';input.placeholder='مثال: توحيد حساب مكرر';input.value='توحيد حساب مكرر';submit.textContent='التالي';
+  }else{
+    const expected='MERGE '+mergeCaptainFlow.sourceId+' INTO '+mergeCaptainFlow.targetId;
+    title.textContent='تأكيد عملية الدمج';
+    hint.textContent='اكتب العبارة التالية حرفيًا لتأكيد العملية. لن تُنفذ أي حركة قبل التأكيد.';
+    label.textContent='عبارة التأكيد';
+    context.innerHTML='<b>الحساب المصدر:</b> <span dir="ltr">#'+esc(mergeCaptainFlow.sourceId)+'</span><br><b>الحساب الهدف:</b> <span dir="ltr">#'+esc(mergeCaptainFlow.targetId)+'</span><br><span class="small">الصيغة المطلوبة: '+esc(expected)+'</span>';
+    input.type='text';input.inputMode='latin';input.placeholder=expected;input.value='';submit.textContent='تنفيذ الدمج';
+  }
+  $('mergeCaptainModal').hidden=false;
+  window.setTimeout(()=>input.focus(),0);
+}
+function openMergeCaptainModal(id,name){
+  mergeCaptainFlow={sourceId:Number(id),sourceName:String(name||''),step:'target',inFlight:false};
+  renderMergeCaptainStep('target');
+}
+function closeMergeCaptainModal(){
+  if(mergeCaptainFlow?.inFlight)return;
+  const modal=$('mergeCaptainModal');
+  if(modal)modal.hidden=true;
+  mergeCaptainFlow=null;
+  setMergeCaptainMessage('');
+}
+async function submitMergeCaptainStep(){
+  const flow=mergeCaptainFlow;
+  const input=$('mergeCaptainInput');
+  const submit=$('mergeCaptainSubmit');
+  if(!flow||flow.inFlight||!input||!submit)return;
+  const value=input.value.trim();
+  if(flow.step==='target'){
+    if(!/^\d+$/.test(value)||Number(value)<1||Number(value)===flow.sourceId){setMergeCaptainMessage('أدخل ID حساب هدف صحيحًا ومختلفًا عن الحساب المصدر.');input.focus();return}
+    flow.targetId=Number(value);renderMergeCaptainStep('reason');return;
+  }
+  if(flow.step==='reason'){
+    if(!value){setMergeCaptainMessage('اكتب سبب الدمج قبل المتابعة.');input.focus();return}
+    flow.reason=value;renderMergeCaptainStep('confirmation');return;
+  }
+  const expected='MERGE '+flow.sourceId+' INTO '+flow.targetId;
+  if(value!==expected){setMergeCaptainMessage('عبارة التأكيد غير مطابقة. اكتبها كما تظهر داخل البطاقة تمامًا.');input.focus();return}
+  flow.inFlight=true;submit.disabled=true;submit.textContent='جارٍ تنفيذ الدمج…';setMergeCaptainMessage('جارٍ التحقق وحفظ الدمج في سجل التدقيق…','success');
+  try{
+    await api('/api/admin/captains/'+flow.sourceId+'/merge',{method:'POST',body:JSON.stringify({targetId:flow.targetId,reason:flow.reason,confirmation:value})});
+    try{await loadCaptains()}catch(_error){}
+    flow.inFlight=false;submit.disabled=true;submit.textContent='تم الدمج';setMergeCaptainMessage('تم دمج الحساب مع حفظ الرصيد والحركات المالية وسجل التدقيق.','success');
+  }catch(error){
+    flow.inFlight=false;submit.disabled=false;submit.textContent='إعادة المحاولة';setMergeCaptainMessage(error.message||'تعذر تنفيذ الدمج.');
+  }
+}
 let approvalTestCaptain=null, approvalTestSending=false;
 function approvalTestPreview(c){return ['╭━━━ ✦ WASLNI NOW OPERATIONS NETWORK ✦ ━━━╮','┃ وصلني الآن | بوابة التشغيل الرسمية','┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫','┃ إشعار اختبار الموافقة','┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫','┃ عزيزي الكابتن '+c.name+'،','┃ تمت الموافقة على تسجيلك من الشركة.','┃ هذه رسالة اختبار فقط، ولا تغيّر حالة حسابك أو رصيدك.','┃ رقم الهاتف: '+c.phone,'┃ رابط دخول الكابتن المباشر:','┃ https://whatsapserver-2.onrender.com/captain?mode=login','┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫','┃ نقل أسرع • تنظيم أدق • سجل موثّق','╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯'].join('\n')}
 function openApprovalTest(button){approvalTestCaptain={id:Number(button.dataset.approvalTestId),name:button.dataset.approvalTestName||'غير محدد',phone:button.dataset.approvalTestPhone||'غير محدد'};$('approvalTestName').textContent=approvalTestCaptain.name;$('approvalTestPhone').textContent=approvalTestCaptain.phone;$('approvalTestPreview').textContent=approvalTestPreview(approvalTestCaptain);$('approvalTestConfirm').checked=false;$('approvalTestSend').disabled=true;$('approvalTestResult').hidden=true;$('approvalTestModal').hidden=false}
