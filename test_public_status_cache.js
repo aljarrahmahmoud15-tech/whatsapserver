@@ -11,7 +11,7 @@ assert.match(source, /const PUBLIC_STATUS_CACHE_TTL_MS = Math\.max\(250, Math\.m
 assert.match(source, /let publicStatusCache = \{ payload: null, expiresAt: 0 \};/);
 assert.match(route, /publicStatusCache\.payload && publicStatusCache\.expiresAt > currentTime/);
 assert.match(route, /X-Status-Cache/);
-assert.match(route, /private, max-age=1, stale-while-revalidate=4/);
+assert.match(route, /private, max-age=2, stale-while-revalidate=5/);
 assert.match(route, /publicStatusCache = \{ payload, expiresAt: Date\.now\(\) \+ PUBLIC_STATUS_CACHE_TTL_MS \};/);
 assert.ok(!route.includes('settlePendingOrder('), 'status cache route remains read-only');
 

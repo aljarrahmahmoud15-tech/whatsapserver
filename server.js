@@ -46,7 +46,7 @@ const QR_PUBLIC_DURATION_MS = 15 * 60 * 1000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const DEFAULT_PUBLIC_REPORT_ORIGIN = "https://waslni-stab-ndpp5c4k.manus.space";
 const PUBLIC_REPORT_ORIGIN = String(process.env.PUBLIC_REPORT_ORIGIN || DEFAULT_PUBLIC_REPORT_ORIGIN).replace(/\/$/, "");
-const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || 1000)));
+const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || 5000)));
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
@@ -7190,7 +7190,7 @@ app.get("/api/public/operations-feed", (req, res) => {
 app.get("/status", (req, res) => {
   const currentTime = Date.now();
   if (publicStatusCache.payload && publicStatusCache.expiresAt > currentTime) {
-    res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=4");
+    res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=5");
     res.setHeader("X-Status-Cache", "HIT");
     return res.json(publicStatusCache.payload);
   }
@@ -7250,7 +7250,7 @@ app.get("/status", (req, res) => {
     acceptanceRecovery: lastAcceptanceRecovery,
   };
   publicStatusCache = { payload, expiresAt: Date.now() + PUBLIC_STATUS_CACHE_TTL_MS };
-  res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=4");
+  res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=5");
   res.setHeader("X-Status-Cache", "MISS");
   res.json(payload);
 });
