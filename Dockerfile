@@ -47,4 +47,4 @@ RUN mkdir -p /app/data && chown -R node:node /app
 
 EXPOSE 10000
 # Render mounts the persistent disk after image build; fix its ownership at startup.
-CMD ["sh", "-c", "chown -R node:node /app/data && exec su -s /bin/sh node -c 'exec node server.js'"]
+CMD ["sh", "-c", "chown -R node:node /app/data && exec su -s /bin/sh node -c 'exec node --expose-gc --max-old-space-size=768 server.js'"]

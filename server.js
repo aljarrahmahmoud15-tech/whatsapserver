@@ -1645,6 +1645,17 @@ function safePathHealth(targetPath) {
     return { exists: false, directory: false, writable: false, error: error.code || "unavailable" };
   }
 }
+function whatsappSessionPersistenceHealth() {
+  const authDirectory = safePathHealth(AUTH_PATH);
+  const profileDirectory = safePathHealth(path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`));
+  return {
+    configured: !runningOnRender || path.resolve(DATA_DIR) === "/app/data",
+    authDirectoryExists: Boolean(authDirectory.exists),
+    authDirectoryWritable: Boolean(authDirectory.writable),
+    profileDirectoryExists: Boolean(profileDirectory.exists),
+    profileDirectoryWritable: Boolean(profileDirectory.writable),
+  };
+}
 function storageInventory() {
   const files = [];
   const directories = [];
@@ -7209,6 +7220,10 @@ app.get("/status", (req, res) => {
     whatsappLastEvent,
     whatsappLastError,
     whatsappInitializing: Boolean(initializing),
+    lastQrAt: lastQrTime ? new Date(lastQrTime).toISOString() : null,
+    lastReadyAt,
+    lastDisconnectAt,
+    whatsappSessionPersistence: whatsappSessionPersistenceHealth(),
     whatsappStoragePressure: { ...whatsappStoragePressure },
     captains: {
       activeRegistered: activeCaptains,

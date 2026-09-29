@@ -4,9 +4,13 @@ const fs = require('node:fs');
 const server = fs.readFileSync('./server.js', 'utf8');
 const index = fs.readFileSync('./public/index.html', 'utf8');
 const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+const renderConfig = fs.readFileSync('./render.yaml', 'utf8');
+const dockerfile = fs.readFileSync('./Dockerfile', 'utf8');
 
 assert.match(packageJson.scripts.start, /--expose-gc/);
 assert.match(packageJson.scripts.start, /--max-old-space-size=\$\{NODE_HEAP_MB:-768\}/);
+assert.match(renderConfig, /startCommand: node --expose-gc --max-old-space-size=768 server\.js/);
+assert.match(dockerfile, /node --expose-gc --max-old-space-size=768 server\.js/);
 
 assert.match(server, /WHATSAPP_LID_CACHE_TTL_MS/);
 assert.match(server, /WHATSAPP_LID_CACHE_MAX_ENTRIES/);
@@ -15,6 +19,8 @@ assert.match(server, /MEMORY_PRUNE_COOLDOWN_MS/);
 assert.match(server, /RUNTIME_TEMP_CLEANUP_INTERVAL_MS/);
 assert.match(server, /RUNTIME_TEMP_FILE_MAX_AGE_MS/);
 assert.match(server, /function cleanupStaleRuntimeTempFiles\(/);
+assert.match(server, /function whatsappSessionPersistenceHealth\(/);
+assert.match(server, /whatsappSessionPersistence: whatsappSessionPersistenceHealth\(\)/);
 assert.match(server, /function cacheWhatsappLidPhone\(/);
 assert.match(server, /function pruneTimestampedMap\(/);
 assert.match(server, /function pruneRuntimeMemoryCaches\(/);
