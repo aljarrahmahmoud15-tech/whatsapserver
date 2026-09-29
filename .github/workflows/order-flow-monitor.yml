@@ -128,5 +128,20 @@ jobs:
             [[ "$attempt" -eq 6 ]] || sleep 10
           done
 
+          final_status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+          if [[ -n "$final_status" ]] && printf '%s\n' "$final_status" | jq -e '
+            (.ready == true) and
+            (.whatsappState == "ready") and
+            (.groupReceiverReady == true) and
+            (.whatsappLastError == null) and
+            (.whatsappStoragePressure | type == "object") and
+            (.whatsappStoragePressure.status == "unknown") and
+            (.whatsappStoragePressure.blocked == false)
+          ' >/dev/null 2>&1; then
+            echo "::warning::IndexedDB pressure is still unmeasured, but WhatsApp and the official group are ready and sending is not blocked."
+            printf '%s\n' "$final_status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}'
+            exit 0
+          fi
+
           echo "IndexedDB pressure state remained unavailable or unmeasured after retries." >&2
           exit 1

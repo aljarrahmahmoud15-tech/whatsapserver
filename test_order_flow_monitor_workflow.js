@@ -15,4 +15,6 @@ assert.match(workflow, /WhatsApp\/group status did not return a healthy JSON pay
 assert.match(workflow, /\.groupReceiverReady == true/, 'يتحقق من مستقبل القروب');
 assert.match(workflow, /\.whatsappLastError == null/, 'يرفض حالة خطأ WhatsApp');
 assert.match(workflow, /\.orders\.pendingConfirmation >= 0/, 'يتحقق من عداد الطلبات المعلقة');
+assert.match(workflow, /IndexedDB pressure is still unmeasured/, 'يصدر تحذيرًا غير قاتل إذا كانت مؤشرات الضغط غير مقاسة مؤقتًا مع جاهزية WhatsApp');
+assert.match(workflow, /\.whatsappStoragePressure\.status == "unknown"/, 'يربط التحذير بحالة الضغط غير المقاسة فقط');
 console.log('order flow monitor workflow guardrails verified');
