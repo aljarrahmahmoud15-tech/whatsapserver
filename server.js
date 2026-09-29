@@ -29,6 +29,12 @@ const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+// Keep LocalAuth namespaces independent across cloned Render services. When
+// WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
+// service's own phone and group instead of using a shared constant.
+const WHATSAPP_IDENTITY_SCOPE = String(
+  process.env.WHATSAPP_IDENTITY_SCOPE || `${BOT_PHONE_INTL || BOT_PHONE}:${WHATSAPP_GROUP_ID || "unconfigured"}`,
+).trim().replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80) || "isolated";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
@@ -81,7 +87,7 @@ const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
-const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || "aljarah-main-v2";
+const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Approved immutable settlement policy: the value after "السعر" is external;
 // 12% goes to the captain who posted the order, 3% to the company, and both
 // are charged to the confirming captain (15% total). The fare never credits B.
@@ -2047,7 +2053,18 @@ function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
   if (!value) return false;
   if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
-  if (value.endsWith("@lid")) return true;
+  // A LID is not globally meaningful across WhatsApp sessions. Accept it
+  // only when this service has verified the mapping in its own SQLite store;
+  // otherwise a cloned Server 2 session could become an outbound target.
+  if (value.endsWith("@lid")) {
+    const mapped = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? AND active=1 LIMIT 1").get(value);
+    if (!mapped?.phone) return false;
+    const phone = phoneWithCountry(mapped.phone);
+    return Boolean(
+      db.prepare("SELECT 1 FROM users WHERE phone=? AND active=1 AND account_status='active' LIMIT 1").get(phone)
+        || db.prepare("SELECT 1 FROM customer_leads WHERE phone=? AND state NOT IN ('cancelled') LIMIT 1").get(phone),
+    );
+  }
   if (!value.endsWith("@c.us")) return false;
   const phone = phoneWithCountry(value.slice(0, -5));
   if (!phone) return false;
@@ -7210,8 +7227,16 @@ app.get("/status", (req, res) => {
   const payload = {
     ready: Boolean(isReady),
     phone: connectedBotPhone(),
+    whatsappIdentityScope: WHATSAPP_IDENTITY_SCOPE,
+    whatsappClientId: WHATSAPP_CLIENT_ID,
     groupConfigured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
     groupId: configuredGroupId || null,
+    groupIsolation: {
+      environmentGroupId: WHATSAPP_GROUP_ID || null,
+      exactMatchRequired: true,
+      crossGroupOperations: false,
+      unverifiedLidOutbound: false,
+    },
     groupReceiverReady,
     groupReceiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
     lastGroupEventGroupId,
