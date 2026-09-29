@@ -55,7 +55,7 @@ assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزا
 assert(server.includes('negativeBalanceWarningRuns'), 'negative balance warning broadcast is idempotent by run');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents'), 'subscription debit triggers wallet threshold policy');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance'), 'administrative debit triggers wallet threshold policy');
-assert(server.includes('if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id'), 'order settlement triggers wallet threshold policy');
+assert(server.includes('async function enforceConfirmedOrderDebtRemoval'), 'order settlement uses the confirmed-card debt removal guard');
 assert(server.includes('operations card not sent because branded media failed'), 'plain-text fallback is disabled for individual company messages');
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.id'), 'top-up request fulfillment renders a card image');

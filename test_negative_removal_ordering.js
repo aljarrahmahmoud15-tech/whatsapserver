@@ -1,0 +1,30 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+
+const server = fs.readFileSync("./server.js", "utf8");
+const thresholdStart = server.indexOf("async function enforceCaptainWalletThresholds(");
+const thresholdEnd = server.indexOf("async function enforceCaptainWalletThresholdsForAll", thresholdStart);
+assert.ok(thresholdStart >= 0 && thresholdEnd > thresholdStart, "wallet threshold guard must exist");
+const thresholdBody = server.slice(thresholdStart, thresholdEnd);
+
+assert.match(server, /function confirmedOrderDebtEvidence\(orderId, captainId\)/);
+assert.match(server, /s\.status='applied'/);
+assert.match(server, /d\.status='sent'/);
+assert.match(server, /o\.settlement_state='settled'/);
+assert.match(server, /l\.type='captain_fee'/);
+assert.match(server, /async function enforceConfirmedOrderDebtRemoval\(/);
+assert.match(server, /removal_deferred_confirmation_required/);
+assert.match(server, /confirmed_settlement_and_card_required/);
+assert.match(server, /removalContext\?\.confirmedSettlement === true/);
+const confirmationStart = server.indexOf("async function sendFinalBookingConfirmation(");
+const confirmationEnd = server.indexOf("async function retryFailedBookingConfirmations", confirmationStart);
+assert.ok(confirmationStart >= 0 && confirmationEnd > confirmationStart, "confirmation sender must exist");
+const confirmationBody = server.slice(confirmationStart, confirmationEnd);
+assert.match(confirmationBody, /enforceConfirmedOrderDebtRemoval\(/);
+assert.match(confirmationBody, /status='sent'/);
+assert.doesNotMatch(thresholdBody, /suspendMemberForDebt\(/, "generic wallet threshold checks must not remove a captain directly");
+const historicalStart = server.indexOf("function settleHistoricalConfirmedOrder(");
+const historicalEnd = server.indexOf("function normalizeRecoveryText", historicalStart);
+assert.ok(historicalStart >= 0 && historicalEnd > historicalStart, "historical settlement function must exist");
+assert.doesNotMatch(server.slice(historicalStart, historicalEnd), /void enforceCaptainWalletThresholds\(/, "historical settlement must not remove before confirmation delivery");
+console.log("negative-balance removal is deferred until applied settlement and sent confirmation card");

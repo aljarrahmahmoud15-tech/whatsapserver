@@ -1368,18 +1368,78 @@ async function runCaptainCompletionAnnouncement({ runKey, captains }) {
     run.completedAt = now();
   }
 }
+function confirmedOrderDebtEvidence(orderId, captainId) {
+  const safeOrderId = Number(orderId);
+  const safeCaptainId = Number(captainId);
+  if (!Number.isInteger(safeOrderId) || safeOrderId <= 0 || !Number.isInteger(safeCaptainId) || safeCaptainId <= 0) return null;
+  return db.prepare(`SELECT o.id AS order_id,o.order_no,o.captain_user_id,u.wallet_cents,
+      s.status AS settlement_status,d.status AS confirmation_status,l.balance_after_cents
+    FROM orders o
+    JOIN users u ON u.id=o.captain_user_id AND u.id=? AND u.role='captain' AND u.is_bot=0
+    JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+    JOIN order_confirmation_deliveries d ON d.order_id=o.id AND d.status='sent'
+    JOIN wallet_ledger l ON l.order_id=o.id AND l.user_id=u.id AND l.type='captain_fee' AND l.reference=('ORDER-' || o.order_no)
+    WHERE o.id=? AND o.captain_user_id=? AND o.status IN ('accepted','completed')
+      AND o.settlement_state='settled'
+      AND l.balance_after_cents < 0
+      AND u.wallet_cents < 0
+    LIMIT 1`).get(safeCaptainId, safeOrderId, safeCaptainId);
+}
+
+async function enforceConfirmedOrderDebtRemoval({ orderId, captainId, balanceCents, reason, reference }) {
+  const resolvedCaptainId = Number(captainId) || Number(db.prepare("SELECT captain_user_id FROM orders WHERE id=? LIMIT 1").get(Number(orderId))?.captain_user_id || 0);
+  const resolvedBalance = Number.isFinite(Number(balanceCents))
+    ? Number(balanceCents)
+    : Number(db.prepare("SELECT wallet_cents FROM users WHERE id=? LIMIT 1").get(resolvedCaptainId)?.wallet_cents);
+  const evidence = confirmedOrderDebtEvidence(orderId, resolvedCaptainId);
+  if (!evidence || resolvedBalance >= 0) {
+    audit("captain.wallet.negative_removal_deferred", "user", resolvedCaptainId, {
+      orderId: Number(orderId) || null,
+      balanceCents: resolvedBalance,
+      reference: String(reference || "").slice(0, 100),
+      reason: String(reason || "").slice(0, 160),
+      financialMutation: false,
+      blocker: evidence ? "balance_not_negative" : "confirmed_settlement_and_card_required",
+    });
+    return { status: "removal_deferred_confirmation_required", financialMutation: false };
+  }
+  return notifyCaptainNegativeBalance({
+    captainId: resolvedCaptainId,
+    balanceCents: resolvedBalance,
+    reason,
+    reference,
+    removalContext: { confirmedSettlement: true, orderId: evidence.order_id },
+  });
+}
+
 async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference, removalContext = null }) {
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && Number(balanceCents) >= 0)) return { status: "ineligible" };
   const title = "إشعار رصيد مستحق من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
-  const removal = await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }));
+  const removalEvidence = removalContext?.confirmedSettlement === true
+    ? confirmedOrderDebtEvidence(removalContext.orderId, captain.id)
+    : null;
+  const removal = removalEvidence
+    ? await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }))
+    : { status: "removal_deferred_confirmation_required", error: "confirmed_settlement_and_card_required" };
+  if (!removalEvidence) {
+    audit("captain.wallet.negative_removal_deferred", "user", captain.id, {
+      balanceCents: Number(balanceCents),
+      reference: safeReference,
+      financialMutation: false,
+      blocker: "confirmed_settlement_and_card_required",
+    });
+  }
+  const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
+    ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
+    : "تم تسجيل الرصيد المستحق، ولم تتم إزالة الحساب أو إيقافه؛ يلزم أولًا وجود تسوية طلب مؤكدة ووصول بطاقة التثبيت.";
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
     `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق.",
+    removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
     "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
@@ -3400,6 +3460,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
     })();
     if (delivery?.status === "sent") {
       confirmationDeliveryInFlight.delete(orderId);
+      void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
       return null;
     }
     if (delivery?.retrySuppressed) {
@@ -3417,6 +3478,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       void sendPromise.then((lateSent) => {
         if (!orderId || !serializedMessageId(lateSent)) return;
         db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(serializedMessageId(lateSent), now(), now(), orderId);
+        void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
       }).catch((error) => {
         console.warn(`[WhatsApp] confirmation send completed after timeout with error: order=${details?.orderNo || "unknown"} error=${String(error?.message || error)}`);
       }).finally(() => {
@@ -3429,6 +3491,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
     if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
+    if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
     return sent;
   } catch (error) {
     console.error("[WhatsApp] final booking confirmation not sent:", error.message);
@@ -5174,7 +5237,6 @@ async function approveBotOwnedAcceptance({ groupId, message, candidateId, accept
       confirmedBy: connectedBotPhone(),
       confirmationText: finalBookingConfirmationText(confirmationDetails),
     });
-    if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية طلب", reference: `ORDER-${result.order.order_no}` });
     console.log(`[Order] bot-owned booking accepted directly #${result.order?.order_no || "?"}`);
   } else if (result.state !== "stale") {
     console.warn(`[Order] bot-owned booking approval blocked candidate=${candidateId} state=${result.state}`);
@@ -5969,7 +6031,6 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
     logSettlementCompleted({ mode: "historical", orderId, orderNo: current.order_no, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
     const chargedWallet = db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id);
-    void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: chargedWallet?.wallet_cents, reason: "خصم حصة تسوية طلب تاريخي", reference: `ORDER-${current.order_no}` });
     return { state: "accepted", order: db.prepare("SELECT * FROM orders WHERE id=?").get(orderId), captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id), chargedWallet };
   })();
 }
@@ -6523,7 +6584,7 @@ async function handleMessageReaction(reaction) {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
   }
-  void sendFinalBookingConfirmation(target.from, {
+  const confirmationDetails = {
     orderNo: result.order?.order_no,
     orderId: result.order?.id,
     executorName: result.captain?.name,
@@ -6532,8 +6593,8 @@ async function handleMessageReaction(reaction) {
     origin: result.order?.origin,
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
-  }).catch(() => null);
-  if (result.chargedWallet) void enforceCaptainWalletThresholds({ captainId: result.captain.id, balanceCents: result.chargedWallet.wallet_cents, reason: "خصم حصة تسوية الطلب", reference: `ORDER-${result.order.order_no}` });
+  };
+  void sendFinalBookingConfirmation(target.from, confirmationDetails).catch(() => null);
 }
 
 async function reconcileStoredThumbReaction(messageId) {

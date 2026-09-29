@@ -19,7 +19,7 @@ assert.match(server, /INSERT INTO orders\(order_no,source_message_id/);
 assert.match(server, /status IN \('accepted','completed'\)/);
 assert.match(server, /app\.get\("\/api\/admin\/orders", requireAdmin/);
 assert.match(server, /const pendingConfirmation = 0/);
-assert.match(server, /void sendFinalBookingConfirmation\(target\.from, \{\s*orderNo: result\.order\?\.order_no/);
+assert.match(server, /const confirmationDetails = \{\s*orderNo: result\.order\?\.order_no/);
 assert.match(server, /function finalBookingConfirmationText\(\{ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime \}\)/);
 assert.match(confirmationBody, /`✅ تم تثبيت الطلب #\$\{normalizedOrderNo\}`/);
 assert.match(confirmationBody, /🧾 رقم الرحلة/);
