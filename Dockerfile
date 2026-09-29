@@ -35,6 +35,7 @@ ENV NODE_ENV=production \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     DATA_DIR=/app/data \
+    RENDER_DATA_DIR=/app/data \
     AUTH_PATH=/app/data/.wwebjs_auth \
     BAILEYS_AUTH_PATH=/app/data/.baileys_auth
 

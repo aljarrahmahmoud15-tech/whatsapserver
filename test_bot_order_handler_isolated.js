@@ -29,6 +29,7 @@ const db = {
 };
 
 const context = {
+  WHATSAPP_GROUP_ID: "test-group@g.us",
   resolveGroupChatId: () => "test-group@g.us",
   isConfiguredGroup: () => true,
   isQuotedOrderRecoveryCommand: () => false,

@@ -39,10 +39,11 @@ const WHATSAPP_IDENTITY_SCOPE = String(
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://whatsappserver-new-1.onrender.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
-if (runningOnRender && path.resolve(DATA_DIR) !== "/app/data") {
-  throw new Error(`Persistent DATA_DIR is required on Render; received ${DATA_DIR}`);
+const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/var/data");
+if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
+  throw new Error(`Persistent DATA_DIR is required at ${expectedRenderDataDir}; received ${DATA_DIR}`);
 }
 // Baileys is an optional second WhatsApp connection. Keep it off by default on Render
 // so the primary whatsapp-web.js session has the available memory and one QR/session.
@@ -1658,7 +1659,7 @@ function whatsappSessionPersistenceHealth() {
   const authDirectory = safePathHealth(AUTH_PATH);
   const profileDirectory = safePathHealth(path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`));
   return {
-    configured: !runningOnRender || path.resolve(DATA_DIR) === "/app/data",
+    configured: !runningOnRender || path.resolve(DATA_DIR) === expectedRenderDataDir,
     authDirectoryExists: Boolean(authDirectory.exists),
     authDirectoryWritable: Boolean(authDirectory.writable),
     profileDirectoryExists: Boolean(profileDirectory.exists),

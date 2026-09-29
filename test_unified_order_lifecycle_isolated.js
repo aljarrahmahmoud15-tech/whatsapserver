@@ -165,6 +165,7 @@ function message(id, body, sender, quoted = null) {
 }
 
 const context = {
+  WHATSAPP_GROUP_ID: GROUP,
   db,
   client: { async getMessageById(id) { return state.targets?.[id] || message(id, id.startsWith("done") ? "تم" : "رسالة أخرى", EXECUTOR, message("price-1", "السعر 20", PRODUCER)); } },
   isReady: true,

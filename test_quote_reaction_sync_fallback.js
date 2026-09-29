@@ -22,6 +22,6 @@ assert.match(source, /function messageIdCore\(value\)/);
 assert.match(source, /function sourceMessageIdsEqual\(left, right\)/);
 assert.match(source, /function configuredRuntimeGroupId\(\)/);
 assert.match(source, /const groupId = configuredRuntimeGroupId\(\);/);
-assert.match(source, /ORDER BY updated_at DESC LIMIT 1/);
+assert.match(source, /return configured === WHATSAPP_GROUP_ID && isConfiguredGroup\(WHATSAPP_GROUP_ID\) \? WHATSAPP_GROUP_ID : "";/);
 
 console.log('quote/reaction synchronization fallback verified');

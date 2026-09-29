@@ -20,7 +20,8 @@ assert.match(server, /message\.send_pending/);
 assert.match(server, /message\.sent_after_timeout/);
 assert.match(dashboard, /id="ops-send-order"/);
 assert.match(dashboard, /api\('\/api\/admin\/send'/);
-assert.match(dashboard, /to:'120363426604560611@g\.us'/);
+assert.match(dashboard, /ACTIVE_GROUP_ID=String\(s\.groupId\|\|''\)\.trim\(\)/);
+assert.match(dashboard, /to:ACTIVE_GROUP_ID/);
 assert.match(dashboard, /sendState==='pending'/);
 assert.match(dashboard, /سيُنشر الطلب باسم البوت\/الشركة/);
 

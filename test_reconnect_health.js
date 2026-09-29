@@ -31,5 +31,5 @@ assert.ok(index.includes('SAFE STORAGE INVENTORY'), 'admin UI labels storage inv
 assert.ok(index.includes('id="captain-whatsapp-invite"'), 'captain invite WhatsApp button exists in the first operations card');
 assert.ok(index.includes("https://wa.me/?text="), 'captain invite WhatsApp action opens a prefilled share');
 assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'official operations gateway link remains fixed');
-assert.ok(render.includes('DATA_DIR') && render.includes('/app/data'), 'persistent data path remains configured');
+assert.ok(render.includes('DATA_DIR') && render.includes('/var/data') && render.includes('mountPath: /var/data'), 'persistent Native Render data path remains configured');
 console.log('reconnect health guardrails verified');
