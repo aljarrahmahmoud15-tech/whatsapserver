@@ -29,6 +29,7 @@ const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+if (process.env.RENDER && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
 // Keep LocalAuth namespaces independent across cloned Render services. When
 // WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
 // service's own phone and group instead of using a shared constant.
@@ -2022,7 +2023,7 @@ function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_conf
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
   const normalizedGroupId = String(groupId || "").trim();
-  if (WHATSAPP_GROUP_ID && normalizedGroupId !== WHATSAPP_GROUP_ID) {
+  if (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID) {
     audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID });
     console.warn(`[Isolation] refused Server 2 group reconfiguration: ${normalizedGroupId}`);
     return false;
@@ -2039,15 +2040,12 @@ function configureGroupId(groupId, groupName) {
 }
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
-  return configured > 0 && Boolean(configuredGroup(groupId));
+  return Boolean(WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID && configured > 0 && Boolean(configuredGroup(groupId)));
 }
 function configuredRuntimeGroupId() {
-  const candidates = [
-    getSetting("active_group_id", getSetting("group_id", "")),
-    WHATSAPP_GROUP_ID,
-    db.prepare("SELECT group_id FROM groups_config WHERE active=1 ORDER BY updated_at DESC LIMIT 1").get()?.group_id,
-  ];
-  return candidates.map((value) => String(value || "").trim()).find((value) => value && isConfiguredGroup(value)) || "";
+  if (!WHATSAPP_GROUP_ID) return "";
+  const configured = String(getSetting("active_group_id", getSetting("group_id", "")) || "").trim();
+  return configured === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID) ? WHATSAPP_GROUP_ID : "";
 }
 function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
@@ -5266,6 +5264,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const body = String(msg.body || "").trim();
   const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === "string" ? WHATSAPP_GROUP_ID : "";
   if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
+  if (!configuredEnvironmentGroup) return;
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = msg.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(msg, contact);
@@ -8677,6 +8676,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   try {
     const inviteInfo = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
     let groupId = inviteInfo && inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id));
+    if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Invite is not Server 2's configured group" });
     const existingChat = groupId && groupId.endsWith("@g.us") ? await withTimeout(client.getChatById(groupId), 20000, null) : null;
     if (!existingChat || !existingChat.isGroup) groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
@@ -8709,7 +8709,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   const groupId = String(lastGroupEventGroupId || "").trim();
   const expectedGroupId = String(req.body?.groupId || groupId).trim();
   if (!groupId || !groupId.endsWith("@g.us") || !lastGroupMessageTelemetry?.at) return res.status(409).json({ error: "No recent group event is available" });
-  if (expectedGroupId !== groupId) return res.status(409).json({ error: "The observed group changed; refresh diagnostics before adopting it" });
+  if (expectedGroupId !== groupId || !WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(409).json({ error: "Only Server 2\'s configured group may be adopted" });
   const observedAt = Date.parse(lastGroupMessageTelemetry.at);
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
@@ -8725,7 +8725,7 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const chats = await withTimeout(client.getChats(), 25000, null);
   if (!Array.isArray(chats)) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
-  res.json({ groups: chats.filter((chat) => chat.isGroup).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
+  res.json({ groups: chats.filter((chat) => chat.isGroup && String(chat.id?._serialized || "") === WHATSAPP_GROUP_ID).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
 });
 app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
