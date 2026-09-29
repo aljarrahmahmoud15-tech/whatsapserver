@@ -71,7 +71,7 @@ assert.ok(admin.includes('بطاقات معلّقة'), 'admin users table shows 
 assert.ok(admin.includes('إرسال WhatsApp'), 'admin users table includes WhatsApp action');
 assert.ok(index.includes('data-card-history-send'), 'owner UI provides controlled resend action');
 assert.ok(index.includes("'/api/admin/cards/'+encodeURIComponent(cardId)+'/send-text'"), 'owner UI uses the reliable text resend endpoint');
-assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'owner invite points to the official operations gateway');
+assert.ok(index.includes('https://wasselni-whatsapp-ops.onrender.com/join.html'), 'owner invite points to the official operations gateway');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has a redemption form');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app submits redemption to the session API');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('renderTopupCards'), 'captain app renders card notifications');

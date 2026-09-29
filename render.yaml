@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: whatsapserver-2
+    name: wasselni-whatsapp-ops
     runtime: node
     plan: standard
     buildCommand: npm ci --omit=dev
@@ -16,6 +16,8 @@ services:
         value: production
       - key: PORT
         value: "10000"
+      - key: PUBLIC_BASE_URL
+        value: https://wasselni-whatsapp-ops.onrender.com
       - key: QR_PUBLIC
         value: "false"
       - key: QR_RATE_LIMIT_MAX
