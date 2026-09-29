@@ -3959,7 +3959,6 @@ const puppeteerConfig = {
     "--no-zygote",
     "--disable-gpu",
     "--disable-extensions",
-    "--disable-features=IsolateOrigins,site-per-process",
     "--window-size=1280,900",
     // Bound the browser's own heap. Without a cap Chromium grows past the container
     // memory limit and Render kills the instance, which drops the WhatsApp pairing.
@@ -4808,6 +4807,8 @@ async function initializeWhatsApp() {
     whatsappLastError = String(error?.message || error);
     console.error("[WhatsApp] initialize:", error.message);
     isReady = false;
+    if (client === currentClient) client = null;
+    await withTimeout(disposeClientInstance(currentClient, "initialize_error"), 15000, null);
     scheduleReconnect();
   } finally {
     if (runId === initializationRunId) {
