@@ -1047,7 +1047,8 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962775969880"]);
+// 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
 const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
@@ -1680,11 +1681,9 @@ function ensureBlockedPhones() {
 }
 function sanitizeLegacyPhone() {
   const legacyPhone = phoneWithCountry("0775969880");
-  const stamp = now();
-  db.transaction(() => {
-    db.prepare("UPDATE users SET active=0, is_bot=0, updated_at=? WHERE phone=? AND phone<>?").run(stamp, legacyPhone, phoneWithCountry(BOT_PHONE));
-    db.prepare("UPDATE captain_invites SET status='cancelled' WHERE phone=? AND status IN ('issued','pending')").run(legacyPhone);
-  })();
+  // This legacy number is no longer a blocked/system identity after explicit owner approval.
+  // Remove only its stale block-row; activation remains an explicit admin action.
+  db.prepare("DELETE FROM blocked_phones WHERE phone=?").run(legacyPhone);
 }
 
 function getSetting(key, fallback = null) {

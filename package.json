@@ -28,6 +28,7 @@
     "whatsapp-web.js": "^1.26.0"
   },
   "overrides": {
+    "brace-expansion": "2.1.7",
     "ip-address": "10.7.2",
     "whatsapp-web.js": {
       "puppeteer": "25.11.0"
