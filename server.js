@@ -3392,6 +3392,11 @@ const confirmationDeliveryInFlight = new Set();
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
+async function sendFinalBookingConfirmationDirect(groupId, message) {
+  if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
+  if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
+  return client.sendMessage(groupId, message);
+}
 async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
   if (!client || !isReady) throw new Error("whatsapp_not_ready");
@@ -3432,6 +3437,7 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
   const forceFinalRecovery = options.forceFinalRecovery === true;
+  const deliveryMode = options.deliveryMode === "fallback" ? "fallback" : "direct";
   let releaseInFlightAfterSendPromise = false;
   if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
   if (orderId) confirmationDeliveryInFlight.add(orderId);
@@ -3469,7 +3475,10 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
     }
   }
   try {
-    const sendPromise = sendFinalBookingConfirmationViaConfiguredChat(groupId, finalBookingConfirmationText(details));
+    const message = finalBookingConfirmationText(details);
+    const sendPromise = deliveryMode === "fallback"
+      ? sendFinalBookingConfirmationViaConfiguredChat(groupId, message)
+      : sendFinalBookingConfirmationDirect(groupId, message);
     const sendTimeoutMarker = {};
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
     if (sent === sendTimeoutMarker) {
@@ -3542,7 +3551,7 @@ async function retryFailedBookingConfirmations() {
       origin: row.origin,
       destination: row.destination,
       tripTime: row.trip_time,
-    }, { forceFinalRecovery: row.status === 'pending' || Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
+    }, { deliveryMode: "fallback", forceFinalRecovery: row.status === 'pending' || Number(row.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS });
     if (sent) result.sent += 1;
     else result.suppressed += 1;
   }
@@ -5228,7 +5237,7 @@ async function approveBotOwnedAcceptance({ groupId, message, candidateId, accept
       destination: result.order?.destination,
       tripTime: result.order?.trip_time,
     };
-    void sendFinalBookingConfirmation(groupId, confirmationDetails).catch((error) => {
+    void sendFinalBookingConfirmation(groupId, confirmationDetails, { deliveryMode: "direct" }).catch((error) => {
       console.warn(`[Order] bot-owned confirmation card failed: ${String(error?.message || error)}`);
     });
     audit("order.bot_owned.accepted_directly", "order", result.order?.id, {
@@ -6594,7 +6603,7 @@ async function handleMessageReaction(reaction) {
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
   };
-  void sendFinalBookingConfirmation(target.from, confirmationDetails).catch(() => null);
+  void sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
 }
 
 async function reconcileStoredThumbReaction(messageId) {
@@ -9393,7 +9402,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
       destination: result.order?.destination,
       tripTime: result.order?.trip_time,
     };
-    void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
+    void sendFinalBookingConfirmation(groupId, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
     audit("order.exact_group_recovery.completed", "order", order.id, { sourceMessageId, acceptanceMessageId, downloaderPhone: evidence.producerPhone, executorPhone: evidence.captainPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
   }
@@ -9453,7 +9462,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
         destination: result.order?.destination,
         tripTime: result.order?.trip_time,
       };
-      void sendFinalBookingConfirmation(verified.groupId, confirmationDetails).catch(() => null);
+      void sendFinalBookingConfirmation(verified.groupId, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
       audit("order.verified_bot_booking.completed", "order", order.id, { sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId, downloaderPhone: verified.downloaderPhone, executorPhone: verified.executorPhone, confirmationText: finalBookingConfirmationText(confirmationDetails) });
     } catch (error) {
       audit("order.verified_bot_booking.error", "order", null, { error: String(error?.message || error).slice(0, 200), sourceMessageId: verified.sourceMessageId, acceptanceMessageId: verified.acceptanceMessageId });
@@ -10384,7 +10393,7 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, 
       destination: result.order?.destination,
       tripTime: result.order?.trip_time,
     };
-    void sendFinalBookingConfirmation(candidate.group_id, confirmationDetails).catch(() => null);
+    void sendFinalBookingConfirmation(candidate.group_id, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
     audit("order.admin_unconfirmed.confirmed", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, orderNo: result.order?.order_no, financialMutation: true });
     return res.status(201).json({ success: true, state: "accepted", mutation: "applied_once", order: result.order, chargedWallet: result.chargedWallet, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, executorPhone: phoneWithCountry(acceptance.executor_phone) }, cardSent: false });
   } finally {

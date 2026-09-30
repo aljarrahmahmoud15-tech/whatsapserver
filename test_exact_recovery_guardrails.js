@@ -43,7 +43,7 @@ assert.match(server, /importSource: "admin_exact_group_recovery"/);
 assert.match(server, /const producer = quoted\.fromMe && BOT_FINANCIAL_MODE === "company" \? companyUser\(\)/);
 assert.match(server, /const producer = botProducer \? companyUser\(\)/);
 assert.match(server, /existingSettlement\?\.status === "applied"/);
-assert.match(server, /void sendFinalBookingConfirmation\(groupId, confirmationDetails\)/);
+assert.match(server, /void sendFinalBookingConfirmation\(groupId, confirmationDetails, \{ deliveryMode: "direct" \}\)/);
 assert.match(admin, /id="historyRecoveryCard"/);
 assert.match(admin, /\/api\/admin\/group\/confirmed-preview/);
 assert.match(admin, /\/api\/admin\/group\/confirm-one/);

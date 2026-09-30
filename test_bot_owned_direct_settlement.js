@@ -7,7 +7,7 @@ const dashboard = fs.readFileSync('./admin.html', 'utf8');
 assert.match(source, /async function approveBotOwnedAcceptance\(\{ groupId, message, candidateId, acceptanceMessageId \}\)/);
 assert.match(source, /const result = settlePendingOrder\(candidateId, acceptanceMessageId, connectedBotPhone\(\)\)/);
 assert.match(source, /audit\("order\.bot_owned\.accepted_directly"/);
-assert.match(source, /void sendFinalBookingConfirmation\(groupId, confirmationDetails\)/);
+assert.match(source, /void sendFinalBookingConfirmation\(groupId, confirmationDetails, \{ deliveryMode: "direct" \}\)/);
 assert.match(source, /if \(producer\.is_bot === 1 \|\| producer\.role === "company"\)/);
 assert.match(source, /void approveBotOwnedAcceptance\(\{ groupId, message: msg, candidateId: candidate\.id, acceptanceMessageId \}\)/);
 assert.match(source, /Human-owned bookings still use the producer's/);
