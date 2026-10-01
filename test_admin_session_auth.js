@@ -10,6 +10,8 @@ assert.match(html, /credentials:'same-origin'/, 'session login and logout must i
 assert.match(html, /function headers\(\)\{return \{\.\.\.\(token\?/s, 'Bearer header must be optional for cookie sessions');
 assert.match(html, /async function logout\(\)\{[\s\S]*?\/api\/auth\/logout/s, 'logout must clear the server session');
 assert.match(html, /async function bootstrap\(\)[\s\S]*?\/api\/admin\/bot\/status/s, 'dashboard must detect an existing authenticated session');
+assert.match(html, /function isAuthError\(error\)[\s\S]*?unauthorized/s, 'dashboard must recognize cookie-session expiry');
+assert.match(html, /catch\(e\)\{\$\('status'\)\.textContent=e\.message;if\(isAuthError\(e\)\)void logout\(\)\}/, 'expired sessions must return to the login screen instead of leaving stale controls visible');
 assert.match(html, /onclick="enforceNegativeWalletPolicy\(true\)"/, 'negative-wallet action must remain wired');
 assert.match(html, /\/api\/admin\/captains\/enforce-wallet-policy/, 'negative-wallet action must keep its protected endpoint');
 assert.doesNotMatch(html, /function setMetriclocalStorage/, 'login patch must not corrupt following function declarations');
