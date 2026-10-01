@@ -11,12 +11,12 @@ const settlement = calculateSettlement({
   orderKind: 'normal',
   regularProducerRateBps: 1200,
   specialOrderProducerRateBps: 1200,
-  companyFromProducerRateBps: 400,
-  specialOrderCompanyFromProducerRateBps: 400,
+  companyFromProducerRateBps: 300,
+  specialOrderCompanyFromProducerRateBps: 300,
 });
 assert.equal(settlement.producerNetCents, 600, '12% downloader share for 50 JOD');
-assert.equal(settlement.companyCents, 200, '4% company share for 50 JOD');
-assert.equal(settlement.confirmingCaptainFeeCents, 800, '16% confirming debit for 50 JOD');
+assert.equal(settlement.companyCents, 150, '3% company share for 50 JOD');
+assert.equal(settlement.confirmingCaptainFeeCents, 750, '15% confirming debit for 50 JOD');
 
 assert.match(server, /charged_user_id INTEGER REFERENCES users\(id\)/);
 assert.match(server, /charged_user_id=CASE WHEN captain_user_id IN \(SELECT id FROM users WHERE is_bot=1\)/);
