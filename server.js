@@ -6622,14 +6622,15 @@ async function handleMessageReaction(reaction) {
 }
 
 async function reconcileStoredThumbReaction(messageId) {
-  if (!messageId || !client || !isReady || typeof client.getMessageById !== "function") return;
-  const target = await getWhatsAppMessageByIdVariants(messageId, 5000) || buildStoredAcceptanceMessageById(messageId);
+  const normalizedMessageId = reactionId(messageId) || String(messageId || "").trim();
+  if (!normalizedMessageId || !client || !isReady || typeof client.getMessageById !== "function") return;
+  const target = await getWhatsAppMessageByIdVariants(normalizedMessageId, 5000) || buildStoredAcceptanceMessageById(normalizedMessageId);
   if (!target) return;
   const targetGroupId = String(target.from || target._data?.from || "").trim();
   if (!targetGroupId.endsWith("@g.us") || !isConfiguredGroup(targetGroupId)) {
     logOrderTrace("reaction_scan_ignored_unconfigured_group", {
       groupKey: orderTraceKey(targetGroupId),
-      reactionKey: orderTraceKey(messageId),
+      reactionKey: orderTraceKey(normalizedMessageId),
     });
     return;
   }
@@ -6637,30 +6638,30 @@ async function reconcileStoredThumbReaction(messageId) {
     ? await withTimeout(target.getReactions(), 12000, [])
     : (Array.isArray(target.__reactions) ? target.__reactions : []);
   if (!Array.isArray(reactions) || !reactions.length) {
-    const internalReactions = await fetchInternalReactionRows(messageId);
+    const internalReactions = await fetchInternalReactionRows(normalizedMessageId);
     if (Array.isArray(internalReactions) && internalReactions.length) reactions = internalReactions;
   }
   if (!Array.isArray(reactions) || !reactions.length) {
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
-      await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
+      await withTimeout(client.interface.openChatWindowAt(normalizedMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-	if (await hasVisibleThumbReaction(messageId)) {
-	  const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
-	    ? await resolveVisibleReactionSenderPhones(messageId)
-	    : [];
-	  if (visiblePhones.length) {
-	    for (const phone of visiblePhones) {
-	      await handleMessageReaction({ reaction: "👍", msgId: messageId, __senderPhone: phone });
-	    }
-	  } else {
-    // The business signal is the visible 👍 on the exact «تم» reply;
-	    // WhatsApp may omit the reaction owner's phone from the collection.
-	    await handleMessageReaction({ reaction: "👍", msgId: messageId });
-	  }
-	  return;
-	}
-    console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(messageId).slice(0, 80)}`);
+    if (await hasVisibleThumbReaction(normalizedMessageId)) {
+      const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
+        ? await resolveVisibleReactionSenderPhones(normalizedMessageId)
+        : [];
+      if (visiblePhones.length) {
+        for (const phone of visiblePhones) {
+          await handleMessageReaction({ reaction: "👍", msgId: normalizedMessageId, __senderPhone: phone });
+        }
+      } else {
+        // The business signal is the visible 👍 on the exact «تم» reply;
+        // WhatsApp may omit the reaction owner's phone from the collection.
+        await handleMessageReaction({ reaction: "👍", msgId: normalizedMessageId });
+      }
+      return;
+    }
+    console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(normalizedMessageId).slice(0, 80)}`);
     return;
   }
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
@@ -6670,11 +6671,11 @@ async function reconcileStoredThumbReaction(messageId) {
     const reactionIsByCurrentAccount = reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true;
     const senders = Array.isArray(reaction.senders) ? reaction.senders : [];
 	if (!senders.length) {
-	  await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, hasReactionByMe: reactionIsByCurrentAccount });
-	  continue;
-	}
+      await handleMessageReaction({ reaction: reactionEmoji, msgId: normalizedMessageId, hasReactionByMe: reactionIsByCurrentAccount });
+      continue;
+    }
     for (const sender of senders) {
-      await handleMessageReaction({ reaction: reactionEmoji, msgId: messageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
+      await handleMessageReaction({ reaction: reactionEmoji, msgId: normalizedMessageId, senderId: sender.senderId || sender.id?._serialized || sender.id || sender, senderUserJid: sender?.senderUserJid, author: sender?.author, __senderPhone: sender?.__senderPhone, hasReactionByMe: reaction.hasReactionByMe === true || reaction?._data?.hasReactionByMe === true });
     }
   }
 }

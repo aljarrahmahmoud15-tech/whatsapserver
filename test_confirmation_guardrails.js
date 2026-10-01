@@ -53,7 +53,7 @@ assert.match(server, /hasReactionByMe: storedReaction\?\.hasReactionByMe === tru
 assert.match(server, /if \(reactionValue === "👍" \|\| reactionValue === "❌"\)/);
 assert.doesNotMatch(server, /hasVisibleThumbReaction\(messageId\)\)[\s\S]{0,180}hasReactionByMe: true/);
 assert.match(server, /if \(!senders\.length\)/);
-assert.match(server, /if \(await hasVisibleThumbReaction\(messageId\)\)/);
+assert.match(server, /if \(await hasVisibleThumbReaction\(normalizedMessageId\)\)/);
 assert.doesNotMatch(server, /if \(!target \|\| !target\.hasReaction \|\| typeof target\.getReactions !== "function"\) return;/);
 assert.match(server, /async function recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /async function recoverHistoricalOrderCandidates\(groupId\)/);
