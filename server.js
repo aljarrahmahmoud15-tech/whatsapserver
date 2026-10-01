@@ -1419,9 +1419,11 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && Number(balanceCents) >= 0)) return { status: "ineligible" };
   const title = "إشعار رصيد مستحق من وصلني الآن";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
-  const removalEvidence = removalContext?.confirmedSettlement === true
-    ? confirmedOrderDebtEvidence(removalContext.orderId, captain.id)
-    : null;
+  const removalEvidence = removalContext?.allowUnconfirmedRemoval === true
+    ? { adminOverride: true }
+    : removalContext?.confirmedSettlement === true
+      ? confirmedOrderDebtEvidence(removalContext.orderId, captain.id)
+      : null;
   const removal = removalEvidence
     ? await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }))
     : { status: "removal_deferred_confirmation_required", error: "confirmed_settlement_and_card_required" };
@@ -1433,13 +1435,24 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
       blocker: "confirmed_settlement_and_card_required",
     });
   }
+  if (removalContext?.allowUnconfirmedRemoval === true) {
+    audit("captain.wallet.negative_removal.admin_override", "user", captain.id, {
+      balanceCents: Number(balanceCents),
+      reference: safeReference,
+      financialMutation: false,
+      policy: "owner_confirmed_negative_balance_without_settlement_gate",
+    });
+  }
   const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
     ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
-    : "تم تسجيل الرصيد المستحق، ولم تتم إزالة الحساب أو إيقافه؛ يلزم أولًا وجود تسوية طلب مؤكدة ووصول بطاقة التثبيت.";
+    : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
+      ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
+      : "تم تسجيل الرصيد المستحق، ولم تتم إزالة الحساب بسبب تعذر الوصول إلى القروب الرسمي.";
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
     `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
+    "تُطبق سياسة الرصيد السالب دون الحاجة إلى تسوية طلب أو بطاقة تثبيت، ولا يتغير رصيدك تلقائيًا.",
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
@@ -1515,7 +1528,7 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
-async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false } = {}) {
+async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false, allowUnconfirmedRemoval = false } = {}) {
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
   const captains = negativeOnly
@@ -1532,7 +1545,10 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
   progress.failureStatuses = {};
   progress.firstFailure = null;
   try {
-    const removalContext = await readGroupRemovalContext(configuredRuntimeGroupId()).catch(() => null);
+    const groupRemovalContext = await readGroupRemovalContext(configuredRuntimeGroupId()).catch(() => null);
+    const removalContext = allowUnconfirmedRemoval
+      ? { ...(groupRemovalContext || {}), allowUnconfirmedRemoval: true, source: "admin_negative_wallet_policy" }
+      : groupRemovalContext;
     for (let index = 0; index < captains.length; index += 1) {
       const captain = captains[index];
       const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}`, removalContext }).catch(() => null);
@@ -9960,8 +9976,8 @@ app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, 
   if (captainWalletPolicySweepInFlight) return res.status(409).json({ error: "توجد عملية إزالة أخرى قيد التنفيذ؛ لا تُكرر الطلب" });
   const run = { runKey, status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   captainWalletPolicyRuns.set(runKey, run);
-  void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true }).then((result) => {
-    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true, allowUnconfirmedRemoval: true }).then((result) => {
+    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false, settlementGate: "bypassed_by_owner_admin_action" });
   });
   res.status(202).json({ success: true, started: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
 });

@@ -16,6 +16,10 @@ assert.match(server, /async function enforceConfirmedOrderDebtRemoval\(/);
 assert.match(server, /removal_deferred_confirmation_required/);
 assert.match(server, /confirmed_settlement_and_card_required/);
 assert.match(server, /removalContext\?\.confirmedSettlement === true/);
+assert.match(server, /allowUnconfirmedRemoval: true/);
+assert.match(server, /negative_removal\.admin_override/);
+assert.match(server, /owner_confirmed_negative_balance_without_settlement_gate/);
+assert.match(server, /enforceCaptainWalletThresholdsForAll\(run, \{ negativeOnly: true, allowUnconfirmedRemoval: true \}\)/);
 const confirmationStart = server.indexOf("async function sendFinalBookingConfirmation(");
 const confirmationEnd = server.indexOf("async function retryFailedBookingConfirmations", confirmationStart);
 assert.ok(confirmationStart >= 0 && confirmationEnd > confirmationStart, "confirmation sender must exist");
@@ -27,4 +31,4 @@ const historicalStart = server.indexOf("function settleHistoricalConfirmedOrder(
 const historicalEnd = server.indexOf("function normalizeRecoveryText", historicalStart);
 assert.ok(historicalStart >= 0 && historicalEnd > historicalStart, "historical settlement function must exist");
 assert.doesNotMatch(server.slice(historicalStart, historicalEnd), /void enforceCaptainWalletThresholds\(/, "historical settlement must not remove before confirmation delivery");
-console.log("negative-balance removal is deferred until applied settlement and sent confirmation card");
+console.log("negative-balance removal keeps the settlement gate for automatic flows and bypasses it only for the owner admin sweep");
