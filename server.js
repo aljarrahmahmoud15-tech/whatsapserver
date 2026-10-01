@@ -3038,7 +3038,7 @@ function scheduleOfficialGroupWalletSweep(trigger = "official_group_message") {
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
-  const startsWithPriceKeyword = /^السعر(?:\s|[:：]|$)/u.test(normalized);
+  const startsWithPriceKeyword = /^السعر(?=\s|[:：]|$|[0-9٠-٩۰-۹])/u.test(normalized);
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
   const numberPattern = digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?";
