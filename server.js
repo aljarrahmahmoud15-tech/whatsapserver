@@ -92,11 +92,11 @@ const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Approved immutable settlement policy: the value after "السعر" is external;
 // 12% goes to the captain who posted the order, 3% to the company, and both
-// are charged to the confirming captain (16% total). The fare never credits B.
-const COMPANY_RATE_BPS = 400;
+// are charged to the confirming captain (15% total). The fare never credits B.
+const COMPANY_RATE_BPS = 300;
 const PRODUCER_RATE_BPS = 1200;
 const SPECIAL_ORDER_RATE_BPS = 1200;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -653,6 +653,20 @@ CREATE TABLE IF NOT EXISTS captain_daily_charges (
   FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)
 );
 CREATE INDEX IF NOT EXISTS idx_captain_daily_charges_date ON captain_daily_charges(charge_date);
+CREATE TABLE IF NOT EXISTS captain_wallet_pool_operations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_key TEXT NOT NULL UNIQUE,
+  operation TEXT NOT NULL CHECK(operation IN ('distribute','withdraw')),
+  requested_cents INTEGER NOT NULL,
+  applied_cents INTEGER NOT NULL,
+  eligible_count INTEGER NOT NULL,
+  eligible_total_before_cents INTEGER NOT NULL,
+  company_balance_after_cents INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('applied','failed')) DEFAULT 'applied',
+  details_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL
+);
 `);
 const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
 if (!existingNotificationColumns.includes("source_message_id")) db.exec("ALTER TABLE notifications ADD COLUMN source_message_id TEXT");
@@ -781,6 +795,62 @@ async function resolveWhatsAppRecipientId(phoneValue) {
 const cents = (value) => Math.round(Number(value || 0) * 100);
 const money = (value) => (Number(value || 0) / 100).toFixed(2);
 
+const CAPTAIN_WALLET_POOL_CONFIRMATION = "APPLY_CAPTAIN_WALLET_POOL";
+const CAPTAIN_WALLET_POOL_MAX_CENTS = 100000000;
+function captainWalletPoolCaptains() {
+  return db.prepare(`SELECT id,phone,name,wallet_cents,active,account_status
+    FROM users
+    WHERE role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged' AND wallet_cents>0
+    ORDER BY id`).all();
+}
+function captainWalletPoolFingerprint(rows) {
+  return crypto.createHash("sha256")
+    .update(rows.map((row) => `${Number(row.id)}:${Number(row.wallet_cents || 0)}`).join("|"))
+    .digest("hex");
+}
+function captainWalletPoolAllocations(rows, requestedCents, operation) {
+  const count = rows.length;
+  if (!count) return [];
+  const base = Math.floor(requestedCents / count);
+  const remainder = requestedCents % count;
+  return rows.map((row, index) => {
+    const equalShare = base + (index < remainder ? 1 : 0);
+    const amountCents = operation === "withdraw"
+      ? Math.min(Number(row.wallet_cents || 0), equalShare)
+      : equalShare;
+    return {
+      captainId: Number(row.id),
+      name: row.name,
+      phone: row.phone,
+      balanceBeforeCents: Number(row.wallet_cents || 0),
+      amountCents,
+      balanceAfterCents: Number(row.wallet_cents || 0) + (operation === "withdraw" ? -amountCents : amountCents),
+    };
+  });
+}
+function captainWalletPoolPreview(operation, requestedCents) {
+  const rows = captainWalletPoolCaptains();
+  const company = companyUser();
+  const allocations = captainWalletPoolAllocations(rows, requestedCents, operation);
+  const appliedCents = allocations.reduce((sum, allocation) => sum + Number(allocation.amountCents || 0), 0);
+  return {
+    operation,
+    requestedCents,
+    requested: money(requestedCents),
+    appliedCents,
+    applied: money(appliedCents),
+    unallocatedCents: requestedCents - appliedCents,
+    unallocated: money(requestedCents - appliedCents),
+    eligibleCount: rows.length,
+    eligibleTotalBeforeCents: rows.reduce((sum, row) => sum + Number(row.wallet_cents || 0), 0),
+    eligibleTotalBefore: money(rows.reduce((sum, row) => sum + Number(row.wallet_cents || 0), 0)),
+    eligibleHash: captainWalletPoolFingerprint(rows),
+    companyBalanceBeforeCents: Number(company?.wallet_cents || 0),
+    companyBalanceBefore: money(company?.wallet_cents || 0),
+    allocations,
+  };
+}
+
 function settlementFinancials(row) {
   const value = (primary, fallback = 0) => row[primary] === null || row[primary] === undefined
     ? Number(row[fallback] || 0)
@@ -851,7 +921,7 @@ function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, 
   const companyShare = money(settlement.companyCents);
   const executorDebit = money(settlement.confirmingCaptainFeeCents);
   console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} external_order_value=${price} JOD executor_wallet_credit=0.00 JOD`);
-  console.log(`[Settlement] CONFIRMED 12% downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | 4% company=${companyShare} JOD | 16% executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
+  console.log(`[Settlement] CONFIRMED 12% downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | 3% company=${companyShare} JOD | 15% executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
 }
 
 function serializeSettlement(row, includeLedger = true) {
@@ -3618,7 +3688,7 @@ function formatAcceptance(order, captain, producer) {
     `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 16%" : "طلب عادي · خصم 16%"}`,
+    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 15%" : "طلب عادي · خصم 15%"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
     "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
@@ -5973,13 +6043,13 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, "4% من قيمة الطلب من محفظة الكابتن المؤكد", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, "3% من قيمة الطلب من محفظة الكابتن المؤكد", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "12% من قيمة الطلب تضاف لمحفظة المنتج", stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% + 3% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن الذي وضع تم (16% إجمالًا)", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم 12% + 3% من محفظة الشركة لأن البوت نفذ الطلب" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن الذي وضع تم (15% إجمالًا)", stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
@@ -6049,7 +6119,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 3% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و4% للشركة من محفظة الكابتن المنفذ (16% إجمالًا)", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 12% + 3% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 12% لصاحب تنزيل الطلب و3% للشركة من محفظة الكابتن المنفذ (15% إجمالًا)", now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
@@ -7287,7 +7357,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12%", companyWalletRate: "4%", confirmingCaptainWalletRate: "-16% (12% downloader + 4% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 16% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
+    policy: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15% (12% downloader + 3% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
   });
 });
 
@@ -10189,7 +10259,7 @@ app.get("/api/admin/overview", requireAdmin, (req, res) => {
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "16% (12% لصاحب تنزيل الطلب + 4% للشركة)", companyWalletCredit: "4% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 16% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12% من قيمة الطلب", confirmingCaptainWalletDebit: "15% (12% لصاحب تنزيل الطلب + 3% للشركة)", companyWalletCredit: "3% من قيمة الطلب" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت الطلب وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
@@ -10684,6 +10754,111 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
 app.get("/api/admin/company-wallet", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, wallet: companyWalletSummary() });
+});
+app.post("/api/admin/captain-wallet-pool/preview", requireBotWalletOwner, (req, res) => {
+  const operation = String(req.body?.operation || "").trim().toLowerCase();
+  const requestedCents = req.body?.amountCents === undefined ? cents(req.body?.amount) : Number(req.body.amountCents);
+  if (!["distribute", "withdraw"].includes(operation) || !Number.isInteger(requestedCents) || requestedCents < 1 || requestedCents > CAPTAIN_WALLET_POOL_MAX_CENTS) {
+    return res.status(400).json({ error: "نوع العملية والمبلغ بالمليمات مطلوبان وبحد أقصى مليون دينار" });
+  }
+  const preview = captainWalletPoolPreview(operation, requestedCents);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, operationKey: `CAPTAIN-POOL-${operation.toUpperCase()}-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`, ...preview });
+});
+app.post("/api/admin/captain-wallet-pool/execute", requireBotWalletOwner, (req, res) => {
+  const operation = String(req.body?.operation || "").trim().toLowerCase();
+  const operationKey = String(req.body?.operationKey || "").trim();
+  const confirmation = String(req.body?.confirmation || "").trim();
+  const requestedCents = Number(req.body?.requestedCents);
+  const expectedEligibleCount = Number(req.body?.expectedEligibleCount);
+  const expectedEligibleTotalCents = Number(req.body?.expectedEligibleTotalCents);
+  const expectedEligibleHash = String(req.body?.expectedEligibleHash || "").trim();
+  if (!["distribute", "withdraw"].includes(operation) || !operationKey || operationKey.length > 120 || confirmation !== CAPTAIN_WALLET_POOL_CONFIRMATION || !Number.isInteger(requestedCents) || requestedCents < 1 || requestedCents > CAPTAIN_WALLET_POOL_MAX_CENTS || !Number.isInteger(expectedEligibleCount) || expectedEligibleCount < 1 || !Number.isInteger(expectedEligibleTotalCents) || expectedEligibleTotalCents < 1 || !/^[a-f0-9]{64}$/.test(expectedEligibleHash)) {
+    return res.status(400).json({ error: "تأكيد العملية ولقطة المعاينة الكاملة مطلوبة" });
+  }
+  const existing = db.prepare("SELECT * FROM captain_wallet_pool_operations WHERE operation_key=? LIMIT 1").get(operationKey);
+  if (existing) {
+    if (existing.operation !== operation || Number(existing.requested_cents) !== requestedCents) return res.status(409).json({ error: "مفتاح العملية مستخدم لعملية مختلفة" });
+    const details = JSON.parse(existing.details_json || "{}");
+    return res.json({ success: true, alreadyApplied: true, operation: existing.operation, operationKey, requested: money(existing.requested_cents), applied: money(existing.applied_cents), appliedCents: existing.applied_cents, companyBalanceAfter: money(existing.company_balance_after_cents), companyBalanceAfterCents: existing.company_balance_after_cents, eligibleCount: existing.eligible_count, allocations: details.allocations || [], unallocated: money(Number(existing.requested_cents) - Number(existing.applied_cents)) });
+  }
+  try {
+    const result = db.transaction(() => {
+      const rows = captainWalletPoolCaptains();
+      const currentHash = captainWalletPoolFingerprint(rows);
+      const currentTotal = rows.reduce((sum, row) => sum + Number(row.wallet_cents || 0), 0);
+      if (rows.length !== expectedEligibleCount || currentTotal !== expectedEligibleTotalCents || currentHash !== expectedEligibleHash) {
+        const error = new Error("تغيرت أرصدة أو قائمة الكباتن منذ المعاينة؛ أعد المعاينة قبل التنفيذ");
+        error.statusCode = 409;
+        error.code = "CAPTAIN_WALLET_POOL_PREVIEW_STALE";
+        throw error;
+      }
+      const company = db.prepare("SELECT id,wallet_cents,role,is_bot FROM users WHERE role='company' ORDER BY id LIMIT 1").get();
+      if (!company) {
+        const error = new Error("محفظة الشركة غير موجودة");
+        error.statusCode = 409;
+        throw error;
+      }
+      const allocations = captainWalletPoolAllocations(rows, requestedCents, operation);
+      const appliedCents = allocations.reduce((sum, allocation) => sum + Number(allocation.amountCents || 0), 0);
+      if (!appliedCents) {
+        const error = new Error("لا يوجد رصيد متاح للتنفيذ");
+        error.statusCode = 409;
+        throw error;
+      }
+      if (operation === "distribute" && Number(company.wallet_cents || 0) < requestedCents) {
+        const error = new Error(`رصيد محفظة الشركة غير كافٍ؛ المتاح ${money(company.wallet_cents)} دينار`);
+        error.statusCode = 409;
+        throw error;
+      }
+      const stamp = now();
+      const reference = `CAPTAIN-POOL-${operation.toUpperCase()}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+      const ledgerType = operation === "distribute" ? "captain_pool_distribution" : "captain_pool_withdrawal";
+      const note = operation === "distribute" ? "توزيع متساوٍ من محفظة الشركة على محفظة الكباتن" : "سحب متساوٍ من محافظ الكباتن إلى محفظة الشركة؛ سُحب المتاح فقط";
+      for (const allocation of allocations) {
+        if (!allocation.amountCents) continue;
+        const signedAmount = operation === "withdraw" ? -allocation.amountCents : allocation.amountCents;
+        const update = db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged'").run(signedAmount, stamp, allocation.captainId);
+        if (!update.changes) throw new Error("تعذر تحديث أحد حسابات الكباتن؛ أُلغيت العملية كاملة");
+        const after = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(allocation.captainId);
+        db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(
+          allocation.captainId,
+          ledgerType,
+          signedAmount,
+          Number(after.wallet_cents),
+          `${reference}-${allocation.captainId}`.slice(0, 100),
+          note,
+          stamp,
+          JSON.stringify({ operation, operationKey, requestedCents, appliedCents, allocationCents: allocation.amountCents }),
+          `${operationKey}-${allocation.captainId}`.slice(0, 100),
+        );
+      }
+      const companySignedAmount = operation === "distribute" ? -requestedCents : appliedCents;
+      const companyUpdate = db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=? AND role='company'").run(companySignedAmount, stamp, company.id);
+      if (!companyUpdate.changes) throw new Error("تعذر تحديث محفظة الشركة؛ أُلغيت العملية كاملة");
+      const companyAfter = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id);
+      db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(
+        company.id,
+        operation === "distribute" ? "company_pool_distribution" : "company_pool_withdrawal",
+        companySignedAmount,
+        Number(companyAfter.wallet_cents),
+        reference,
+        operation === "distribute" ? "تمويل توزيع رصيد على محافظ الكباتن" : "إضافة السحب المتاح من محافظ الكباتن",
+        stamp,
+        JSON.stringify({ operation, operationKey, requestedCents, appliedCents, eligibleCount: rows.length }),
+        `${operationKey}-COMPANY`.slice(0, 100),
+      );
+      const details = { allocations: allocations.map(({ captainId, amountCents, balanceBeforeCents, balanceAfterCents }) => ({ captainId, amountCents, balanceBeforeCents, balanceAfterCents })) };
+      db.prepare("INSERT INTO captain_wallet_pool_operations(operation_key,operation,requested_cents,applied_cents,eligible_count,eligible_total_before_cents,company_balance_after_cents,status,details_json,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)").run(operationKey, operation, requestedCents, appliedCents, rows.length, currentTotal, Number(companyAfter.wallet_cents), "applied", JSON.stringify(details), stamp, stamp);
+      audit(`captain.wallet_pool.${operation}.applied`, "captain_wallet_pool", operationKey, { operation, requestedCents, appliedCents, eligibleCount: rows.length, companyBalanceAfterCents: Number(companyAfter.wallet_cents), allocations: details.allocations });
+      return { operation, operationKey, requestedCents, appliedCents, companyBalanceAfterCents: Number(companyAfter.wallet_cents), eligibleCount: rows.length, allocations };
+    })();
+    res.status(201).json({ success: true, alreadyApplied: false, ...result, requested: money(result.requestedCents), applied: money(result.appliedCents), companyBalanceAfter: money(result.companyBalanceAfterCents), unallocated: money(result.requestedCents - result.appliedCents) });
+  } catch (error) {
+    const statusCode = Number(error.statusCode) || 500;
+    if (statusCode >= 500) console.error("[CaptainWalletPool] failed:", error.message);
+    res.status(statusCode).json({ error: error.message || "تعذر تنفيذ حركة محفظة الكباتن" , code: error.code || "CAPTAIN_WALLET_POOL_FAILED" });
+  }
 });
 app.get("/api/staff/company-wallet", requireStaffRole("accountant"), (req, res) => {
   res.setHeader("Cache-Control", "no-store");
