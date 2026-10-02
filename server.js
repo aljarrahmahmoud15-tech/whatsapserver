@@ -263,6 +263,10 @@ app.get("/admin.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "admin.html"));
 });
+app.get("/admin-v26.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+});
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
   const validToken = OWNER_DIRECT_TOKEN && constantTimeEquals(provided, OWNER_DIRECT_TOKEN);
