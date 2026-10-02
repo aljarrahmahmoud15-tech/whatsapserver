@@ -77,6 +77,14 @@ const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTA
 const UNQUOTED_ACCEPTANCE_WINDOW_MS = Number.isFinite(configuredUnquotedAcceptanceWindowMs)
   ? Math.max(30 * 1000, Math.min(configuredUnquotedAcceptanceWindowMs, 60 * 60 * 1000))
   : 10 * 60 * 1000;
+// Recovery-only window for unquoted «تم» replies that were missed while the bot was offline.
+// The live path only matches these inside UNQUOTED_ACCEPTANCE_WINDOW_MS (10 minutes by default),
+// so any longer outage left the candidate stuck forever. Ambiguity is still refused: a match is
+// accepted only when exactly one candidate fits, and no financial movement happens on ambiguity.
+const configuredUnquotedAcceptanceRecoveryWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS || 6 * 60 * 60 * 1000);
+const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number.isFinite(configuredUnquotedAcceptanceRecoveryWindowMs)
+  ? Math.max(UNQUOTED_ACCEPTANCE_WINDOW_MS, Math.min(configuredUnquotedAcceptanceRecoveryWindowMs, 72 * 60 * 60 * 1000))
+  : 6 * 60 * 60 * 1000;
 const CAPTAIN_SUBSCRIPTION_CENTS = 100;
 const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
 const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
@@ -1530,12 +1538,12 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
     : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
-      : "تم تسجيل الرصيد المستحق، ولم تتم إزالة الحساب بسبب تعذر الوصول إلى القروب الرسمي.";
+      : "تم تسجيل الرصيد المستحق. الإزالة من القروب مرتبطة بتأكيد تسوية الطلب وبطاقة التثبيت المُرسلة، أو بقرار صريح من المالك.";
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
     `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    "تُطبق سياسة الرصيد السالب دون الحاجة إلى تسوية طلب أو بطاقة تثبيت، ولا يتغير رصيدك تلقائيًا.",
+    "سياسة الرصيد السالب: يُسجَّل الدين فورًا ولا يتغير رصيدك تلقائيًا. الإزالة من القروب تُنفَّذ بعد تأكيد تسوية الطلب وبطاقة التثبيت، أو بقرار صريح من المالك.",
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
@@ -1617,13 +1625,14 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
   const captains = negativeOnly
     ? db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < 0 ORDER BY id").all()
     : db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
-  const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
+  const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, deferred: 0, failed: 0, startedAt: now(), completedAt: null };
   progress.total = captains.length;
   progress.scanned = 0;
   progress.negative = 0;
   progress.warned = 0;
   progress.removed = 0;
   progress.alreadyRemoved = 0;
+  progress.deferred = 0;
   progress.failed = 0;
   progress.failureStatuses = {};
   progress.firstFailure = null;
@@ -1642,6 +1651,9 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
         const removalStatus = result?.removalStatus;
         if (removalStatus === "removed") progress.removed += 1;
         else if (removalStatus === "already_removed" || removalStatus === "not_in_group") progress.alreadyRemoved += 1;
+        // A policy gate is not a fault: removal is intentionally deferred until a confirmed
+        // settlement plus confirmation card exists, or until the owner confirms explicitly.
+        else if (removalStatus === "removal_deferred_confirmation_required") progress.deferred += 1;
         else {
           progress.failed += 1;
           const failureStatus = String(removalStatus || "unknown");
@@ -1659,6 +1671,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       negative: progress.negative,
       removed: progress.removed,
       alreadyRemoved: progress.alreadyRemoved,
+      deferred: progress.deferred,
       failed: progress.failed,
       failureStatuses: progress.failureStatuses,
       firstFailure: progress.firstFailure,
@@ -1678,6 +1691,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       negative: progress.negative,
       removed: progress.removed,
       alreadyRemoved: progress.alreadyRemoved,
+      deferred: progress.deferred,
       failed: progress.failed,
       failureStatuses: progress.failureStatuses,
       firstFailure: progress.firstFailure,
@@ -3333,9 +3347,11 @@ function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(groupId, serializedMessageId(quoted));
   return byId && byId.group_id === groupId ? byId : null;
 }
-function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs = Date.now()) {
+function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs = Date.now(), windowMs = UNQUOTED_ACCEPTANCE_WINDOW_MS) {
   const timestampMs = Math.max(0, Number(acceptanceTimestampMs || Date.now()));
-  const cutoff = new Date(Math.max(0, timestampMs - UNQUOTED_ACCEPTANCE_WINDOW_MS)).toISOString();
+  const requestedWindowMs = Number(windowMs);
+  const effectiveWindowMs = Number.isFinite(requestedWindowMs) && requestedWindowMs > 0 ? requestedWindowMs : UNQUOTED_ACCEPTANCE_WINDOW_MS;
+  const cutoff = new Date(Math.max(0, timestampMs - effectiveWindowMs)).toISOString();
   const upperBound = new Date(timestampMs + 60 * 1000).toISOString();
   const rows = db.prepare(`
     SELECT c.*,p.phone AS producer_phone
@@ -4491,9 +4507,20 @@ async function recoverHistoricalOrderCandidates(groupId) {
   const cutoff = Date.now() - WHATSAPP_RECOVERY_SCAN_HOURS * 60 * 60 * 1000;
   const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
   lastHistoricalRecovery = recovery;
-  const fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
-  const recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
-  recovery.source = "order-scan";
+  let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  let recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
+  // Same reconnect gap as the acceptance recovery: the lightweight scanner can return nothing
+  // while the in-page history loader still reads the group. Without this fallback the function
+  // scanned zero messages on every run and still reported a silent success.
+  if (!recoveredMessages.length) {
+    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+    if (Array.isArray(history?.messages) && history.messages.length) {
+      fastScan = { ...history, source: "history-fallback" };
+      recoveredMessages = history.messages;
+    }
+  }
+  recovery.source = fastScan.source || "order-scan";
+  recovery.scanTimedOut = Boolean(fastScan.timedOut);
   whatsappHistoricalCandidateRecoveryAttempted = true;
   whatsappHistoricalCandidateRecoveryAt = Date.now();
   let recovered = 0;
@@ -4548,8 +4575,12 @@ async function recoverHistoricalOrderCandidates(groupId) {
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
-  const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, Math.min(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT));
-  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, pagesScanned: 0, messagesFetched: 0, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, recovered: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
+  // The execution batch stays bounded, but the reported backlog must not be capped:
+  // a saturated counter hides real growth and makes a stuck queue look stable.
+  const recoveryBatchLimit = Math.min(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT);
+  const pendingCandidatesTotal = Number(db.prepare("SELECT COUNT(*) AS total FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL").get(groupId)?.total || 0);
+  const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, recoveryBatchLimit);
+  lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, pendingCandidatesTotal, pendingCandidatesCapped: pendingCandidatesTotal > pendingCandidates.length, pagesScanned: 0, messagesFetched: 0, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, unquotedAttempts: 0, unquotedMatches: 0, recovered: 0, recoveredQuoted: 0, recoveredUnquoted: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };
   if (!pendingCandidates.length) { lastAcceptanceRecovery.finishedAt = new Date().toISOString(); return; }
   const pendingSourceIds = new Set(pendingCandidates.map((row) => String(row.source_message_id || "")).filter(Boolean));
   const cutoff = Date.now() - WHATSAPP_RECOVERY_SCAN_HOURS * 60 * 60 * 1000;
@@ -4559,23 +4590,29 @@ async function recoverPendingAcceptanceMessages(groupId) {
   const maxPages = WHATSAPP_RECOVERY_MAX_PAGES;
   for (let page = 0; page < maxPages; page += 1) {
     let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
-    // The lightweight scanner can return an empty page after a reconnect even while
-    // chat.fetchMessages can read the same recent history. Use that bounded fallback
-    // so stored «تم» replies are not left as candidate-only bookings indefinitely.
-    const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
-    if (!before && fastMessages.length === 0) {
-      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
-      if (Array.isArray(history?.messages) && history.messages.length) {
-        fastScan = { ...history, nextCursor: null, exhausted: true, source: "history-fallback" };
-        lastAcceptanceRecovery.lastStage = "history_fallback";
-      }
-    }
-    lastAcceptanceRecovery.pagesScanned += 1;
-    if (fastScan.timedOut) {
+    // Surface a fast-path timeout before any fallback replaces the object; otherwise the
+    // failure is silently relabelled as a successful history_fallback and never diagnosed.
+    if (fastScan?.timedOut) {
       lastAcceptanceRecovery.lastError = "recovery_group_scan_timeout";
       lastAcceptanceRecovery.lastStage = "group_scan_timeout";
       break;
     }
+    // The lightweight scanner can return an empty page after a reconnect even while
+    // chat.fetchMessages can read the same recent history. Use that bounded fallback,
+    // and keep paging from its oldest message so recovery depth is not capped at one page.
+    const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
+    if (!before && fastMessages.length === 0) {
+      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+      if (Array.isArray(history?.messages) && history.messages.length) {
+        const historyOldest = history.messages.reduce((oldest, message) => {
+          const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
+          return timestamp > 0 && (!oldest || timestamp < oldest) ? timestamp : oldest;
+        }, 0);
+        fastScan = { ...history, nextCursor: historyOldest || null, exhausted: false, source: "history-fallback" };
+        lastAcceptanceRecovery.lastStage = "history_fallback";
+      }
+    }
+    lastAcceptanceRecovery.pagesScanned += 1;
     const pageMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
     for (const message of pageMessages) {
       const messageId = serializedMessageId(message) || String(message?.id || "").trim();
@@ -4588,6 +4625,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     if (!before) break;
   }
   lastAcceptanceRecovery.messagesFetched = scanMessages.length;
+  const unquotedAcceptanceRows = [];
   let recovered = 0;
   for (const row of scanMessages.slice(0, WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES)) {
     lastAcceptanceRecovery.scanned += 1;
@@ -4604,6 +4642,10 @@ async function recoverPendingAcceptanceMessages(groupId) {
       acceptance.__quoted = quoted;
       acceptance.__quotedMessageId = serializedMessageId(quoted);
       lastAcceptanceRecovery.quoteFallbackMatches += 1;
+    } else {
+      // No quote at all: defer to the unquoted pass instead of discarding the reply.
+      unquotedAcceptanceRows.push({ row: acceptance, rowMessageId });
+      continue;
     }
     const sourceId = serializedMessageId(quoted);
     const matchingPendingSourceId = sourceId && Array.from(pendingSourceIds).find((pendingSourceId) => sourceMessageIdsEqual(pendingSourceId, sourceId));
@@ -4619,10 +4661,50 @@ async function recoverPendingAcceptanceMessages(groupId) {
       setAcceptanceRecoveryStage("handle_incoming_message_error");
     }
     const recorded = findPendingAcceptanceByMessage(groupId, rowMessageId);
-    if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; }
+    if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; lastAcceptanceRecovery.recoveredQuoted += 1; }
+  }
+  // Unquoted recovery pass. The live handler only links an unquoted «تم» to a candidate inside
+  // a short window, so every reply missed during a longer outage stayed stuck forever. Reuse the
+  // same conservative rule with the wider recovery window: exactly one candidate, otherwise refuse.
+  for (const { row: acceptance, rowMessageId } of unquotedAcceptanceRows) {
+    lastAcceptanceRecovery.unquotedAttempts += 1;
+    const senderPhone = await resolveMessageSenderPhone(acceptance).catch(() => null);
+    if (!senderPhone) continue;
+    const acceptanceTimestampMs = Number(acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now();
+    const unquoted = findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs, UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS);
+    if (!unquoted.candidate) continue;
+    lastAcceptanceRecovery.unquotedMatches += 1;
+    setAcceptanceRecoveryStage("before_register_unquoted_acceptance");
+    let unquotedResult = null;
+    try {
+      unquotedResult = registerAcceptance({
+        groupId,
+        messageId: rowMessageId,
+        senderPhone,
+        senderName: String(acceptance.__notifyName || acceptance.notifyName || displayPhone(senderPhone)).trim(),
+        acceptanceMode: "unquoted",
+        candidate: {
+          ...unquoted.candidate,
+          acceptance_author: acceptance.author,
+          acceptance_author_lid: acceptance._data?.author || acceptance.id?.participant || acceptance._data?.id?.participant,
+        },
+      });
+      setAcceptanceRecoveryStage("after_register_unquoted_acceptance");
+    } catch (error) {
+      lastAcceptanceRecovery.errors = Number(lastAcceptanceRecovery.errors || 0) + 1;
+      lastAcceptanceRecovery.lastError = String(error?.message || error).slice(0, 180);
+      setAcceptanceRecoveryStage("register_unquoted_acceptance_error");
+      continue;
+    }
+    if (!unquotedResult || ["captain_ineligible", "producer_missing_or_same_captain", "not_recorded", "transition_failed"].includes(unquotedResult.state)) {
+      lastAcceptanceRecovery.lastError = `unquoted_${unquotedResult?.state || "no_result"}`;
+      continue;
+    }
+    const recorded = findPendingAcceptanceByMessage(groupId, rowMessageId);
+    if (recorded) { recovered += 1; lastAcceptanceRecovery.recovered += 1; lastAcceptanceRecovery.recoveredUnquoted += 1; }
   }
   lastAcceptanceRecovery.finishedAt = new Date().toISOString();
-  if (recovered) console.log(`[WhatsApp] recovered ${recovered} quoted pending acceptance message(s)`);
+  if (recovered) console.log(`[WhatsApp] recovered ${recovered} pending acceptance message(s) (quoted=${lastAcceptanceRecovery.recoveredQuoted} unquoted=${lastAcceptanceRecovery.recoveredUnquoted})`);
 }
 function startBackgroundOrderRecovery(groupId) {
   if (whatsappRecoveryBackgroundRunning) return;
@@ -7846,6 +7928,41 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
   } catch (error) {
     return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
+});
+// V26 group linking: the operator needs exactly three identity fields — the group name,
+// the official group id, and the group's own invite code — with no extra tokens or codes.
+// This route is strictly read-only and never changes configuration or membership.
+app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) {
+    return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  }
+  const storedName = String(db.prepare("SELECT group_name FROM groups_config WHERE group_id=? LIMIT 1").get(groupId)?.group_name || "").trim();
+  const ready = Boolean(client && isReady);
+  let groupName = storedName || null;
+  let inviteCode = null;
+  let liveNameRead = false;
+  if (ready) {
+    try {
+      const chat = await withTimeout(resolveGroupChat(groupId), 20000, null);
+      if (chat?.name && String(chat.name).trim()) { groupName = String(chat.name).trim(); liveNameRead = true; }
+      if (chat && typeof chat.getInviteCode === "function") inviteCode = await withTimeout(chat.getInviteCode(), 20000, null);
+    } catch (_) { /* read-only best effort; configuration is never touched here */ }
+  }
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  return res.json({
+    success: true,
+    mutation: "none",
+    groupId,
+    officialGroupId: WHATSAPP_GROUP_ID || null,
+    identityMatch: Boolean(WHATSAPP_GROUP_ID && groupId === WHATSAPP_GROUP_ID),
+    groupName,
+    liveNameRead,
+    inviteCode: inviteCode ? String(inviteCode).trim() : null,
+    inviteUrl: inviteCode ? `https://chat.whatsapp.com/${String(inviteCode).trim()}` : null,
+    ready,
+    generatedAt: now(),
+  });
 });
 app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, (req, res) => {

@@ -62,7 +62,9 @@ assert.match(server, /WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
 assert.match(server, /Date\.now\(\) - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
 assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
 assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ cutoff, batch: 50, includeOutgoing: true \}\)/);
-assert.match(server, /recovery\.source = "order-scan"/);
+// The historical recovery now reports the source it actually used, so a history fallback is no
+// longer mislabelled as an order-scan read. "order-scan" must remain the default when no fallback ran.
+assert.match(server, /recovery\.source = fastScan\.source \|\| "order-scan"/);
 assert.doesNotMatch(server, /await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /const maxPages = WHATSAPP_RECOVERY_MAX_PAGES/);
