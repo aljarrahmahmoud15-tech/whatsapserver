@@ -25,19 +25,22 @@ for (const endpoint of [
   '/api/admin/leads',
 ]) assert.match(page, new RegExp(endpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
-// The display page must not wire any finance, settlement, group, or account mutation.
+// The page must not wire broad or unrelated mutations; owner actions are individually guarded.
 for (const forbidden of [
   '/api/admin/captain-wallet-pool/execute',
   '/api/admin/captain-wallet-pool/distribute',
   '/api/admin/captain-wallet-pool/withdraw',
-  '/api/admin/users/:id/direct-credit',
-  '/api/admin/captains/:id/direct-credit',
   '/api/admin/captains/:id/wallet-adjustment',
   '/api/admin/group/sync-captains',
   '/api/admin/captain-invites/:id/decision',
 ]) assert.doesNotMatch(page, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
-assert.match(page, /لا توجد حركة مالية أو إرسال WhatsApp تلقائي/);
+assert.match(page, /\/api\/admin\/group\/confirmed-preview/);
+assert.match(page, /\/api\/admin\/group\/confirm-one/);
+assert.match(page, /معاينة القروب · آخر 7 ساعات/);
+assert.match(page, /تثبيت هذا الحجز/);
+
+assert.match(page, /لا توجد حركة تلقائية؛ الأزرار الحساسة تتطلب تأكيد المالك/);
 assert.match(page, /إضافة الرصيد/);
 assert.match(page, /data-safe-action="edit"/);
 assert.match(page, /data-safe-action="credit"/);

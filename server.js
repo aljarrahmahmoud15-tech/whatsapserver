@@ -8519,6 +8519,53 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`], ownersOnly: true });
   res.json({ success: true, id, active, name, statusChanged: true, notificationSent: true });
 });
+app.post("/api/admin/captains/:id/suspend-and-remove", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const confirmation = String(req.body?.confirmation || "").trim();
+  const reason = String(req.body?.reason || "").trim().slice(0, 240);
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  if (!Number.isInteger(id) || id < 1 || confirmation !== "SUSPEND_AND_REMOVE_CAPTAIN" || !reason) {
+    return res.status(400).json({ error: "معرف الكابتن والسبب وعبارة التأكيد مطلوبة", mutation: "none" });
+  }
+  const captain = db.prepare("SELECT id,phone,name,active,account_status,is_bot,role FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
+  if (!captain) return res.status(404).json({ error: "الكابتن البشري غير موجود أو غير مؤهل", mutation: "none" });
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "القروب الرسمي المكوّن غير موجود", mutation: "none" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا؛ لم يتغير الحساب", mutation: "none" });
+
+  const normalizedPhone = phoneWithCountry(captain.phone);
+  const context = await readGroupRemovalContext(groupId).catch(() => null);
+  if (!context || !context.chat || typeof context.chat.removeParticipants !== "function") {
+    return res.status(503).json({ error: "تعذر قراءة القروب الرسمي؛ لم يتغير الحساب", mutation: "none" });
+  }
+  const directParticipantId = `${normalizedPhone}@c.us`;
+  const participantIds = new Set(Array.isArray(context.participantIds) ? context.participantIds : []);
+  const mappedParticipantId = context.phoneToParticipantId?.get(normalizedPhone);
+  const participantId = mappedParticipantId || (participantIds.has(directParticipantId) ? directParticipantId : null);
+  if (!participantId) {
+    if (!captain.active) return res.json({ success: true, state: "already_suspended_and_removed", mutation: "none", id, removed: false });
+    return res.status(409).json({ error: "الكابتن غير موجود حاليًا في القروب؛ لم يُوقف الحساب", mutation: "none", state: "not_in_group" });
+  }
+
+  try {
+    await context.chat.removeParticipants([participantId]);
+  } catch (error) {
+    audit("captain.group_removal.failed", "user", id, { groupId, phone: normalizedPhone, participantId, reason, error: String(error?.message || error).slice(0, 200), accountChanged: false });
+    return res.status(502).json({ error: "تعذرت إزالة الكابتن من القروب؛ لم يتغير الحساب", mutation: "none" });
+  }
+
+  const stamp = now();
+  const updated = db.prepare("UPDATE users SET active=0,account_status='suspended',updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").run(stamp, id);
+  audit("captain.suspended_and_removed_from_official_group", "user", id, {
+    groupId,
+    phone: normalizedPhone,
+    participantId,
+    reason,
+    statusChanged: Boolean(updated.changes),
+    notificationSent: false,
+    financialMutation: false,
+  });
+  res.json({ success: true, state: "suspended_and_removed", mutation: "captain_suspended_and_removed", id, removed: true, statusChanged: Boolean(updated.changes), notificationSent: false, financialMutation: false });
+});
 app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
