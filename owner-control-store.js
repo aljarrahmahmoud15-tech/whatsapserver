@@ -6,11 +6,24 @@ const ALLOWED_OWNER_COMMANDS = Object.freeze([
   "status.snapshot",
   "official-group.snapshot",
   "data.summary",
+  "bot.restart",
+  "session.refresh",
+  "group.broadcast",
 ]);
 
 const SENSITIVE_KEY = /token|secret|password|cookie|authorization|credential|pin|code|body|message/i;
 const SENSITIVE_PATH_KEY = /session|auth/i;
 const MAX_JSON_BYTES = 64 * 1024;
+const OWNER_COMMAND_CODE_KEY = /^(?:code|script|source|eval|function|constructor|prototype|__proto__|child_process|exec|spawn|fork)$/i;
+const OWNER_COMMAND_CODE_TEXT = /(?:\beval\s*\(|\bnew\s+Function\s*\(|\b(?:child_process|process\.(?:env|exit)|require|exec(?:File)?|spawn|fork)\s*\(|<\s*script\b|javascript\s*:)/i;
+
+function ownerCommandPayloadContainsCode(value, key = "", depth = 0) {
+  if (OWNER_COMMAND_CODE_KEY.test(String(key || ""))) return true;
+  if (typeof value === "string") return OWNER_COMMAND_CODE_TEXT.test(value);
+  if (value == null || typeof value !== "object" || depth > 6) return false;
+  if (Array.isArray(value)) return value.some((item) => ownerCommandPayloadContainsCode(item, "", depth + 1));
+  return Object.entries(value).some(([childKey, childValue]) => ownerCommandPayloadContainsCode(childValue, childKey, depth + 1));
+}
 
 function isoNow() {
   return new Date().toISOString();
@@ -159,5 +172,6 @@ function createOwnerControlStore({ dataDir, clock = isoNow } = {}) {
 module.exports = {
   ALLOWED_OWNER_COMMANDS,
   createOwnerControlStore,
+  ownerCommandPayloadContainsCode,
   safeObject,
 };

@@ -19,7 +19,7 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
-const { createOwnerControlStore } = require("./owner-control-store");
+const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
 
 const app = express();
@@ -7581,10 +7581,43 @@ app.post("/api/admin/owner-vault/decision", requireBotWalletOwner, (req, res) =>
   });
   res.status(201).json({ success: true, mutation: "none", executed: false, decision });
 });
-app.post("/api/admin/owner-control/command", requireBotWalletOwner, (req, res) => {
+
+function ownerControlProcessManager() {
+  return process.env.pm_id != null || Boolean(process.env.PM2_HOME);
+}
+
+function recordOwnerCommand(command, status, result = null) {
+  return ownerControlStore.recordCommand(command, status, result);
+}
+
+function ownerBroadcastMessageIsOperational(message) {
+  const text = String(message || "").trim();
+  return parseOrder(text).isOrder
+    || isCaptainAcceptance(text)
+    || /^#(?:تسجيل|استرداد|اعتماد|ربط|اعتمد)\b/i.test(text);
+}
+
+app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, res) => {
   const command = String(req.body?.command || "").trim();
+  if (!consumeRateLimit(adminActionRate, `owner-command:${clientAddress(req)}`, 10)) {
+    return res.status(429).json({ success: false, mutation: "none", executed: false, error: "محاولات أوامر المالك كثيرة؛ حاول لاحقًا" });
+  }
+  if (ownerCommandPayloadContainsCode(req.body)) {
+    if (ownerControlStore.allowedCommands.includes(command)) {
+      recordOwnerCommand(command, "rejected", { reason: "executable_code_payload_rejected" });
+    } else {
+      recordOwnerCommand("status.snapshot", "rejected", { reason: "executable_code_payload_rejected", commandNotAllowListed: true });
+    }
+    return res.status(400).json({
+      success: false,
+      mutation: "none",
+      executed: false,
+      error: "يُرفض أي payload يحتوي كودًا أو مسار تنفيذ؛ لا يوجد تنفيذ كود حر",
+      allowedCommands: ownerControlStore.allowedCommands,
+    });
+  }
   if (!ownerControlStore.allowedCommands.includes(command)) {
-    ownerControlStore.recordCommand("status.snapshot", "rejected", { reason: "not_allow_listed" });
+    recordOwnerCommand("status.snapshot", "rejected", { reason: "not_allow_listed" });
     return res.status(400).json({
       success: false,
       mutation: "none",
@@ -7592,6 +7625,85 @@ app.post("/api/admin/owner-control/command", requireBotWalletOwner, (req, res) =
       allowedCommands: ownerControlStore.allowedCommands,
     });
   }
+
+  if (command === "bot.restart") {
+    if (!ownerControlProcessManager()) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "process_manager_required", manager: null });
+      return res.status(409).json({
+        success: false,
+        mutation: "none",
+        executed: false,
+        command,
+        error: "إعادة تشغيل العملية متاحة فقط عند تشغيل الخدمة تحت PM2 أو مدير عمليات مماثل؛ Render الحالي لا يوفّر هذا المسار",
+        audit: auditRow,
+      });
+    }
+    const auditRow = recordOwnerCommand(command, "accepted", { mutation: "process.restart", executed: true, manager: "pm2" });
+    res.status(202).json({ success: true, accepted: true, mutation: "process.restart", executed: true, command, manager: "pm2", audit: auditRow });
+    setTimeout(() => process.exit(0), 250).unref?.();
+    return;
+  }
+
+  if (command === "session.refresh") {
+    try {
+      await restartWhatsApp("owner command: session.refresh");
+      const checkpoint = recordOwnerControlCheckpoint("owner-command.session.refresh", { force: true });
+      const auditRow = recordOwnerCommand(command, "accepted", { mutation: "session.refresh", executed: true, preservesAuth: true, checkpointId: checkpoint?.id || null });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ success: true, mutation: "session.refresh", executed: true, command, preservesAuth: true, audit: auditRow });
+    } catch (error) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "refresh_failed" });
+      return res.status(502).json({ success: false, mutation: "none", executed: false, command, error: "تعذر جدولة إعادة اتصال جلسة WhatsApp", audit: auditRow });
+    }
+  }
+
+  if (command === "group.broadcast") {
+    const groupId = String(req.body?.groupId || "").trim();
+    const message = String(req.body?.message || "").trim();
+    const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || crypto.randomUUID()).trim().slice(0, 120);
+    const officialGroupId = configuredRuntimeGroupId();
+    if (!groupId || !/^\d+@g\.us$/.test(groupId) || groupId !== officialGroupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "official_group_exact_match_required" });
+      return res.status(403).json({ success: false, mutation: "none", executed: false, command, error: "يسمح بالبث إلى القروب الرسمي المكوّن فقط", audit: auditRow });
+    }
+    if (!message || message.length > 2000 || message.includes("\u0000") || ownerBroadcastMessageIsOperational(message)) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "message_not_allowed_for_broadcast" });
+      return res.status(400).json({ success: false, mutation: "none", executed: false, command, error: "رسالة broadcast يجب أن تكون إعلانًا نصيًا عاديًا، لا طلبًا أو قبولًا أو أمر تشغيل", audit: auditRow });
+    }
+    if (!client || !isReady || typeof client.sendMessage !== "function") {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "whatsapp_not_ready" });
+      return res.status(503).json({ success: false, mutation: "none", executed: false, command, error: "WhatsApp غير جاهز للإرسال حاليًا", audit: auditRow });
+    }
+    if (isWhatsAppStorageSendBlocked()) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "whatsapp_storage_send_blocked" });
+      return res.status(503).json({ success: false, mutation: "none", executed: false, command, error: "تم إيقاف الإرسال مؤقتًا بسبب ضغط التخزين", audit: auditRow });
+    }
+    try {
+      const chat = await resolveGroupChat(groupId);
+      if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") {
+        const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "configured_chat_not_hydrated" });
+        return res.status(404).json({ success: false, mutation: "none", executed: false, command, error: "تعذر الحصول على القروب الرسمي الجاهز", audit: auditRow });
+      }
+      const timeoutMarker = Symbol("owner_broadcast_timeout");
+      const sendPromise = Promise.resolve().then(() => chat.sendMessage(message));
+      const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, timeoutMarker);
+      if (sent === timeoutMarker) {
+        const auditRow = recordOwnerCommand(command, "accepted", { mutation: "group.broadcast", executed: true, sendState: "pending", groupId, operationId, messageLength: message.length });
+        void sendPromise.catch((error) => audit("owner.group.broadcast.failed_after_timeout", "group", groupId, { operationId, error: String(error?.message || error).slice(0, 240) }));
+        return res.status(202).json({ success: true, accepted: true, mutation: "group.broadcast", executed: true, sendState: "pending", command, groupId, operationId, audit: auditRow });
+      }
+      const messageId = serializedMessageId(sent);
+      const sendState = messageId ? "confirmed" : "accepted";
+      audit("owner.group.broadcast.sent", "group", groupId, { operationId, messageId, messageLength: message.length, sendState });
+      const auditRow = recordOwnerCommand(command, "accepted", { mutation: "group.broadcast", executed: true, sendState, groupId, operationId, messageLength: message.length, messageId: messageId ? "[redacted]" : null });
+      return res.json({ success: true, mutation: "group.broadcast", executed: true, sendState, command, groupId, operationId, messageId, audit: auditRow });
+    } catch (error) {
+      const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "broadcast_failed" });
+      audit("owner.group.broadcast.failed", "group", groupId, { operationId, error: String(error?.message || error).slice(0, 240) });
+      return res.status(502).json({ success: false, mutation: "none", executed: false, command, error: "تعذر إرسال broadcast إلى القروب الرسمي", audit: auditRow });
+    }
+  }
+
   const reason = `owner-command.${command}`;
   const checkpoint = recordOwnerControlCheckpoint(reason, { force: true });
   const result = command === "official-group.snapshot"
@@ -7707,6 +7819,34 @@ app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => r
   official: { groupId: lastOfficialGroupEventGroupId, telemetry: lastOfficialGroupMessageTelemetry },
   ignored: { groupId: lastIgnoredGroupEventGroupId, telemetry: lastIgnoredGroupMessageTelemetry },
 }));
+app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) {
+    return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  }
+  if (!client || !isReady) {
+    return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  }
+  try {
+    const snapshot = await readGroupSnapshot(groupId);
+    if (!snapshot || !Array.isArray(snapshot.participants)) {
+      return res.status(502).json({ success: false, mutation: "none", groupId, ready: true, error: "Official group participant snapshot unavailable" });
+    }
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({
+      success: true,
+      mutation: "none",
+      groupId,
+      groupName: snapshot.name || null,
+      participantCount: snapshot.participants.length,
+      participantRawCount: Number(snapshot.participantRawCount || snapshot.participants.length),
+      participantSource: snapshot.participantSource || "unknown",
+      generatedAt: now(),
+    });
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
+  }
+});
 app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();

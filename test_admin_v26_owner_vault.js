@@ -10,6 +10,12 @@ assert.match(server, /app\.get\("\/api\/admin\/owner-vault", requireBotWalletOwn
 assert.match(server, /app\.post\("\/api\/admin\/owner-vault\/decision", requireBotWalletOwner/);
 assert.match(server, /owner\.decision\.note/);
 assert.match(server, /mutation: "none"/);
+for (const marker of ["bot.restart", "session.refresh", "group.broadcast", "ownerCommandPayloadContainsCode", "official_group_exact_match_required"]) {
+  assert.match(server, new RegExp(marker.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")));
+}
+assert.doesNotMatch(server, /app\.post\("\/api\/admin\/owner-control\/command"[\s\S]{0,500}eval\(/);
+assert.doesNotMatch(server, /app\.post\("\/api\/admin\/owner-control\/command"[\s\S]{0,500}new Function\(/);
+assert.doesNotMatch(server, /app\.post\("\/api\/admin\/owner-control\/command"[\s\S]{0,500}child_process/);
 const vaultRouteStart = server.indexOf('app.get("/api/admin/owner-vault"');
 const vaultRouteEnd = server.indexOf('app.post("/api/admin/owner-control/command"', vaultRouteStart);
 assert.ok(vaultRouteStart >= 0 && vaultRouteEnd > vaultRouteStart);
@@ -22,6 +28,11 @@ for (const marker of [
   "owner.decision.note",
   "مشفر",
   "لا تنفيذ آلي",
+  "أوامر المالك V26",
+  "bot.restart",
+  "session.refresh",
+  "group.broadcast",
+  "ownerBroadcastForm",
 ]) assert.match(page, new RegExp(marker.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")));
 assert.doesNotMatch(page, /OWNER_VAULT_SECRET/);
 assert.doesNotMatch(page, /owner-vault\.key/);

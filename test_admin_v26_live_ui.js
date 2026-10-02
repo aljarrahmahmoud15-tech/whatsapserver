@@ -6,7 +6,13 @@ const page = fs.readFileSync('./public/admin-v26.html', 'utf8');
 assert.match(page, /<title>وصلني الآن · عمليات V26<\/title>/);
 assert.match(page, /id="metricCaptains"/);
 assert.match(page, /id="metricOrders"/);
-assert.match(page, /id="metricNegative"/);
+assert.match(page, /id="groupMemberCount"/);
+assert.match(page, /class="main-nav primary-nav"/);
+assert.match(page, /data-admin-action="invites"/);
+assert.match(page, /data-admin-action="cards"/);
+assert.match(page, /data-admin-action="leads"/);
+assert.match(page, /data-admin-action="finance"/);
+assert.match(page, /data-admin-action="vault"/);
 assert.match(page, /id="captainList"/);
 assert.match(page, /id="ordersList"/);
 assert.match(page, /id="adminDetailPanel"/);
@@ -23,6 +29,7 @@ for (const endpoint of [
   '/api/admin/captain-invites',
   '/api/admin/cards?limit=100',
   '/api/admin/leads',
+  '/api/admin/group/summary',
 ]) assert.match(page, new RegExp(endpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
 // The page must not wire broad or unrelated mutations; owner actions are individually guarded.
@@ -40,7 +47,7 @@ assert.match(page, /\/api\/admin\/group\/confirm-one/);
 assert.match(page, /معاينة القروب · آخر 7 ساعات/);
 assert.match(page, /تثبيت هذا الحجز/);
 
-assert.match(page, /لا توجد حركة تلقائية؛ الأزرار الحساسة تتطلب تأكيد المالك/);
+assert.match(page, /لا يوجد تنفيذ كود حر/);
 assert.match(page, /إضافة الرصيد/);
 assert.match(page, /data-safe-action="edit"/);
 assert.match(page, /data-safe-action="credit"/);

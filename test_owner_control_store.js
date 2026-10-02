@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createOwnerControlStore } = require("./owner-control-store");
+const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "waslni-owner-control-"));
 const store = createOwnerControlStore({ dataDir: tempDir, clock: () => "2026-10-02T10:00:00.000Z" });
@@ -24,8 +24,21 @@ assert.equal(latest.snapshot.officialGroup.groupId, "120363426604560611@g.us");
 const accepted = store.recordCommand("official-group.snapshot", "accepted", { mutation: "none" });
 assert.equal(accepted.status, "accepted");
 assert.equal(store.listRecentCommands(10)[0].command, "official-group.snapshot");
-assert.deepEqual(store.allowedCommands, ["status.snapshot", "official-group.snapshot", "data.summary"]);
+assert.deepEqual(store.allowedCommands, [
+  "status.snapshot",
+  "official-group.snapshot",
+  "data.summary",
+  "bot.restart",
+  "session.refresh",
+  "group.broadcast",
+]);
+for (const command of ["bot.restart", "session.refresh", "group.broadcast"]) {
+  assert.equal(store.recordCommand(command, "accepted", { mutation: "test-only" }).status, "accepted");
+}
 assert.throws(() => store.recordCommand("eval", "accepted"), /allow-listed/);
+assert.equal(ownerCommandPayloadContainsCode({ command: "group.broadcast", message: "eval(process.env)" }), true);
+assert.equal(ownerCommandPayloadContainsCode({ command: "group.broadcast", message: "إعلان تشغيلي عادي" }), false);
+assert.equal(ownerCommandPayloadContainsCode({ command: "group.broadcast", code: "return 1" }), true);
 
 store.close();
 const dbPath = path.join(tempDir, "owner-control.sqlite");
@@ -37,8 +50,16 @@ const server = fs.readFileSync("./server.js", "utf8");
 assert.match(server, /owner-control-store/);
 assert.match(server, /app\.get\("\/api\/admin\/owner-control", requireBotWalletOwner/);
 assert.match(server, /ownerControlStore\.allowedCommands/);
+assert.match(server, /bot\.restart/);
+assert.match(server, /session\.refresh/);
+assert.match(server, /group\.broadcast/);
+assert.match(server, /official_group_exact_match_required/);
+assert.match(server, /executable_code_payload_rejected/);
+assert.match(server, /ownerBroadcastMessageIsOperational/);
 assert.match(server, /productionDatabaseUntouched: true/);
 assert.doesNotMatch(server, /owner-control\/command[\s\S]{0,240}eval\(/, "owner control must not evaluate arbitrary code");
+assert.doesNotMatch(server, /owner-control\/command[\s\S]{0,240}new Function\(/, "owner control must not construct arbitrary functions");
+assert.doesNotMatch(server, /owner-control\/command[\s\S]{0,240}child_process/, "owner control must not execute child processes from input");
 assert.match(server, /LocalAuth\(\{ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH \}\)/);
 assert.match(server, /recordOwnerControlCheckpoint\("whatsapp\.ready"/);
 assert.match(server, /ownerControlStore\.close\(\)/);
