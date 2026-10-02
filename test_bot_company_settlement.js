@@ -6,7 +6,7 @@ const settlement = calculateSettlement({
   orderKind: "normal",
   regularProducerRateBps: 1200,
   specialOrderProducerRateBps: 1200,
-  companyFromProducerRateBps: 400,
+  companyFromProducerRateBps: 300,
 });
 
 const companyStartingBalance = 0;
@@ -14,9 +14,9 @@ const companyAfterCompanyShare = companyStartingBalance + settlement.companyCent
 const companyFinalBalance = companyAfterCompanyShare + settlement.producerNetCents;
 
 assert.equal(settlement.producerFeeCents, 240);
-assert.equal(settlement.companyCents, 80);
+assert.equal(settlement.companyCents, 60);
 assert.equal(settlement.producerNetCents, 240);
-assert.equal(companyFinalBalance, 320, "حصة المنتج 12% وعمولة الشركة 4% تذهبان معًا لرصيد الشركة");
+assert.equal(companyFinalBalance, 300, "حصة المنتج 12% وعمولة الشركة 3% تذهبان معًا لرصيد الشركة");
 assert.equal(settlement.producerNetCents > 0, true);
 assert.equal("botWallet" in {}, false, "لا توجد محفظة مستقلة للبوت");
 
