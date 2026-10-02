@@ -20,6 +20,7 @@ sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore } = require("./owner-control-store");
+const { createOwnerVault } = require("./owner-vault");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -64,6 +65,7 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Jojo1987@";
 const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
 const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
+const OWNER_VAULT_SECRET = process.env.OWNER_VAULT_SECRET || "";
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
@@ -304,6 +306,9 @@ db.pragma("foreign_keys = ON");
 // This is a separate, non-authoritative owner-control projection. It never replaces
 // or mutates the production database, WhatsApp auth folders, or group configuration.
 const ownerControlStore = createOwnerControlStore({ dataDir: DATA_DIR });
+// Encrypted owner decisions live in a separate persistent store. No arbitrary
+// code, raw secret, WhatsApp session material, or financial mutation is stored here.
+const ownerVault = createOwnerVault({ dataDir: DATA_DIR, secret: OWNER_VAULT_SECRET });
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -7549,6 +7554,33 @@ app.get("/api/admin/owner-control", requireBotWalletOwner, (req, res) => {
     recentCommands: ownerControlStore.listRecentCommands(20),
   });
 });
+app.get("/api/admin/owner-vault", requireBotWalletOwner, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    mutation: "none",
+    vault: ownerVault.status(),
+    recentDecisions: ownerVault.listRecent(20),
+    rawPayloadsIncluded: false,
+    executionDispatcher: "disabled",
+  });
+});
+app.post("/api/admin/owner-vault/decision", requireBotWalletOwner, (req, res) => {
+  const command = String(req.body?.command || "").trim();
+  if (command !== "owner.decision.note") {
+    return res.status(400).json({ success: false, mutation: "none", executed: false, error: "قرار الخزنة غير موجود في القائمة البيضاء" });
+  }
+  const note = String(req.body?.note || "").trim();
+  if (!note || note.length > 2000) {
+    return res.status(400).json({ success: false, mutation: "none", executed: false, error: "نص قرار المالك مطلوب وبحد أقصى 2000 حرف" });
+  }
+  const decision = ownerVault.recordDecision({
+    command,
+    payload: { note },
+    result: { executed: false, mutation: "none", dispatcher: "disabled" },
+  });
+  res.status(201).json({ success: true, mutation: "none", executed: false, decision });
+});
 app.post("/api/admin/owner-control/command", requireBotWalletOwner, (req, res) => {
   const command = String(req.body?.command || "").trim();
   if (!ownerControlStore.allowedCommands.includes(command)) {
@@ -11440,5 +11472,5 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerControlStore.close(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
