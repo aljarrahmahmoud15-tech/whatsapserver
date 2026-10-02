@@ -19,6 +19,7 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
+const { createOwnerControlStore } = require("./owner-control-store");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -300,6 +301,9 @@ app.use(
 const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+// This is a separate, non-authoritative owner-control projection. It never replaces
+// or mutates the production database, WhatsApp auth folders, or group configuration.
+const ownerControlStore = createOwnerControlStore({ dataDir: DATA_DIR });
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -3786,9 +3790,89 @@ let baileysInitializing = false;
 let baileysReconnectTimer = null;
 let baileysConnectionGeneration = 0;
 let baileysModulePromise = null;
+let lastOwnerControlCheckpointAt = 0;
 
 function boundedDiagnosticText(value, limit = 2400) {
   return String(value || "").replace(/\u0000/g, "").slice(0, limit);
+}
+
+function ownerControlSnapshot() {
+  const memory = process.memoryUsage();
+  const captainSummary = db.prepare(`SELECT
+    COUNT(*) AS registered,
+    SUM(CASE WHEN role='captain' AND is_bot=0 AND active=1 AND account_status='active' THEN 1 ELSE 0 END) AS active,
+    SUM(CASE WHEN role='captain' AND is_bot=0 AND wallet_cents < 0 THEN 1 ELSE 0 END) AS negative,
+    COALESCE(SUM(CASE WHEN role='captain' AND is_bot=0 THEN wallet_cents ELSE 0 END), 0) AS walletCents
+    FROM users`).get();
+  const orderSummary = db.prepare(`SELECT
+    COUNT(*) AS total,
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' THEN 1 ELSE 0 END) AS open,
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pendingConfirmation,
+    SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS acceptedUnlinked
+    FROM orders`).get();
+  const configuredGroupId = configuredRuntimeGroupId() || null;
+  return {
+    schemaVersion: 1,
+    recordedAt: now(),
+    source: "bot-runtime",
+    mutation: "none",
+    whatsapp: {
+      ready: Boolean(isReady),
+      state: whatsappState,
+      lastEvent: whatsappLastEvent,
+      lastError: boundedDiagnosticText(whatsappLastError, 500) || null,
+      qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+      lastReadyAt,
+      lastDisconnectAt,
+      sessionPersistence: whatsappSessionPersistenceHealth(),
+    },
+    officialGroup: {
+      configured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
+      groupId: configuredGroupId,
+      receiverReady: Boolean(isReady || baileysReady),
+      receiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
+      lastEventAt: lastOfficialGroupMessageTelemetry?.at || null,
+      lastEventType: lastOfficialGroupMessageTelemetry?.event || null,
+      lastEventMatched: lastOfficialGroupMessageTelemetry ? Boolean(lastOfficialGroupMessageTelemetry.configured) : null,
+    },
+    dataSummary: {
+      captains: {
+        registered: Number(captainSummary?.registered || 0),
+        active: Number(captainSummary?.active || 0),
+        negative: Number(captainSummary?.negative || 0),
+        walletCents: Number(captainSummary?.walletCents || 0),
+      },
+      orders: {
+        total: Number(orderSummary?.total || 0),
+        open: Number(orderSummary?.open || 0),
+        pendingConfirmation: Number(orderSummary?.pendingConfirmation || 0),
+        acceptedUnlinked: Number(orderSummary?.acceptedUnlinked || 0),
+      },
+    },
+    runtime: {
+      rssMb: Math.round(memory.rss / (1024 * 1024)),
+      heapUsedMb: Math.round(memory.heapUsed / (1024 * 1024)),
+      storagePressure: {
+        status: whatsappStoragePressure.status,
+        blocked: Boolean(whatsappStoragePressure.blocked),
+        usageRatio: whatsappStoragePressure.usageRatio,
+        lastCheckedAt: whatsappStoragePressure.lastCheckedAt,
+      },
+    },
+  };
+}
+
+function recordOwnerControlCheckpoint(reason, { force = false } = {}) {
+  const nowMs = Date.now();
+  if (!force && nowMs - lastOwnerControlCheckpointAt < 60000) return null;
+  try {
+    const checkpoint = ownerControlStore.saveCheckpoint(reason, ownerControlSnapshot());
+    lastOwnerControlCheckpointAt = nowMs;
+    return checkpoint;
+  } catch (error) {
+    console.warn("[OwnerControl] checkpoint failed:", boundedDiagnosticText(error?.message || error, 500));
+    return null;
+  }
 }
 
 function recordWhatsAppPageDiagnostic(type, payload = {}) {
@@ -4793,6 +4877,7 @@ function createClient() {
     lastQrTime = new Date();
     isReady = false;
     console.log("[WhatsApp] New QR generated");
+    recordOwnerControlCheckpoint("whatsapp.qr", { force: true });
   });
   instance.on("authenticated", () => {
     whatsappState = "authenticated";
@@ -4800,6 +4885,7 @@ function createClient() {
     whatsappLastError = null;
     qrCodeData = null;
     console.log(`[WhatsApp] authenticated (clientId=${WHATSAPP_CLIENT_ID})`);
+    recordOwnerControlCheckpoint("whatsapp.authenticated", { force: true });
   });
   instance.on("ready", () => {
     if (generation !== connectionGeneration || client !== instance) return;
@@ -4824,6 +4910,7 @@ function createClient() {
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
+    recordOwnerControlCheckpoint("whatsapp.ready", { force: true });
     const readyGeneration = generation;
     setTimeout(() => {
       if (readyGeneration !== connectionGeneration || !isReady || client !== instance) return;
@@ -4862,6 +4949,7 @@ function createClient() {
     isReady = false;
     if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
+    recordOwnerControlCheckpoint("whatsapp.auth_failure", { force: true });
     void disposeClientInstance(instance, "auth_failure");
     scheduleReconnect();
   });
@@ -4876,6 +4964,7 @@ function createClient() {
     qrCodeData = null;
     if (client === instance) client = null;
     console.warn("[WhatsApp] disconnected:", reason);
+    recordOwnerControlCheckpoint("whatsapp.disconnected", { force: true });
     // Do not leave the old Chromium process alive while the retry starts.
     void disposeClientInstance(instance, "disconnected");
     scheduleReconnect();
@@ -4958,6 +5047,7 @@ async function initializeWhatsApp() {
       whatsappState = "initialize_timeout";
       whatsappLastEvent = "initialize_timeout";
       whatsappLastError = "WhatsApp initialization timed out; controlled retry scheduled";
+      recordOwnerControlCheckpoint("whatsapp.initialize_timeout", { force: true });
       await withTimeout(disposeClientInstance(currentClient, "initialize_timeout"), 15000, null);
       if (client === currentClient) client = null;
       scheduleReconnect();
@@ -4968,6 +5058,7 @@ async function initializeWhatsApp() {
     whatsappLastError = String(error?.message || error);
     console.error("[WhatsApp] initialize:", error.message);
     isReady = false;
+    recordOwnerControlCheckpoint("whatsapp.initialize_error", { force: true });
     if (client === currentClient) client = null;
     await withTimeout(disposeClientInstance(currentClient, "initialize_error"), 15000, null);
     scheduleReconnect();
@@ -5261,6 +5352,7 @@ function recordGroupMessageTelemetry(event, msg) {
   if (configured) {
     lastOfficialGroupEventGroupId = groupId;
     lastOfficialGroupMessageTelemetry = telemetry;
+    recordOwnerControlCheckpoint("official-group.event");
   } else {
     lastIgnoredGroupEventGroupId = groupId;
     lastIgnoredGroupMessageTelemetry = telemetry;
@@ -7443,6 +7535,41 @@ app.get("/status", (req, res) => {
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, health: runtimeHealth() });
+});
+app.get("/api/admin/owner-control", requireBotWalletOwner, (req, res) => {
+  recordOwnerControlCheckpoint("owner-control.read", { force: true });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    mutation: "none",
+    controlPlane: "owner-v26-allow-list",
+    productionDatabaseUntouched: true,
+    whatsappAuthUntouched: true,
+    latestCheckpoint: ownerControlStore.getLatestCheckpoint(),
+    recentCommands: ownerControlStore.listRecentCommands(20),
+  });
+});
+app.post("/api/admin/owner-control/command", requireBotWalletOwner, (req, res) => {
+  const command = String(req.body?.command || "").trim();
+  if (!ownerControlStore.allowedCommands.includes(command)) {
+    ownerControlStore.recordCommand("status.snapshot", "rejected", { reason: "not_allow_listed" });
+    return res.status(400).json({
+      success: false,
+      mutation: "none",
+      error: "الأمر غير موجود في القائمة البيضاء؛ لا يوجد تنفيذ برمجي عام",
+      allowedCommands: ownerControlStore.allowedCommands,
+    });
+  }
+  const reason = `owner-command.${command}`;
+  const checkpoint = recordOwnerControlCheckpoint(reason, { force: true });
+  const result = command === "official-group.snapshot"
+    ? ownerControlSnapshot().officialGroup
+    : command === "data.summary"
+      ? ownerControlSnapshot().dataSummary
+      : ownerControlSnapshot();
+  const auditRow = ownerControlStore.recordCommand(command, "accepted", { mutation: "none", checkpointId: checkpoint?.id || null });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", command, audit: auditRow, result });
 });
 app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, async (req, res) => {
   try {
@@ -11297,6 +11424,7 @@ process.on("unhandledRejection", (reason) => {
   whatsappLastError = "WhatsApp browser context restarted; controlled reconnect scheduled";
   whatsappLastEvent = "browser_context_reset";
   isReady = false;
+  recordOwnerControlCheckpoint("whatsapp.browser_context_reset", { force: true });
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; scheduling reconnect");
   scheduleReconnect();
 });
@@ -11308,8 +11436,9 @@ process.on("uncaughtException", (error) => {
   whatsappLastError = "WhatsApp browser context restarted; controlled reconnect scheduled";
   whatsappLastEvent = "browser_context_reset";
   isReady = false;
+  recordOwnerControlCheckpoint("whatsapp.browser_context_reset", { force: true });
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerControlStore.close(); db.close(); process.exit(0); });
