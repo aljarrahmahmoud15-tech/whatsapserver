@@ -3279,6 +3279,31 @@ function notifyOrderLifecycleBlocker(candidateId, blocker, details = {}) {
     ownersOnly: true,
   });
 }
+function notifyPendingBookingApproval(candidateId, { acceptanceMessageId = null, captain = null } = {}) {
+  if (!candidateId) return;
+  const event = `order.pending_owner_approval.${candidateId}`;
+  if (db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(event)) return;
+  const candidate = db.prepare(`SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id,
+      p.name AS producer_name
+    FROM order_candidates c LEFT JOIN users p ON p.id=c.producer_user_id
+    WHERE c.id=? AND c.status='pending' LIMIT 1`).get(candidateId);
+  if (!candidate) return;
+  const captainName = captain?.name || captain?.phone || "كابتن غير مسمى";
+  void notifyOperations({
+    event,
+    title: "حجز جديد بانتظار اعتماد المالك",
+    lines: [
+      `الحجز المرشح: #${candidate.id}`,
+      `المسار: ${candidate.origin || "—"} ← ${candidate.destination || "—"}`,
+      `القيمة: ${money(candidate.price_cents)} JOD`,
+      `المنزّل: ${candidate.producer_name || "غير مسجل"}`,
+      `الكابتن المقبول: ${captainName}`,
+      acceptanceMessageId ? `رسالة القبول: ${orderTraceKey(acceptanceMessageId)}` : "",
+      "الطلب محفوظ بانتظار تدقيقك واعتماده من واجهة V26.",
+    ],
+    ownersOnly: true,
+  });
+}
 function findPendingAcceptanceByMessage(groupId, acceptanceMessageId) {
   if (!groupId || !acceptanceMessageId) return null;
   const exact = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1").get(groupId, acceptanceMessageId);
@@ -3319,6 +3344,7 @@ function registerAcceptance({ groupId, messageId, senderPhone, senderName, candi
   if (recorded.state !== "recorded") return recorded;
   const { acceptance } = recorded;
   audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, acceptanceMode: normalizedAcceptanceMode });
+  notifyPendingBookingApproval(candidate.id, { acceptanceMessageId: acceptance.acceptance_message_id, captain });
   return { state: "recorded", acceptance, captain, producer };
 }
 function latestEligibleGroupOrderMessage(messages, groupId) {
