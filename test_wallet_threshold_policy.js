@@ -50,7 +50,7 @@ assert.match(server, /failureStatuses/);
 assert.match(server, /firstFailure/);
 assert.match(server, /app\.get\("\/api\/admin\/captains\/enforce-wallet-policy\/:runKey"/);
 assert.match(server, /member\.suspended_for_negative_balance/);
-assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied"/);
+assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 16% debit remains applied"/);
 assert.match(server, /skipped_negative_balance/);
 assert.match(server, /sendWhatsAppAtMostOnce\(recipient, message/);
 

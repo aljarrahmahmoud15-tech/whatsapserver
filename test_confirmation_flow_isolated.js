@@ -122,7 +122,7 @@ const context = {
   getSetting: (_key, fallback) => fallback,
   PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1200,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 300,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 400,
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
@@ -173,9 +173,9 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
   assert.strictEqual(candidate.status, "finalized", "التفاعل المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
-  assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
+  assert.strictEqual(users[3].wallet_cents, 80, "يُخصم 16% من محفظة الكابتن المنفذ");
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
-  assert.strictEqual(users[1].wallet_cents, 60, "تضاف 3% لمحفظة الشركة");
+  assert.strictEqual(users[1].wallet_cents, 80, "تضاف 4% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
   assert.match(messages[0].text, /✅ تم تثبيت الطلب #7/);
   assert.match(messages[0].text, /👤 كابتن تنزيل الطلب: المنتج/);
