@@ -21,6 +21,7 @@ const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
+const { cancelSettledOrderAndReverse } = require("./order-cancellation");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -3494,7 +3495,17 @@ function finalBookingConfirmationOrderNo(body) {
   const legacyMatch = text.match(/رقم الرحلة:\s*#(\d+)/);
   return Number(legacyMatch?.[1] || 0);
 }
-function finalBookingCancellationText() {
+function finalBookingCancellationText(order = null) {
+  if (order?.order_no) {
+    return [
+      `❌ تم إلغاء الحجز #${order.order_no}`,
+      "",
+      `🛣️ المسار: ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
+      `💰 القيمة: ${money(order.price_cents)} JOD`,
+      "📌 الحالة: ملغى ومعكوس ماليًا بقرار المالك V26.",
+      "تم إرجاع الحصص والخصم في دفتر المحافظ، ولن تُحتسب عمولة لهذا الحجز.",
+    ].join("\n");
+  }
   return [
     "❌ تم رفض أو إلغاء الطلب",
     "",
@@ -3699,15 +3710,15 @@ function observeFinalBookingConfirmationMessage(message) {
   if (updated.changes) console.log(`[WhatsApp] final booking confirmation observed order=${orderNo} message=${messageId}`);
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
-async function sendFinalBookingCancellation(groupId) {
+async function sendFinalBookingCancellation(groupId, order = null) {
   if (!client || !groupId) return null;
   try {
-    const sent = await sendServer2DirectAtMostOnce(groupId, finalBookingCancellationText(), undefined, 15000);
+    const sent = await sendServer2DirectAtMostOnce(groupId, finalBookingCancellationText(order), undefined, 15000);
     if (!sent) throw new Error("cancellation message was not acknowledged");
     return sent;
   } catch (error) {
     console.error("[WhatsApp] final booking cancellation not sent:", error.message);
-    void notifyOperations({ event: `order.cancellation_card.failed.${orderTraceKey(groupId)}`, title: "تعذر إرسال بطاقة إلغاء الطلب", lines: ["تم تسجيل إلغاء الطلب دون تسوية مالية، لكن رسالة الإلغاء لم تصل إلى القروب."], ownersOnly: true });
+    void notifyOperations({ event: `order.cancellation_card.failed.${orderTraceKey(groupId)}`, title: "تعذر إرسال بطاقة إلغاء الطلب", lines: [order?.order_no ? `تم إلغاء الحجز #${order.order_no} وعكس تسويته داخل التطبيق، لكن بطاقة القروب لم تصل.` : "تم تسجيل إلغاء الطلب دون حركة مالية، لكن رسالة الإلغاء لم تصل إلى القروب."], ownersOnly: true });
     return null;
   }
 }
@@ -7446,9 +7457,9 @@ app.get("/api/staff/orders", requireStaff, (req, res) => {
   const rows = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,
     s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
     p.name AS producer_name,c.name AS captain_name
-    FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-    WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.id DESC LIMIT 200`).all();
-  res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || 'غير مسجل', captain_name: row.captain_name || 'غير مسجل', companyShare: settlementFinancials(row).company, settlement: 'applied' })) });
+    FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed') LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
+    WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT 200`).all();
+  res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || 'غير مسجل', captain_name: row.captain_name || 'غير مسجل', companyShare: settlementFinancials(row).company, settlement: row.settlement_status || 'applied' })) });
 });
 app.get("/api/staff/captains", requireStaffRole("operations"), (req, res) => {
   const captains = db.prepare("SELECT id,phone,name,active,account_status,created_at,captain_last_login_at FROM users WHERE role='captain' AND account_status<>'merged' ORDER BY active DESC,name").all().map((row) => ({ ...row, lastLoginAt: row.captain_last_login_at }));
@@ -7516,7 +7527,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     text: redact(row.message),
     time: row.created_at,
   }));
-  const recentSettlements = settlementRows(10).filter((row) => row.settlement_status === "applied").map((row) => {
+  const recentSettlements = settlementRows(10).filter((row) => ["applied", "reversed"].includes(row.settlement_status)).map((row) => {
     const finance = settlementFinancials(row);
     return {
       orderNo: row.order_no,
@@ -10732,12 +10743,48 @@ app.get("/api/admin/leads", requireAdmin, (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ leads: rows });
 });
+const OWNER_ORDER_CANCELLATION_CONFIRMATION = "V26_CANCEL_ORDER";
+app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const confirmation = String(req.body?.confirmation || "").trim();
+  const idempotencyKey = String(req.get("X-Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+  const reason = String(req.body?.reason || "إلغاء الحجز وعكس الحوالة من المالك عبر V26").trim().slice(0, 240);
+  if (!Number.isInteger(orderId) || orderId < 1 || confirmation !== OWNER_ORDER_CANCELLATION_CONFIRMATION || !/^V26-CANCEL-ORDER-[A-Za-z0-9_-]{1,80}$/.test(idempotencyKey)) {
+    return res.status(400).json({ error: "رقم الحجز وتأكيد V26 ومفتاح التكرار مطلوبون" });
+  }
+  try {
+    const result = cancelSettledOrderAndReverse(db, { orderId, now, audit, reason, idempotencyKey });
+    if (result.state === "not_found") return res.status(404).json({ error: "الحجز غير موجود" });
+    if (result.state === "not_settled") return res.status(409).json({ error: "لا يمكن عكس الحوالة؛ الحجز ليس مثبتًا ومسوى ماليًا", state: result.state, financialMutation: false });
+    if (result.state === "missing_wallet_party") return res.status(409).json({ error: "تعذر تحديد محافظ الحجز؛ لم تُنفذ أي حركة", state: result.state, financialMutation: false });
+    if (result.state === "already_reversed") {
+      return res.json({ success: true, state: result.state, alreadyReversed: true, financialMutation: false, orderId, message: "الحجز ملغى ومعكوس مسبقًا؛ لم تتكرر الحركة" });
+    }
+    const message = await sendFinalBookingCancellation(result.order.group_id, result.order);
+    audit("order.cancellation_card.owner_delivery", "order", orderId, { orderNo: result.order.order_no, sent: Boolean(message), messageId: message?.id?._serialized || null, financialMutation: false, synchronizedState: "cancelled_reversed" });
+    res.status(201).json({
+      success: true,
+      state: result.state,
+      alreadyReversed: false,
+      financialMutation: true,
+      synchronizedState: "cancelled_reversed",
+      orderId,
+      orderNo: result.order.order_no,
+      reversal: result.reversal,
+      groupNotification: message ? "sent" : "failed_or_unavailable",
+      messageId: message?.id?._serialized || null,
+    });
+  } catch (error) {
+    console.error("[OwnerCancellation] failed:", error);
+    res.status(500).json({ error: "تعذر إلغاء الحجز وعكس الحوالة؛ أُلغيت العملية كاملة", financialMutation: false });
+  }
+});
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
     s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at
-    FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+    FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed')
     LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-    WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.id DESC LIMIT 200`).all();
+    WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT 200`).all();
   res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
 app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
@@ -11196,12 +11243,12 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
   const rows = groupId
     ? db.prepare(`SELECT o.*, p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
         s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at
-        FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-        WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' AND o.group_id=? ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(groupId, limit)
+        FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed') LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
+        WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') AND o.group_id=? ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(groupId, limit)
     : db.prepare(`SELECT o.*, p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
         s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at
-        FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-        WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled' ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(limit);
+        FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed') LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
+        WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.accepted_at DESC, o.id DESC LIMIT ?`).all(limit);
   res.setHeader("Cache-Control", "no-store");
   res.json({
     success: true,

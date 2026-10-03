@@ -27,7 +27,7 @@ assert.match(confirmationBody, /👤 كابتن تنزيل الطلب/);
 assert.match(confirmationBody, /🚕 الكابتن المنفذ/);
 assert.match(server, /function finalBookingConfirmationOrderNo\(body\)/);
 assert.match(server, /const shortMatch = text\.match\(\/\^✅ تم تثبيت الطلب\\s\*#\(\\d\+\)\/m\)/);
-assert.match(server, /function finalBookingCancellationText\(\)/);
+assert.match(server, /function finalBookingCancellationText\(/);
 assert.match(server, /❌ تم رفض أو إلغاء الطلب/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "تم تسجيل الطلب"/);
 assert.doesNotMatch(server, /sendGroupBrandedMessage\(groupId, "بانتظار اعتماد كابتن تنزيل الطلب"/);
