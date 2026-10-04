@@ -10,7 +10,7 @@ assert.match(server, /postedShare: money/);
 assert.match(server, /executedDebit: money/);
 assert.match(server, /function settlementFinancials\(row\)/);
 assert.match(server, /app\.get\("\/api\/admin\/settlements", requireAdmin/);
-assert.match(server, /app\.get\("\/api\/staff\/settlements", requireStaffRole\("accountant"\)/);
+assert.match(server, /app\.get\("\/api\/staff\/settlements", requireStaffPermission\("settlements"\)/);
 assert.match(server, /s\.captain_fee_cents/);
 assert.match(server, /s\.producer_cents/);
 assert.match(server, /settlement_state='settled'/);

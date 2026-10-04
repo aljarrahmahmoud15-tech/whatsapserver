@@ -339,6 +339,7 @@ CREATE TABLE IF NOT EXISTS staff_accounts (
   role TEXT NOT NULL CHECK(role IN ('accountant','operations')),
   password_hash TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
+  permissions_json TEXT NOT NULL DEFAULT '[]',
   last_login_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -690,6 +691,9 @@ CREATE TABLE IF NOT EXISTS captain_wallet_pool_operations (
   completed_at TEXT NOT NULL
 );
 `);
+const existingStaffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all().map((column) => column.name);
+if (!existingStaffColumns.includes("permissions_json")) db.exec("ALTER TABLE staff_accounts ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
+
 const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
 if (!existingNotificationColumns.includes("source_message_id")) db.exec("ALTER TABLE notifications ADD COLUMN source_message_id TEXT");
 if (!existingNotificationColumns.includes("idempotency_key")) db.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT");
@@ -6980,6 +6984,38 @@ function parseCookies(header = "") {
     return cookies;
   }, {});
 }
+const STAFF_PERMISSION_OPTIONS = Object.freeze([
+  { key: "orders", label: "الطلبات" },
+  { key: "captains", label: "الكباتن" },
+  { key: "wallets", label: "محافظ الكباتن" },
+  { key: "company_wallet", label: "محفظة الشركة (قراءة)" },
+  { key: "settlements", label: "التسويات" },
+  { key: "support", label: "خدمة العملاء (قراءة)" },
+]);
+const STAFF_PERMISSION_KEYS = new Set(STAFF_PERMISSION_OPTIONS.map((item) => item.key));
+const STAFF_PERMISSION_LABELS = Object.fromEntries(STAFF_PERMISSION_OPTIONS.map((item) => [item.key, item.label]));
+const STAFF_ROLE_DEFAULT_PERMISSIONS = Object.freeze({
+  operations: ["orders", "captains", "support"],
+  accountant: ["wallets", "company_wallet", "settlements"],
+});
+for (const staffAccount of db.prepare("SELECT id,role,permissions_json FROM staff_accounts").all()) {
+  if (!String(staffAccount.permissions_json || "").trim() || String(staffAccount.permissions_json).trim() === "[]") {
+    db.prepare("UPDATE staff_accounts SET permissions_json=? WHERE id=?").run(JSON.stringify(STAFF_ROLE_DEFAULT_PERMISSIONS[staffAccount.role] || []), staffAccount.id);
+  }
+}
+function normalizeStaffPermissions(value, fallbackRole = "operations") {
+  const hasArray = Array.isArray(value);
+  const candidates = hasArray ? value : (value === null || value === undefined || String(value).trim() === "" ? (STAFF_ROLE_DEFAULT_PERMISSIONS[fallbackRole] || []) : String(value).split(","));
+  return [...new Set(candidates.map((item) => String(item || "").trim().toLowerCase()).filter((item) => STAFF_PERMISSION_KEYS.has(item)))];
+}
+function staffAccountPermissions(account) {
+  let parsed = null;
+  try { parsed = JSON.parse(String(account?.permissions_json || "")); } catch {}
+  return normalizeStaffPermissions(Array.isArray(parsed) ? parsed : null, account?.role);
+}
+function staffPortalUrl(req) {
+  return `${captainInviteBaseUrl(req)}/staff.html`;
+}
 function isAdmin(req) {
   const session = getWebAdminSession(req);
   return session?.role === "company";
@@ -7000,15 +7036,32 @@ function requireAdmin(req, res, next) {
   if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
   next();
 }
+function hydrateStaffSession(session) {
+  if (!session || session.role === "company") return session;
+  const account = session.staffId ? db.prepare("SELECT id,username,name,role,active,permissions_json FROM staff_accounts WHERE id=? LIMIT 1").get(session.staffId) : null;
+  if (!account || !account.active) return null;
+  return { ...session, role: account.role, username: account.username, name: account.name, permissions: staffAccountPermissions(account) };
+}
 function requireStaff(req, res, next) {
-  const session = getWebAdminSession(req);
+  const session = hydrateStaffSession(getWebAdminSession(req));
   if (!session || !["company", "accountant", "operations"].includes(session.role)) return res.status(401).json({ error: "تسجيل دخول الموظف مطلوب" });
   req.staffSession = session;
   next();
 }
+function requireStaffPermission(permission) {
+  return (req, res, next) => {
+    const session = hydrateStaffSession(getWebAdminSession(req));
+    if (!session || !["company", "accountant", "operations"].includes(session.role)) return res.status(401).json({ error: "تسجيل دخول الموظف مطلوب" });
+    const allowed = session.role === "company" || staffAccountPermissions({ role: session.role, permissions_json: JSON.stringify(session.permissions || []) }).includes(permission);
+    if (!allowed) return res.status(403).json({ error: "هذه الصلاحية غير متاحة لهذا الحساب" });
+    req.staffSession = session;
+    next();
+  };
+}
+// Kept for compatibility with older callers; new staff data routes use explicit permissions.
 function requireStaffRole(...roles) {
   return (req, res, next) => {
-    const session = getWebAdminSession(req);
+    const session = hydrateStaffSession(getWebAdminSession(req));
     if (!session || !roles.includes(session.role)) return res.status(403).json({ error: "هذه الصلاحية غير متاحة لهذا الحساب" });
     req.staffSession = session;
     next();
@@ -7463,23 +7516,25 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/auth/staff-login", (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  const account = db.prepare("SELECT id,username,name,role,password_hash,active FROM staff_accounts WHERE username=? LIMIT 1").get(username);
+  const account = db.prepare("SELECT id,username,name,role,password_hash,active,permissions_json FROM staff_accounts WHERE username=? LIMIT 1").get(username);
   if (!JWT_SECRET || !account || !account.active || !bcrypt.compareSync(password, account.password_hash)) return res.status(401).json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة" });
+  const permissions = staffAccountPermissions(account);
   db.prepare("UPDATE staff_accounts SET last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), account.id);
-  setSessionCookie(res, jwt.sign({ role: account.role, staffId: account.id, username: account.username, name: account.name }, JWT_SECRET, { expiresIn: "12h" }));
-  res.json({ success: true, role: account.role, name: account.name, username: account.username });
+  setSessionCookie(res, jwt.sign({ role: account.role, staffId: account.id, username: account.username, name: account.name, permissions }, JWT_SECRET, { expiresIn: "12h" }));
+  res.json({ success: true, role: account.role, name: account.name, username: account.username, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
 });
 app.post("/api/auth/logout", (req, res) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
   res.json({ success: true });
 });
-app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username } }));
+app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username, permissions: req.staffSession.role === "company" ? [...STAFF_PERMISSION_KEYS] : (req.staffSession.permissions || []), permissionLabels: STAFF_PERMISSION_LABELS }, portalUrl: staffPortalUrl(req) }));
 app.get("/api/staff/overview", requireStaff, (req, res) => {
   const totals = db.prepare("SELECT COUNT(*) AS total, 0 AS open, SUM(CASE WHEN o.status='accepted' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled'").get();
-  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: totals, companyWallet: req.staffSession.role === "accountant" ? companyWalletSummary() : null, role: req.staffSession.role });
+  const permissions = req.staffSession.role === "company" ? [...STAFF_PERMISSION_KEYS] : (req.staffSession.permissions || []);
+  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: permissions.includes("orders") ? totals : { total: 0, open: 0, accepted: 0, completed: 0 }, companyWallet: permissions.includes("company_wallet") ? companyWalletSummary() : null, role: req.staffSession.role, permissions, permissionLabels: STAFF_PERMISSION_LABELS });
 });
-app.get("/api/staff/orders", requireStaff, (req, res) => {
+app.get("/api/staff/orders", requireStaffPermission("orders"), (req, res) => {
   const rows = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,
     s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
     p.name AS producer_name,c.name AS captain_name
@@ -7487,33 +7542,43 @@ app.get("/api/staff/orders", requireStaff, (req, res) => {
     WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT 200`).all();
   res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || 'غير مسجل', captain_name: row.captain_name || 'غير مسجل', companyShare: settlementFinancials(row).company, settlement: row.settlement_status || 'applied' })) });
 });
-app.get("/api/staff/captains", requireStaffRole("operations"), (req, res) => {
+app.get("/api/staff/captains", requireStaffPermission("captains"), (req, res) => {
   const captains = db.prepare("SELECT id,phone,name,active,account_status,created_at,captain_last_login_at FROM users WHERE role='captain' AND account_status<>'merged' ORDER BY active DESC,name").all().map((row) => ({ ...row, lastLoginAt: row.captain_last_login_at }));
   res.json({ captains });
 });
-app.get("/api/staff/wallets", requireStaffRole("accountant"), (req, res) => {
+app.get("/api/staff/wallets", requireStaffPermission("wallets"), (req, res) => {
   const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.account_status,u.updated_at,
     COALESCE((SELECT SUM(s.producer_cents) FROM order_settlements s JOIN orders p ON p.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND p.status IN ('accepted','completed')),0) AS posted_share_cents,
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS executed_debit_cents,
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u WHERE u.role IN ('captain','producer') ORDER BY u.role,u.name`).all();
-  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
+  res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: req.staffSession.permissions?.includes("company_wallet") ? companyWalletSummary() : null });
+});
+app.get("/api/staff/support-tickets", requireStaffPermission("support"), (req, res) => {
+  const rows = db.prepare("SELECT id,ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
+  res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
 });
 app.get("/api/admin/staff", requireAdmin, (req, res) => {
-  const accounts = db.prepare("SELECT id,username,name,role,active,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all();
-  res.json({ accounts });
+  const accounts = db.prepare("SELECT id,username,name,role,active,permissions_json,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all().map((account) => ({ ...account, permissions: staffAccountPermissions(account), permissionLabels: STAFF_PERMISSION_LABELS }));
+  res.json({ accounts, portalUrl: staffPortalUrl(req), permissionOptions: STAFF_PERMISSION_OPTIONS });
 });
+function requestedStaffPermissions(value, role) {
+  if (value === undefined) return [...(STAFF_ROLE_DEFAULT_PERMISSIONS[role] || [])];
+  if (!Array.isArray(value)) return null;
+  return normalizeStaffPermissions(value, role);
+}
 app.post("/api/admin/staff", requireAdmin, (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
   const name = String(req.body?.name || "").trim();
   const role = String(req.body?.role || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  if (!/^[a-z0-9._-]{3,40}$/.test(username) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || password.length < 10) return res.status(400).json({ error: "بيانات الموظف غير صالحة؛ كلمة المرور 10 أحرف على الأقل" });
+  const permissions = requestedStaffPermissions(req.body?.permissions, role);
+  if (!/^[a-z0-9._-]{3,40}$/.test(username) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || password.length < 10 || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات الموظف غير صالحة؛ اختر صلاحية واحدة على الأقل وكلمة مرور 10 أحرف على الأقل" });
   try {
     const stamp = now();
-    const result = db.prepare("INSERT INTO staff_accounts(username,name,role,password_hash,active,created_at,updated_at) VALUES(?,?,?,?,1,?,?)").run(username, name, role, bcrypt.hashSync(password, 12), stamp, stamp);
-    audit("staff.account.created", "staff_account", result.lastInsertRowid, { username, role });
-    res.status(201).json({ success: true, id: result.lastInsertRowid, username, name, role });
+    const result = db.prepare("INSERT INTO staff_accounts(username,name,role,password_hash,active,permissions_json,created_at,updated_at) VALUES(?,?,?,?,1,?,?,?)").run(username, name, role, bcrypt.hashSync(password, 12), JSON.stringify(permissions), stamp, stamp);
+    audit("staff.account.created", "staff_account", result.lastInsertRowid, { username, role, permissions });
+    res.status(201).json({ success: true, id: result.lastInsertRowid, username, name, role, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
   } catch (error) { res.status(409).json({ error: error.code === "SQLITE_CONSTRAINT_UNIQUE" ? "اسم المستخدم مستخدم مسبقًا" : "تعذر إنشاء الحساب" }); }
 });
 app.patch("/api/admin/staff/:id", requireAdmin, (req, res) => {
@@ -7524,12 +7589,13 @@ app.patch("/api/admin/staff/:id", requireAdmin, (req, res) => {
   const role = req.body.role === undefined ? account.role : String(req.body.role).trim().toLowerCase();
   const active = req.body.active === undefined ? account.active : (req.body.active ? 1 : 0);
   const password = req.body.password === undefined ? "" : String(req.body.password);
-  if (!name || name.length > 100 || !["accountant", "operations"].includes(role) || (password && password.length < 10)) return res.status(400).json({ error: "بيانات التعديل غير صالحة" });
+  const permissions = requestedStaffPermissions(req.body.permissions, role);
+  if (!name || name.length > 100 || !["accountant", "operations"].includes(role) || (password && password.length < 10) || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات التعديل غير صالحة؛ اختر صلاحية واحدة على الأقل" });
   const stamp = now();
-  if (password) db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,password_hash=?,updated_at=? WHERE id=?").run(name, role, active, bcrypt.hashSync(password, 12), stamp, id);
-  else db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,updated_at=? WHERE id=?").run(name, role, active, stamp, id);
-  audit("staff.account.updated", "staff_account", id, { name, role, active, passwordChanged: Boolean(password) });
-  res.json({ success: true });
+  if (password) db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,permissions_json=?,password_hash=?,updated_at=? WHERE id=?").run(name, role, active, JSON.stringify(permissions), bcrypt.hashSync(password, 12), stamp, id);
+  else db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,permissions_json=?,updated_at=? WHERE id=?").run(name, role, active, JSON.stringify(permissions), stamp, id);
+  audit("staff.account.updated", "staff_account", id, { name, role, active, permissions, passwordChanged: Boolean(password) });
+  res.json({ success: true, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
 });
 app.delete("/api/admin/staff/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
@@ -11400,7 +11466,7 @@ app.post("/api/admin/captain-wallet-pool/execute", requireBotWalletOwner, (req, 
     res.status(statusCode).json({ error: error.message || "تعذر تنفيذ حركة محفظة الكباتن" , code: error.code || "CAPTAIN_WALLET_POOL_FAILED" });
   }
 });
-app.get("/api/staff/company-wallet", requireStaffRole("accountant"), (req, res) => {
+app.get("/api/staff/company-wallet", requireStaffPermission("company_wallet"), (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, wallet: companyWalletSummary() });
 });
@@ -11560,7 +11626,7 @@ app.get("/api/admin/settlements", requireAdmin, (req, res) => {
   res.json({ success: true, count: rows.length, settlements: rows });
 });
 
-app.get("/api/staff/settlements", requireStaffRole("accountant"), (req, res) => {
+app.get("/api/staff/settlements", requireStaffPermission("settlements"), (req, res) => {
   const query = String(req.query.q || "").trim().toLowerCase();
   const rows = settlementRows(req.query.limit || 300).map((row) => serializeSettlement(row, true)).filter((row) => {
     if (!query) return true;
