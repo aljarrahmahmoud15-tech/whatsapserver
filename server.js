@@ -188,6 +188,7 @@ const balanceNotificationBroadcasts = new Map();
 const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
+const selectiveCaptainPinRuns = new Map();
 let publicStatusCache = { payload: null, expiresAt: 0 };
 const negativeBalanceWarningRuns = new Map();
 const captainWalletPolicyRuns = new Map();
@@ -4856,7 +4857,7 @@ function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
-  [balanceNotificationBroadcasts, captainAnnouncementBroadcasts, bulkTopupRuns, bulkPinRuns, negativeBalanceWarningRuns, dailyDebitCancellationRuns, captainWalletPolicyRuns].forEach((store) => pruneCompletedRunMap(store, atMs));
+  [balanceNotificationBroadcasts, captainAnnouncementBroadcasts, bulkTopupRuns, bulkPinRuns, selectiveCaptainPinRuns, negativeBalanceWarningRuns, dailyDebitCancellationRuns, captainWalletPolicyRuns].forEach((store) => pruneCompletedRunMap(store, atMs));
 }
 
 function startRuntimeMemoryCleanup() {
@@ -10477,6 +10478,131 @@ app.get("/api/admin/bulk-topup/negative-one-3/:runKey", requireAdmin, (req, res)
   const run = bulkTopupRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية البطاقات غير موجودة في الذاكرة الحالية" });
   res.json({ success: true, ...run });
+});
+const SELECTIVE_CAPTAIN_PIN_CONFIRMATION = "RESET_ALL_CAPTAIN_PINS_SELECTIVE_TO_00000";
+const SELECTIVE_CAPTAIN_PIN_EVENT = "captain.pin_reset.selective";
+function selectiveCaptainPinRunPayload(run) {
+  return {
+    runKey: run.runKey,
+    status: run.status,
+    total: run.total,
+    pinAlready00000: run.pinAlready00000,
+    pinChanged: run.pinChanged,
+    updated: run.updated,
+    messageAttempted: run.messageAttempted,
+    sent: run.sent,
+    failed: run.failed,
+    skipped: run.skipped,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    target: "all_non_merged_captains",
+    groupMessageSent: 0,
+    financialMutation: false,
+  };
+}
+app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const runKey = String(req.body?.runKey || "").trim();
+  const expectedTotal = Number(req.body?.expectedTotalCaptainAccounts);
+  if (confirmation !== SELECTIVE_CAPTAIN_PIN_CONFIRMATION || !/^PIN-SEL-[A-Z0-9-]{12,80}$/.test(runKey)) {
+    return res.status(400).json({ error: "تأكيد العملية ومفتاحها مطلوبان" });
+  }
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا؛ لم يتغير أي PIN" });
+  if (selectiveCaptainPinRuns.has(runKey)) return res.json({ success: true, started: true, ...selectiveCaptainPinRunPayload(selectiveCaptainPinRuns.get(runKey)) });
+  const captains = db.prepare("SELECT id,phone,name,captain_pin_hash,captain_pin_ciphertext,captain_auth_method FROM users WHERE role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged' ORDER BY id").all();
+  if (!Number.isInteger(expectedTotal) || expectedTotal !== captains.length) {
+    return res.status(409).json({ error: "تغير عدد حسابات الكباتن؛ أعد المعاينة قبل التنفيذ", observedTotal: captains.length, expectedTotal: Number.isInteger(expectedTotal) ? expectedTotal : null, mutation: "none", groupMessageSent: 0, financialMutation: false });
+  }
+  const run = {
+    runKey,
+    status: "running",
+    total: captains.length,
+    pinAlready00000: 0,
+    pinChanged: 0,
+    updated: 0,
+    messageAttempted: 0,
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    startedAt: now(),
+    completedAt: null,
+  };
+  selectiveCaptainPinRuns.set(runKey, run);
+  void (async () => {
+    for (const captain of captains) {
+      const priorRun = db.prepare("SELECT id FROM audit_logs WHERE action=? AND entity_type='user' AND entity_id=? AND details LIKE ? LIMIT 1").get(SELECTIVE_CAPTAIN_PIN_EVENT, String(captain.id), `%${runKey}%`);
+      if (priorRun) { run.skipped += 1; continue; }
+      const already00000 = Boolean(captain.captain_pin_hash) && bcrypt.compareSync("00000", String(captain.captain_pin_hash));
+      const idempotencyKey = `CAPTAIN-PIN-00000-${captain.id}`.slice(0, 100);
+      const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+      if (already00000) run.pinAlready00000 += 1;
+      else run.pinChanged += 1;
+      try {
+        const needsCredentialUpdate = !already00000 || String(captain.captain_auth_method || "pin") !== "pin" || Boolean(captain.captain_pin_ciphertext);
+        if (needsCredentialUpdate) {
+          const nextHash = already00000 ? String(captain.captain_pin_hash) : bcrypt.hashSync("00000", 10);
+          const updated = db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND COALESCE(account_status,'')<>'merged'").run(nextHash, now(), captain.id);
+          run.updated += updated.changes;
+        }
+        if (already00000 && (!existing || ["sent", "delivered", "uncertain"].includes(String(existing.delivery_status)))) {
+          audit(SELECTIVE_CAPTAIN_PIN_EVENT, "user", captain.id, { runKey, pinChanged: false, notice: "not_sent_pin_already_00000" });
+          continue;
+        }
+        run.messageAttempted += 1;
+        if (existing && ["sent", "delivered", "uncertain"].includes(String(existing.delivery_status))) {
+          run.skipped += 1;
+          audit(SELECTIVE_CAPTAIN_PIN_EVENT, "user", captain.id, { runKey, pinChanged: true, notice: "already_sent", deliveryStatus: existing.delivery_status });
+          continue;
+        }
+        const appUrl = captainLoginUrl(captainInviteBaseUrl(req));
+        const title = "تحديث دخول الكابتن";
+        const text = brandedMessage(title, [
+          `الكابتن: ${captain.name || "حسابك"}`,
+          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          `رقم الهاتف: ${captain.phone}`,
+          "الرقم السري: 00000",
+          `رابط الدخول الفوري: ${appUrl}`,
+          "يرجى تغيير الرقم السري بعد أول دخول وعدم مشاركته مع أي شخص.",
+        ]);
+        let notificationId = existing?.id || null;
+        if (existing) {
+          db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',event=?,title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(captain.phone, SELECTIVE_CAPTAIN_PIN_EVENT, title, text, existing.id);
+        } else {
+          const inserted = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?)").run(captain.phone, SELECTIVE_CAPTAIN_PIN_EVENT, title, text, idempotencyKey, now());
+          notificationId = inserted.lastInsertRowid;
+        }
+        let deliveryStatus = "failed";
+        let messageId = null;
+        try {
+          const recipient = await resolveWhatsAppRecipientId(captain.phone);
+          const sent = recipient ? await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000) : null;
+          if (sent) {
+            deliveryStatus = "sent";
+            messageId = sent.id?._serialized || null;
+            run.sent += 1;
+          } else {
+            run.failed += 1;
+          }
+        } catch (_) {
+          run.failed += 1;
+        }
+        db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+        audit(SELECTIVE_CAPTAIN_PIN_EVENT, "user", captain.id, { runKey, pinChanged: true, notice: deliveryStatus, messageId: messageId || null });
+      } catch (_) {
+        run.failed += 1;
+        audit(SELECTIVE_CAPTAIN_PIN_EVENT, "user", captain.id, { runKey, pinChanged: !already00000, notice: "processing_failed" });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    run.status = "completed";
+    run.completedAt = now();
+  })().catch(() => { run.status = "failed"; run.completedAt = now(); });
+  res.status(202).json({ success: true, started: true, ...selectiveCaptainPinRunPayload(run) });
+});
+app.get("/api/admin/captains/reset-pin-selective/:runKey", requireAdmin, (req, res) => {
+  const run = selectiveCaptainPinRuns.get(String(req.params.runKey || ""));
+  if (!run) return res.status(404).json({ error: "عملية PIN الانتقائية غير موجودة في الذاكرة الحالية" });
+  res.json({ success: true, ...selectiveCaptainPinRunPayload(run) });
 });
 app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req, res) => {
   const confirmation = String(req.body?.confirmation || "");
