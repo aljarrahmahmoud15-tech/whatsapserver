@@ -200,11 +200,11 @@ const context = {
   maskSettlementPhone: (value) => String(value || ""),
   money: (value) => (Number(value || 0) / 100).toFixed(2),
   calculateSettlement,
-  PRODUCER_RATE_BPS: 1200,
-  SPECIAL_ORDER_RATE_BPS: 1200,
-  SPECIAL_ORDER_PRODUCER_RATE_BPS: 1200,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 400,
-  SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 400,
+  PRODUCER_RATE_BPS: 1300,
+  SPECIAL_ORDER_RATE_BPS: 1300,
+  SPECIAL_ORDER_PRODUCER_RATE_BPS: 1300,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 200,
+  SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 200,
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   serializedMessageId: (msg) => msg?.id?._serialized || msg?.id || null,
@@ -248,9 +248,9 @@ async function approve(doneId = "done-1") {
   await approve();
   assert.equal(state.candidate.status, "finalized");
   assert.equal(state.ledgers.length, 3, "التسوية الذرية تسجل 3 حركات فقط");
-  assert.equal(users.producer.wallet_cents, 240, "يُضاف 12% للمنتج");
-  assert.equal(users.company.wallet_cents, 80, "يُضاف 4% للشركة");
-  assert.equal(users.executor.wallet_cents, 4680, "يُخصم 15% من المنفذ");
+  assert.equal(users.producer.wallet_cents, 260, "يُضاف 13% للمنتج");
+  assert.equal(users.company.wallet_cents, 40, "يُضاف 2% للشركة");
+  assert.equal(users.executor.wallet_cents, 4700, "يُخصم 15% من المنفذ");
   await approve();
   assert.equal(state.ledgers.length, 3, "التفاعل المكرر لا يكرر التسوية");
   assert.equal(state.confirmations.length, 1, "بطاقة واحدة فقط");
@@ -280,9 +280,9 @@ async function approve(doneId = "done-1") {
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
   assert.equal(state.candidate.status, "finalized", "بعد حل هوية صاحب 👍 الأصلي يتم التثبيت");
   assert.equal(state.ledgers.length, 3);
-  assert.equal(users.producer.wallet_cents, 240);
-  assert.equal(users.company.wallet_cents, 80);
-  assert.equal(users.executor.wallet_cents, 4680);
+  assert.equal(users.producer.wallet_cents, 260);
+  assert.equal(users.company.wallet_cents, 40);
+  assert.equal(users.executor.wallet_cents, 4700);
 
   reset({ executorBalance: -199 });
   await ingestPrice();
@@ -290,7 +290,7 @@ async function approve(doneId = "done-1") {
   await approve("done-debt");
   assert.equal(state.candidate.status, "finalized", "الرصيد السالب لا يمنع تثبيت الطلب");
   assert.equal(state.ledgers.length, 3, "تُسجل التسوية حتى مع الرصيد السالب");
-  assert.equal(users.executor.wallet_cents, -519, "يُخصم 15% مع تسجيل الرصيد السالب");
+  assert.equal(users.executor.wallet_cents, -499, "يُخصم 15% مع تسجيل الرصيد السالب");
   assert.equal(state.candidate.lifecycle_stage, "settled");
 
   reset({ archived: true });
