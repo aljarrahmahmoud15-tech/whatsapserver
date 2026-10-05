@@ -101,6 +101,7 @@ const db = {
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
         if (query.startsWith("SELECT id FROM notifications WHERE event=?")) return null;
         if (query.startsWith("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=?")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, group_id: state.candidate.group_id, source_message_id: state.candidate.source_message_id } : null;
+        if (query.startsWith("SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, order_kind: state.candidate.order_kind, group_id: state.candidate.group_id, producer_name: users.producer?.name || "المنتج" } : null;
         if (query.startsWith("SELECT * FROM orders WHERE group_id=?")) return state.order && state.order.accepted_message_id === args[1] ? { ...state.order } : null;
         throw new Error(`Unexpected get query: ${query}`);
       },
