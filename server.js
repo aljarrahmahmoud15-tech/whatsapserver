@@ -3593,6 +3593,7 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
   const forceFinalRecovery = options.forceFinalRecovery === true;
+  const immediateReaction = options.immediateReaction === true;
   const deliveryMode = options.deliveryMode === "fallback" ? "fallback" : "direct";
   let releaseInFlightAfterSendPromise = false;
   if (orderId && confirmationDeliveryInFlight.has(orderId)) return null;
@@ -3606,7 +3607,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
       const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
       const finalRecoveryAvailable = forceFinalRecovery && Number(existing?.final_recovery_attempts || 0) < MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS;
-      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
+      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || (!immediateReaction && deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS))) {
         return { ...existing, retrySuppressed: true };
       }
       if (existing) {
@@ -6913,7 +6914,9 @@ async function handleMessageReaction(reaction) {
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
   };
-  void sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
+  await sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
+    console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
+  });
 }
 
 async function reconcileStoredThumbReaction(messageId) {

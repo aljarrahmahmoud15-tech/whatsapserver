@@ -30,12 +30,13 @@ assert.match(retry, /findFinalBookingConfirmationInGroup\(row\.group_id, row\.or
 assert.doesNotMatch(retry, /settlePendingOrder|wallet_ledger|order_settlements/, "card retry must not settle or mutate wallets");
 
 for (const caller of [
-  "sendFinalBookingConfirmation(groupId, confirmationDetails, { deliveryMode: \"direct\" })",
-  "sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: \"direct\" })",
-  "sendFinalBookingConfirmation(verified.groupId, confirmationDetails, { deliveryMode: \"direct\" })",
-  "sendFinalBookingConfirmation(candidate.group_id, confirmationDetails, { deliveryMode: \"direct\" })",
+  /sendFinalBookingConfirmation\(groupId, confirmationDetails, \{ deliveryMode: "direct" \}\)/,
+  /await sendFinalBookingConfirmation\(target\.from, confirmationDetails, \{ deliveryMode: "direct", immediateReaction: true \}\)/,
+  /sendFinalBookingConfirmation\(verified\.groupId, confirmationDetails, \{ deliveryMode: "direct" \}\)/,
+  /sendFinalBookingConfirmation\(candidate\.group_id, confirmationDetails, \{ deliveryMode: "direct" \}\)/,
 ]) {
-  assert.ok(source.includes(caller), `automatic confirmation caller must use direct mode: ${caller}`);
+  assert.match(source, caller, `automatic confirmation caller must use direct mode: ${caller}`);
 }
+assert.match(source, /await sendFinalBookingConfirmation\(target\.from, confirmationDetails/, "the live 👍 caller must wait for the confirmation send");
 
 console.log("confirmation direct-first/fallback-only guardrails verified");
