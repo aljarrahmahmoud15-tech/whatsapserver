@@ -10481,6 +10481,30 @@ app.get("/api/admin/bulk-topup/negative-one-3/:runKey", requireAdmin, (req, res)
 });
 const SELECTIVE_CAPTAIN_PIN_CONFIRMATION = "RESET_ALL_CAPTAIN_PINS_SELECTIVE_TO_00000";
 const SELECTIVE_CAPTAIN_PIN_EVENT = "captain.pin_reset.selective";
+async function sendCaptainPinNoticeAtMostOnce(captain, content, timeoutMs = 30000) {
+  const captainId = Number(captain?.id);
+  const expectedPhone = phoneWithCountry(captain?.phone);
+  if (!Number.isInteger(captainId) || captainId < 1 || !isValidJordanPhone(expectedPhone) || !String(content || "").trim()) return null;
+  const stored = db.prepare("SELECT id,phone,role,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(captainId);
+  if (!stored || stored.role !== "captain" || Number(stored.is_bot) === 1 || String(stored.account_status || "") === "merged" || phoneWithCountry(stored.phone) !== expectedPhone) return null;
+  if (!client || !isReady || typeof client.sendMessage !== "function") return null;
+  const resolved = await resolveWhatsAppRecipientId(expectedPhone);
+  const directContactSuffix = ["@", "c.us"].join("");
+  const recipient = String(resolved || `${expectedPhone}${directContactSuffix}`).trim();
+  if (!(recipient.endsWith(directContactSuffix) || recipient.endsWith("@lid"))) return null;
+  if (recipient.endsWith("@lid")) {
+    const mapped = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? AND active=1 LIMIT 1").get(recipient);
+    if (!mapped?.phone || phoneWithCountry(mapped.phone) !== expectedPhone) return null;
+  } else if (phoneWithCountry(recipient.slice(0, -directContactSuffix.length)) !== expectedPhone) {
+    return null;
+  }
+  try {
+    return await withTimeout(client.sendMessage(recipient, content), timeoutMs, null);
+  } catch (error) {
+    console.error(`[WhatsApp] captain PIN notice failed for ${captainId}:`, error.message);
+    return null;
+  }
+}
 function selectiveCaptainPinRunPayload(run) {
   return {
     runKey: run.runKey,
@@ -10574,8 +10598,7 @@ app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, re
         let deliveryStatus = "failed";
         let messageId = null;
         try {
-          const recipient = await resolveWhatsAppRecipientId(captain.phone);
-          const sent = recipient ? await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000) : null;
+          const sent = await sendCaptainPinNoticeAtMostOnce(captain, text, 30000);
           if (sent) {
             deliveryStatus = "sent";
             messageId = sent.id?._serialized || null;
