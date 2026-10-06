@@ -103,11 +103,11 @@ const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Approved immutable settlement policy: the value after "السعر" is external;
-// 13% goes to the captain who posted the order, 2% to the company, and both
+// 12% goes to the captain who posted the order, 4% to the company, and both
 // are charged to the confirming captain (16% total). The fare never credits B.
 const COMPANY_RATE_BPS = 400;
 const PRODUCER_RATE_BPS = 1200;
-const SPECIAL_ORDER_RATE_BPS = 1300;
+const SPECIAL_ORDER_RATE_BPS = 1200;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
@@ -7087,6 +7087,11 @@ function requireBotWalletOwner(req, res, next) {
   if (!isAdmin(req)) return res.status(403).json({ error: "Bot wallet is owner-only" });
   next();
 }
+function requireCompanyOwner(req, res, next) {
+  const session = getWebAdminSession(req);
+  if (!session || session.role !== "company") return res.status(403).json({ error: "هذه العملية متاحة للمالك فقط" });
+  next();
+}
 function setSessionCookie(res, token) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `aljarah_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
@@ -9041,6 +9046,18 @@ app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   });
   void notifyOperations({ event: active ? "captain.activated" : "captain.deactivated", title: active ? "تأكيد تفعيل حساب الكابتن" : "تأكيد إيقاف حساب الكابتن", lines: [`الكابتن: ${name}`, `الحالة: ${active ? "نشط" : "موقوف"}`], ownersOnly: true });
   res.json({ success: true, id, active, name, statusChanged: true, notificationSent: true });
+});
+app.patch("/api/admin/captains/:id/pin", requireCompanyOwner, (req, res) => {
+  const id = Number(req.params.id);
+  const pin = String(req.body?.pin || "").trim();
+  const captain = db.prepare("SELECT id,phone,name,is_bot,role,account_status FROM users WHERE id=? LIMIT 1").get(id);
+  if (!Number.isInteger(id) || !captain || captain.role !== "captain" || captain.account_status === "merged") return res.status(404).json({ error: "الكابتن غير موجود" });
+  if (captain.is_bot) return res.status(403).json({ error: "حساب البوت محمي" });
+  if (!validCaptainPin(pin)) return res.status(400).json({ error: "الرمز السري يجب أن يكون 5 أرقام" });
+  const stamp = now();
+  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND is_bot=0").run(bcrypt.hashSync(pin, 10), stamp, id);
+  audit("captain.pin.updated", "user", id, { phone: captain.phone, name: captain.name, actor: "company_owner", authMethod: "pin" });
+  res.json({ success: true, id, captain: { id: captain.id, name: captain.name, phone: captain.phone }, authMethod: "pin", pinChanged: true });
 });
 app.post("/api/admin/captains/:id/suspend-and-remove", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);

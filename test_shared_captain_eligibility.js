@@ -51,11 +51,11 @@ assert.ok(
   server.includes('posted_share_cents') &&
   server.includes('executed_debit_cents') &&
   server.includes('executedDebit: money(executedDebitCents)'),
-  'captain-facing fee summaries include the full 15% debit'
+  'captain-facing fee summaries include the full 16% debit'
 );
 assert.ok(
   server.includes('const PRODUCER_RATE_BPS = 1200;') &&
-  server.includes('const SPECIAL_ORDER_RATE_BPS = 1300;') &&
+  server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
   server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 400;'),
   'the approved 12% downloader and 4% company rates are immutable policy constants'
 );
