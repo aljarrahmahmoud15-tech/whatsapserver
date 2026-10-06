@@ -3551,9 +3551,40 @@ function finalBookingCancellationText(order = null) {
   ].join("\n");
 }
 const confirmationDeliveryInFlight = new Set();
+const confirmationSendQueue = [];
+const confirmationQueuedOrderIds = new Set();
+let confirmationSendQueueRunning = false;
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
+async function drainConfirmationSendQueue() {
+  if (confirmationSendQueueRunning) return;
+  confirmationSendQueueRunning = true;
+  try {
+    while (confirmationSendQueue.length) {
+      const job = confirmationSendQueue.shift();
+      if (job.orderId) confirmationQueuedOrderIds.delete(job.orderId);
+      try {
+        const result = await sendFinalBookingConfirmation(job.groupId, job.details, job.options);
+        job.resolve(result);
+      } catch (error) {
+        job.reject(error);
+      }
+    }
+  } finally {
+    confirmationSendQueueRunning = false;
+    if (confirmationSendQueue.length) void drainConfirmationSendQueue();
+  }
+}
+function enqueueFinalBookingConfirmation(groupId, details, options = {}) {
+  const orderId = Number(details?.orderId || 0) || null;
+  if (orderId && (confirmationDeliveryInFlight.has(orderId) || confirmationQueuedOrderIds.has(orderId))) return Promise.resolve(null);
+  if (orderId) confirmationQueuedOrderIds.add(orderId);
+  return new Promise((resolve, reject) => {
+    confirmationSendQueue.push({ groupId, details, options, orderId, resolve, reject });
+    void drainConfirmationSendQueue();
+  });
+}
 async function sendFinalBookingConfirmationDirect(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
   if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
@@ -3705,7 +3736,7 @@ async function retryFailedBookingConfirmations() {
       result.sent += 1;
       continue;
     }
-    const sent = await sendFinalBookingConfirmation(row.group_id, {
+    const sent = await enqueueFinalBookingConfirmation(row.group_id, {
       orderId: row.order_id,
       orderNo: row.order_no,
       executorName: row.executor_name,
@@ -6036,12 +6067,12 @@ async function resolveReactionSenderPhone(reaction) {
   return "";
 }
 
-function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone) {
+function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone, ownerAuthorized = false) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    if (!producer || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone))) return { state: "unauthorized" };
     const stamp = now();
     const pendingCaptain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (current.status === "open" && current.pending_message_id === expectedMessageId) {
@@ -6071,12 +6102,12 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
   })();
 }
 
-function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, producerPhone) {
+function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, producerPhone, ownerAuthorized = false) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    if (!producer || phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone)) return { state: "unauthorized" };
+    if (!producer || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone))) return { state: "unauthorized" };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status='pending' LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
     const stamp = now();
@@ -6778,20 +6809,22 @@ async function handleMessageReaction(reaction) {
     const pendingAcceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (pendingAcceptance) {
       const producer = pendingAcceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pendingAcceptance.producer_user_id) : null;
-      const producerAuthorized = Boolean(producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")));
+      const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
+      const producerAuthorized = Boolean(ownerAuthorized || (producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company"))));
       if (!producerAuthorized || isBlockedPhone(approverPhone)) {
         updateOrderCandidateLifecycle(pendingAcceptance.candidate_id, "awaiting_authorized_thumb", "producer_authorization", { acceptanceMessageId: messageId, reaction: "❌" });
         return;
       }
-      const cancelled = cancelPendingOrderForProducerReaction(pendingAcceptance.candidate_id, messageId, approverPhone);
+      const cancelled = cancelPendingOrderForProducerReaction(pendingAcceptance.candidate_id, messageId, approverPhone, ownerAuthorized);
       if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
     }
     const acceptedOrder = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
     if (!acceptedOrder) return;
     const producer = acceptedOrder.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptedOrder.producer_user_id) : null;
-    if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
-    const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, messageId, approverPhone);
+    const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
+    if (!producer || !approverPhone || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone))) return;
+    const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, messageId, approverPhone, ownerAuthorized);
     if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
     return;
   }
@@ -6920,9 +6953,15 @@ async function handleMessageReaction(reaction) {
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
   };
-  await sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
-    console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
-  });
+  if (typeof enqueueFinalBookingConfirmation === "function") {
+    void enqueueFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
+      console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
+    });
+  } else {
+    await sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
+      console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
+    });
+  }
 }
 
 async function reconcileStoredThumbReaction(messageId) {

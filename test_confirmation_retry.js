@@ -15,7 +15,7 @@ assert.match(retry, /d\.attempts < \?/);
 assert.match(retry, /d\.final_recovery_attempts < \?/);
 assert.match(retry, /julianday\(d\.updated_at\) <= julianday\('now', '-120 seconds'\)/);
 assert.match(retry, /MAX_CONFIRMATION_DELIVERY_ATTEMPTS/);
-assert.match(retry, /sendFinalBookingConfirmation\(row\.group_id/);
+assert.match(retry, /enqueueFinalBookingConfirmation\(row\.group_id/);
 assert.match(retry, /forceFinalRecovery:/);
 assert.match(retry, /row\.status === 'pending'/);
 assert.match(retry, /findFinalBookingConfirmationInGroup\(row\.group_id, row\.order_no\)/);

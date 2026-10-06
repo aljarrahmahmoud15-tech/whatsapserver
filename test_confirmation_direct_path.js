@@ -25,7 +25,7 @@ assert.match(sender, /status='failed',last_error=/);
 const retryStart = source.indexOf("async function retryFailedBookingConfirmations");
 const retryEnd = source.indexOf("async function findFinalBookingConfirmationInGroup", retryStart);
 const retry = source.slice(retryStart, retryEnd);
-assert.match(retry, /sendFinalBookingConfirmation\(row\.group_id[\s\S]*deliveryMode: "fallback"/s, "retry must use the old configured-chat path as fallback");
+assert.match(retry, /enqueueFinalBookingConfirmation\(row\.group_id[\s\S]*deliveryMode: "fallback"/s, "retry must use the old configured-chat path as fallback");
 assert.match(retry, /findFinalBookingConfirmationInGroup\(row\.group_id, row\.order_no\)/, "fallback must check for an already delivered card before resending");
 assert.doesNotMatch(retry, /settlePendingOrder|wallet_ledger|order_settlements/, "card retry must not settle or mutate wallets");
 
