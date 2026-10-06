@@ -87,6 +87,9 @@ const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number.isFinite(configuredUnquote
   ? Math.max(UNQUOTED_ACCEPTANCE_WINDOW_MS, Math.min(configuredUnquotedAcceptanceRecoveryWindowMs, 72 * 60 * 60 * 1000))
   : 6 * 60 * 60 * 1000;
 const CAPTAIN_SUBSCRIPTION_CENTS = 100;
+// Owner policy: recurring captain charges are paused until further notice.
+// Only an applied order settlement may debit a captain wallet.
+const CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false;
 const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
 const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
 const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
@@ -3029,6 +3032,7 @@ function captainDisplayName(name) {
   return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
 }
 function applyCaptainSubscriptionCharges(stamp = now()) {
+  if (!CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [] };
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -3108,8 +3112,10 @@ function applyCaptainDailyCharges(stamp = now()) {
   return { status: "completed", chargeDate, applied, eligibleCount: captains.length };
 }
 function startCaptainSubscriptionScheduler() {
-  applyCaptainSubscriptionCharges();
-  setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
+  if (CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) {
+    applyCaptainSubscriptionCharges();
+    setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
+  }
   if (CAPTAIN_DAILY_CHARGE_ENABLED) {
     applyCaptainDailyCharges();
     setInterval(() => applyCaptainDailyCharges(), CAPTAIN_DAILY_CHARGE_INTERVAL_MS).unref();
