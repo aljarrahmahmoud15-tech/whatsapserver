@@ -4,10 +4,10 @@
 // - 14% is credited to the captain who posted the order.
 // - 4% is credited to the company.
 // - 16% total is debited from the confirming executor wallet.
-const REGULAR_PRODUCER_RATE_BPS = 1200;
-const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1200;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const REGULAR_PRODUCER_RATE_BPS = 1300;
+const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1300;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 200;
 
 function calculateSettlement({
   priceCents,
