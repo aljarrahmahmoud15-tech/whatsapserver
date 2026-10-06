@@ -249,7 +249,7 @@ async function approve(doneId = "done-1") {
   assert.equal(state.candidate.status, "finalized");
   assert.equal(state.ledgers.length, 3, "التسوية الذرية تسجل 3 حركات فقط");
   assert.equal(users.producer.wallet_cents, 260, "يُضاف 13% للمنتج");
-  assert.equal(users.company.wallet_cents, 40, "يُضاف 2% للشركة");
+  assert.equal(users.company.wallet_cents, 40, "يُضاف 4% للشركة");
   assert.equal(users.executor.wallet_cents, 4700, "يُخصم 15% من المنفذ");
   await approve();
   assert.equal(state.ledgers.length, 3, "التفاعل المكرر لا يكرر التسوية");

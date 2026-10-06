@@ -1,13 +1,13 @@
 // Fixed settlement policy for every order kind:
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
-// - 13% is credited to the captain who posted the order.
-// - 2% is credited to the company.
-// - 15% total is debited from the confirming executor wallet.
-const REGULAR_PRODUCER_RATE_BPS = 1300;
-const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1300;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 200;
+// - 14% is credited to the captain who posted the order.
+// - 4% is credited to the company.
+// - 16% total is debited from the confirming executor wallet.
+const REGULAR_PRODUCER_RATE_BPS = 1200;
+const SPECIAL_ORDER_PRODUCER_RATE_BPS = 1200;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
 
 function calculateSettlement({
   priceCents,
