@@ -3644,7 +3644,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
       const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
       const finalRecoveryAvailable = forceFinalRecovery && Number(existing?.final_recovery_attempts || 0) < MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS;
-      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || (!immediateReaction && deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS))) {
+      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
         return { ...existing, retrySuppressed: true };
       }
       if (existing) {

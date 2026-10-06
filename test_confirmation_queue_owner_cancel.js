@@ -7,6 +7,8 @@ assert.match(source, /const confirmationSendQueue = \[\];/);
 assert.match(source, /const confirmationQueuedOrderIds = new Set\(\);/);
 assert.match(source, /function enqueueFinalBookingConfirmation\(groupId, details, options = \{\}\)/);
 assert.match(source, /confirmationDeliveryInFlight\.has\(orderId\) \|\| confirmationQueuedOrderIds\.has\(orderId\)/);
+assert.match(source, /deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS/);
+assert.doesNotMatch(source, /!immediateReaction && deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS/);
 assert.match(source, /void enqueueFinalBookingConfirmation\(target\.from, confirmationDetails, \{ deliveryMode: "direct", immediateReaction: true \}\)/);
 assert.match(source, /const ownerAuthorized = Boolean\(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity\(approverPhone\)\);/);
 assert.match(source, /cancelPendingOrderForProducerReaction\(pendingAcceptance\.candidate_id, messageId, approverPhone, ownerAuthorized\)/);

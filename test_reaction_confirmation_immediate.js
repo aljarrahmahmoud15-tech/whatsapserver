@@ -29,8 +29,13 @@ assert.match(
 );
 assert.match(
   confirmation,
+  /deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS/,
+  "confirmation retries must respect the backoff",
+);
+assert.doesNotMatch(
+  confirmation,
   /!immediateReaction && deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS/,
-  "a live 👍 may bypass only the retry backoff, not the sent/idempotency guard",
+  "a live 👍 must not bypass duplicate protection",
 );
 
 console.log("live 👍 confirmation is awaited and sent directly without retry-backoff delay");
