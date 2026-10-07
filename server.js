@@ -6913,11 +6913,13 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
+  // Final settlement is owner-authorized only: the downloader's 👍 is no
+  // longer sufficient. This keeps the financial mutation behind the
+  // protected owner identity used by the ❌ cancellation path.
   const producerApproved = Boolean(
-    approverPhone && (
-      phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone)
-      || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")
-    )
+    approverPhone &&
+    typeof isProtectedOwnerIdentity === "function" &&
+    isProtectedOwnerIdentity(approverPhone)
   );
   if (!producerApproved || isBlockedPhone(approverPhone)) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {

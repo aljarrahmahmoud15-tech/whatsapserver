@@ -184,12 +184,13 @@ const context = {
   phoneWithCountry: (value) => String(value || "").replace(/[^0-9]/g, "").replace(/^0/, "962"),
   isValidJordanPhone: (value) => /^9627\d{8}$/.test(String(value)),
   isBlockedPhone: () => false,
+  isProtectedOwnerIdentity: (phone) => String(phone) === BOT,
   companyUser: () => ({ ...users.company }),
   botEmployeeUser: () => ({ ...users.company, is_bot: 1, role: "producer", phone: BOT }),
   ensureProducerUser: () => ({ ...users.producer }),
   ensureCaptainUser: (phone, name) => phone === EXECUTOR ? { ...users.executor, name: name || users.executor.name } : null,
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
-  isBotPhone: () => false,
+  isBotPhone: (phone) => String(phone) === BOT,
   isBotGeneratedMessage,
   cents: (value) => Math.round(Number(value) * 100),
   now: () => "2026-01-01T00:00:00.000Z",
@@ -237,7 +238,7 @@ async function ingestAcceptance(doneId = "done-1") {
 }
 async function approve(doneId = "done-1") {
   state.targets = { [doneId]: message(doneId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
-  state.reactionSender = PRODUCER;
+  state.reactionSender = BOT;
   await context.handleMessageReaction({ reaction: "👍", msgId: doneId });
 }
 
@@ -276,7 +277,7 @@ async function approve(doneId = "done-1") {
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
   assert.equal(state.candidate.status, "pending", "لا يتم التثبيت قبل حل هوية صاحب 👍");
   assert.equal(state.ledgers.length, 0);
-  state.reactionSender = PRODUCER;
+  state.reactionSender = BOT;
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
   assert.equal(state.candidate.status, "finalized", "بعد حل هوية صاحب 👍 الأصلي يتم التثبيت");
   assert.equal(state.ledgers.length, 3);

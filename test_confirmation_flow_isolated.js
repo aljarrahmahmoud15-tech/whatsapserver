@@ -106,6 +106,7 @@ const context = {
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
   isConfiguredGroup: (groupId) => groupId === "test-group@g.us",
   isBlockedPhone: () => false,
+  isProtectedOwnerIdentity: (phone) => String(phone) === "962779110123",
   phoneWithCountry: (value) => String(value),
   isBotReactionSender,
   serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
@@ -157,8 +158,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
   assert.strictEqual(candidate.status, "pending", "هوية غير مرتبطة بالمنتج لا تعتمد الطلب");
-  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
-  assert.strictEqual(candidate.status, "finalized", "إعجاب المنتج الأصلي يثبت المرشح");
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779110123" });
+  assert.strictEqual(candidate.status, "finalized", "إعجاب المالك يثبت المرشح");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث عند أول 👍");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة عند أول 👍");
 
@@ -170,8 +171,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(candidate.status, "finalized", "هوية صاحب التفاعل لا تمنع الطلب بعد اكتمال الشروط");
   assert.strictEqual(ledgers.length, 3, "لا تتكرر التسوية بسبب اختلاف صاحب التفاعل");
 
-  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
-  assert.strictEqual(candidate.status, "finalized", "التفاعل المكرر يبقى idempotent");
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779110123" });
+  assert.strictEqual(candidate.status, "finalized", "تفاعل المالك المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
   assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
   assert.strictEqual(users[2].wallet_cents, 260, "تضاف 13% لمحفظة كابتن تنزيل الطلب");
