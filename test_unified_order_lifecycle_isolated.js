@@ -238,7 +238,7 @@ async function ingestAcceptance(doneId = "done-1") {
 }
 async function approve(doneId = "done-1") {
   state.targets = { [doneId]: message(doneId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
-  state.reactionSender = EXECUTOR;
+  state.reactionSender = PRODUCER;
   await context.handleMessageReaction({ reaction: "👍", msgId: doneId });
 }
 
@@ -277,7 +277,7 @@ async function approve(doneId = "done-1") {
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
   assert.equal(state.candidate.status, "pending", "لا يتم التثبيت قبل حل هوية صاحب 👍");
   assert.equal(state.ledgers.length, 0);
-  state.reactionSender = EXECUTOR;
+  state.reactionSender = PRODUCER;
   await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
   assert.equal(state.candidate.status, "finalized", "بعد حل هوية صاحب 👍 الأصلي يتم التثبيت");
   assert.equal(state.ledgers.length, 3);

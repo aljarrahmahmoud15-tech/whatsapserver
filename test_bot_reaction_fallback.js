@@ -11,5 +11,5 @@ assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
 assert.match(server, /const producerApproved = Boolean\(/);
-assert.match(server, /reaction_approver_not_registered_captain/);
+assert.match(server, /reaction_approver_not_original_producer/);
 console.log('original producer thumbs-up on the exact quoted تم reply settles once');

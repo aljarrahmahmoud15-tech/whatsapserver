@@ -6925,9 +6925,11 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Final settlement is authorized by any registered, active captain who
-  // reacts with 👍 on the selected «تم» reply. The owner-only rule remains
-  // limited to the ❌ cancellation path below.
+  // Final settlement is authorized only when the captain who posted the
+  // original price/order message reacts with 👍 on the selected «تم» reply.
+  // The owner-only rule remains limited to the ❌ cancellation path below.
+  const producerPhone = phoneWithCountry(producer.phone);
+  const approverNormalizedPhone = phoneWithCountry(approverPhone);
   const approvingCaptain = approverPhone
     ? (typeof findCaptainByPhone === "function"
       ? findCaptainByPhone(approverPhone, { activeOnly: true })
@@ -6938,7 +6940,9 @@ async function handleMessageReaction(reaction) {
     approvingCaptain.role === "captain" &&
     approvingCaptain.is_bot !== 1 &&
     approvingCaptain.active === 1 &&
-    approvingCaptain.account_status === "active"
+    approvingCaptain.account_status === "active" &&
+    producerPhone &&
+    approverNormalizedPhone === producerPhone
   );
   if (!producerApproved || isBlockedPhone(approverPhone)) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {
@@ -6946,7 +6950,7 @@ async function handleMessageReaction(reaction) {
       reaction: "👍",
       reactionOwnerResolved: Boolean(approverPhone),
     });
-    logOrderTrace("reaction_approver_not_registered_captain", {
+    logOrderTrace("reaction_approver_not_original_producer", {
       groupKey: orderTraceKey(target.from),
       reactionKey: orderTraceKey(messageId),
       candidateId: pending.candidate_id,

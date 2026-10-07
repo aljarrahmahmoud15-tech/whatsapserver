@@ -40,7 +40,7 @@ assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
 assert.match(server, /const producerApproved = Boolean\(/);
-assert.match(server, /reaction_approver_not_registered_captain/);
+assert.match(server, /reaction_approver_not_original_producer/);
 assert.match(server, /const storedAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"/);
 assert.match(server, /const target = storedAcceptanceTarget \|\| await getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
 assert.match(server, /reactionIsByCurrentAccount/);
