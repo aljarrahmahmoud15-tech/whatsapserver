@@ -5,7 +5,7 @@ const server = fs.readFileSync('server.js', 'utf8');
 const index = fs.readFileSync('public/index.html', 'utf8');
 
 assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment\)/);
-assert.match(server, /app\.post\("\/api\/dashboard\/captains\/\:id\/wallet-adjustment", requireDashboardApi, async/);
+assert.match(server, /app\.post\("\/api\/dashboard\/captains\/\:id\/wallet-adjustment", requireCompanyOwner, async/);
 assert.match(server, /if \(direction === "credit"\) \{/);
 assert.match(server, /source: "company_direct_transfer"/);
 assert.match(server, /ADMIN-WALLET-\$\{idempotencyKey\}/);

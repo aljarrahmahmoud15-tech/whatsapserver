@@ -100,9 +100,9 @@ const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
 // Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
 // Keep this hard-off until a future code change explicitly re-enables the policy.
 const CAPTAIN_DAILY_CHARGE_ENABLED = false;
-// Owner policy: no manual/admin debit is allowed. The only captain debit is
-// the idempotent debit created by a completed downloader/executor settlement.
-const CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED = false;
+// Owner policy: manual wallet changes are available only through
+// owner-authenticated routes. Staff and dashboard-token callers are blocked.
+const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
@@ -8211,7 +8211,7 @@ app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) =>
   res.json({ success: errors.length === 0, groupId, sent, errors });
 });
 
-app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
+app.post("/api/dashboard/cards", requireCompanyOwner, (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many card issuance attempts; try again later" });
   const value = Number(req.body?.value);
@@ -8236,7 +8236,7 @@ app.post("/api/dashboard/cards", requireDashboardApi, (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid, code, value: Number(value).toFixed(2), status: "issued", captainId });
 });
 
-app.post("/api/dashboard/cards/:id/send", requireDashboardApi, async (req, res) => {
+app.post("/api/dashboard/cards/:id/send", requireCompanyOwner, async (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
   const cardId = Number(req.params.id);
   const deliveryIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
@@ -8286,7 +8286,7 @@ function handleVoidTopupCard(req, res) {
   audit("topup_card.voided", "topup_card", cardId, { reason, voidIdempotencyKey });
   res.json({ success: true, cardId, status: "void", cancelledAt: stamp });
 }
-app.post("/api/dashboard/cards/:id/void", requireDashboardApi, handleVoidTopupCard);
+app.post("/api/dashboard/cards/:id/void", requireCompanyOwner, handleVoidTopupCard);
 app.post("/api/admin/cards/:id/void", requireAdmin, handleVoidTopupCard);
 
 app.get("/api/dashboard/captains/portal/:phone", requireDashboardApi, (req, res) => {
@@ -8338,7 +8338,7 @@ app.post("/api/dashboard/captains/redeem", requireDashboardApi, (req, res) => {
   }
 });
 
-app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, async (req, res) => {
+app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, async (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
@@ -8347,7 +8347,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
   const reason = String(req.body?.reason || "").trim();
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
-  if (direction === "debit" && !CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
+  if (direction === "debit" && !CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (direction === "credit" && creditMode === "direct") {
     const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
@@ -9281,7 +9281,7 @@ async function handleAdminWalletAdjustment(req, res) {
   if (!["credit", "debit"].includes(direction) || (direction === "credit" && !["card", "direct"].includes(creditMode)) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
     return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
-  if (direction === "debit" && !CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
+  if (direction === "debit" && !CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (amountCents < 1) return res.status(400).json({ error: "المبلغ صغير جدًا" });
   if (direction === "credit") {
