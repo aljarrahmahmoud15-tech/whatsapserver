@@ -6859,6 +6859,7 @@ async function handleMessageReaction(reaction) {
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
       void enforceCaptainWalletThresholds({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
     }
+    if (result.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
     return;
   }
   let acceptance = findPendingAcceptanceByMessage(target.from, messageId);
