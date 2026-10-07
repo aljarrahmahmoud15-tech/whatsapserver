@@ -100,6 +100,9 @@ const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
 // Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
 // Keep this hard-off until a future code change explicitly re-enables the policy.
 const CAPTAIN_DAILY_CHARGE_ENABLED = false;
+// Owner policy: no manual/admin debit is allowed. The only captain debit is
+// the idempotent debit created by a completed downloader/executor settlement.
+const CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED = false;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot 0779110123 is always settled through the internal company wallet.
@@ -8344,6 +8347,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireDashboardApi, a
   const reason = String(req.body?.reason || "").trim();
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
+  if (direction === "debit" && !CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (direction === "credit" && creditMode === "direct") {
     const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
@@ -9277,6 +9281,7 @@ async function handleAdminWalletAdjustment(req, res) {
   if (!["credit", "debit"].includes(direction) || (direction === "credit" && !["card", "direct"].includes(creditMode)) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
     return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
+  if (direction === "debit" && !CAPTAIN_NON_SETTLEMENT_DEBITS_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (amountCents < 1) return res.status(400).json({ error: "المبلغ صغير جدًا" });
   if (direction === "credit") {
