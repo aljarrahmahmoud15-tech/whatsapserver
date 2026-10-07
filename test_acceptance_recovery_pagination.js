@@ -62,8 +62,8 @@ assert.match(source, /progress\.deferred = 0;/, 'the sweep must track deferred r
 assert.match(source, /else if \(removalStatus === "removal_deferred_confirmation_required"\) progress\.deferred \+= 1;/, 'a policy gate must count as deferred, not failed');
 assert.match(source, /deferred: progress\.deferred,/, 'deferred removals must be reported in the policy snapshot');
 
-// The captain notification must not describe a policy gate as a group-access failure.
+// The captain notification must state the immediate isolation policy clearly.
 assert.doesNotMatch(source, /بسبب تعذر الوصول إلى القروب الرسمي/, 'the misleading group-access reason must be gone');
-assert.match(source, /الإزالة من القروب مرتبطة بتأكيد تسوية الطلب وبطاقة التثبيت المُرسلة/, 'the notification must state the real removal condition');
+assert.match(source, /يُعزل الحساب فورًا ويُزال من القروب عند الإمكان/, 'the notification must state immediate isolation');
 
 console.log('acceptance recovery pagination and unquoted recovery guardrails verified');

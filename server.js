@@ -1547,12 +1547,12 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
     : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
-      : "تم تسجيل الرصيد المستحق. الإزالة من القروب مرتبطة بتأكيد تسوية الطلب وبطاقة التثبيت المُرسلة، أو بقرار صريح من المالك.";
+      : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
     `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    "سياسة الرصيد السالب: يُسجَّل الدين فورًا ولا يتغير رصيدك تلقائيًا. الإزالة من القروب تُنفَّذ بعد تأكيد تسوية الطلب وبطاقة التثبيت، أو بقرار صريح من المالك.",
+    "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
@@ -1624,7 +1624,16 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
 async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference, removalContext = null }) {
   const balance = Number(balanceCents);
   if (!Number.isFinite(balance)) return { status: "invalid_balance" };
-  if (balance < 0) return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext });
+  if (balance < 0) {
+    // A negative wallet immediately isolates the captain. This only changes
+    // access/group membership; it never settles, creates, or confirms an order.
+    const automaticIsolationContext = {
+      ...(removalContext || {}),
+      allowUnconfirmedRemoval: true,
+      source: "automatic_negative_balance_isolation",
+    };
+    return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext: automaticIsolationContext });
+  }
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
