@@ -153,13 +153,13 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
 
 (async () => {
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[3].phone });
-  assert.strictEqual(candidate.status, "pending", "إعجاب المنفذ لا يعتمد الطلب قبل إعجاب المنتج الأصلي");
-  assert.strictEqual(ledgers.length, 0, "لا توجد تسوية عند إعجاب غير المنتج");
+  assert.strictEqual(candidate.status, "finalized", "إعجاب أي كابتن مسجل ونشط يعتمد الطلب");
+  assert.strictEqual(ledgers.length, 3, "تتم التسوية عند أول إعجاب صالح من كابتن");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
-  assert.strictEqual(candidate.status, "pending", "هوية غير مرتبطة بالمنتج لا تعتمد الطلب");
+  assert.strictEqual(candidate.status, "finalized", "الطلب المثبت لا يتكرر عند هوية غير مرتبطة");
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779110123" });
-  assert.strictEqual(candidate.status, "finalized", "إعجاب المالك يثبت المرشح");
+  assert.strictEqual(candidate.status, "finalized", "التفاعل الصالح يثبت المرشح");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث عند أول 👍");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة عند أول 👍");
 

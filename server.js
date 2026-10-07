@@ -6925,13 +6925,20 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Final settlement is owner-authorized only: the downloader's 👍 is no
-  // longer sufficient. This keeps the financial mutation behind the
-  // protected owner identity used by the ❌ cancellation path.
+  // Final settlement is authorized by any registered, active captain who
+  // reacts with 👍 on the selected «تم» reply. The owner-only rule remains
+  // limited to the ❌ cancellation path below.
+  const approvingCaptain = approverPhone
+    ? (typeof findCaptainByPhone === "function"
+      ? findCaptainByPhone(approverPhone, { activeOnly: true })
+      : (typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(approverPhone) : null))
+    : null;
   const producerApproved = Boolean(
-    approverPhone &&
-    typeof isProtectedOwnerIdentity === "function" &&
-    isProtectedOwnerIdentity(approverPhone)
+    approvingCaptain &&
+    approvingCaptain.role === "captain" &&
+    approvingCaptain.is_bot !== 1 &&
+    approvingCaptain.active === 1 &&
+    approvingCaptain.account_status === "active"
   );
   if (!producerApproved || isBlockedPhone(approverPhone)) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {
@@ -6939,7 +6946,7 @@ async function handleMessageReaction(reaction) {
       reaction: "👍",
       reactionOwnerResolved: Boolean(approverPhone),
     });
-    logOrderTrace("reaction_approver_not_original_producer", {
+    logOrderTrace("reaction_approver_not_registered_captain", {
       groupKey: orderTraceKey(target.from),
       reactionKey: orderTraceKey(messageId),
       candidateId: pending.candidate_id,
