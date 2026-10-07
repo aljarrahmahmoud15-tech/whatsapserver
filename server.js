@@ -6978,15 +6978,11 @@ async function handleMessageReaction(reaction) {
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
   };
-  if (typeof enqueueFinalBookingConfirmation === "function") {
-    void enqueueFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
-      console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
-    });
-  } else {
-    await sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
-      console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
-    });
-  }
+  // A producer 👍 must not wait behind an unrelated confirmation job. The
+  // delivery table and in-flight order lock still provide idempotency.
+  await sendFinalBookingConfirmation(target.from, confirmationDetails, { deliveryMode: "direct", immediateReaction: true }).catch((error) => {
+    console.warn(`[Order] immediate confirmation card after 👍 failed: ${String(error?.message || error).slice(0, 240)}`);
+  });
 }
 
 async function reconcileStoredThumbReaction(messageId) {
