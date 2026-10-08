@@ -2391,6 +2391,75 @@ async function resolveGroupParticipantPhone(participant) {
     : null;
   return resolveWhatsappUserPhone(contact, contact?.id, contact?._data?.id, contact?.number, serialized);
 }
+const CAPTAIN_GROUP_WELCOME_EVENT = "captain.group.welcome";
+const captainGroupWelcomeInFlight = new Set();
+function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
+  return [
+    `أهلًا بك يا كابتن ${displayName} في قروب «وصلني الآن».`,
+    "تم انضمامك إلى شبكة التشغيل.",
+    "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
+    "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
+    "بعد وضع 👍 من كابتن تنزيل الطلب يتم التثبيت والتسوية مرة واحدة.",
+    "للدخول إلى بوابة الكابتن: " + captainLoginUrl(baseUrl),
+    "نتمنى لك التوفيق والرزق الطيب."
+  ].join("\n");
+}
+async function sendCaptainGroupWelcome(participant, groupId) {
+  if (!client || !isReady || !isConfiguredGroup(groupId)) return { status: "not_ready" };
+  const phone = await resolveGroupParticipantPhone(participant).catch(() => "");
+  if (!isValidJordanPhone(phone) || isProtectedOwnerIdentity(phone) || isBotPhone(phone)) return { status: "skipped", phone: phone || null };
+  const key = `CAPTAIN-GROUP-WELCOME-${phone}`;
+  if (captainGroupWelcomeInFlight.has(key)) return { status: "pending", duplicate: true, phone };
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE event=? AND idempotency_key=? LIMIT 1").get(CAPTAIN_GROUP_WELCOME_EVENT, key);
+  if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) {
+    return { status: existing.delivery_status, duplicate: true, phone, notificationId: existing.id, messageId: existing.message_id || null };
+  }
+  const serialized = serializedWhatsappUserId(participant?.id || participant);
+  const contact = serialized && typeof client.getContactById === "function"
+    ? await withTimeout(client.getContactById(serialized), 8000, null).catch(() => null)
+    : null;
+  const name = String(contact?.pushname || contact?.name || contact?.shortName || "كابتن").trim();
+  const message = captainGroupWelcomeMessage(name);
+  let row = existing;
+  if (row) {
+    db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(phone, "ترحيب الكابتن الجديد", message, row.id);
+  } else {
+    try {
+      row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?)").run(phone, CAPTAIN_GROUP_WELCOME_EVENT, "ترحيب الكابتن الجديد", message, key, now());
+    } catch (error) {
+      const duplicate = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE event=? AND idempotency_key=? LIMIT 1").get(CAPTAIN_GROUP_WELCOME_EVENT, key);
+      if (duplicate) return { status: duplicate.delivery_status, duplicate: true, phone, notificationId: duplicate.id, messageId: duplicate.message_id || null };
+      throw error;
+    }
+  }
+  const notificationId = row.lastInsertRowid || row.id;
+  captainGroupWelcomeInFlight.add(key);
+  let deliveryStatus = "failed";
+  let messageId = null;
+  try {
+    const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
+    const result = await sendWhatsAppAtMostOnce(recipient, message, undefined, 30000);
+    if (result.status === "sent" || result.status === "uncertain") {
+      deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
+      messageId = result.message?.id?._serialized || null;
+    }
+  } catch (error) {
+    console.warn(`[CaptainWelcome] failed for ${phone}: ${String(error?.message || error).slice(0, 160)}`);
+  } finally {
+    captainGroupWelcomeInFlight.delete(key);
+  }
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit(`notification.${CAPTAIN_GROUP_WELCOME_EVENT}`, "user", phone, { deliveryStatus, idempotencyKey: key, groupId });
+  return { status: deliveryStatus, phone, notificationId, messageId };
+}
+async function sendConfiguredGroupCaptainWelcome(notification) {
+  const groupId = String(notification?.chatId || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !Array.isArray(notification?.recipientIds)) return;
+  for (const participant of notification.recipientIds) {
+    try { await sendCaptainGroupWelcome(participant, groupId); } catch (error) { console.warn(`[CaptainWelcome] participant failed: ${String(error?.message || error).slice(0, 160)}`); }
+  }
+}
 function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
   const normalized = phoneWithCountry(phone);
   if (!isValidJordanPhone(normalized) || isBlockedPhone(normalized)) return { status: "skipped_invalid_or_blocked", phone: normalized || String(phone || "") };
@@ -5260,6 +5329,7 @@ function createClient() {
   instance.on("group_join", (notification) => {
     if (generation !== connectionGeneration || !notification || !isConfiguredGroup(notification.chatId)) return;
     scheduleConfiguredGroupCaptainSync("group_join");
+    void sendConfiguredGroupCaptainWelcome(notification).catch((error) => console.warn(`[CaptainWelcome] group handler failed: ${String(error?.message || error).slice(0, 180)}`));
     console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
   });
   instance.on("message_create", async (msg) => {
