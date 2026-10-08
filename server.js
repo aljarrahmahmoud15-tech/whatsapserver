@@ -3752,7 +3752,14 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       const updatedAtMs = Date.parse(String(existing?.updated_at || ""));
       const deliveryAgeMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Infinity;
       const finalRecoveryAvailable = forceFinalRecovery && Number(existing?.final_recovery_attempts || 0) < MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS;
-      if (existing && !finalRecoveryAvailable && (Number(existing.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS)) {
+      // A live producer 👍 is the explicit final trigger. Never make it wait
+      // behind the background retry backoff; the order lock and unique
+      // delivery row still prevent duplicate settlement/confirmation sends.
+      const retryBlocked = !immediateReaction && (
+        Number(existing?.attempts || 0) >= MAX_CONFIRMATION_DELIVERY_ATTEMPTS
+        || deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS
+      );
+      if (existing && !finalRecoveryAvailable && retryBlocked) {
         return { ...existing, retrySuppressed: true };
       }
       if (existing) {
