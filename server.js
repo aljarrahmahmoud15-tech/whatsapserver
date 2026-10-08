@@ -459,6 +459,8 @@ CREATE TABLE IF NOT EXISTS order_confirmation_deliveries (
   group_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')) DEFAULT 'pending',
   message_id TEXT,
+  ack_status TEXT,
+  ack_at TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TEXT NOT NULL,
@@ -757,6 +759,8 @@ if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE o
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
+if (!existingConfirmationDeliveryColumns.includes("ack_status")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN ack_status TEXT");
+if (!existingConfirmationDeliveryColumns.includes("ack_at")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN ack_at TEXT");
 if (!existingConfirmationDeliveryColumns.includes("final_recovery_attempted_at")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN final_recovery_attempted_at TEXT");
 if (!existingConfirmationDeliveryColumns.includes("final_recovery_attempts")) db.exec("ALTER TABLE order_confirmation_deliveries ADD COLUMN final_recovery_attempts INTEGER NOT NULL DEFAULT 0");
 db.exec("UPDATE order_confirmation_deliveries SET final_recovery_attempts=1 WHERE final_recovery_attempted_at IS NOT NULL AND COALESCE(final_recovery_attempts,0)=0");
@@ -3569,6 +3573,98 @@ let confirmationSendQueueRunning = false;
 const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
+const CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS = Math.max(30000, Number(process.env.CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS || 60000));
+const CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS = Math.max(120000, Number(process.env.CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS || 300000));
+let confirmationDeliveryMonitorTimer = null;
+let confirmationDeliveryMonitorRunning = false;
+
+async function alertConfirmationDeliveryFailure(row, reason) {
+  const orderId = Number(row?.order_id || 0);
+  if (!orderId) return { alerted: false, reason: "invalid_order" };
+  const alertEvent = `order.confirmation_delivery.monitor.failed.${orderId}`;
+  if (db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(alertEvent)) {
+    return { alerted: false, duplicate: true };
+  }
+  const orderNo = row.order_no || orderId;
+  const errorText = String(reason || row.last_error || "حالة التسليم غير مؤكدة").slice(0, 180);
+  audit(alertEvent, "order", orderId, { orderNo, status: row.status, ackStatus: row.ack_status || null, messageId: row.message_id || null, reason: errorText });
+  try {
+    await notifyOperations({
+      event: alertEvent,
+      title: "تنبيه تسليم رسالة تثبيت",
+      lines: [
+        `رقم الطلب: #${orderNo}`,
+        "لم يتم تأكيد تسليم رسالة التثبيت عبر WhatsApp.",
+        `السبب: ${errorText}`,
+        "تم منع التكرار وستستمر آلية الاسترداد الآمنة.",
+      ],
+      ownersOnly: true,
+    });
+  } catch (error) {
+    console.error(`[DeliveryMonitor] owner alert failed for order ${orderNo}:`, error.message);
+  }
+  return { alerted: true, orderId, orderNo };
+}
+
+async function monitorConfirmationDeliveries() {
+  if (confirmationDeliveryMonitorRunning || !db) return { checked: 0, alerted: 0 };
+  confirmationDeliveryMonitorRunning = true;
+  try {
+    const cutoff = new Date(Date.now() - CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS).toISOString();
+    const rows = db.prepare(`
+      SELECT d.order_id,d.status,d.message_id,d.ack_status,d.ack_at,d.last_error,d.updated_at,d.sent_at,
+             o.order_no
+      FROM order_confirmation_deliveries d
+      JOIN orders o ON o.id=d.order_id
+      WHERE d.status='failed'
+         OR (d.status='pending' AND d.updated_at <= ?)
+         OR (d.status='sent' AND d.message_id IS NOT NULL AND d.ack_status IS NULL AND COALESCE(d.sent_at,d.updated_at) <= ?)
+      ORDER BY d.updated_at ASC
+      LIMIT 50
+    `).all(cutoff, cutoff);
+    let alerted = 0;
+    for (const row of rows) {
+      const reason = row.status === "failed"
+        ? (row.last_error || "فشل الإرسال")
+        : row.status === "pending"
+          ? "الرسالة بقيت معلقة دون نتيجة إرسال"
+          : "لم يصل ACK من WhatsApp ضمن المهلة المحددة";
+      if (row.status === "sent" && !row.ack_status) {
+        db.prepare("UPDATE order_confirmation_deliveries SET ack_status='timeout',ack_at=COALESCE(ack_at,?),last_error=COALESCE(last_error,?),updated_at=? WHERE order_id=? AND status='sent' AND ack_status IS NULL")
+          .run(now(), reason, now(), row.order_id);
+      }
+      const result = await alertConfirmationDeliveryFailure(row, reason);
+      if (result.alerted) alerted += 1;
+    }
+    if (rows.length || alerted) console.warn(`[DeliveryMonitor] checked=${rows.length} alerted=${alerted}`);
+    return { checked: rows.length, alerted };
+  } finally {
+    confirmationDeliveryMonitorRunning = false;
+  }
+}
+
+function startConfirmationDeliveryMonitor() {
+  if (confirmationDeliveryMonitorTimer) return;
+  confirmationDeliveryMonitorTimer = setInterval(() => {
+    if (!isReady) return;
+    void monitorConfirmationDeliveries().catch((error) => console.error("[DeliveryMonitor] sweep failed:", error.message));
+  }, CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS);
+  confirmationDeliveryMonitorTimer.unref?.();
+}
+
+function recordConfirmationMessageAck(message, ack) {
+  const messageId = serializedMessageId(message);
+  if (!messageId) return;
+  const delivery = db.prepare("SELECT d.order_id,o.order_no FROM order_confirmation_deliveries d JOIN orders o ON o.id=d.order_id WHERE d.message_id=? LIMIT 1").get(messageId);
+  if (!delivery) return;
+  const ackValue = String(ack ?? "").trim();
+  db.prepare("UPDATE order_confirmation_deliveries SET ack_status=?,ack_at=?,last_error=CASE WHEN ? IN ('0','ERROR','error') THEN COALESCE(last_error,'WhatsApp ACK reported failure') ELSE last_error END,updated_at=? WHERE order_id=?")
+    .run(ackValue || null, now(), ackValue, now(), delivery.order_id);
+  if (ackValue === "0" || ackValue.toLowerCase() === "error") {
+    void alertConfirmationDeliveryFailure({ order_id: delivery.order_id, order_no: delivery.order_no, status: "failed", message_id: messageId, ack_status: ackValue, last_error: "WhatsApp ACK reported failure" }, "WhatsApp ACK reported failure");
+  }
+}
+
 async function drainConfirmationSendQueue() {
   if (confirmationSendQueueRunning) return;
   confirmationSendQueueRunning = true;
@@ -3661,9 +3757,9 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       }
       if (existing) {
         if (finalRecoveryAvailable) {
-          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,final_recovery_attempted_at=?,final_recovery_attempts=final_recovery_attempts+1,last_error=NULL,updated_at=? WHERE order_id=? AND status<>'sent' AND final_recovery_attempts < ?").run(stamp, stamp, orderId, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS);
+          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',ack_status=NULL,ack_at=NULL,attempts=attempts+1,final_recovery_attempted_at=?,final_recovery_attempts=final_recovery_attempts+1,last_error=NULL,updated_at=? WHERE order_id=? AND status<>'sent' AND final_recovery_attempts < ?").run(stamp, stamp, orderId, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS);
         } else {
-          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
+          db.prepare("UPDATE order_confirmation_deliveries SET status='pending',ack_status=NULL,ack_at=NULL,attempts=attempts+1,last_error=NULL,updated_at=? WHERE order_id=?").run(stamp, orderId);
         }
         return db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=? LIMIT 1").get(orderId);
       }
@@ -3692,7 +3788,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_pending_waiting_message_create", now(), orderId);
       void sendPromise.then((lateSent) => {
         if (!orderId || !serializedMessageId(lateSent)) return;
-        db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(serializedMessageId(lateSent), now(), now(), orderId);
+        db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(serializedMessageId(lateSent), now(), now(), orderId);
         void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
       }).catch((error) => {
         console.warn(`[WhatsApp] confirmation send completed after timeout with error: order=${details?.orderNo || "unknown"} error=${String(error?.message || error)}`);
@@ -3705,7 +3801,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_waiting_message_create", now(), orderId);
       return null;
     }
-    if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
+    if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
     if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
     return sent;
   } catch (error) {
@@ -3744,7 +3840,7 @@ async function retryFailedBookingConfirmations() {
     result.attempted += 1;
     const observed = await findFinalBookingConfirmationInGroup(row.group_id, row.order_no);
     if (observed) {
-      db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(observed.messageId, now(), now(), row.order_id);
+      db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(observed.messageId, now(), now(), now(), row.order_id);
       result.sent += 1;
       continue;
     }
@@ -3787,7 +3883,7 @@ function observeFinalBookingConfirmationMessage(message) {
   if (!orderNo || !messageId) return null;
   const order = db.prepare("SELECT id FROM orders WHERE group_id=? AND order_no=? ORDER BY id DESC LIMIT 1").get(String(message.from), orderNo);
   if (!order) return null;
-  const updated = db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(messageId, now(), now(), order.id);
+  const updated = db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(messageId, now(), now(), now(), order.id);
   if (updated.changes) console.log(`[WhatsApp] final booking confirmation observed order=${orderNo} message=${messageId}`);
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
@@ -5172,6 +5268,7 @@ function createClient() {
   });
   instance.on("message_ack", async (msg, ack) => {
     if (generation !== connectionGeneration) return;
+    try { recordConfirmationMessageAck(msg, ack); } catch (error) { console.error("[DeliveryMonitor] ACK handler:", error.message); }
     try { await handleCaptainAccessCardAck(msg, ack); } catch (error) { console.error("[WhatsApp] captain card ack:", error); }
   });
   instance.on("message", async (msg) => {
@@ -10038,7 +10135,7 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
   const keptMessageId = serializedMessageId(keep);
   const order = db.prepare("SELECT id FROM orders WHERE group_id=? AND order_no=? ORDER BY id DESC LIMIT 1").get(groupId, orderNo);
   if (order && keptMessageId) {
-    db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(keptMessageId, now(), now(), order.id);
+    db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(keptMessageId, now(), now(), now(), order.id);
   }
   audit("order.confirmation_duplicates_deleted", "order", order?.id || null, { groupId, orderNo, matched: matches.length, deleted, failed, keptMessageId });
   res.json({ success: failed.length === 0, mutation: "messages_deleted", groupId, orderNo, matched: matches.length, keptMessageId, deleted, failed });
@@ -12069,6 +12166,7 @@ app.listen(PORT, () => {
   startRuntimeMemoryWatchdog();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
+  startConfirmationDeliveryMonitor();
   initializeWhatsApp();
   startWhatsAppWatchdog();
   startWhatsAppReactionScanner();
