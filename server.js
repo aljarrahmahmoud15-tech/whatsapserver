@@ -2521,6 +2521,7 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   return { status: deliveryStatus, phone, notificationId, messageId };
 }
 async function sendConfiguredGroupCaptainWelcome(notification) {
+  if (CLEAN_INSTANCE) return { status: "disabled_in_clean_instance" };
   const groupId = String(notification?.chatId || "").trim();
   if (!groupId || !isConfiguredGroup(groupId) || !Array.isArray(notification?.recipientIds)) return;
   for (const participant of notification.recipientIds) {
@@ -2578,6 +2579,7 @@ function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
 let configuredGroupCaptainSyncTimer = null;
 let configuredGroupCaptainSyncInFlight = false;
 function scheduleConfiguredGroupCaptainSync(trigger = "group_activity") {
+  if (CLEAN_INSTANCE) return;
   if (!isReady || !client || configuredGroupCaptainSyncInFlight || configuredGroupCaptainSyncTimer) return;
   configuredGroupCaptainSyncTimer = setTimeout(async () => {
     configuredGroupCaptainSyncTimer = null;
@@ -2983,8 +2985,10 @@ async function normalizeAllCaptains({ force = false, baseUrl = process.env.PUBLI
   captainNormalizationInFlight = true;
   try {
     const existingUsers = normalizeExistingHumanUsersAsCaptains({ reactivate: true });
-    const groupMembers = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl });
-    if (groupMembers.status !== "completed") throw new Error(`Group captain synchronization did not complete: ${groupMembers.status}`);
+    const groupMembers = CLEAN_INSTANCE
+      ? { status: "skipped_clean_instance", groupId: getSetting("group_id", null), totalMembers: 0, resolvedMembers: 0, results: [] }
+      : await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true, baseUrl });
+    if (!CLEAN_INSTANCE && groupMembers.status !== "completed") throw new Error(`Group captain synchronization did not complete: ${groupMembers.status}`);
     const reconciliation = reconcileCaptainLinksWithoutSettlement();
     const totals = db.prepare(`SELECT
       COUNT(*) AS all_users,
@@ -5366,7 +5370,7 @@ function createClient() {
       if (generation !== connectionGeneration || !isReady) return;
       void normalizeAllCaptains()
         .then(async (normalization) => {
-          if (normalization.status !== "already_completed") return normalization;
+          if (normalization.status !== "already_completed" || CLEAN_INSTANCE) return normalization;
           const result = await registerGroupMembersAsCaptains({ sendLinks: false, reactivate: true });
           console.log(`[Captains] configured group sync completed: members=${result.resolvedMembers || 0} registered=${(result.results || []).filter((item) => item.status === "registered").length} activated=${(result.results || []).filter((item) => item.status === "activated_captain").length}`);
           return result;
@@ -5417,6 +5421,10 @@ function createClient() {
   });
   instance.on("group_join", (notification) => {
     if (generation !== connectionGeneration || !notification || !isConfiguredGroup(notification.chatId)) return;
+    if (CLEAN_INSTANCE) {
+      console.log("[Captains] group join welcome and auto-registration disabled on Clean");
+      return;
+    }
     scheduleConfiguredGroupCaptainSync("group_join");
     void sendConfiguredGroupCaptainWelcome(notification).catch((error) => console.warn(`[CaptainWelcome] group handler failed: ${String(error?.message || error).slice(0, 180)}`));
     console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
