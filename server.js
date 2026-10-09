@@ -10295,13 +10295,26 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   if (!client?.pupPage || !messageId) {
     result = { ok: false, reason: "page_unavailable_or_missing_id" };
   } else {
-    result = await withTimeout(client.pupPage.evaluate(async (targetId) => {
-    const id = String(targetId || "").trim();
-    if (!id) return { ok: false, reason: "missing_id" };
+    const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000);
+    const liveMessageId = serializedMessageId(liveMessage);
+    const lookupIds = [...new Set([
+      ...messageIdLookupVariants(messageId),
+      ...messageIdLookupVariants(liveMessageId),
+    ])];
+    console.log(`[WhatsApp][MessageDelete] lookup message=${deletionKey} variants=${lookupIds.length} clientFallback=${Boolean(liveMessage)}`);
+    result = await withTimeout(client.pupPage.evaluate(async (targetIds) => {
+    const ids = [...new Set((Array.isArray(targetIds) ? targetIds : [targetIds]).map((value) => String(value || "").trim()).filter(Boolean))];
+    if (!ids.length) return { ok: false, reason: "missing_id" };
     try {
       const collections = window.require("WAWebCollections");
-      const message = collections.Msg.get(id) || (await collections.Msg.getMessagesById([id]))?.messages?.[0];
-      if (!message) return { ok: false, reason: "message_not_found" };
+      let message = null;
+      for (const id of ids) {
+        message = collections.Msg.get(id) || null;
+        if (message) break;
+      }
+      if (!message) message = (await collections.Msg.getMessagesById(ids))?.messages?.[0] || null;
+      if (!message) return { ok: false, reason: "message_not_found", lookupIds: ids };
+      const id = message.id?._serialized || message.id?.id || ids[0];
       const chat = collections.Chat.get(message.id.remote) || (await collections.Chat.find(message.id.remote));
       if (!chat) return { ok: false, reason: "chat_not_found" };
       const capability = window.require("WAWebMsgActionCapability");
@@ -10319,7 +10332,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     } catch (error) {
       return { ok: false, reason: String(error?.message || error).slice(0, 240), stack: String(error?.stack || "").slice(0, 800) };
     }
-    }, String(messageId)), 30000, { ok: false, reason: "page_evaluation_timeout" });
+    }, lookupIds), 30000, { ok: false, reason: "page_evaluation_timeout", lookupIds });
   }
   const outcome = result?.ok ? "success" : "failure";
   console.log(`[WhatsApp][MessageDelete] ${outcome} message=${deletionKey} reason=${deletionContext.reason} result=${String(result?.reason || (result?.revoked ? "revoked" : "not_revoked"))} requested=${Boolean(result?.requested)} revoked=${Boolean(result?.revoked)}`);
