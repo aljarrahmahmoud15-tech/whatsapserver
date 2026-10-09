@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-v24.html', 'utf8');
-assert.match(page, /وصلني الآن/, 'V24 branding is present');
+assert.match(page, /TAKE&GO الشمال/, 'V24 branding is present');
 assert.match(page, /id="activeCaptains"/, 'active captain metric exists');
 assert.match(page, /id="confirmedOrders"/, 'confirmed order metric exists');
 assert.match(page, /id="negativeWallets"/, 'negative wallet metric exists');

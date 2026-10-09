@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-merged-readonly.html', 'utf8');
-assert.match(page, /<title>وصلني الآن · لوحة الإدارة الموحدة<\/title>/);
+assert.match(page, /<title>TAKE&GO الشمال · لوحة الإدارة الموحدة<\/title>/);
 assert.match(page, /مصدرها V26/);
 assert.match(page, /لا توجد حركة تلقائية/);
 assert.match(page, /id="metricCaptains"/);

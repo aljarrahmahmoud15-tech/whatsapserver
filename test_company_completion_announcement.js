@@ -5,7 +5,7 @@ const server = fs.readFileSync('./server.js', 'utf8');
 
 assert.match(server, /CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_ANNOUNCEMENT"/, 'الإعلان يطلب تأكيدًا خاصًا به');
 assert.match(server, /CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION = "company-completion-v1"/, 'الإعلان مربوط بإصدار محتوى ثابت');
-assert.match(server, /إعلان اكتمال شركة وصلني الآن/, 'الإعلان يحمل عنوانًا عربيًا واضحًا');
+assert.match(server, /إعلان اكتمال TAKE&GO الشمال/, 'الإعلان يحمل عنوانًا عربيًا واضحًا');
 assert.match(server, /renderOperationsMessageMedia\(title, lines\)/, 'الإعلان يستخدم بطاقة صورة تشغيلية موحّدة');
 assert.match(server, /role='captain' AND is_bot=0 AND active=1 AND account_status='active'/, 'الإرسال يقتصر على الكباتن النشطين غير البوت');
 assert.match(server, /captain\.company_completion\.\$\{runKey\}/, 'لكل إعلان ومتلقي مفتاح idempotency مستقل');

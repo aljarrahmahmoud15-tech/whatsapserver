@@ -13,7 +13,7 @@ assert.match(route, /req\.body\?\.confirm !== true/, 'المسار يتطلب ت
 assert.match(route, /X-Idempotency-Key/, 'المسار يستخدم مفتاح منع التكرار');
 assert.match(route, /registerAdminSend\(\{ operationId, chatId: groupId, message: caption \}\)/, 'المسار يسجل العملية idempotently');
 assert.match(route, /isWhatsAppStorageSendBlocked\(\)/, 'المسار يحترم حارس IndexedDB');
-assert.match(route, /renderOperationsMessageMedia\("اختبار وسائط Waslni Now"/, 'المسار يعيد استخدام مولد بطاقة العمليات الإنتاجي');
+assert.match(route, /renderOperationsMessageMedia\("اختبار وسائط TAKE&GO"/, 'المسار يعيد استخدام مولد بطاقة العمليات الإنتاجي');
 assert.match(route, /client\.sendMessage\(groupId, media/, 'المسار يرسل مباشرة إلى المعرّف الرسمي');
 assert.match(route, /client\.sendMessage\(groupId, media, \{ caption \}\)/, 'المسار يستخدم خيارات الإرسال الإنتاجية');
 assert.doesNotMatch(route, /waitUntilMsgSent/, 'لا يغيّر خيار انتظار الوسائط الإنتاجي');

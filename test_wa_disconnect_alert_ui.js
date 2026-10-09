@@ -8,7 +8,7 @@ assert.match(admin, /aria-live="assertive"/, 'التنبيه فوري لقارئ
 assert.match(admin, /api\('\/api\/admin\/bot\/status'\)/, 'المراقب يقرأ حالة WhatsApp المحمية');
 assert.match(admin, /setInterval\(\(\)=>void pollWhatsAppAlert\(\),15000\)/, 'المراقبة الدورية كل 15 ثانية');
 assert.match(admin, /lastDisconnectAt/, 'التنبيه يعرض وقت آخر انقطاع');
-assert.match(admin, /new Notification\('وصلني الآن — انقطاع WhatsApp'/, 'يدعم إشعار المتصفح عند السماح به');
+assert.match(admin, /new Notification\('TAKE&GO الشمال — انقطاع WhatsApp'/, 'يدعم إشعار المتصفح عند السماح به');
 assert.match(admin, /eventKey!==waAlertKey/, 'يمنع تكرار إشعار نفس الحدث');
 assert.match(admin, /startWhatsAppAlertMonitor\(\)/, 'تبدأ المراقبة بعد فتح لوحة الإدارة');
 console.log('WhatsApp disconnect alert UI guardrails verified');

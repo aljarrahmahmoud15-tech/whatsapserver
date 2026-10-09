@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-v26.html', 'utf8');
-assert.match(page, /<title>وصلني الآن · عمليات V26<\/title>/);
+assert.match(page, /<title>TAKE&GO الشمال · عمليات V26<\/title>/);
 assert.match(page, /id="metricCaptains"/);
 assert.match(page, /id="metricOrders"/);
 assert.match(page, /id="groupMemberCount"/);
