@@ -5797,17 +5797,17 @@ async function handleBaileysUpsert(message) {
   await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
-async function reactToCaptainAcceptance(message, messageId) {
+async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
   const liveMessage = client && isReady && messageId
     ? await getWhatsAppMessageByIdVariants(messageId, 5000)
     : null;
   const target = liveMessage || message;
   if (!target || typeof target.react !== "function") return false;
   try {
-    await withTimeout(target.react("👍"), 12000, null);
+    await withTimeout(target.react(emoji), 12000, null);
     return true;
   } catch (error) {
-    console.error("[WhatsApp] captain acceptance reaction:", error.message);
+    console.error(`[WhatsApp] captain acceptance reaction ${emoji}:`, error.message);
     return false;
   }
 }
@@ -6084,25 +6084,15 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
-      messageDeletionRequested: Boolean(typeof msg?.delete === "function"),
+      messageReactionRequested: true,
     });
-    let deletionStatus = "not_requested";
-    if (typeof msg?.delete === "function") {
-      try {
-        const deletion = await deleteWhatsAppMessageForEveryone(messageId);
-        deletionStatus = deletion?.ok ? "deleted" : "failed";
-        if (!deletion?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletion?.reason || "unknown"}`);
-      } catch (error) {
-        deletionStatus = "failed";
-        console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
-      }
-    }
+    const reactionStatus = (await reactToCaptainAcceptance(msg, messageId, "❌")) ? "reacted" : "failed";
     const notification = await notifyCaptainInsufficientAcceptanceBalance({
       captain: acceptanceResult.captain,
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
       sourceMessageId: messageId,
-      deletionStatus,
+      deletionStatus: "not_requested",
     });
     if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
       console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
@@ -6114,7 +6104,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       captainId: acceptanceResult.captain?.id || null,
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
-      deletionStatus,
+      reactionStatus,
       notificationStatus: notification.status,
     });
     return;
