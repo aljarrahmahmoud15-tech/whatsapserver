@@ -32,7 +32,7 @@ const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
-const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب الشمال";
 if (process.env.RENDER && !CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
 // Keep LocalAuth namespaces independent across cloned Render services. When
 // WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
@@ -178,7 +178,7 @@ const MEMORY_PRUNE_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.MEMORY_P
 const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
 const RUNTIME_TEMP_CLEANUP_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.RUNTIME_TEMP_CLEANUP_INTERVAL_MS || 15 * 60 * 1000));
 const RUNTIME_TEMP_FILE_MAX_AGE_MS = Math.max(15 * 60 * 1000, Number(process.env.RUNTIME_TEMP_FILE_MAX_AGE_MS || 60 * 60 * 1000));
-const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
+const GROUP_BRAND_NAME = "قروب الشمال";
 const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
 const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لوصلني الآن.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
@@ -1618,7 +1618,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     });
   }
   const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
-    ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
+    ? "تم إيقاف الحساب وإزالتك من قروب الشمال إلى حين تسديد الرصيد المستحق."
     : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
       : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
@@ -9066,7 +9066,7 @@ app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = "pre-group-reset-" + Date.now() + ".sqlite";
   const backupPath = path.join(backupDir, backupName);
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "قروب الشمال").trim().slice(0, 100) || "قروب الشمال";
   const operationId = "RESET-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_current_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: [], reset: true, oldGroupId, backupName };
@@ -9086,7 +9086,7 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   const phones = [...new Set((groupCreateState.participants || []).map((participant) => phoneWithCountry(participant && participant.phone)).filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone)))];
   if (!phones.length) return res.status(409).json({ error: "No eligible members are available for recovery" });
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "قروب الشمال").trim().slice(0, 100) || "قروب الشمال";
   groupCreateInFlight = true;
   groupCreateState = { ...groupCreateState, status: "recovering", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: phones.map((phone) => ({ phone, status: "pending" })), recoverable: true };
   void finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
@@ -9185,7 +9185,7 @@ app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "قروب الشمال").trim().slice(0, 100) || "قروب الشمال";
   const operationId = "INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupInviteInFlight = true;
   groupInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, inviteUrl: null, participants: [] };
@@ -9200,7 +9200,7 @@ app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "قروب الشمال").trim().slice(0, 100) || "قروب الشمال";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -9216,7 +9216,7 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by Server 2 isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "قروب الشمال").trim().slice(0, 100) || "قروب الشمال";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -9769,7 +9769,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
 
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
-  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
+  const groupName = String(req.body.groupName || "قروب الشمال").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID)) return res.status(403).json({ error: "Only Server 2's configured environment group may be active" });
   configureGroupId(groupId, groupName);
@@ -9780,7 +9780,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = CLEAN_INSTANCE ? getSetting("group_id", null) : WHATSAPP_GROUP_ID;
-  const groupName = "🔥 وصلني الآن 🔥 🔥Waslni Now🔥";
+  const groupName = "🔥 قروب الشمال";
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
   const stamp = now();
@@ -9822,7 +9822,7 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
   const groupId = String(req.query.groupId || "").trim();
   const newGroupId = "";
   const originalGroupId = CLEAN_INSTANCE ? getSetting("group_id", null) : WHATSAPP_GROUP_ID;
-  const expectedName = "وصلني الآن — شبكة التشغيل الرسمية";
+  const expectedName = "قروب الشمال";
   if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -9849,7 +9849,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
-  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
+  const groupName = String(req.body.groupName || "قروب الشمال").trim();
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
@@ -9893,7 +9893,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
-  const groupName = String(chat.name || "قروب وصلني الآن").trim().slice(0, 160) || "قروب وصلني الآن";
+  const groupName = String(chat.name || "قروب الشمال").trim().slice(0, 160) || "قروب الشمال";
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
@@ -11240,7 +11240,7 @@ app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, asyn
         const text = brandedMessage("تنبيه رصيد المحفظة", [
           `الكابتن: ${captain.name || "حساب الكابتن"}`,
           `رصيدك الحالي: ${money(captain.wallet_cents)} JOD`,
-          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.",
+          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب الشمال.",
           "يرجى التواصل مع الإدارة لشحن الرصيد.",
         ]);
         const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
