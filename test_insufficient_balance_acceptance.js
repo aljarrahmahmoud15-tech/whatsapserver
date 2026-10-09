@@ -28,6 +28,10 @@ assert.match(server, /attempt=\$\{attempt \+ 1\}\/\$\{directDeleteDelays\.length
 assert.match(server, /const recentWhatsAppMessages = new Map\(\)/);
 assert.match(server, /cacheIncomingWhatsAppMessage\(msg\)/);
 assert.match(server, /const originalMessage = context\.message \|\| getCachedIncomingWhatsAppMessage\(messageId\)/);
+assert.match(server, /originalMessage\.getChat\(\)/);
+assert.match(server, /chat\.fetchMessages\(\{ limit: 50 \}\)/);
+assert.match(server, /chat_history_lookup/);
+assert.match(server, /chat\.fetchMessages\.message\.delete/);
 const registerStart = server.indexOf('function registerAcceptance');
 const guardIndex = server.indexOf('acceptanceBalanceGuard(candidate, captain)', registerStart);
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances', registerStart);

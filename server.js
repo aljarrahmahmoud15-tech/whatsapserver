@@ -10389,6 +10389,35 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       }
     }
   }
+  if (!result?.ok && originalMessage && typeof originalMessage.getChat === "function") {
+    try {
+      const chat = await withTimeout(originalMessage.getChat(), 10000, null);
+      const history = chat && typeof chat.fetchMessages === "function"
+        ? await withTimeout(chat.fetchMessages({ limit: 50 }), 15000, [])
+        : [];
+      const liveCandidates = (Array.isArray(history) ? history : []).filter((candidate) => {
+        const candidateId = serializedMessageId(candidate);
+        return candidate && candidateId && sourceMessageIdsEqual(candidateId, messageId);
+      });
+      console.log(`[WhatsApp][MessageDelete] chat_history_lookup message=${deletionKey} candidates=${liveCandidates.length}`);
+      for (let index = 0; index < liveCandidates.length; index += 1) {
+        const candidate = liveCandidates[index];
+        if (typeof candidate.delete !== "function") continue;
+        try {
+          const deletedFromHistory = await withTimeout(candidate.delete(true), 15000, false);
+          console.log(`[WhatsApp][MessageDelete] chat_history_result message=${deletionKey} ok=${deletedFromHistory === true} attempt=${index + 1}/${liveCandidates.length}`);
+          if (deletedFromHistory === true) {
+            result = { ok: true, requested: true, revoked: true, method: "chat.fetchMessages.message.delete", attempts: index + 1 };
+            break;
+          }
+        } catch (error) {
+          console.warn(`[WhatsApp][MessageDelete] chat_history_failure message=${deletionKey} attempt=${index + 1}/${liveCandidates.length} error=${String(error?.message || error).slice(0, 180)}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp][MessageDelete] chat_history_lookup_failed message=${deletionKey} error=${String(error?.message || error).slice(0, 180)}`);
+    }
+  }
   if (!result?.ok && !client?.pupPage || !messageId) {
     result = result || { ok: false, reason: "page_unavailable_or_missing_id" };
   } else if (!result?.ok) {
