@@ -12,11 +12,18 @@ assert.match(server, /existing\?\.delivery_status === "sent" \|\| existing\?\.de
 assert.match(server, /captain\.acceptance\.insufficient_balance/);
 assert.match(server, /await notifyCaptainInsufficientAcceptanceBalance\(/);
 assert.match(server, /notificationStatus: notification\.status/);
+assert.match(server, /async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure/);
+assert.match(server, /GROUP-ACCEPTANCE-DELETE-FAILED-\$\{sourceKey\}/);
+assert.match(server, /order\.acceptance\.insufficient_balance_deletion_failed/);
+assert.match(server, /تعذّر حذف رسالة «تم» تلقائيًا/);
+assert.match(server, /await notifyOfficialGroupInsufficientAcceptanceDeletionFailure\(/);
 
 const guardIndex = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
 const deleteIndex = server.indexOf('deleteWhatsAppMessageForEveryone(messageId, {', guardIndex);
 const notifyIndex = server.indexOf('await notifyCaptainInsufficientAcceptanceBalance(', guardIndex);
 assert.ok(guardIndex >= 0 && deleteIndex > guardIndex && notifyIndex > deleteIndex, 'private notification runs after the deletion attempt');
+const correctionIndex = server.indexOf('await notifyOfficialGroupInsufficientAcceptanceDeletionFailure(', guardIndex);
+assert.ok(correctionIndex > deleteIndex && correctionIndex < notifyIndex, 'group correction runs between deletion and private captain notice');
 
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances');
 const notifyFunctionIndex = server.indexOf('async function notifyCaptainInsufficientAcceptanceBalance');

@@ -219,6 +219,7 @@ const context = {
   notifyOperations: () => Promise.resolve([]),
   notifyCaptainNegativeBalance: async () => {},
   notifyCaptainInsufficientAcceptanceBalance: async () => ({ status: "sent" }),
+  notifyOfficialGroupInsufficientAcceptanceDeletionFailure: async () => ({ status: "sent" }),
   reactToCaptainAcceptance: async () => true,
   enforceCaptainWalletThresholds: async () => {},
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },

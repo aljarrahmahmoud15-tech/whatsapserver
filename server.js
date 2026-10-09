@@ -1220,6 +1220,38 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
+async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId }) {
+  const targetGroupId = String(groupId || "").trim();
+  const sourceKey = String(sourceMessageId || "").trim();
+  if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
+  const idempotencyKey = `GROUP-ACCEPTANCE-DELETE-FAILED-${sourceKey}`;
+  const title = "تنبيه: قبول غير معتمد";
+  const message = [
+    "⚠️ تنبيه للمجموعة:",
+    "تعذّر حذف رسالة «تم» تلقائيًا، لكنها مرفوضة وغير معتمدة بسبب عدم كفاية رصيد الكابتن.",
+    `الرصيد الحالي: ${money(balanceCents)} JOD | العمولة المطلوبة: ${money(requiredCents)} JOD`,
+    "لن يتم اعتماد الطلب أو إجراء أي تسوية بناءً على هذه الرسالة.",
+  ].join("\n");
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group','order.acceptance.insufficient_balance_deletion_failed',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  try {
+    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = result.message?.id?._serialized || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
+    return { status: deliveryStatus, notificationId, messageId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.insufficient_balance_deletion_correction_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
+    return { status: "failed", notificationId };
+  }
+}
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
@@ -6122,9 +6154,10 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       messageDeletionRequested: Boolean(typeof msg?.delete === "function"),
     });
     let deletionStatus = "not_requested";
+    let deletionResult = null;
     if (typeof msg?.delete === "function") {
       try {
-        const deletion = await deleteWhatsAppMessageForEveryone(messageId, {
+        deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
           message: msg,
           reason: "insufficient_balance_acceptance",
           groupId,
@@ -6132,12 +6165,23 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
           balanceCents: acceptanceResult.balanceCents,
           requiredCents: acceptanceResult.requiredCents,
         });
-        deletionStatus = deletion?.ok ? "deleted" : "failed";
-        if (!deletion?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletion?.reason || "unknown"}`);
+        deletionStatus = deletionResult?.ok ? "deleted" : "failed";
+        if (!deletionResult?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletionResult?.reason || "unknown"}`);
       } catch (error) {
         deletionStatus = "failed";
         console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
       }
+    }
+    const correction = deletionStatus === "deleted"
+      ? { status: "not_needed" }
+      : await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
+        groupId,
+        balanceCents: acceptanceResult.balanceCents,
+        requiredCents: acceptanceResult.requiredCents,
+        sourceMessageId: messageId,
+      });
+    if (!['sent', 'already_sent', 'uncertain', 'not_needed'].includes(correction.status)) {
+      console.warn(`[Order] insufficient-balance group correction ${correction.status} message=${orderTraceKey(messageId)}`);
     }
     const notification = await notifyCaptainInsufficientAcceptanceBalance({
       captain: acceptanceResult.captain,
@@ -6157,6 +6201,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
       deletionStatus,
+      correctionStatus: correction.status,
       notificationStatus: notification.status,
     });
     return;
@@ -10294,16 +10339,21 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
   if (context.message && typeof context.message.delete === "function") {
-    console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete`);
-    try {
-      const directDeleted = await withTimeout(context.message.delete(true), 15000, false);
-      result = directDeleted === true
-        ? { ok: true, requested: true, revoked: true, method: "message.delete" }
-        : { ok: false, reason: "direct_delete_not_confirmed", requested: Boolean(directDeleted), method: "message.delete" };
-      console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete`);
-    } catch (error) {
-      result = { ok: false, reason: "direct_delete_failed", method: "message.delete", error: String(error?.message || error).slice(0, 240) };
-      console.warn(`[WhatsApp][MessageDelete] direct_failure message=${deletionKey} error=${result.error}`);
+    const directDeleteDelays = [0, 400, 1000];
+    for (let attempt = 0; attempt < directDeleteDelays.length; attempt += 1) {
+      if (directDeleteDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, directDeleteDelays[attempt]));
+      console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
+      try {
+        const directDeleted = await withTimeout(context.message.delete(true), 15000, false);
+        result = directDeleted === true
+          ? { ok: true, requested: true, revoked: true, method: "message.delete", attempts: attempt + 1 }
+          : { ok: false, reason: "direct_delete_not_confirmed", requested: Boolean(directDeleted), method: "message.delete", attempts: attempt + 1 };
+        console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
+        if (result.ok) break;
+      } catch (error) {
+        result = { ok: false, reason: "direct_delete_failed", method: "message.delete", attempts: attempt + 1, error: String(error?.message || error).slice(0, 240) };
+        console.warn(`[WhatsApp][MessageDelete] direct_failure message=${deletionKey} attempt=${attempt + 1}/${directDeleteDelays.length} error=${result.error}`);
+      }
     }
   }
   if (!result?.ok && !client?.pupPage || !messageId) {

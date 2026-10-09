@@ -23,6 +23,8 @@ assert.match(server, /const lookupIds = \[\.\.\.new Set\(/);
 assert.match(server, /collections\.Msg\.getMessagesById\(ids\)/);
 assert.match(server, /context\.message\.delete\(true\)/);
 assert.match(server, /method: "message\.delete"/);
+assert.match(server, /const directDeleteDelays = \[0, 400, 1000\]/);
+assert.match(server, /attempt=\$\{attempt \+ 1\}\/\$\{directDeleteDelays\.length\}/);
 const registerStart = server.indexOf('function registerAcceptance');
 const guardIndex = server.indexOf('acceptanceBalanceGuard(candidate, captain)', registerStart);
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances', registerStart);
