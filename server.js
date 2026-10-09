@@ -12307,6 +12307,26 @@ app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
     res.redirect(303, "/qr?session=cleared");
   } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
 });
+app.post("/api/admin/group/rename", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group rename actions; try again later" });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = String(getSetting("group_id", "") || "").trim();
+  const newName = "قروب الشمال";
+  if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "No configured operational group" });
+  try {
+    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+    if (typeof chat.setSubject !== "function") return res.status(502).json({ error: "WhatsApp group rename is unavailable" });
+    await chat.setSubject(newName);
+    configureGroupId(groupId, newName);
+    audit("group.renamed", "group", groupId, { groupName: newName });
+    res.json({ success: true, groupId, groupName: newName, messageSent: false });
+  } catch (error) {
+    audit("group.rename_failed", "group", groupId, { error: error.message });
+    res.status(502).json({ error: "Unable to rename group", details: error.message });
+  }
+});
 app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
   if (req.body.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
