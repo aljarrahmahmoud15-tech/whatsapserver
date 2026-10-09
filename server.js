@@ -9370,6 +9370,7 @@ app.get("/api/admin/captains/sync-names/run", requireAdmin, async (req, res) => 
   res.json({ success: true, ...result });
 });
 app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => {
+  if (CLEAN_INSTANCE) return res.status(409).json({ error: "Clean accepts captains only through the official invitation flow" });
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -9380,6 +9381,7 @@ app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => 
   res.json({ success: true, ...result, sendLinks });
 });
 app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
+  if (CLEAN_INSTANCE) return res.status(409).json({ error: "Clean accepts captains only through the official invitation flow" });
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();
   const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod || "whatsapp");
@@ -10023,7 +10025,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
     };
     const inGroup = memberPhones.has(phone);
     const protectedIdentity = isProtectedOwnerIdentity(phone);
-    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && Number(user.wallet_cents || 0) === 0;
+    const deletable = (!inGroup || CLEAN_INSTANCE) && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && Number(user.wallet_cents || 0) === 0;
     return {
       id: user.id,
       phone: user.phone,
@@ -10034,13 +10036,14 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
       inConfiguredGroup: inGroup,
       protectedIdentity,
       refs,
-      safeDisposition: inGroup ? "keep" : (protectedIdentity ? "protected_keep" : (deletable ? "delete_empty_account" : "suspend_preserve_history")),
+      safeDisposition: (inGroup && !CLEAN_INSTANCE) ? "keep" : (protectedIdentity ? "protected_keep" : (deletable ? "delete_empty_account" : "suspend_preserve_history")),
     };
   });
-  const keep = candidates.filter((candidate) => candidate.inConfiguredGroup);
-  const remove = candidates.filter((candidate) => !candidate.inConfiguredGroup);
+  const keep = CLEAN_INSTANCE ? candidates.filter((candidate) => candidate.protectedIdentity) : candidates.filter((candidate) => candidate.inConfiguredGroup);
+  const remove = CLEAN_INSTANCE ? candidates.filter((candidate) => !candidate.protectedIdentity) : candidates.filter((candidate) => !candidate.inConfiguredGroup);
   const payload = {
     mutation: "none",
+    cleanInstance: CLEAN_INSTANCE,
     generatedAt: now(),
     groupId,
     groupName: chat.name || null,
@@ -10098,11 +10101,11 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
     };
     const inGroup = memberPhones.has(phone);
     const protectedIdentity = isProtectedOwnerIdentity(phone);
-    const deletable = !inGroup && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && refs.balance === 0;
+    const deletable = (!inGroup || CLEAN_INSTANCE) && !protectedIdentity && refs.orders === 0 && refs.candidates === 0 && refs.acceptances === 0 && refs.audit === 0 && refs.ledger === 0 && refs.settlements === 0 && refs.cards === 0 && refs.subscriptions === 0 && refs.balance === 0;
     return { user, phone, refs, inGroup, protectedIdentity, deletable };
   });
-  const keep = candidates.filter((candidate) => candidate.inGroup);
-  const remove = candidates.filter((candidate) => !candidate.inGroup && !candidate.protectedIdentity);
+  const keep = CLEAN_INSTANCE ? candidates.filter((candidate) => candidate.protectedIdentity) : candidates.filter((candidate) => candidate.inGroup);
+  const remove = CLEAN_INSTANCE ? candidates.filter((candidate) => !candidate.protectedIdentity) : candidates.filter((candidate) => !candidate.inGroup && !candidate.protectedIdentity);
   const deletable = remove.filter((candidate) => candidate.deletable);
   const preserveHistory = remove.filter((candidate) => !candidate.deletable);
   const currentCounts = { keepCount: keep.length, removeCount: remove.length, deletableEmptyCount: deletable.length, preserveHistoryCount: preserveHistory.length };
@@ -10132,7 +10135,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
     }
   })();
   audit("captains.cleanup.applied", "group", groupId, { backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, expected });
-  void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تم حذف حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
+  if (!CLEAN_INSTANCE) void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تم حذف حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
