@@ -1,0 +1,147 @@
+name: Order Flow Health Monitor
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: order-flow-health-monitor
+  cancel-in-progress: false
+
+jobs:
+  order-flow-tests:
+    name: Order flow regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Run full regression suite
+        run: npm test
+      - name: Run IndexedDB 90% guard simulation
+        run: npm run test:indexeddb-guard
+      - name: Run focused order confirmation suite
+        run: |
+          node test_price_confirmation_rule.js
+          node test_confirmation_flow_isolated.js
+          node test_selected_reply_reaction.js
+          node test_phone_identity_settlement.js
+          node test_reaction_cancellation.js
+
+  production-health:
+    name: Production WhatsApp and group health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SERVICE_URL: https://whatsapserver-2.onrender.com
+    steps:
+      - name: Check public health endpoint
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            health="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/health" || true)"
+            if [[ -n "$health" ]] && printf '%s\n' "$health" | jq -e '(.ok == true) and (.ready == true) and (.whatsapp == "ready")' >/dev/null 2>&1; then
+              echo "Health endpoint is ready."
+              exit 0
+            fi
+            echo "Health endpoint was unavailable, non-JSON, or not ready (attempt $attempt/6); retrying."
+            if [[ -n "$health" ]]; then
+              printf '%s\n' "$health" | jq '.' >&2 2>/dev/null || printf '%s\n' "${health:0:240}" >&2
+            fi
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+          echo "Health endpoint did not return a ready JSON payload after retries." >&2
+          exit 1
+      - name: Check WhatsApp group receiver and order counters
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
+              (.ready == true) and
+              (.whatsappState == "ready") and
+              (.groupConfigured == true) and
+              (.groupReceiverReady == true) and
+              (.whatsappLastError == null) and
+              (.orders.openUnassigned >= 0) and
+              (.orders.pendingConfirmation >= 0) and
+              (.orders.acceptedUnlinked >= 0)
+            ' >/dev/null 2>&1; then
+              echo "WhatsApp, group receiver, and order counters are healthy."
+              exit 0
+            fi
+            echo "WhatsApp/group status was unavailable, non-JSON, or not ready (attempt $attempt/6); retrying."
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+          echo "WhatsApp/group status did not return a healthy JSON payload after retries." >&2
+          exit 1
+      - name: Check IndexedDB pressure guard state
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+
+            # Never hide a real send-blocking condition. A critical state or an
+            # explicit block fails immediately; only an incomplete startup
+            # payload is retried while WhatsApp finishes initializing.
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
+              (.whatsappStoragePressure.status == "critical") or
+              (.whatsappStoragePressure.blocked == true)
+            ' >/dev/null 2>&1; then
+              echo "IndexedDB pressure guard is blocking sends." >&2
+              printf '%s\n' "$status" | jq '.whatsappStoragePressure' >&2
+              exit 1
+            fi
+
+            if [[ -n "$status" ]] && printf '%s\n' "$status" | jq -e '
+              (.whatsappStoragePressure | type == "object") and
+              (.whatsappStoragePressure.status | type == "string") and
+              (.whatsappStoragePressure.blocked == false) and
+              (.whatsappStoragePressure.blockedAttempts | type == "number") and
+              (.whatsappStoragePressure.blockedAttempts >= 0) and
+              ((.whatsappStoragePressure.status == "normal") or (.whatsappStoragePressure.status == "warning"))
+            ' >/dev/null 2>&1; then
+              echo "IndexedDB pressure is below the critical send-blocking state."
+              printf '%s\n' "$status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}'
+              exit 0
+            fi
+
+            if [[ -n "$status" ]]; then
+              echo "IndexedDB pressure state is not measured yet (attempt $attempt/6); retrying."
+              printf '%s\n' "$status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}' 2>/dev/null || true
+            else
+              echo "Status endpoint was unavailable (attempt $attempt/6); retrying."
+            fi
+            [[ "$attempt" -eq 6 ]] || sleep 10
+          done
+
+          final_status="$(curl --fail-with-body --silent --show-error --retry 3 --retry-delay 3 --max-time 20 "$SERVICE_URL/status" || true)"
+          if [[ -n "$final_status" ]] && printf '%s\n' "$final_status" | jq -e '
+            (.ready == true) and
+            (.whatsappState == "ready") and
+            (.groupReceiverReady == true) and
+            (.whatsappLastError == null) and
+            (.whatsappStoragePressure | type == "object") and
+            (.whatsappStoragePressure.status == "unknown") and
+            (.whatsappStoragePressure.blocked == false)
+          ' >/dev/null 2>&1; then
+            echo "::warning::IndexedDB pressure is still unmeasured, but WhatsApp and the official group are ready and sending is not blocked."
+            printf '%s\n' "$final_status" | jq '{status: .whatsappStoragePressure.status, usageRatio: .whatsappStoragePressure.usageRatio, blocked: .whatsappStoragePressure.blocked, blockedAttempts: .whatsappStoragePressure.blockedAttempts}'
+            exit 0
+          fi
+
+          echo "IndexedDB pressure state remained unavailable or unmeasured after retries." >&2
+          exit 1

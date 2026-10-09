@@ -1,0 +1,174 @@
+{
+  "generatedAt": "2026-09-23T01:20:56.262Z",
+  "mode": "local-only-no-network-no-render-no-whatsapp-no-sqlite",
+  "groupId": "120363426604560611@g.us",
+  "orderMessage": "السعر 12 من إربد إلى عمّان",
+  "conclusion": {
+    "localAdapterRouting": "verified",
+    "productionErrorBoundary": "chat.sendMessage/client.sendMessage adapter boundary",
+    "puppeteerErrorReproducedAsObservedInput": true,
+    "rootCauseProvenByLocalSimulation": false,
+    "why": "The simulator can reproduce the state transition and fallback behavior, but it cannot execute WhatsApp Web internals. The r: r failure must be captured with browser-side diagnostics or a minimal real client probe.",
+    "settlementAttempted": false,
+    "walletMutation": false
+  },
+  "scenarios": [
+    {
+      "name": "control-plain-text-succeeds",
+      "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا.",
+      "result": {
+        "sendState": "confirmed",
+        "messageId": "control-plain-001",
+        "error": null
+      },
+      "calls": [
+        {
+          "method": "client.getChatById",
+          "chatId": "120363426604560611@g.us"
+        },
+        {
+          "method": "chat.sendMessage",
+          "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا."
+        }
+      ],
+      "events": [
+        {
+          "at": "2026-09-23T01:20:56.260Z",
+          "event": "send.confirmed",
+          "messageId": "control-plain-001"
+        }
+      ],
+      "financialMutation": 0
+    },
+    {
+      "name": "arabic-order-observed-production-error",
+      "message": "السعر 12 من إربد إلى عمّان",
+      "result": {
+        "sendState": "failed",
+        "messageId": null,
+        "error": "r: r\n    at #evaluate (file:///app/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)"
+      },
+      "calls": [
+        {
+          "method": "client.getChatById",
+          "chatId": "120363426604560611@g.us"
+        },
+        {
+          "method": "chat.sendMessage",
+          "message": "السعر 12 من إربد إلى عمّان"
+        },
+        {
+          "method": "client.sendMessage",
+          "chatId": "120363426604560611@g.us",
+          "message": "السعر 12 من إربد إلى عمّان"
+        }
+      ],
+      "events": [
+        {
+          "at": "2026-09-23T01:20:56.261Z",
+          "event": "chat.sendMessage.failed",
+          "error": "r: r\n    at #evaluate (file:///app/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)"
+        },
+        {
+          "at": "2026-09-23T01:20:56.261Z",
+          "event": "send.failed",
+          "error": "r: r\n    at #evaluate (file:///app/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)"
+        }
+      ],
+      "financialMutation": 0
+    },
+    {
+      "name": "chat-fails-client-fallback-succeeds",
+      "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا.",
+      "result": {
+        "sendState": "confirmed",
+        "messageId": "fallback-001",
+        "error": null
+      },
+      "calls": [
+        {
+          "method": "client.getChatById",
+          "chatId": "120363426604560611@g.us"
+        },
+        {
+          "method": "chat.sendMessage",
+          "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا."
+        },
+        {
+          "method": "client.sendMessage",
+          "chatId": "120363426604560611@g.us",
+          "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا."
+        }
+      ],
+      "events": [
+        {
+          "at": "2026-09-23T01:20:56.261Z",
+          "event": "chat.sendMessage.failed",
+          "error": "chat adapter unavailable"
+        },
+        {
+          "at": "2026-09-23T01:20:56.261Z",
+          "event": "send.confirmed",
+          "messageId": "fallback-001"
+        }
+      ],
+      "financialMutation": 0
+    },
+    {
+      "name": "chat-unavailable-getChats-fallback-succeeds",
+      "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا.",
+      "result": {
+        "sendState": "confirmed",
+        "messageId": "getchats-001",
+        "error": null
+      },
+      "calls": [
+        {
+          "method": "client.getChatById",
+          "chatId": "120363426604560611@g.us"
+        },
+        {
+          "method": "client.getChats"
+        },
+        {
+          "method": "chat.sendMessage",
+          "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا."
+        }
+      ],
+      "events": [
+        {
+          "at": "2026-09-23T01:20:56.261Z",
+          "event": "send.confirmed",
+          "messageId": "getchats-001"
+        }
+      ],
+      "financialMutation": 0
+    },
+    {
+      "name": "send-accepted-without-message-object",
+      "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا.",
+      "result": {
+        "sendState": "pending",
+        "messageId": null,
+        "error": null
+      },
+      "calls": [
+        {
+          "method": "client.getChatById",
+          "chatId": "120363426604560611@g.us"
+        },
+        {
+          "method": "chat.sendMessage",
+          "message": "🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا."
+        }
+      ],
+      "events": [
+        {
+          "at": "2026-09-23T01:20:56.262Z",
+          "event": "send.waiting_message_create"
+        }
+      ],
+      "financialMutation": 0
+    }
+  ]
+}

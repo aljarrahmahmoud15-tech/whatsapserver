@@ -1,26 +1,26 @@
 const assert = require("assert");
 const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
 const { isBotGeneratedMessage } = require("./message_guardrails");
 
-const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
+const source = fs.readFileSync("./server.js", "utf8");
 const start = source.indexOf("async function handleIncomingMessage(");
+const helperStart = source.indexOf("async function getQuotedMessageWithFallback(");
 const end = source.indexOf("function reactionId(", start);
-assert(start >= 0 && end > start);
+assert(helperStart >= 0 && start >= 0 && end > start);
 
 const writes = [];
-const orderInsert = [];
+const candidateInsert = [];
 const db = {
   prepare(sql) {
     return {
       get(...args) {
-        if (sql.includes("SELECT COALESCE(MAX(order_no),0)+1")) return { next: 7 };
+        if (sql.includes("SELECT * FROM order_candidates WHERE source_message_id=?")) return null;
+        if (sql.includes("SELECT * FROM order_candidates WHERE group_id=?")) return null;
         throw new Error(`unexpected get: ${sql}`);
       },
       run(...args) {
         if (sql.includes("INSERT OR IGNORE INTO messages")) writes.push({ type: "message", args });
-        else if (sql.includes("INSERT INTO orders")) orderInsert.push(args);
         else throw new Error(`unexpected run: ${sql}`);
         return { changes: 1, lastInsertRowid: 19 };
       },
@@ -29,10 +29,12 @@ const db = {
 };
 
 const context = {
+  WHATSAPP_GROUP_ID: "test-group@g.us",
   resolveGroupChatId: () => "test-group@g.us",
   isConfiguredGroup: () => true,
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
+  isCaptainAcceptance: (body) => /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(String(body || "").trim()),
   parseOrder: () => ({ isOrder: true, price: 5, origin: "إربد", destination: "عمّان", tripTime: null, orderKind: "normal" }),
   connectedBotPhone: () => "962775696880",
   phoneWithCountry: (value) => String(value).replace(/^0/, "962"),
@@ -40,15 +42,17 @@ const context = {
   isBlockedPhone: () => false,
   companyUser: () => ({ id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 }),
   botEmployeeUser: () => ({ id: 2, phone: "962775696880", name: "منتج موظف — بوت شركة الجراح", role: "producer", wallet_cents: 0, is_bot: 1 }),
+  COMPANY_BRAND_NAME: "وصلني الآن",
   BOT_FINANCIAL_MODE: "company",
   cents: (value) => Math.round(Number(value) * 100),
   now: () => "2026-08-27T00:00:00.000Z",
   audit: () => {},
+  createOrderCandidate: (args) => { candidateInsert.push(args); return { id: 19, status: "candidate" }; },
   db,
   console,
 };
 
-vm.runInNewContext(`${source.slice(start, end)}\nthis.handleIncomingMessage = handleIncomingMessage;`, context);
+vm.runInNewContext(`${source.slice(helperStart, end)}\nthis.handleIncomingMessage = handleIncomingMessage;`, context);
 
 (async () => {
   await context.handleIncomingMessage({
@@ -62,10 +66,9 @@ vm.runInNewContext(`${source.slice(start, end)}\nthis.handleIncomingMessage = ha
   }, { allowSelf: true });
 
   assert.equal(writes.length, 1, "يُحفظ سجل الرسالة المنسقة مرة واحدة");
-  assert.equal(orderInsert.length, 1, "طلب البوت المنسق يُنشأ مرة واحدة");
-  assert.equal(orderInsert[0][9], 1, "producer_user_id هو حساب الشركة في المرحلة الثانية");
-  assert.equal(orderInsert[0][8], "normal");
-  assert.equal(orderInsert[0][10], "open");
-  assert.equal(orderInsert[0].includes("962775696880"), false, "رقم البوت لا يُخزّن كمنتج مالي");
-  console.log("bot order handler company assignment verified");
+  assert.equal(candidateInsert.length, 1, "رسالة السعر تنشئ مرشحًا خاصًا مرة واحدة");
+  assert.equal(candidateInsert[0].producer.id, 1, "producer_user_id هو حساب الشركة في المرشح");
+  assert.equal(candidateInsert[0].parsed.orderKind, "normal");
+  assert.equal(candidateInsert[0].producer.phone.includes("962775696880"), false, "رقم البوت لا يُخزّن كمنتج مالي");
+  console.log("bot order handler private candidate assignment verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

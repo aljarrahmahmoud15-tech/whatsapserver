@@ -26,6 +26,7 @@ assert(owner.includes('الحسابات المفعلة'), 'owner UI shows active
 assert(owner.includes('دمج حساب'), 'owner UI exposes audited merge action');
 assert(captain.includes('id="reg-auth-method"'), 'registration offers authentication method choice');
 assert(captain.includes('value="whatsapp"'), 'WhatsApp authentication is selectable');
-assert(captain.includes('/api/captain/whatsapp/request-code'), 'captain UI requests WhatsApp OTP');
-assert(captain.includes('/api/captain/whatsapp/verify'), 'captain UI verifies WhatsApp OTP');
+assert(captain.includes('id="phone"'), 'captain login accepts the registered phone');
+assert(captain.includes('id="pin"'), 'captain login accepts the five-digit PIN');
+assert(!captain.includes('id="login-auth-method"'), 'captain login has no second authentication selector');
 console.log('captain management, authentication, and historical-order guardrails verified');

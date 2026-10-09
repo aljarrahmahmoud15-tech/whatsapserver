@@ -24,6 +24,7 @@ assert.match(source, /app\.post\("\/api\/admin\/group\/adopt-last-seen", require
 assert(source.includes("Date.now() - observedAt > 15 * 60 * 1000"), "لا يمكن اعتماد حدث قروب قديم");
 assert(source.includes("const groupReceiverReady = Boolean(isReady || baileysReady);"), "جاهزية مستقبل القروب تشمل مستقبل whatsapp-web.js الرئيسي");
 assert(source.includes('const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";'), "يمكن تثبيت معرف القروب عبر بيئة النشر");
+assert(source.includes("const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === \"string\" ? WHATSAPP_GROUP_ID : \"\";") && source.includes("if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;"), "القروبات غير المعتمدة تُتجاهل قبل أي معالجة أو أمر اعتماد");
 assert(source.includes("reconcileConfiguredGroupFromEnvironment();"), "تتم مزامنة معرف القروب عند بدء الخدمة");
 assert.match(source, /app\.post\("\/api\/admin\/group\/leave-unconfigured", requireAdmin,/, "مسار خروج البوت من القروب غير المعتمد محمي إداريًا");
 assert(source.includes("deleted: false"), "خروج البوت لا يحذف القروب غير المعتمد");

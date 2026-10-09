@@ -35,15 +35,17 @@ ENV NODE_ENV=production \
     PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     DATA_DIR=/app/data \
+    RENDER_DATA_DIR=/app/data \
     AUTH_PATH=/app/data/.wwebjs_auth \
     BAILEYS_AUTH_PATH=/app/data/.baileys_auth
 
 WORKDIR /app
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci --omit=dev
 COPY . .
 RUN mkdir -p /app/data && chown -R node:node /app
 
 EXPOSE 10000
 # Render mounts the persistent disk after image build; fix its ownership at startup.
-CMD ["sh", "-c", "chown -R node:node /app/data && exec su -s /bin/sh node -c 'exec node server.js'"]
+CMD ["sh", "-c", "chown -R node:node /app/data && exec su -s /bin/sh node -c 'exec node --expose-gc --max-old-space-size=768 server.js'"]

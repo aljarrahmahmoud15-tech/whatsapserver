@@ -1,0 +1,11 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const source = fs.readFileSync("./server.js", "utf8");
+assert.match(source, /function requireCompanyOwner\(req, res, next\)/);
+assert.match(source, /app\.patch\("\/api\/admin\/captains\/:id\/pin", requireCompanyOwner/);
+assert.match(source, /if \(!validCaptainPin\(pin\)\)/);
+assert.match(source, /captain_pin_hash=\?,captain_pin_ciphertext=NULL,captain_auth_method='pin'/);
+assert.match(source, /bcrypt\.hashSync\(pin, 10\)/);
+assert.match(source, /audit\("captain\.pin\.updated"/);
+assert.doesNotMatch(source, /pin: pin[^A-Za-z]/, "the response must not expose the PIN");
+console.log("owner-only captain PIN update guardrails verified");

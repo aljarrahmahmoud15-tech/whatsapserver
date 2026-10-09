@@ -1,0 +1,24 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+const source = fs.readFileSync('./server.js', 'utf8');
+assert.match(source, /const archivedQuoted = indexedQuoted \|\| acceptance\.__quoted \|\| null/);
+assert.match(source, /let liveQuoted = archivedQuoted/);
+assert.match(source, /const quotedMessageIdHint = String\(/);
+assert.match(source, /messageId === quotedMessageIdHint \|\| messageId\.endsWith/);
+assert.match(source, /const quoted = liveQuoted \|\| liveAcceptance\.__quoted \|\| archivedQuoted \|\| acceptance\.__quoted \|\| null/);
+assert.match(source, /const archivedHasSenders = Array\.isArray\(archivedReactions\)/);
+assert.match(source, /liveAcceptance = await getWhatsAppMessageByIdVariants\(acceptanceMessageId, 5000\)/);
+assert.match(source, /const liveReactions = !storedRecovery && !botProducer && !archivedHasSenders/);
+assert.match(source, /const archivedReactions = acceptance\.__reactions \|\|/);
+assert.match(source, /liveAcceptance\.__reactions \|\| acceptance\.__reactions \|\| \[\]/);
+assert.match(source, /const rawReactionHint = Boolean\(acceptance\.hasReaction \|\| acceptance\.__hasReaction \|\| acceptance\._data\?\.hasReaction/);
+assert.match(source, /let reactionPresentOnAcceptance = Boolean\(thumbs\.length\)/);
+assert.match(source, /hasVisibleThumbReaction\(acceptanceMessageId\)/);
+assert.match(source, /if \(botProducer && reactionPresentOnAcceptance\) reactedByBot = true/);
+assert.match(source, /reactionPresent: Boolean\(evidence\.reactionPresentOnAcceptance\)/);
+assert.match(source, /await withTimeout\(acceptance\.getReactions\(\), 1500, null\)/);
+assert.match(source, /client\.interface\.openChatWindowAt\(acceptanceMessageId\)/);
+assert.match(source, /const hydratedAcceptance = typeof client\.getMessageById === "function"/);
+assert.match(source, /mutation: "none"/);
+console.log('archived quote and reaction evidence fallback verified');

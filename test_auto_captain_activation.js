@@ -1,0 +1,13 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('./server.js', 'utf8');
+assert.match(source, /function scheduleConfiguredGroupCaptainSync/);
+assert.match(source, /if \(isConfiguredGroup\(msg\.from\)\) \{\s*scheduleConfiguredGroupCaptainSync\("message"\)/);
+assert.match(source, /isConfiguredGroup\(notification\.chatId\)\) return/);
+assert.match(source, /scheduleConfiguredGroupCaptainSync\("group_join"\)/);
+assert.match(source, /if \(isConfiguredGroup\(msg\.from\)\) \{\s*scheduleConfiguredGroupCaptainSync\("message_create"\)/);
+assert.match(source, /registerGroupMembersAsCaptains\(\{ sendLinks: false, reactivate: true \}\)/);
+assert.match(source, /captains\.auto_activated_from_group/);
+assert.match(source, /isProtectedOwnerIdentity/);
+assert.match(source, /isBotFinancialRole|is_bot=0/);
+console.log('automatic group captain activation guardrails verified');

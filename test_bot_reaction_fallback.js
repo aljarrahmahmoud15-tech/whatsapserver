@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+const server = fs.readFileSync('./server.js', 'utf8');
+assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidate_acceptances/);
+assert.match(server, /INSERT OR IGNORE INTO order_candidate_acceptances/);
+assert.match(server, /Human-owned bookings still use the producer's/);
+assert.match(server, /async function approveBotOwnedAcceptance/);
+assert.doesNotMatch(server, /const result = settlePendingOrder\(candidate\.id, messageId, BOT_PHONE_INTL \|\| BOT_PHONE\)/);
+assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
+assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+assert.match(server, /const producerApproved = Boolean\(/);
+assert.match(server, /reaction_approver_not_original_producer/);
+console.log('original producer thumbs-up on the exact quoted تم reply settles once');

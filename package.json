@@ -4,8 +4,10 @@
   "description": "Al-Jarah Logistics WhatsApp operations and wallet system",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --expose-gc --max-old-space-size=${NODE_HEAP_MB:-768} server.js",
+    "postinstall": "node scripts/patch-whatsapp-web-media.js",
     "check": "node --check server.js",
+    "test:indexeddb-guard": "node simulate_indexeddb_quota_guard.js",
     "test": "node --test test_*.js"
   },
   "engines": {
@@ -15,13 +17,21 @@
     "@whiskeysockets/baileys": "6.7.24",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.7.0",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "pino": "8.21.0",
-    "puppeteer": "^24.15.0",
+    "puppeteer": "^25.11.0",
     "qrcode": "^1.5.4",
     "sharp": "^0.35.4",
     "whatsapp-web.js": "^1.26.0"
+  },
+  "overrides": {
+    "brace-expansion": "2.1.7",
+    "ip-address": "10.7.2",
+    "whatsapp-web.js": {
+      "puppeteer": "25.11.0"
+    }
   }
 }

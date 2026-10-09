@@ -14,7 +14,15 @@ assert.ok(server.includes('protectedPaths'), 'storage inventory marks protected 
 assert.ok(server.includes('app.patch("/api/admin/system/settings", requireAdmin'), 'settings API is admin protected');
 assert.ok(server.includes('reconnect scheduled in'), 'reconnect backoff is logged');
 assert.ok(server.includes('initialize_timeout'), 'initialization timeout is surfaced');
-assert.ok(server.includes('disposeClientInstance(client, "initialize_timeout")'), 'timed out clients are disposed');
+assert.ok(server.includes('disposeClientInstance(currentClient, "initialize_timeout")'), 'timed out clients are disposed');
+assert.ok(server.includes('let initializationRunId = 0;'), 'initialization runs have a generation guard');
+assert.ok(server.includes('const runId = ++initializationRunId;'), 'each initialization receives a unique run id');
+assert.ok(server.includes('if (runId !== initializationRunId)'), 'stale initialization results are discarded');
+assert.ok(server.includes('if (generation !== connectionGeneration || client !== instance) return;'), 'stale ready events cannot mark the current client ready');
+assert.ok(server.includes('destroyTimeoutMarker'), 'client cleanup has a bounded timeout');
+assert.ok(server.includes('cleanup timed out; continuing with controlled reconnect'), 'cleanup timeout keeps reconnect path alive');
+assert.ok(server.includes('disposeClientInstance(currentClient, "initialize_error")'), 'failed initialization disposes the broken Chromium client before retry');
+assert.ok(server.includes('Attempted to use detached Frame'), 'detached Puppeteer frames are treated as recoverable lifecycle errors');
 assert.ok(index.includes('ops-drawer-overlay'), 'admin glass overlay exists');
 assert.ok(index.includes('LIVE SYSTEM HEALTH'), 'admin health panel exists');
 assert.ok(index.includes('/api/admin/system/health'), 'admin UI consumes health API');
@@ -24,5 +32,5 @@ assert.ok(index.includes('SAFE STORAGE INVENTORY'), 'admin UI labels storage inv
 assert.ok(index.includes('id="captain-whatsapp-invite"'), 'captain invite WhatsApp button exists in the first operations card');
 assert.ok(index.includes("https://wa.me/?text="), 'captain invite WhatsApp action opens a prefilled share');
 assert.ok(index.includes('https://whatsapserver-2.onrender.com/join.html'), 'official operations gateway link remains fixed');
-assert.ok(render.includes('DATA_DIR') && render.includes('/app/data'), 'persistent data path remains configured');
+assert.ok(render.includes('DATA_DIR') && render.includes('/var/data') && render.includes('mountPath: /var/data'), 'persistent Native Render data path remains configured');
 console.log('reconnect health guardrails verified');
