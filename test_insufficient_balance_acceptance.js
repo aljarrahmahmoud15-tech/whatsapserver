@@ -10,6 +10,7 @@ assert.match(server, /if \(acceptanceResult\.state === "insufficient_balance"\)/
 const rejectionStart = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
 const rejectionEnd = server.indexOf('if (["captain_ineligible"', rejectionStart);
 assert.match(server.slice(rejectionStart, rejectionEnd), /deleteWhatsAppMessageForEveryone\(messageId, \{/);
+assert.match(server.slice(rejectionStart, rejectionEnd), /message: msg/);
 assert.doesNotMatch(server.slice(rejectionStart, rejectionEnd), /reactToCaptainAcceptance\(msg, messageId, "❌"\)/);
 assert.match(server, /order\.acceptance_rejected_insufficient_balance/);
 assert.match(server, /messageDeletionRequested/);
@@ -20,6 +21,8 @@ assert.match(server, /whatsapp\.message_deletion/);
 assert.match(server, /const liveMessage = await getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
 assert.match(server, /const lookupIds = \[\.\.\.new Set\(/);
 assert.match(server, /collections\.Msg\.getMessagesById\(ids\)/);
+assert.match(server, /context\.message\.delete\(true\)/);
+assert.match(server, /method: "message\.delete"/);
 const registerStart = server.indexOf('function registerAcceptance');
 const guardIndex = server.indexOf('acceptanceBalanceGuard(candidate, captain)', registerStart);
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances', registerStart);

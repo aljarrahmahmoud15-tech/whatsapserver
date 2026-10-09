@@ -6125,6 +6125,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     if (typeof msg?.delete === "function") {
       try {
         const deletion = await deleteWhatsAppMessageForEveryone(messageId, {
+          message: msg,
           reason: "insufficient_balance_acceptance",
           groupId,
           candidateId: candidate.id,
@@ -10292,9 +10293,22 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionKey = orderTraceKey(messageId);
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
-  if (!client?.pupPage || !messageId) {
-    result = { ok: false, reason: "page_unavailable_or_missing_id" };
-  } else {
+  if (context.message && typeof context.message.delete === "function") {
+    console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete`);
+    try {
+      const directDeleted = await withTimeout(context.message.delete(true), 15000, false);
+      result = directDeleted === true
+        ? { ok: true, requested: true, revoked: true, method: "message.delete" }
+        : { ok: false, reason: "direct_delete_not_confirmed", requested: Boolean(directDeleted), method: "message.delete" };
+      console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete`);
+    } catch (error) {
+      result = { ok: false, reason: "direct_delete_failed", method: "message.delete", error: String(error?.message || error).slice(0, 240) };
+      console.warn(`[WhatsApp][MessageDelete] direct_failure message=${deletionKey} error=${result.error}`);
+    }
+  }
+  if (!result?.ok && !client?.pupPage || !messageId) {
+    result = result || { ok: false, reason: "page_unavailable_or_missing_id" };
+  } else if (!result?.ok) {
     const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000);
     const liveMessageId = serializedMessageId(liveMessage);
     const lookupIds = [...new Set([
