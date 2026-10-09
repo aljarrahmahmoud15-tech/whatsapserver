@@ -6043,13 +6043,17 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const captainAcceptance = isCaptainAcceptance(body);
   const senderName = msg.fromMe ? `${COMPANY_BRAND_NAME} — المنتج الأساسي` : ((contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone));
   let insertedMessage = { changes: 0 };
-  if (body) {
+  const persistIncomingMessage = () => {
+    if (!body) return insertedMessage;
     const stamp = now();
     const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
-  }
+    return insertedMessage;
+  };
+  // لا نحفظ «تم» قبل حارس الرصيد؛ القبول المرفوض لا يدخل جدول messages أصلًا.
+  if (body && !captainAcceptance) persistIncomingMessage();
   const quotedForRecovery = await getQuotedMessageWithFallback(msg);
   if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
     const sourceMessageId = quotedForRecovery.id._serialized;
@@ -6064,15 +6068,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  // Keep normal messages idempotent, but replay a stored «تم» so a late
-  // reaction or a reconnect can still create its pending acceptance row.
+  // الرسائل العادية idempotent. أما «تم» فتمر أولًا على حارس الرصيد قبل الحفظ.
   if (!insertedMessage.changes && !captainAcceptance) return;
-  if (!insertedMessage.changes && captainAcceptance) {
-    logOrderTrace("acceptance_message_replayed_after_duplicate_guard", {
-      groupKey: orderTraceKey(groupId),
-      senderKey: orderTraceKey(senderPhone),
-    });
-  }
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
@@ -6231,6 +6228,14 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       notificationStatus: notification.status,
     });
     return;
+  }
+  // لا يصل هذا السطر إلى حالة نقص الرصيد؛ تلك الحالة عادت أعلاه بعد الرفض والحذف.
+  persistIncomingMessage();
+  if (captainAcceptance && !insertedMessage.changes) {
+    logOrderTrace("acceptance_message_replayed_after_duplicate_guard", {
+      groupKey: orderTraceKey(groupId),
+      senderKey: orderTraceKey(senderPhone),
+    });
   }
   if (["captain_ineligible", "producer_missing_or_same_captain", "not_recorded", "transition_failed"].includes(acceptanceResult.state)) {
     logOrderTrace(`acceptance_${acceptanceResult.state}`, {
