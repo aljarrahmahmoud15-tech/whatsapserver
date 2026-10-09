@@ -12315,13 +12315,19 @@ app.post("/api/admin/group/rename", requireAdmin, async (req, res) => {
   const newName = "قروب الشمال";
   if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "No configured operational group" });
   try {
-    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
-    if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+    let chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    let resolvedGroupId = groupId;
+    if (!chat || !chat.isGroup) {
+      const chats = await withTimeout(client.getChats(), 30000, []);
+      const fallback = (Array.isArray(chats) ? chats : []).find((item) => item?.isGroup && ["الجراح", newName].includes(String(item.name || item.formattedTitle || "").trim()));
+      if (fallback) { chat = fallback; resolvedGroupId = String(fallback.id?._serialized || fallback.id || "").trim(); }
+    }
+    if (!chat || !chat.isGroup || !resolvedGroupId) return res.status(404).json({ error: "Configured chat is not a group" });
     if (typeof chat.setSubject !== "function") return res.status(502).json({ error: "WhatsApp group rename is unavailable" });
     await chat.setSubject(newName);
-    configureGroupId(groupId, newName);
-    audit("group.renamed", "group", groupId, { groupName: newName });
-    res.json({ success: true, groupId, groupName: newName, messageSent: false });
+    configureGroupId(resolvedGroupId, newName);
+    audit("group.renamed", "group", resolvedGroupId, { previousGroupId: groupId, groupName: newName });
+    res.json({ success: true, groupId: resolvedGroupId, previousGroupId: groupId, groupName: newName, messageSent: false });
   } catch (error) {
     audit("group.rename_failed", "group", groupId, { error: error.message });
     res.status(502).json({ error: "Unable to rename group", details: error.message });
