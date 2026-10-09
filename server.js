@@ -3416,6 +3416,8 @@ function registerAcceptance({ groupId, messageId, senderPhone, senderName, candi
   }
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return { state: "producer_missing_or_same_captain", captain, producer };
+  const balanceGuard = acceptanceBalanceGuard(candidate, captain);
+  if (!balanceGuard.allowed) return { ...balanceGuard, captain, producer };
   for (const identityValue of [candidate.acceptance_author, candidate.acceptance_author_lid]) {
     if (/@lid$/i.test(serializedWhatsappUserId(identityValue))) persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender");
   }
@@ -3458,6 +3460,26 @@ function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
 function isCaptainAcceptance(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
   return /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(normalized);
+}
+function acceptanceBalanceGuard(candidate, captain) {
+  if (!candidate || !captain) return { allowed: false, state: "stale" };
+  const settlement = calculateSettlement({
+    priceCents: candidate.price_cents,
+    orderKind: candidate.order_kind,
+    regularProducerRateBps: PRODUCER_RATE_BPS,
+    specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
+    companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
+    specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
+  });
+  const company = companyUser();
+  const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
+  if (!walletOwner) return { allowed: false, state: "stale" };
+  const balanceCents = Number(walletOwner.wallet_cents || 0);
+  const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
+  if (balanceCents < requiredCents) {
+    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
+  }
+  return { allowed: true, walletOwner, balanceCents, requiredCents };
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -6020,6 +6042,34 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptance_author_lid: msg?._data?.author || msg?.id?.participant || msg?._data?.id?.participant,
     },
   });
+  if (acceptanceResult.state === "insufficient_balance") {
+    audit("order.acceptance_rejected_insufficient_balance", "order_candidate", candidate.id, {
+      acceptanceMessageId: messageId,
+      captainId: acceptanceResult.captain?.id || null,
+      walletOwnerId: acceptanceResult.walletOwner?.id || null,
+      balanceCents: acceptanceResult.balanceCents,
+      requiredCents: acceptanceResult.requiredCents,
+      projectedBalanceCents: acceptanceResult.projectedBalanceCents,
+      messageDeletionRequested: Boolean(typeof msg?.delete === "function"),
+    });
+    if (typeof msg?.delete === "function") {
+      try {
+        const deletion = await deleteWhatsAppMessageForEveryone(messageId);
+        if (!deletion?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletion?.reason || "unknown"}`);
+      } catch (error) {
+        console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
+      }
+    }
+    logOrderTrace("acceptance_rejected_insufficient_balance", {
+      groupKey: orderTraceKey(groupId),
+      acceptanceKey: orderTraceKey(messageId),
+      candidateId: candidate.id,
+      captainId: acceptanceResult.captain?.id || null,
+      requiredCents: acceptanceResult.requiredCents,
+      balanceCents: acceptanceResult.balanceCents,
+    });
+    return;
+  }
   if (["captain_ineligible", "producer_missing_or_same_captain", "not_recorded", "transition_failed"].includes(acceptanceResult.state)) {
     logOrderTrace(`acceptance_${acceptanceResult.state}`, {
       groupKey: orderTraceKey(groupId),

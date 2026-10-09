@@ -285,14 +285,12 @@ async function approve(doneId = "done-1") {
   assert.equal(users.company.wallet_cents, 40);
   assert.equal(users.executor.wallet_cents, 4700);
 
-  reset({ executorBalance: -199 });
+  reset({ executorBalance: 299 });
   await ingestPrice();
-  await ingestAcceptance("done-debt");
-  await approve("done-debt");
-  assert.equal(state.candidate.status, "finalized", "الرصيد السالب لا يمنع تثبيت الطلب");
-  assert.equal(state.ledgers.length, 3, "تُسجل التسوية حتى مع الرصيد السالب");
-  assert.equal(users.executor.wallet_cents, -499, "يُخصم 15% مع تسجيل الرصيد السالب");
-  assert.equal(state.candidate.lifecycle_stage, "settled");
+  await context.handleIncomingMessage(message("done-debt", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)));
+  assert.equal(state.acceptance, null, "لا يُسجل تم عندما لا يغطي الرصيد عمولة الطلب");
+  assert.equal(state.candidate.status, "candidate", "يبقى الطلب بانتظار منفذ يملك رصيدًا كافيًا");
+  assert.equal(state.ledgers.length, 0, "لا تُسجل تسوية عند نقص الرصيد");
 
   reset({ archived: true });
   await context.handleIncomingMessage(message("price-archived", "السعر 20", PRODUCER));

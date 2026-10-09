@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('server.js', 'utf8');
+
+assert.match(server, /function acceptanceBalanceGuard\(candidate, captain\)/);
+assert.match(server, /state: "insufficient_balance"/);
+assert.match(server, /balanceCents < requiredCents/);
+assert.match(server, /acceptanceBalanceGuard\(candidate, captain\)/);
+assert.match(server, /if \(acceptanceResult\.state === "insufficient_balance"\)/);
+assert.match(server, /deleteWhatsAppMessageForEveryone\(messageId\)/);
+assert.match(server, /order\.acceptance_rejected_insufficient_balance/);
+assert.match(server, /messageDeletionRequested/);
+const registerStart = server.indexOf('function registerAcceptance');
+const guardIndex = server.indexOf('acceptanceBalanceGuard(candidate, captain)', registerStart);
+const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances', registerStart);
+assert.ok(registerStart >= 0 && guardIndex >= 0 && insertIndex > guardIndex, 'balance guard runs before acceptance insert');
+console.log('insufficient balance blocks and revokes captain acceptance');
