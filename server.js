@@ -26,10 +26,11 @@ const { cancelSettledOrderAndReverse } = require("./order-cancellation");
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
+const CLEAN_INSTANCE = process.env.CLEAN_INSTANCE === "true";
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
 if (process.env.RENDER && !CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
@@ -42,7 +43,7 @@ const WHATSAPP_IDENTITY_SCOPE = String(
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || (CLEAN_INSTANCE ? "https://whatsapserver-clean.onrender.com" : "https://whatsapserver-2.onrender.com")).replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/app/data");
 if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
