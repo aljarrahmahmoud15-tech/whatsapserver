@@ -1173,6 +1173,30 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
     new Promise((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
   ]);
 }
+const RECENT_WHATSAPP_MESSAGE_TTL_MS = 15 * 60 * 1000;
+const RECENT_WHATSAPP_MESSAGE_MAX = 500;
+const recentWhatsAppMessages = new Map();
+function cacheIncomingWhatsAppMessage(message) {
+  const messageId = serializedMessageId(message);
+  const groupId = String(message?.from || "").trim();
+  if (!messageId || !isConfiguredGroup(groupId)) return;
+  const receivedAt = Date.now();
+  recentWhatsAppMessages.set(messageId, { message, receivedAt });
+  for (const [key, entry] of recentWhatsAppMessages) {
+    if (receivedAt - Number(entry?.receivedAt || 0) > RECENT_WHATSAPP_MESSAGE_TTL_MS) recentWhatsAppMessages.delete(key);
+  }
+  while (recentWhatsAppMessages.size > RECENT_WHATSAPP_MESSAGE_MAX) recentWhatsAppMessages.delete(recentWhatsAppMessages.keys().next().value);
+}
+function getCachedIncomingWhatsAppMessage(messageId) {
+  const key = String(messageId || "").trim();
+  const entry = recentWhatsAppMessages.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.receivedAt || 0) > RECENT_WHATSAPP_MESSAGE_TTL_MS) {
+    recentWhatsAppMessages.delete(key);
+    return null;
+  }
+  return entry.message || null;
+}
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
   if (!isServer2OutboundTargetAllowed(to)) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
@@ -5422,6 +5446,7 @@ function createClient() {
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
+    if (isConfiguredGroup(msg.from)) cacheIncomingWhatsAppMessage(msg);
     observeAdminSentMessage(msg);
     observeFinalBookingConfirmationMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
@@ -5438,6 +5463,7 @@ function createClient() {
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
+    if (isConfiguredGroup(msg.from)) cacheIncomingWhatsAppMessage(msg);
     recordGroupMessageTelemetry("message", msg);
     if (isConfiguredGroup(msg.from)) {
       scheduleConfiguredGroupCaptainSync("message");
@@ -10338,13 +10364,15 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionKey = orderTraceKey(messageId);
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
-  if (context.message && typeof context.message.delete === "function") {
+  const originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
+  if (originalMessage && typeof originalMessage.delete === "function") {
+    console.log(`[WhatsApp][MessageDelete] original_message_available message=${deletionKey} source=${context.message ? "context" : "cache"}`);
     const directDeleteDelays = [0, 400, 1000];
     for (let attempt = 0; attempt < directDeleteDelays.length; attempt += 1) {
       if (directDeleteDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, directDeleteDelays[attempt]));
       console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
       try {
-        const directDeleted = await withTimeout(context.message.delete(true), 15000, false);
+        const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
         result = directDeleted === true
           ? { ok: true, requested: true, revoked: true, method: "message.delete", attempts: attempt + 1 }
           : { ok: false, reason: "direct_delete_not_confirmed", requested: Boolean(directDeleted), method: "message.delete", attempts: attempt + 1 };
