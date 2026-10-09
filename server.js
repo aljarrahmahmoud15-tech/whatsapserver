@@ -2288,7 +2288,7 @@ function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_conf
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
   const normalizedGroupId = String(groupId || "").trim();
-  if (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID) {
+  if (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID)) {
     audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID });
     console.warn(`[Isolation] refused Server 2 group reconfiguration: ${normalizedGroupId}`);
     return false;
@@ -2305,7 +2305,7 @@ function configureGroupId(groupId, groupName) {
 }
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
-  return Boolean(WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID && configured > 0 && Boolean(configuredGroup(groupId)));
+  return Boolean(configured > 0 && Boolean(configuredGroup(groupId)) && (CLEAN_INSTANCE ? Boolean(String(groupId || "").trim()) : Boolean(WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID)));
 }
 function configuredRuntimeGroupId() {
   if (!CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) return "";
