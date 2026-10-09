@@ -1194,7 +1194,7 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
   const title = "لم يتم اعتماد كلمة تم";
   const message = [
     `الكابتن ${captain.name || displayPhone(phone)}،`,
-    "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب.",
+    "تم رفض رسالة «تم» ووضع ❌ عليها لأن رصيد محفظتك لا يغطي عمولة هذا الطلب. لم يتم حذف الرسالة.",
     `الرصيد الحالي: ${money(balanceCents)} JOD`,
     `العمولة المطلوبة: ${money(requiredCents)} JOD`,
     "يرجى شحن المحفظة ثم المشاركة في طلب آخر.",
@@ -5797,19 +5797,54 @@ async function handleBaileysUpsert(message) {
   await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
-async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
-  const liveMessage = client && isReady && messageId
+function reactionRowsContainEmoji(rows, emoji) {
+  return (Array.isArray(rows) ? rows : []).some((row) => {
+    const value = row?.aggregateEmoji || row?.reaction || row?.emoji || row?._data?.emoji || "";
+    return String(value).trim() === emoji;
+  });
+}
+
+async function hasVisibleAcceptanceReaction(messageId, emoji) {
+  const target = client && isReady && messageId
     ? await getWhatsAppMessageByIdVariants(messageId, 5000)
     : null;
-  const target = liveMessage || message;
-  if (!target || typeof target.react !== "function") return false;
-  try {
-    await withTimeout(target.react(emoji), 12000, null);
-    return true;
-  } catch (error) {
-    console.error(`[WhatsApp] captain acceptance reaction ${emoji}:`, error.message);
-    return false;
+  if (target && typeof target.getReactions === "function") {
+    const rows = await withTimeout(target.getReactions(), 8000, []);
+    if (reactionRowsContainEmoji(rows, emoji)) return true;
   }
+  const internalRows = await fetchInternalReactionRows(messageId);
+  return reactionRowsContainEmoji(internalRows, emoji);
+}
+
+async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
+  if (!messageId) return false;
+  const retryDelays = [0, 350, 900, 1800];
+  let lastError = null;
+  for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+    if (retryDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+    const liveMessage = client && isReady
+      ? await getWhatsAppMessageByIdVariants(messageId, 5000)
+      : null;
+    const target = liveMessage || message;
+    if (!target || typeof target.react !== "function") {
+      lastError = new Error("message_reaction_api_unavailable");
+      continue;
+    }
+    try {
+      await withTimeout(target.react(emoji), 12000, null);
+      if (await hasVisibleAcceptanceReaction(messageId, emoji)) {
+        console.log(`[WhatsApp] captain acceptance reaction confirmed emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
+        return true;
+      }
+      lastError = new Error("reaction_not_visible_after_send");
+      console.warn(`[WhatsApp] captain acceptance reaction not confirmed emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
+    } catch (error) {
+      lastError = error;
+      console.warn(`[WhatsApp] captain acceptance reaction retry emoji=${emoji} attempt=${attempt + 1} error=${String(error?.message || error).slice(0, 180)}`);
+    }
+  }
+  console.error(`[WhatsApp] captain acceptance reaction failed emoji=${emoji} attempts=${retryDelays.length} message=${orderTraceKey(messageId)} reason=${String(lastError?.message || lastError || "unknown")}`);
+  return false;
 }
 
 async function approveBotOwnedAcceptance({ groupId, message, candidateId, acceptanceMessageId }) {

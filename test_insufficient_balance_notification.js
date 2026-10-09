@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /async function notifyCaptainInsufficientAcceptanceBalance/);
-assert.match(server, /تم حذف\/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب/);
+assert.match(server, /تم رفض رسالة «تم» ووضع ❌ عليها لأن رصيد محفظتك لا يغطي عمولة هذا الطلب\. لم يتم حذف الرسالة/);
 assert.match(server, /الرصيد الحالي: \$\{money\(balanceCents\)\} JOD/);
 assert.match(server, /العمولة المطلوبة: \$\{money\(requiredCents\)\} JOD/);
 assert.match(server, /CAPTAIN-ACCEPTANCE-BALANCE-\$\{sourceKey\}/);
@@ -13,6 +13,10 @@ assert.match(server, /captain\.acceptance\.insufficient_balance/);
 assert.match(server, /await notifyCaptainInsufficientAcceptanceBalance\(/);
 assert.match(server, /notificationStatus: notification\.status/);
 assert.match(server, /reactionStatus/);
+assert.match(server, /const retryDelays = \[0, 350, 900, 1800\]/);
+assert.match(server, /hasVisibleAcceptanceReaction\(messageId, emoji\)/);
+assert.match(server, /reaction_not_visible_after_send/);
+assert.match(server, /captain acceptance reaction confirmed/);
 
 const guardIndex = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
 const reactionIndex = server.indexOf('reactToCaptainAcceptance(msg, messageId, "❌")', guardIndex);
