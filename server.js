@@ -6124,7 +6124,13 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     let deletionStatus = "not_requested";
     if (typeof msg?.delete === "function") {
       try {
-        const deletion = await deleteWhatsAppMessageForEveryone(messageId);
+        const deletion = await deleteWhatsAppMessageForEveryone(messageId, {
+          reason: "insufficient_balance_acceptance",
+          groupId,
+          candidateId: candidate.id,
+          balanceCents: acceptanceResult.balanceCents,
+          requiredCents: acceptanceResult.requiredCents,
+        });
         deletionStatus = deletion?.ok ? "deleted" : "failed";
         if (!deletion?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletion?.reason || "unknown"}`);
       } catch (error) {
@@ -10275,9 +10281,21 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
-async function deleteWhatsAppMessageForEveryone(messageId) {
-  if (!client?.pupPage || !messageId) return { ok: false, reason: "page_unavailable_or_missing_id" };
-  return withTimeout(client.pupPage.evaluate(async (targetId) => {
+async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
+  const deletionContext = {
+    reason: String(context.reason || "unspecified").slice(0, 120),
+    groupId: String(context.groupId || "").slice(0, 120),
+    candidateId: context.candidateId || null,
+    balanceCents: Number.isFinite(context.balanceCents) ? context.balanceCents : null,
+    requiredCents: Number.isFinite(context.requiredCents) ? context.requiredCents : null,
+  };
+  const deletionKey = orderTraceKey(messageId);
+  console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
+  let result;
+  if (!client?.pupPage || !messageId) {
+    result = { ok: false, reason: "page_unavailable_or_missing_id" };
+  } else {
+    result = await withTimeout(client.pupPage.evaluate(async (targetId) => {
     const id = String(targetId || "").trim();
     if (!id) return { ok: false, reason: "missing_id" };
     try {
@@ -10301,7 +10319,17 @@ async function deleteWhatsAppMessageForEveryone(messageId) {
     } catch (error) {
       return { ok: false, reason: String(error?.message || error).slice(0, 240), stack: String(error?.stack || "").slice(0, 800) };
     }
-  }, String(messageId)), 30000, { ok: false, reason: "page_evaluation_timeout" });
+    }, String(messageId)), 30000, { ok: false, reason: "page_evaluation_timeout" });
+  }
+  const outcome = result?.ok ? "success" : "failure";
+  console.log(`[WhatsApp][MessageDelete] ${outcome} message=${deletionKey} reason=${deletionContext.reason} result=${String(result?.reason || (result?.revoked ? "revoked" : "not_revoked"))} requested=${Boolean(result?.requested)} revoked=${Boolean(result?.revoked)}`);
+  audit("whatsapp.message_deletion", "message", String(messageId || ""), {
+    ...deletionContext,
+    messageKey: deletionKey,
+    outcome,
+    deletionResult: result || null,
+  });
+  return result || { ok: false, reason: "empty_deletion_result" };
 }
 app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
   if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {

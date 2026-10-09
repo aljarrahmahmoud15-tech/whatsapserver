@@ -14,7 +14,7 @@ assert.match(server, /await notifyCaptainInsufficientAcceptanceBalance\(/);
 assert.match(server, /notificationStatus: notification\.status/);
 
 const guardIndex = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
-const deleteIndex = server.indexOf('deleteWhatsAppMessageForEveryone(messageId)', guardIndex);
+const deleteIndex = server.indexOf('deleteWhatsAppMessageForEveryone(messageId, {', guardIndex);
 const notifyIndex = server.indexOf('await notifyCaptainInsufficientAcceptanceBalance(', guardIndex);
 assert.ok(guardIndex >= 0 && deleteIndex > guardIndex && notifyIndex > deleteIndex, 'private notification runs after the deletion attempt');
 

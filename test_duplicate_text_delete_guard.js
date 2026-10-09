@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const source = fs.readFileSync('./server.js', 'utf8');
 
 assert.match(source, /app\.post\("\/api\/admin\/group\/delete-duplicate-text", requireBotWalletOwner/);
-assert.match(source, /async function deleteWhatsAppMessageForEveryone\(messageId\)/);
+assert.match(source, /async function deleteWhatsAppMessageForEveryone\(messageId, context = \{\}\)/);
 assert.match(source, /Array\.isArray\(req\.body\?\.messageIds\)/);
 assert.match(source, /message\?\.fromMe === true/);
 assert.match(source, /resolveGroupChatId\(message\) === groupId/);
