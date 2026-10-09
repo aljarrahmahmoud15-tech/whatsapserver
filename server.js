@@ -104,8 +104,8 @@ const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 // Owner policy: manual wallet changes are available only through
 // owner-authenticated routes. Staff and dashboard-token callers are blocked.
 const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
-const COMPANY_BRAND_NAME = "وصلني الآن";
-const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
+const COMPANY_BRAND_NAME = "قروب الشمال";
+const COMPANY_BRAND_ENGLISH = "NORTH GROUP";
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
@@ -179,9 +179,9 @@ const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_REC
 const RUNTIME_TEMP_CLEANUP_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.RUNTIME_TEMP_CLEANUP_INTERVAL_MS || 15 * 60 * 1000));
 const RUNTIME_TEMP_FILE_MAX_AGE_MS = Math.max(15 * 60 * 1000, Number(process.env.RUNTIME_TEMP_FILE_MAX_AGE_MS || 60 * 60 * 1000));
 const GROUP_BRAND_NAME = "قروب الشمال";
-const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
+const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لقروب الشمال للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
 const GROUP_BRAND_IMAGE_URL = process.env.GROUP_BRAND_IMAGE_URL || "https://3000-igl6dwmxr017cr8770kph-08c34cbc.sg1.manus.computer/manus-storage/aljarah-group-avatar-final_cebe4f44.png";
-const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لوصلني الآن.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
+const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لقروب الشمال.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
 const pendingAdminSends = new Map();
 const adminSendResults = new Map();
 const loginRate = new Map();
@@ -1467,14 +1467,14 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION = "company-completion-v1";
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_ANNOUNCEMENT";
 function captainCompletionAnnouncementContent() {
-  const title = "إعلان اكتمال شركة وصلني الآن";
+  const title = "إعلان اكتمال قروب الشمال";
   const lines = [
-    "تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن.",
+    "تم بحمد الله اكتمال تجهيز وتشغيل قروب الشمال.",
     "تم تفعيل مسار الطلبات والتأكيد والتسوية المالية.",
     "طريقة العمل المعتمدة: يُنشر السعر في القروب الرسمي، ثم يرد الكابتن المنفّذ بكلمة «تم»، ويُستكمل اعتماد الحجز والتسوية حسب المسار المعتمد.",
     "ستصلكم الإشعارات الرسمية عند تسجيل العمليات المهمة.",
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونكم مع وصلني الآن – Waslni Now.",
+    "شكرًا لتعاونكم مع قروب الشمال – North Group.",
   ];
   return { title, lines, caption: brandedMessage(title, lines) };
 }
@@ -1591,7 +1591,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && Number(balanceCents) >= 0)) return { status: "ineligible" };
-  const title = "إشعار رصيد مستحق من وصلني الآن";
+  const title = "إشعار رصيد مستحق من قروب الشمال";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const removalEvidence = removalContext?.allowUnconfirmedRemoval === true
     ? { adminOverride: true }
@@ -1630,7 +1630,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
+    "شكرًا لتعاونك مع قروب الشمال – North Group.",
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
@@ -2463,7 +2463,7 @@ const captainGroupWelcomeInFlight = new Set();
 function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
-    `أهلًا بك يا كابتن ${displayName} في قروب «وصلني الآن».`,
+    `أهلًا بك يا كابتن ${displayName} في قروب «قروب الشمال».`,
     "تم انضمامك إلى شبكة التشغيل.",
     "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
     "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
@@ -7630,7 +7630,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في وصلني الآن\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في قروب الشمال\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -7779,7 +7779,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (decision === "reject") {
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
-    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى وصلني الآن.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى قروب الشمال.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
@@ -7879,7 +7879,7 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في قروب الشمال: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
   if (!sent) {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
@@ -9132,7 +9132,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
-      "تم تسجيل رقمك ضمن أعضاء شبكة وصلني الآن التشغيلية.",
+      "تم تسجيل رقمك ضمن أعضاء شبكة قروب الشمال التشغيلية.",
       "هذا ليس تسجيل كابتن جديدًا.",
       "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
       `البوابة الرسمية: ${gateway}`,
@@ -9228,7 +9228,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
   if (groupCreateState.status === "failed" && groupCreateState.groupId) return res.status(409).json({ error: "A group was created but participant addition did not finish; verify the group before retrying", groupId: groupCreateState.groupId, operationId: groupCreateState.operationId });
-  const groupName = String(req.body.groupName || "وصلني الآن للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
+  const groupName = String(req.body.groupName || "قروب الشمال للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
   if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
@@ -9622,7 +9622,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
       const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
       const previous = [...messages].reverse().find((message) => {
         const body = String(message?.body || "");
-        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة وصلني الآن)/.test(body);
+        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة قروب الشمال)/.test(body);
       });
       if (previous && typeof previous.delete === "function") {
         const removed = await withTimeout(previous.delete(true), 20000, null);
@@ -11085,7 +11085,7 @@ app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, re
         const title = "تحديث دخول الكابتن";
         const text = brandedMessage(title, [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          "تم تحديث بيانات الدخول الخاصة بك في قروب الشمال.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -11155,7 +11155,7 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
         run.updated += 1;
         const text = brandedMessage("تحديث دخول الكابتن", [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          "تم تحديث بيانات الدخول الخاصة بك في قروب الشمال.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -11202,7 +11202,7 @@ app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, asyn
           "نحيطك علمًا بأنه تم إلغاء الخصم اليومي بقيمة 10 قروش من حسابك.",
           "لن يتم تنفيذ أي خصم يومي جديد ابتداءً من الآن.",
           "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
-          "وصلني الآن — الإدارة",
+          "قروب الشمال — الإدارة",
         ]);
         const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -11396,7 +11396,7 @@ app.get("/api/admin/captains/announcement-chat-check/:phone", requireAdmin, asyn
     const { title, caption } = captainCompletionAnnouncementContent();
     const matches = (Array.isArray(messages) ? messages : []).filter((message) => {
       const body = String(message?.body || "");
-      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن") || body === caption);
+      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل قروب الشمال") || body === caption);
     }).map((message) => ({
       id: message?.id?._serialized || null,
       timestamp: message?.timestamp || null,
@@ -12344,7 +12344,7 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   }
   audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
   const sendPromise = Promise.resolve().then(async () => {
-    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Waslni Now", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
+    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط North Group", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
     if (!media) throw new Error("media test card render returned no media");
     if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
     return withTimeoutStrict(client.sendMessage(groupId, media, { caption }), ADMIN_SEND_TIMEOUT_MS, null);

@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Waslni Now — automatic WhatsApp order approval cycle.
+ * North Group — automatic WhatsApp order approval cycle.
  *
  * Flow:
  *   1) Producer sends: السعر <variable numeric price>
