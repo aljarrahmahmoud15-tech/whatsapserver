@@ -1186,6 +1186,40 @@ async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutM
     return { status: "failed", message: null, error: String(error?.message || error).slice(0, 240) };
   }
 }
+async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCents, requiredCents, sourceMessageId, deletionStatus = "requested" }) {
+  const phone = phoneWithCountry(captain?.phone);
+  const sourceKey = String(sourceMessageId || "").trim();
+  if (!captain?.id || !isValidJordanPhone(phone) || !sourceKey) return { status: "invalid" };
+  const idempotencyKey = `CAPTAIN-ACCEPTANCE-BALANCE-${sourceKey}`;
+  const title = "لم يتم اعتماد كلمة تم";
+  const message = [
+    `الكابتن ${captain.name || displayPhone(phone)}،`,
+    "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب.",
+    `الرصيد الحالي: ${money(balanceCents)} JOD`,
+    `العمولة المطلوبة: ${money(requiredCents)} JOD`,
+    "يرجى شحن المحفظة ثم المشاركة في طلب آخر.",
+  ].join("\n");
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'captain','captain.acceptance.insufficient_balance',?,?, 'pending',?,?,?)").run(phone, title, message, sourceKey, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  try {
+    const recipient = await resolveWhatsAppRecipientId(phone);
+    const result = recipient ? await sendWhatsAppAtMostOnce(recipient, message, undefined, 30000) : { status: "failed" };
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = result.message?.id?._serialized || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("captain.acceptance.insufficient_balance_notified", "user", captain.id, { sourceMessageId: sourceKey, balanceCents, requiredCents, deletionStatus, deliveryStatus, idempotencyKey });
+    return { status: deliveryStatus, notificationId, messageId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("captain.acceptance.insufficient_balance_notification_failed", "user", captain.id, { sourceMessageId: sourceKey, error: String(error?.message || error).slice(0, 180), idempotencyKey });
+    return { status: "failed", notificationId };
+  }
+}
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
@@ -6052,13 +6086,26 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
       messageDeletionRequested: Boolean(typeof msg?.delete === "function"),
     });
+    let deletionStatus = "not_requested";
     if (typeof msg?.delete === "function") {
       try {
         const deletion = await deleteWhatsAppMessageForEveryone(messageId);
+        deletionStatus = deletion?.ok ? "deleted" : "failed";
         if (!deletion?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletion?.reason || "unknown"}`);
       } catch (error) {
+        deletionStatus = "failed";
         console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
       }
+    }
+    const notification = await notifyCaptainInsufficientAcceptanceBalance({
+      captain: acceptanceResult.captain,
+      balanceCents: acceptanceResult.balanceCents,
+      requiredCents: acceptanceResult.requiredCents,
+      sourceMessageId: messageId,
+      deletionStatus,
+    });
+    if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
+      console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
     }
     logOrderTrace("acceptance_rejected_insufficient_balance", {
       groupKey: orderTraceKey(groupId),
@@ -6067,6 +6114,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       captainId: acceptanceResult.captain?.id || null,
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
+      deletionStatus,
+      notificationStatus: notification.status,
     });
     return;
   }
