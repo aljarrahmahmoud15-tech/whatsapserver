@@ -30,7 +30,7 @@ const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://whatsapserver-clean.onrender.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 if (runningOnRender && path.resolve(DATA_DIR) !== "/app/data") {
   throw new Error(`Persistent DATA_DIR is required on Render; received ${DATA_DIR}`);
@@ -1217,7 +1217,7 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
   const safeName = escapeXml(captainName || "كابتن شبكة الجراح");
   const safeCode = escapeXml(code);
   const safeValue = escapeXml(`${money(valueCents)} JOD`);
-  const safeUrl = escapeXml(appUrl || "https://whatsapserver-2.onrender.com/join.html");
+  const safeUrl = escapeXml(appUrl || "https://whatsapserver-clean.onrender.com/join.html");
   const logoFrame = `<circle cx="142" cy="138" r="86" fill="#48d9d1" opacity=".12"/><circle cx="142" cy="138" r="76" fill="none" stroke="#f6c84c" stroke-opacity=".55" stroke-width="2"/><circle cx="142" cy="138" r="68" fill="none" stroke="#48d9d1" stroke-opacity=".45" stroke-width="2"/><circle cx="142" cy="50" r="7" fill="#48d9d1"/><circle cx="142" cy="50" r="15" fill="none" stroke="#48d9d1" stroke-opacity=".3" stroke-width="2"/>`;
   const logo = logoData ? `<image href="data:image/png;base64,${logoData}" x="76" y="72" width="132" height="132" preserveAspectRatio="xMidYMid meet"/>` : `<circle cx="142" cy="138" r="62" fill="#0b1523" stroke="#f6c84c" stroke-width="4"/><text x="142" y="153" text-anchor="middle" fill="#f6c84c" font-size="54" font-weight="700">ج</text>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="680" viewBox="0 0 1080 680">
@@ -3511,7 +3511,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
 
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
-  const groupName = String(req.body.groupName || "قروب الجراح").trim();
+  const groupName = String(req.body.groupName || "وصلني الآن | شبكة التشغيل اللوجستي").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   configureGroupId(groupId, groupName);
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
@@ -3590,7 +3590,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
-  const groupName = String(req.body.groupName || "قروب الجراح").trim();
+  const groupName = String(req.body.groupName || "وصلني الآن | شبكة التشغيل اللوجستي").trim();
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
@@ -3633,7 +3633,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
-  const groupName = String(chat.name || "قروب الجراح").trim().slice(0, 160) || "قروب الجراح";
+  const groupName = String(chat.name || "وصلني الآن | شبكة التشغيل اللوجستي").trim().slice(0, 160) || "وصلني الآن | شبكة التشغيل اللوجستي";
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
