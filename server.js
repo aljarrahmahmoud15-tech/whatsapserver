@@ -10838,6 +10838,24 @@ app.post("/api/admin/group/delete-single-member-message", requireAdmin, async (r
   audit("owner.single_member_message_force_deleted", "message", messageId, { groupId, body, author, deletion, financialMutation: false });
   return res.json({ success: Boolean(deletion?.ok), mutation: "message_deleted", financialMutation: false, groupId, messageId, body, author, deletion });
 });
+app.post("/api/admin/group/delete-single-test-message", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const messageId = String(req.body?.messageId || "").trim();
+  const expectedBody = String(req.body?.expectedBody || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !messageId || !expectedBody.startsWith("🧪 SERVER2-DELETE-TEST ")) return res.status(400).json({ error: "configured groupId, messageId, and a unique SERVER2-DELETE-TEST body are required", mutation: "none" });
+  let message = await getWhatsAppMessageByIdVariants(messageId, 5000);
+  if (!message) {
+    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+    message = (history.messages || []).find((candidate) => sourceMessageIdsEqual(serializedMessageId(candidate), messageId)) || null;
+  }
+  const body = String(message?.body || message?.text || "").trim();
+  const valid = Boolean(message && message.fromMe === true && resolveGroupChatId(message) === groupId && body === expectedBody);
+  if (!valid) return res.status(409).json({ error: "Message failed exact outgoing test validation; no message was deleted", mutation: "none", groupId, messageId, found: Boolean(message), fromMe: message?.fromMe ?? null, body, chatId: message ? resolveGroupChatId(message) : null });
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "owner_confirmed_server2_delete_test", groupId });
+  audit("owner.server2_delete_test_completed", "message", messageId, { groupId, body, deletion, financialMutation: false });
+  return res.json({ success: Boolean(deletion?.ok), mutation: "test_message_deleted", financialMutation: false, groupId, messageId, body, deletion });
+});
 app.get("/api/admin/group/rejected-acceptance-notices", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
