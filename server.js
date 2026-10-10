@@ -10396,6 +10396,35 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
+async function verifyWhatsAppMessageDeletion(message, messageId, timeoutMs = 5000) {
+  if (!message) return { verified: false, reason: "message_unavailable" };
+  try {
+    if (typeof message.reload === "function") {
+      const reloaded = await withTimeout(message.reload(), timeoutMs, null);
+      if (reloaded && String(reloaded.type || "").toLowerCase() === "revoked") {
+        return { verified: true, reason: "revoked_after_reload" };
+      }
+    }
+    if (typeof message.getChat !== "function") return { verified: false, reason: "chat_unavailable" };
+    const chat = await withTimeout(message.getChat(), timeoutMs, null);
+    const history = chat && typeof chat.fetchMessages === "function"
+      ? await withTimeout(chat.fetchMessages({ limit: 100 }), timeoutMs, [])
+      : [];
+    const targetId = serializedMessageId(message) || String(messageId || "");
+    const matching = (Array.isArray(history) ? history : []).filter((candidate) => {
+      const candidateId = serializedMessageId(candidate);
+      return candidate && candidateId && sourceMessageIdsEqual(candidateId, targetId);
+    });
+    if (!matching.length) return { verified: true, reason: "absent_from_chat_history" };
+    if (matching.some((candidate) => String(candidate.type || "").toLowerCase() === "revoked")) {
+      return { verified: true, reason: "revoked_in_chat_history" };
+    }
+    return { verified: false, reason: "message_still_present" };
+  } catch (error) {
+    return { verified: false, reason: String(error?.message || error).slice(0, 180) };
+  }
+}
+
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionContext = {
     reason: String(context.reason || "unspecified").slice(0, 120),
@@ -10416,14 +10445,12 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
       try {
         const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
-        // whatsapp-web.js v1.34.x does not return the page-evaluation result from
-        // Message.delete(); a successful call normally resolves to undefined. Only
-        // an explicit false or a thrown error means that this attempt failed.
-        const deleteAcknowledged = directDeleted !== false;
+        const verification = await verifyWhatsAppMessageDeletion(originalMessage, messageId);
+        const deleteAcknowledged = directDeleted !== false && verification.verified;
         result = deleteAcknowledged
-          ? { ok: true, requested: true, revoked: directDeleted === true ? true : null, method: "message.delete", attempts: attempt + 1, acknowledgement: "message.delete_resolved" }
-          : { ok: false, reason: "direct_delete_not_confirmed", requested: false, method: "message.delete", attempts: attempt + 1 };
-        console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length} acknowledgement=${result.acknowledgement || "explicit_false"}`);
+          ? { ok: true, requested: true, revoked: true, method: "message.delete", attempts: attempt + 1, acknowledgement: verification.reason }
+          : { ok: false, reason: verification.reason || "direct_delete_not_verified", requested: false, method: "message.delete", attempts: attempt + 1 };
+        console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length} verification=${verification.reason}`);
         if (result.ok) break;
       } catch (error) {
         result = { ok: false, reason: "direct_delete_failed", method: "message.delete", attempts: attempt + 1, error: String(error?.message || error).slice(0, 240) };
