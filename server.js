@@ -5138,6 +5138,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         requiredCents: unquotedResult.requiredCents,
         projectedBalanceCents: unquotedResult.projectedBalanceCents,
         messageDeletionRequested: Boolean(rowMessageId),
+        acceptanceMode: "unquoted",
         recoveryMode: "unquoted",
       });
       let deletionStatus = "not_requested";
@@ -5181,6 +5182,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         balanceCents: unquotedResult.balanceCents,
         deletionStatus,
         deletionResult: deletionResult || null,
+        acceptanceMode: "unquoted",
         correctionStatus: correction.status,
         notificationStatus: notification.status,
         recoveryMode: "unquoted",
@@ -6332,6 +6334,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
       messageDeletionRequested: Boolean(messageId),
+      acceptanceMode,
     });
     let deletionStatus = "not_requested";
     let deletionResult = null;
@@ -6380,6 +6383,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
       deletionStatus,
+      acceptanceMode,
       correctionStatus: correction.status,
       notificationStatus: notification.status,
     });
