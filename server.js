@@ -10583,6 +10583,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionKey = orderTraceKey(messageId);
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
+  let searchFallbackMessageId = null;
   const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId);
   const originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
   if (persistedReceipt) {
@@ -10679,7 +10680,9 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       });
       if (searchCandidates.length === 1) {
         const candidate = searchCandidates[0];
+        searchFallbackMessageId = serializedMessageId(candidate) || null;
         console.warn(`[WhatsApp][MessageDelete] search_unique_acceptance_fallback message=${deletionKey} candidates=1 originalMessage=${Boolean(originalMessage)} receipt=${Boolean(persistedReceipt)}`);
+        console.log(`[WhatsApp][MessageDelete] search_candidate_id message=${deletionKey} candidate=${orderTraceKey(searchFallbackMessageId)}`);
         const deletedFromSearch = typeof candidate.delete === "function"
           ? await withTimeout(candidate.delete(true), 15000, false)
           : false;
@@ -10700,6 +10703,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   } else if (!result?.ok) {
     const requestedMessageIds = [...new Set([
       messageId,
+      searchFallbackMessageId,
       ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
       ...(persistedReceipt?.messageIds || []),
       ...messageIdCandidates(originalMessage),
