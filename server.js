@@ -12560,15 +12560,16 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   }
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const operationId = String(req.body.operationId || crypto.randomUUID()).slice(0, 120);
-  const registration = registerAdminSend({ operationId, chatId, message });
+  const resolvedAdminChatId = chatId.endsWith("@c.us")
+    ? (await resolveWhatsAppRecipientId(chatId.slice(0, -5)) || chatId)
+    : chatId;
+  const registration = registerAdminSend({ operationId, chatId: resolvedAdminChatId, message });
   if (!registration.created) {
     const existing = registration.state;
     return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
   }
   const sendPromise = Promise.resolve().then(async () => {
-    const resolvedChatId = chatId.endsWith("@c.us")
-      ? (await resolveWhatsAppRecipientId(chatId.slice(0, -5)) || chatId)
-      : chatId;
+    const resolvedChatId = resolvedAdminChatId;
     let chat = null;
     try {
       chat = typeof client.getChatById === "function"
