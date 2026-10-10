@@ -12554,8 +12554,18 @@ app.post("/api/admin/group/open-messages", requireAdmin, async (req, res) => {
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured operational group" });
   try {
-    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    let chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    if (!chat || !chat.isGroup) {
+      const chats = await withTimeout(client.getChats(), 30000, []);
+      chat = (Array.isArray(chats) ? chats : []).find((candidate) => {
+        const candidateId = String(candidate?.id?._serialized || candidate?.id || "").trim();
+        const candidateName = String(candidate?.name || candidate?.formattedTitle || "").trim();
+        return candidate?.isGroup && (candidateId === groupId || candidateName === WHATSAPP_GROUP_NAME);
+      }) || null;
+    }
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+    const resolvedGroupId = String(chat.id?._serialized || chat.id || groupId).trim();
+    if (resolvedGroupId !== groupId) return res.status(403).json({ error: "Resolved group is outside the configured group boundary" });
     if (typeof chat.setMessagesAdminsOnly !== "function") return res.status(502).json({ error: "WhatsApp group message permissions are unavailable" });
     await chat.setMessagesAdminsOnly(false);
     audit("group.messages_opened", "group", groupId, { adminsOnly: false, groupName: chat.name || chat.formattedTitle || null });
