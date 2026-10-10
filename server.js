@@ -1200,7 +1200,11 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
 }
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
-  if (!isServer2OutboundTargetAllowed(to)) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
+  let targetAllowed = isServer2OutboundTargetAllowed(to);
+  if (!targetAllowed && CLEAN_INSTANCE && String(to || "").trim().endsWith("@c.us")) {
+    targetAllowed = await isCleanConfiguredGroupMemberAllowed(to);
+  }
+  if (!targetAllowed) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
   if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready" };
   try {
     const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
@@ -2671,6 +2675,25 @@ async function readGroupSnapshot(groupId) {
       return null;
     }
   }, groupId), 30000, null);
+}
+async function isCleanConfiguredGroupMemberAllowed(target) {
+  if (!CLEAN_INSTANCE) return false;
+  const value = String(target || "").trim();
+  if (!value.endsWith("@c.us")) return false;
+  const groupId = configuredRuntimeGroupId();
+  const phone = phoneWithCountry(value.slice(0, -5));
+  if (!groupId || !phone || isBlockedPhone(phone) || isProtectedOwnerIdentity(phone)) return false;
+  const snapshot = await readGroupSnapshot(groupId);
+  if (!snapshot || !Array.isArray(snapshot.participants)) return false;
+  for (const participant of snapshot.participants) {
+    const participantPhone = groupParticipantPhone(participant);
+    if (participantPhone === phone) return true;
+    if (!participantPhone) {
+      const resolvedPhone = await resolveGroupParticipantPhone(participant).catch(() => "");
+      if (resolvedPhone === phone) return true;
+    }
+  }
+  return false;
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
@@ -12527,7 +12550,11 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const message = String(req.body.message || "").trim();
   if (!to || !message) return res.status(400).json({ error: "to and message are required" });
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
-  if (!isServer2AdminTargetAllowed(chatId)) {
+  let adminTargetAllowed = isServer2AdminTargetAllowed(chatId);
+  if (!adminTargetAllowed && CLEAN_INSTANCE && chatId.endsWith("@c.us")) {
+    adminTargetAllowed = await isCleanConfiguredGroupMemberAllowed(chatId);
+  }
+  if (!adminTargetAllowed) {
     audit("message.send_blocked_cross_boundary", "chat", chatId, { source: "admin_send", reason: "target_not_in_server2_allowlist" });
     return res.status(403).json({ error: "Target is outside Server 2 allowlist" });
   }
