@@ -6211,27 +6211,25 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
-      messageDeletionRequested: Boolean(typeof msg?.delete === "function"),
+      messageDeletionRequested: Boolean(messageId),
     });
     let deletionStatus = "not_requested";
     let deletionResult = null;
-    if (typeof msg?.delete === "function") {
-      try {
-        deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
-          message: msg,
-          messageIdCandidates: messageIdCandidates(msg),
-          reason: "insufficient_balance_acceptance",
-          groupId,
-          candidateId: candidate.id,
-          balanceCents: acceptanceResult.balanceCents,
-          requiredCents: acceptanceResult.requiredCents,
-        });
-        deletionStatus = deletionResult?.ok ? "deleted" : "failed";
-        if (!deletionResult?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletionResult?.reason || "unknown"}`);
-      } catch (error) {
-        deletionStatus = "failed";
-        console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
-      }
+    try {
+      deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
+        message: msg,
+        messageIdCandidates: messageIdCandidates(msg),
+        reason: "insufficient_balance_acceptance",
+        groupId,
+        candidateId: candidate.id,
+        balanceCents: acceptanceResult.balanceCents,
+        requiredCents: acceptanceResult.requiredCents,
+      });
+      deletionStatus = deletionResult?.ok ? "deleted" : "failed";
+      if (!deletionResult?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletionResult?.reason || "unknown"}`);
+    } catch (error) {
+      deletionStatus = "failed";
+      console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
     }
     const correction = deletionStatus === "deleted"
       ? { status: "not_needed" }
