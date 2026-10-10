@@ -35,6 +35,7 @@ assert.match(server, /attempt=\$\{attempt \+ 1\}\/\$\{directDeleteDelays\.length
 assert.match(server, /const recentWhatsAppMessages = new Map\(\)/);
 assert.match(server, /cacheIncomingWhatsAppMessage\(msg\)/);
 assert.match(server, /const originalMessage = context\.message \|\| getCachedIncomingWhatsAppMessage\(messageId\)/);
+assert.match(server, /typeof msg\?\.getContact !== "function"/);
 assert.match(server, /originalMessage\.getChat\(\)/);
 assert.doesNotMatch(server, /chat\.fetchMessages\(\{ limit: 50 \}\)/);
 assert.match(server, /chat_history_lookup/);

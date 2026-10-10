@@ -6035,7 +6035,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
   if (!configuredEnvironmentGroup) return;
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
-  const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
+  const contact = msg.fromMe || typeof msg?.getContact !== "function"
+    ? null
+    : await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = msg.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(msg, contact);
   const primarySender = Boolean(msg.fromMe) && senderPhone === connectedBotPhone();
   if (!isConfiguredGroup(groupId)) {
