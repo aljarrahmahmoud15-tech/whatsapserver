@@ -5128,6 +5128,64 @@ async function recoverPendingAcceptanceMessages(groupId) {
       setAcceptanceRecoveryStage("register_unquoted_acceptance_error");
       continue;
     }
+    if (unquotedResult?.state === "insufficient_balance") {
+      audit("order.acceptance_rejected_insufficient_balance", "order_candidate", unquoted.candidate.id, {
+        acceptanceMessageId: rowMessageId,
+        captainId: unquotedResult.captain?.id || null,
+        walletOwnerId: unquotedResult.walletOwner?.id || null,
+        balanceCents: unquotedResult.balanceCents,
+        requiredCents: unquotedResult.requiredCents,
+        projectedBalanceCents: unquotedResult.projectedBalanceCents,
+        messageDeletionRequested: Boolean(rowMessageId),
+        recoveryMode: "unquoted",
+      });
+      let deletionStatus = "not_requested";
+      let deletionResult = null;
+      try {
+        deletionResult = await deleteWhatsAppMessageForEveryone(rowMessageId, {
+          message: acceptance,
+          messageIdCandidates: messageIdCandidates(acceptance),
+          reason: "insufficient_balance_acceptance_recovery",
+          groupId,
+          candidateId: unquoted.candidate.id,
+          balanceCents: unquotedResult.balanceCents,
+          requiredCents: unquotedResult.requiredCents,
+        });
+        deletionStatus = deletionResult?.ok ? "deleted" : "failed";
+      } catch (error) {
+        deletionStatus = "failed";
+        console.warn(`[Order] recovered insufficient-balance acceptance deletion failed message=${orderTraceKey(rowMessageId)} error=${String(error?.message || error).slice(0, 180)}`);
+      }
+      const correction = deletionStatus === "deleted"
+        ? { status: "not_needed" }
+        : await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
+          groupId,
+          balanceCents: unquotedResult.balanceCents,
+          requiredCents: unquotedResult.requiredCents,
+          sourceMessageId: rowMessageId,
+        });
+      const notification = await notifyCaptainInsufficientAcceptanceBalance({
+        captain: unquotedResult.captain,
+        balanceCents: unquotedResult.balanceCents,
+        requiredCents: unquotedResult.requiredCents,
+        sourceMessageId: rowMessageId,
+        deletionStatus,
+      });
+      logOrderTrace("acceptance_rejected_insufficient_balance", {
+        groupKey: orderTraceKey(groupId),
+        acceptanceKey: orderTraceKey(rowMessageId),
+        candidateId: unquoted.candidate.id,
+        captainId: unquotedResult.captain?.id || null,
+        requiredCents: unquotedResult.requiredCents,
+        balanceCents: unquotedResult.balanceCents,
+        deletionStatus,
+        deletionResult: deletionResult || null,
+        correctionStatus: correction.status,
+        notificationStatus: notification.status,
+        recoveryMode: "unquoted",
+      });
+      continue;
+    }
     if (!unquotedResult || ["captain_ineligible", "producer_missing_or_same_captain", "not_recorded", "transition_failed"].includes(unquotedResult.state)) {
       lastAcceptanceRecovery.lastError = `unquoted_${unquotedResult?.state || "no_result"}`;
       continue;
