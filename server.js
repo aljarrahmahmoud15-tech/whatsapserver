@@ -8933,6 +8933,58 @@ function extractCreatedGroupId(created) {
   return groupId && String(groupId).endsWith("@g.us") ? String(groupId) : null;
 }
 
+async function ensureWhatsAppGroupCreateJob() {
+  if (!client?.pupPage) return false;
+  return withTimeout(client.pupPage.evaluate(async () => {
+    const getModule = (id) => {
+      try { return window.require(id); } catch (_) { return null; }
+    };
+    const alreadyLoaded = getModule("WAWebGroupCreateJob");
+    if (alreadyLoaded && typeof alreadyLoaded.createGroup === "function") return true;
+    const bootloaderModule = getModule("Bootloader");
+    const bootloader = bootloaderModule?.loadModules ? bootloaderModule : bootloaderModule?.default;
+    if (!bootloader || typeof bootloader.loadModules !== "function") return false;
+    const componentMap = bootloader.__debug?.componentMap;
+    const candidates = ["WAWebNewGroupFlow.react"];
+    if (componentMap?.keys && typeof componentMap.keys === "function") {
+      for (const name of componentMap.keys()) {
+        if (/NewGroupFlow/i.test(String(name)) && !candidates.includes(name)) candidates.push(name);
+      }
+    }
+    for (const component of candidates) {
+      if (componentMap?.has && !componentMap.has(component)) continue;
+      try {
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`Bootloader timed out loading ${component}`));
+          }, 30000);
+          try {
+            bootloader.loadModules([component], () => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve();
+            }, "whatsapp-web.js");
+          } catch (error) {
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+          }
+        });
+      } catch (_) {
+        continue;
+      }
+      const loaded = getModule("WAWebGroupCreateJob");
+      if (loaded && typeof loaded.createGroup === "function") return true;
+    }
+    const finalModule = getModule("WAWebGroupCreateJob");
+    return Boolean(finalModule && typeof finalModule.createGroup === "function");
+  }), 45000, false);
+}
+
 async function createGroupInBackground({ operationId, groupName, phones }) {
   let createdGroupId = null;
   const participantResults = phones.map((phone) => ({ phone, status: "pending" }));
@@ -8940,6 +8992,8 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
     // WhatsApp Web currently has a known failure mode when createGroup receives
     // participants in the same request. Create the group from the bot account
     // first, then add each participant separately.
+    const groupCreateJobReady = await ensureWhatsAppGroupCreateJob();
+    if (!groupCreateJobReady) throw new Error("WhatsApp group creation module is unavailable; retry after WhatsApp Web finishes loading");
     console.log(`[GroupCreate] creating empty group operation=${operationId}`);
     const created = await withTimeout(client.createGroup(groupName), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
     if (!created) throw new Error("WhatsApp group creation timed out; no group was configured");
