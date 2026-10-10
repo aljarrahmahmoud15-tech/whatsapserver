@@ -1,4 +1,4 @@
-const express = require("express");
+fconst express = require("express");
 const cors = require("cors");
 const qrcode = require("qrcode");
 const crypto = require("crypto");
@@ -47,6 +47,7 @@ const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
+const CLEAN_IGNORED_DIRECT_BOT_PHONE = "0779110123";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "TAKE&GO الشمال";
 if (process.env.RENDER && !CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
@@ -6018,7 +6019,13 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const groupId = resolveGroupChatId(msg);
   const isGroup = Boolean(groupId);
-  if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
+  if (!isGroup) {
+    if (CLEAN_INSTANCE) {
+      const directSenderPhone = await resolveMessageSenderPhone(msg);
+      if (phoneWithCountry(directSenderPhone) === phoneWithCountry(CLEAN_IGNORED_DIRECT_BOT_PHONE)) return;
+    }
+    return handleCustomerMessage(msg);
+		  }
   const body = String(msg.body || "").trim();
   const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === "string" ? WHATSAPP_GROUP_ID : "";
   if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
