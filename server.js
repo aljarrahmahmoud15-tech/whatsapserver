@@ -1177,11 +1177,11 @@ const RECENT_WHATSAPP_MESSAGE_TTL_MS = 15 * 60 * 1000;
 const RECENT_WHATSAPP_MESSAGE_MAX = 500;
 const recentWhatsAppMessages = new Map();
 function cacheIncomingWhatsAppMessage(message) {
-  const messageId = serializedMessageId(message);
+  const messageIds = messageIdCandidates(message);
   const groupId = String(message?.from || "").trim();
-  if (!messageId || !isConfiguredGroup(groupId)) return;
+  if (!messageIds.length || !isConfiguredGroup(groupId)) return;
   const receivedAt = Date.now();
-  recentWhatsAppMessages.set(messageId, { message, receivedAt });
+  for (const messageId of messageIds) recentWhatsAppMessages.set(messageId, { message, receivedAt, messageIds });
   for (const [key, entry] of recentWhatsAppMessages) {
     if (receivedAt - Number(entry?.receivedAt || 0) > RECENT_WHATSAPP_MESSAGE_TTL_MS) recentWhatsAppMessages.delete(key);
   }
@@ -5554,16 +5554,29 @@ function resolveGroupChatId(message) {
   return candidates.map(serialize).find((value) => value.endsWith("@g.us")) || "";
 }
 function serializedMessageId(message) {
+  return messageIdCandidates(message)[0] || null;
+}
+function messageIdCandidates(message) {
   const raw = message && message.id;
-  return String(
-    message?.__serializedId ||
-    (typeof raw === "string" ? raw : "") ||
-    raw?._serialized ||
-    raw?.id ||
-    message?._data?.id ||
-    message?._data?.key?.id ||
-    ""
-  ).trim() || null;
+  const values = [
+    message?.__serializedId,
+    raw?._serialized,
+    raw?._data?._serialized,
+    raw?.id,
+    raw?._data?.id,
+    raw?._data?.key?._serialized,
+    raw?._data?.key?.id,
+    typeof raw === "string" ? raw : "",
+    message?._data?.id?._serialized,
+    message?._data?.id,
+    message?._data?.key?._serialized,
+    message?._data?.key?.id,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return [...new Set(values)].sort((left, right) => {
+    const leftFull = left.includes("@g.us") ? 1 : 0;
+    const rightFull = right.includes("@g.us") ? 1 : 0;
+    return rightFull - leftFull;
+  });
 }
 function messageIdCore(value) {
   const raw = String(value || "").trim();
@@ -6059,6 +6072,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     if (quotedMessageId && !quotedForRecovery?.fromMe && isCaptainAcceptance(quotedBody)) {
       const deletion = await deleteWhatsAppMessageForEveryone(quotedMessageId, {
         message: quotedForRecovery,
+        messageIdCandidates: messageIdCandidates(quotedForRecovery),
         reason: "owner_requested_incomplete_acceptance",
         groupId,
       });
@@ -6205,6 +6219,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       try {
         deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
           message: msg,
+          messageIdCandidates: messageIdCandidates(msg),
           reason: "insufficient_balance_acceptance",
           groupId,
           candidateId: candidate.id,
@@ -10463,10 +10478,19 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   if (!result?.ok && !client?.pupPage || !messageId) {
     result = result || { ok: false, reason: "page_unavailable_or_missing_id" };
   } else if (!result?.ok) {
-    const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000);
+    const requestedMessageIds = [...new Set([
+      messageId,
+      ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
+      ...messageIdCandidates(originalMessage),
+    ].map((value) => String(value || "").trim()).filter(Boolean))];
+    let liveMessage = null;
+    for (const requestedMessageId of requestedMessageIds) {
+      liveMessage = await getWhatsAppMessageByIdVariants(requestedMessageId, 5000);
+      if (liveMessage) break;
+    }
     const liveMessageId = serializedMessageId(liveMessage);
     const lookupIds = [...new Set([
-      ...messageIdLookupVariants(messageId),
+      ...requestedMessageIds.flatMap((value) => messageIdLookupVariants(value)),
       ...messageIdLookupVariants(liveMessageId),
     ])];
     console.log(`[WhatsApp][MessageDelete] lookup message=${deletionKey} variants=${lookupIds.length} clientFallback=${Boolean(liveMessage)}`);
