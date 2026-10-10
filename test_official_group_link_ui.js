@@ -3,12 +3,10 @@ const fs = require('node:fs');
 
 const portal = fs.readFileSync('./public/index.html', 'utf8');
 const publicJoin = fs.readFileSync('./public/join.html', 'utf8');
-const expected = 'https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR';
+assert.ok(portal.includes("MAIN_WHATSAPP_GROUP_URL='https://chat.whatsapp.com/FmDpcLJ2wBOJ6B237t9aJz'"), 'واجهة الإدارة تشير إلى رابط قروب Clean المعتمد');
+assert.match(portal, /id="ops-copy-main-invite"/, 'الإدارة تتيح نسخ الرابط عند استخدام اللوحة يدويًا');
+assert.ok(!publicJoin.includes('chat.whatsapp.com'), 'بوابة Clean العامة لا تنشر رابط دعوة القروب');
+assert.ok(!publicJoin.includes('GROUP_INVITE_URL') && !publicJoin.includes('copyGroup'), 'بوابة Clean لا تعرض إجراء نسخ دعوة');
+assert.match(publicJoin, /لا تُنشر روابط دعوته عبر هذه البوابة/);
 
-assert.match(portal, new RegExp(`MAIN_WHATSAPP_GROUP_URL='${expected.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}'`), 'واجهة الإدارة تعرض رابط القروب المعتمد');
-assert.match(portal, /id="ops-main-group-invite"\>\$\{esc\(MAIN_WHATSAPP_GROUP_URL\)\}/, 'رابط الدعوة يظهر داخل بطاقة واتساب والقروب');
-assert.match(portal, /id="ops-copy-main-invite"/, 'يوجد زر نسخ رابط الدعوة');
-assert.match(portal, /id="ops-open-main-invite" href="\$\{MAIN_WHATSAPP_GROUP_URL\}"/, 'يوجد زر فتح رابط الدعوة');
-assert.match(publicJoin, new RegExp(expected.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')), 'الرابط يطابق رابط القروب العام');
-
-console.log('official group invite link UI verified');
+console.log('Clean group invite remains admin-only; public portal publishes no group link');

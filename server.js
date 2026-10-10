@@ -22,11 +22,27 @@ const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = requi
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
 const { cancelSettledOrderAndReverse } = require("./order-cancellation");
+const { guardOutboundMethod } = require("./whatsapp-outbound-guard");
 
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
 const CLEAN_INSTANCE = process.env.CLEAN_INSTANCE === "true";
+// Hard-off in the Clean branch. Re-enable only through a future explicitly approved code change.
+const CLEAN_OUTBOUND_SENDS_ENABLED = false;
+const CLEAN_OUTBOUND_SENDS_DISABLED = !CLEAN_OUTBOUND_SENDS_ENABLED;
+function cleanOutboundDisabledError(operation) {
+  const error = new Error("Clean outbound WhatsApp messaging is disabled by code policy");
+  error.code = "CLEAN_OUTBOUND_SENDS_DISABLED";
+  error.operation = operation;
+  return error;
+}
+function rejectCleanOutboundOperation(res, operation) {
+  if (!CLEAN_OUTBOUND_SENDS_DISABLED) return false;
+  res.setHeader("Cache-Control", "no-store");
+  res.status(423).json({ success: false, mutation: "none", code: "CLEAN_OUTBOUND_SENDS_DISABLED", operation, error: "تم إيقاف الرسائل والدعوات الصادرة من Clean افتراضيًا." });
+  return true;
+}
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
@@ -2288,9 +2304,10 @@ function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_conf
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
 function configureGroupId(groupId, groupName) {
   const normalizedGroupId = String(groupId || "").trim();
-  if (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID)) {
-    audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID });
-    console.warn(`[Isolation] refused Server 2 group reconfiguration: ${normalizedGroupId}`);
+  if (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID) {
+    const event = CLEAN_INSTANCE ? "group.configure_blocked_outside_clean" : "group.configure_blocked_outside_server2";
+    audit(event, "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID || null });
+    console.warn(`[Isolation] refused ${CLEAN_INSTANCE ? "Clean" : "Server 2"} group reconfiguration: ${normalizedGroupId}`);
     return false;
   }
   groupId = normalizedGroupId;
@@ -2305,16 +2322,17 @@ function configureGroupId(groupId, groupName) {
 }
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
-  return Boolean(configured > 0 && Boolean(configuredGroup(groupId)) && (CLEAN_INSTANCE ? Boolean(String(groupId || "").trim()) : Boolean(WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID)));
+  return Boolean(configured > 0 && Boolean(configuredGroup(groupId)) && WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID);
 }
 function configuredRuntimeGroupId() {
-  if (!CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) return "";
+  if (!WHATSAPP_GROUP_ID) return "";
   const configured = String(getSetting("active_group_id", getSetting("group_id", "")) || "").trim();
-  return CLEAN_INSTANCE ? configured : (configured === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID) ? WHATSAPP_GROUP_ID : "");
+  return configured === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID) ? WHATSAPP_GROUP_ID : "";
 }
 function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
   if (!value) return false;
+  if (CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || !isConfiguredGroup(WHATSAPP_GROUP_ID))) return false;
   if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
   // A LID is not globally meaningful across WhatsApp sessions. Accept it
   // only when this service has verified the mapping in its own SQLite store;
@@ -4486,17 +4504,18 @@ function isWhatsAppStorageSendBlocked() {
 }
 
 function installWhatsAppStorageSendGuard(instance) {
-  if (!instance || typeof instance.sendMessage !== "function" || instance.__waslniStorageSendGuard) return;
-  const originalSendMessage = instance.sendMessage.bind(instance);
-  instance.sendMessage = async (...args) => {
+  if (!instance || instance.__waslniStorageSendGuard) return;
+  guardOutboundMethod(instance, "sendMessage", () => {
+    if (CLEAN_OUTBOUND_SENDS_DISABLED) return cleanOutboundDisabledError("message");
     if (isWhatsAppStorageSendBlocked()) {
       whatsappStoragePressure.blockedAttempts += 1;
       const error = new Error("WhatsApp sending paused: IndexedDB storage pressure is critical");
       error.code = "WHATSAPP_INDEXEDDB_SEND_PAUSED";
-      throw error;
+      return error;
     }
-    return originalSendMessage(...args);
-  };
+    return null;
+  });
+  guardOutboundMethod(instance, "sendReaction", () => CLEAN_OUTBOUND_SENDS_DISABLED ? cleanOutboundDisabledError("reaction") : null);
   Object.defineProperty(instance, "__waslniStorageSendGuard", { value: true, configurable: false });
 }
 
@@ -7619,6 +7638,7 @@ function issueTemporaryQrGrant(req) {
   return { token, durationSeconds, expiresAt: new Date(temporaryQrGrant.expiresAt).toISOString() };
 }
 app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
+  if (rejectCleanOutboundOperation(res, "captain_invite_issue")) return;
   const token = crypto.randomBytes(24).toString("base64url");
   const stamp = now();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -7629,6 +7649,7 @@ app.post("/api/admin/captain-invites", requireAdmin, (req, res) => {
   res.status(201).json({ success: true, inviteUrl: captainGatewayUrl(captainInviteBaseUrl(req), token), expiresAt });
 });
 app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "captain_invite_send")) return;
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم WhatsApp أردني صحيح مطلوب" });
   const token = crypto.randomBytes(24).toString("base64url");
@@ -7642,6 +7663,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
+  if (rejectCleanOutboundOperation(res, "captain_invite_bulk_issue")) return;
   const candidates = Array.isArray(req.body?.captains) ? req.body.captains : [];
   const excluded = new Set((Array.isArray(req.body?.excludePhones) ? req.body.excludePhones : []).map(phoneWithCountry).filter(Boolean));
   if (!candidates.length || candidates.length > 500) return res.status(400).json({ error: "captains must contain between 1 and 500 entries" });
@@ -7687,6 +7709,7 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   let createdInviteToken = null;
   let invite = db.prepare("SELECT * FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
   if (!invite && publicToken && constantTimeEquals(req.params.token, publicToken)) {
+    if (rejectCleanOutboundOperation(res, "public_captain_invite_issue")) return;
     const token = crypto.randomBytes(24).toString("base64url");
     createdInviteToken = token;
     const stamp = now();
@@ -8119,6 +8142,11 @@ app.get("/status", (req, res) => {
     whatsappClientId: WHATSAPP_CLIENT_ID,
     groupConfigured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
     groupId: configuredGroupId || null,
+    outboundMessaging: {
+      enabled: CLEAN_OUTBOUND_SENDS_ENABLED,
+      blocked: CLEAN_OUTBOUND_SENDS_DISABLED,
+      scope: ["messages", "media", "invitations", "reactions"],
+    },
     groupIsolation: {
       environmentGroupId: WHATSAPP_GROUP_ID || null,
       exactMatchRequired: true,
@@ -8526,6 +8554,7 @@ app.get("/api/admin/group-messages", requireAdmin, (req, res) => {
   res.json({ groupId, count: rows.length, messages: rows });
 });
 app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "approved_guide_video")) return;
   const groupId = String(req.body?.groupId || "").trim();
   const videoUrl = String(req.body?.videoUrl || "").trim();
   const officialGroupId = configuredRuntimeGroupId();
@@ -8549,6 +8578,7 @@ app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req,
   }
 });
 app.post("/api/admin/group/send-guide-videos", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "guide_videos")) return;
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const videos = Array.isArray(req.body?.videos) ? req.body.videos.slice(0, 3).filter((url) => /^https:\/\//i.test(String(url || ""))) : [];
   if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(404).json({ error: "Configured Server 2 group not found" });
@@ -9186,6 +9216,7 @@ app.get("/api/admin/group/invite-status", requireAdmin, (req, res) => {
 });
 
 app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
+  if (rejectCleanOutboundOperation(res, "group_member_invites")) return;
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupInviteInFlight) return res.status(409).json({ error: "Group invite delivery is already in progress", operationId: groupInviteState.operationId });
   const sourceGroupId = String(req.query.sourceGroupId || WHATSAPP_GROUP_ID).trim();
@@ -9342,6 +9373,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
   })) });
 });
 app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
+  if (CLEAN_INSTANCE) return res.status(409).json({ success: false, mutation: "none", code: "CLEAN_GROUP_SYNC_DISABLED", error: "يسمح في Clean بتسجيل الكابتن عبر طلب الدعوة الرسمي فقط." });
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -9616,6 +9648,7 @@ app.post("/api/admin/captains/:id/merge", requireAdmin, async (req, res) => {
   res.json({ success: true, sourceId, targetId, backupName, ...details, balance: money(details.targetBalance) });
 });
 app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "captain_access_card")) return;
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
   const deletePreviousPlain = req.body?.deletePreviousPlain === true;
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم كابتن أردني صحيح مطلوب" });
@@ -9781,15 +9814,16 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
   const groupName = String(req.body.groupName || "TAKE&GO الشمال").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
-  if (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID)) return res.status(403).json({ error: "Only Server 2's configured environment group may be active" });
-  configureGroupId(groupId, groupName);
+  if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Only this service's exact configured environment group may be active" });
+  if (!configureGroupId(groupId, groupName)) return res.status(409).json({ error: "The configured environment group could not be verified" });
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
 });
 
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const groupId = CLEAN_INSTANCE ? getSetting("group_id", null) : WHATSAPP_GROUP_ID;
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId) return res.status(409).json({ success: false, mutation: "none", code: "CLEAN_GROUP_ENV_REQUIRED", error: "يجب أن يطابق معرّف القروب المسجل معرّف البيئة الخاص بهذه الخدمة." });
   const groupName = "🔥 TAKE&GO الشمال";
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
@@ -9848,15 +9882,20 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
 
 app.post("/api/admin/group/invite-info", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const officialGroupId = configuredRuntimeGroupId();
+  if (!officialGroupId) return res.status(409).json({ error: "This service has no verified environment group" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   const info = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
   if (!info) return res.status(504).json({ error: "Invite information lookup timed out" });
+  const inviteGroupId = info.id && (info.id._serialized || String(info.id)) || "";
+  if (inviteGroupId !== officialGroupId) return res.status(403).json({ error: "Invite does not belong to this service's configured environment group" });
   res.json({ success: true, invite: { subject: info.subject || null, id: info.id && (info.id._serialized || String(info.id)) || null, size: info.size || null } });
 });
 
 app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (!WHATSAPP_GROUP_ID) return res.status(409).json({ success: false, mutation: "none", code: "CLEAN_GROUP_ENV_REQUIRED", error: "يلزم تثبيت معرّف القروب الخاص بهذه الخدمة قبل قبول أي رابط." });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
   const groupName = String(req.body.groupName || "TAKE&GO الشمال").trim();
@@ -9865,13 +9904,13 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   try {
     const inviteInfo = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
     let groupId = inviteInfo && inviteInfo.id && (inviteInfo.id._serialized || String(inviteInfo.id));
-    if (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID)) return res.status(403).json({ error: "Invite is not Server 2's configured group" });
+    if (groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Invite is not this service's configured environment group" });
     const existingChat = groupId && groupId.endsWith("@g.us") ? await withTimeout(client.getChatById(groupId), 20000, null) : null;
     if (!existingChat || !existingChat.isGroup) groupId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (!groupId) return res.status(504).json({ error: "WhatsApp invite acceptance timed out; group was not configured" });
     const groupChat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
-    configureGroupId(groupId, groupName);
+    if (!configureGroupId(groupId, groupName)) return res.status(409).json({ error: "The configured environment group could not be verified" });
     audit("group.joined_and_configured", "group", groupId, { groupName });
     void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
     res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length, participantSource: groupChat.participantSource || null });
@@ -9883,9 +9922,14 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
 });
 app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const officialGroupId = configuredRuntimeGroupId();
+  if (!officialGroupId) return res.status(409).json({ error: "This service has no verified environment group", mutation: "none" });
   const inviteCode = extractInviteCode(req.query.inviteLink || req.query.inviteCode || "");
-  const configuredId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const configuredId = String(req.query.groupId || officialGroupId).trim();
+  if (configuredId !== officialGroupId || !isConfiguredGroup(configuredId)) return res.status(403).json({ error: "Only this service's configured environment group may be inspected", mutation: "none" });
   const inviteInfo = inviteCode ? await withTimeout(client.getInviteInfo(inviteCode), 20000, null) : null;
+  const inviteGroupId = inviteInfo?.id && (inviteInfo.id._serialized || String(inviteInfo.id)) || "";
+  if (inviteInfo && inviteGroupId !== officialGroupId) return res.status(403).json({ error: "Invite does not belong to this service's configured environment group", mutation: "none" });
   const chat = configuredId ? await readGroupSnapshot(configuredId) || await resolveGroupChat(configuredId) : null;
   res.json({
     configuredId: configuredId || null,
@@ -9898,7 +9942,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   const groupId = String(lastGroupEventGroupId || "").trim();
   const expectedGroupId = String(req.body?.groupId || groupId).trim();
   if (!groupId || !groupId.endsWith("@g.us") || !lastGroupMessageTelemetry?.at) return res.status(409).json({ error: "No recent group event is available" });
-  if (expectedGroupId !== groupId || (!CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID))) return res.status(409).json({ error: "Only Server 2\'s configured group may be adopted" });
+  if (expectedGroupId !== groupId || !WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(409).json({ error: "Only this service\'s configured environment group may be adopted" });
   const observedAt = Date.parse(lastGroupMessageTelemetry.at);
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
@@ -9918,8 +9962,9 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
 });
 app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
-  if (!groupId || !groupId.endsWith("@g.us")) return res.status(409).json({ error: "No configured group" });
+  const officialGroupId = configuredRuntimeGroupId();
+  const groupId = String(req.query.groupId || officialGroupId).trim();
+  if (!officialGroupId || groupId !== officialGroupId || !isConfiguredGroup(groupId)) return res.status(403).json({ error: "Only this service's configured environment group may be inspected" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
   const members = [];
@@ -9934,6 +9979,7 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
 app.post("/api/admin/group/send-balance-notifications", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "balance_notifications")) return;
   const confirmation = String(req.body?.confirmation || "");
   const runKey = String(req.body?.runKey || "").trim();
   const expectedCount = Number(req.body?.expectedCount);
@@ -12345,6 +12391,7 @@ app.post("/api/admin/group/rename", requireAdmin, async (req, res) => {
   }
 });
 app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "group_identity_and_welcome")) return;
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
   if (req.body.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -12366,6 +12413,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   }
 });
 app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "test_media")) return;
   const officialGroupId = configuredRuntimeGroupId();
   const groupId = String(req.body?.groupId || "").trim();
   const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || crypto.randomUUID()).slice(0, 120);
@@ -12401,6 +12449,7 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   }
 });
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "admin_message")) return;
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });

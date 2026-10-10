@@ -174,8 +174,8 @@
           </a>
         </div>
         <div class="drawer-section-label">OFFICIAL GROUP / القروب الرسمي</div>
-        <div class="group-link-box"><input id="groupLink" value="https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR" readonly aria-label="رابط القروب الرسمي"><button class="copy-link" id="copyGroup" type="button">نسخ الرابط</button></div>
-        <div class="drawer-foot"><strong>للكابتن المعتمد:</strong> استخدم رابط التسجيل أولًا. بعد الموافقة، سيصلك رابط الدخول وتتم إضافتك إلى القروب التشغيلي وفق صلاحيتك.</div>
+        <div class="group-link-box" role="status">القروب المعتمد خاص بالتشغيل ولا تُنشر روابط دعوته عبر هذه البوابة.</div>
+        <div class="drawer-foot"><strong>للكابتن المعتمد:</strong> استخدم رابط التسجيل أولًا. بعد الموافقة، سيصلك رابط الدخول وتتم إضافتك إلى القروب التشغيلي وفق صلاحيتك. لا تصدر هذه البوابة دعوات قروب.</div>
       </aside>
     </section>
 
@@ -201,23 +201,18 @@
 
     <footer class="footer"><span>© 2026 <strong>شركة TAKE&GO الشمال</strong> — بوابة تشغيل موحّدة</span><span>نقل أسرع · تنظيم أدق · حضور مختلف</span></footer>
   </main>
-  <div class="toast" id="toast">رابط القروب غير متاح حاليًا. استخدم خدمة العملاء داخل النظام.</div>
   <script>
-    const GROUP_INVITE_URL = 'https://chat.whatsapp.com/EYG2n54rB0QKS54Ltq8XlR';
     const captainInvite = new URLSearchParams(location.search).get('invite');
     if(captainInvite){document.querySelectorAll('.access-link[href="/captain/register"],.access-link[href="/captain"]').forEach(link=>{link.href=link.getAttribute('href')+'?invite='+encodeURIComponent(captainInvite)});}
     const joinBtn = document.getElementById('joinBtn');
-    const toast = document.getElementById('toast');
     const accessBackdrop = document.getElementById('accessBackdrop');
     const closeAccess = document.getElementById('closeAccess');
-    const groupLink = document.getElementById('groupLink');
     function openAccess(){accessBackdrop.classList.add('open');accessBackdrop.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';closeAccess.focus()}
     function closeAccessPanel(){accessBackdrop.classList.remove('open');accessBackdrop.setAttribute('aria-hidden','true');document.body.style.overflow='';joinBtn.focus()}
     joinBtn.addEventListener('click', openAccess);
     closeAccess.addEventListener('click', closeAccessPanel);
     accessBackdrop.addEventListener('click', (event) => { if(event.target === accessBackdrop) closeAccessPanel(); });
     document.addEventListener('keydown', (event) => { if(event.key === 'Escape' && accessBackdrop.classList.contains('open')) closeAccessPanel(); });
-    document.getElementById('copyGroup').addEventListener('click', async () => { try { await navigator.clipboard.writeText(GROUP_INVITE_URL); toast.textContent='تم نسخ رابط القروب الرسمي'; } catch { groupLink.select(); toast.textContent='حدّد الرابط وانسخه يدويًا'; } toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 3000); });
   </script>
 </body>
 </html>

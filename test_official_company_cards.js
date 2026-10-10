@@ -103,7 +103,7 @@ assert(server.includes('groupInviteInFlight'), 'member invite delivery is protec
 assert(server.includes('sharp.concurrency(1)'), 'card rendering limits native image concurrency');
 assert(server.includes('const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines)'), 'invite cards reuse one rendered media asset per batch');
 assert(server.includes('app.get("/api/admin/group/use-original", requireAdmin'), 'original WhatsApp group can be reactivated safely');
-assert(server.includes('const groupId = WHATSAPP_GROUP_ID'), 'original active group id is the configured Server 2 group');
+assert(server.includes('const groupId = configuredRuntimeGroupId()'), 'original active group is resolved only from this service environment');
 assert(server.includes('UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?'), 'new or historical groups are deactivated without deletion');
 assert(server.includes('newGroupUnused: true'), 'relink response confirms the new group is unused');
 assert(server.includes('app.get("/api/admin/group/delete-unapproved", requireAdmin'), 'unapproved group deletion is admin protected');
