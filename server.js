@@ -10393,12 +10393,31 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     try {
       const chat = await withTimeout(originalMessage.getChat(), 10000, null);
       const history = chat && typeof chat.fetchMessages === "function"
-        ? await withTimeout(chat.fetchMessages({ limit: 50 }), 15000, [])
+        ? await withTimeout(chat.fetchMessages({ limit: 100 }), 15000, [])
         : [];
-      const liveCandidates = (Array.isArray(history) ? history : []).filter((candidate) => {
+      const historyMessages = Array.isArray(history) ? history : [];
+      const exactCandidates = historyMessages.filter((candidate) => {
         const candidateId = serializedMessageId(candidate);
         return candidate && candidateId && sourceMessageIdsEqual(candidateId, messageId);
       });
+      let liveCandidates = exactCandidates;
+      if (!liveCandidates.length && String(originalMessage.body || originalMessage.text || "").trim() === "تم") {
+        const originalTimestamp = Number(originalMessage.timestamp || originalMessage.t || 0);
+        const fallbackCandidates = historyMessages.filter((candidate) => {
+          const body = String(candidate?.body || candidate?.text || "").trim();
+          const candidateTimestamp = Number(candidate?.timestamp || candidate?.t || 0);
+          const withinWindow = originalTimestamp > 0 && candidateTimestamp > 0
+            ? Math.abs(candidateTimestamp - originalTimestamp) <= 180
+            : false;
+          return candidate && body === "تم" && withinWindow;
+        });
+        if (fallbackCandidates.length === 1) {
+          liveCandidates = fallbackCandidates;
+          console.warn(`[WhatsApp][MessageDelete] chat_history_unique_text_fallback message=${deletionKey} body=تم`);
+        } else if (fallbackCandidates.length > 1) {
+          console.warn(`[WhatsApp][MessageDelete] chat_history_text_ambiguous message=${deletionKey} candidates=${fallbackCandidates.length}`);
+        }
+      }
       console.log(`[WhatsApp][MessageDelete] chat_history_lookup message=${deletionKey} candidates=${liveCandidates.length}`);
       for (let index = 0; index < liveCandidates.length; index += 1) {
         const candidate = liveCandidates[index];
