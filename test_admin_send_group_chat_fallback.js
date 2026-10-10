@@ -4,6 +4,9 @@ const fs = require('node:fs');
 const source = fs.readFileSync('./server.js', 'utf8');
 
 assert.match(source, /const sendPromise = Promise\.resolve\(\)\.then\(async \(\) =>/);
+assert.match(source, /chatId\.endsWith\("@g\.us"\) && typeof client\.sendMessage === "function"/);
+assert.match(source, /admin send direct path completed/);
+assert.match(source, /message\.send_direct_failed/);
 assert.match(source, /client\.getChatById\(chatId\)/);
 assert.match(source, /client\.getChats\(\)/);
 assert.match(source, /chat\.sendMessage\(message\)/);

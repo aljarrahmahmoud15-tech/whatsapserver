@@ -12510,6 +12510,18 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
   }
   const sendPromise = Promise.resolve().then(async () => {
+    if (chatId.endsWith("@g.us") && typeof client.sendMessage === "function") {
+      try {
+        const directStartedAt = Date.now();
+        const directSent = await client.sendMessage(chatId, message);
+        console.log(`[WhatsApp] admin send direct path completed: operation=${operationId} chat=${chatId} elapsedMs=${Date.now() - directStartedAt}`);
+        return directSent;
+      } catch (directError) {
+        const detail = String(directError?.stack || directError?.message || directError).slice(0, 500);
+        console.warn(`[WhatsApp] admin send direct path failed; using configured-chat fallback: chat=${chatId} detail=${detail}`);
+        audit("message.send_direct_failed", "chat", chatId, { operationId, error: detail });
+      }
+    }
     let chat = null;
     try {
       chat = typeof client.getChatById === "function"
