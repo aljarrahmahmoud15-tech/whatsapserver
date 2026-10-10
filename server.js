@@ -12547,6 +12547,24 @@ app.post("/api/admin/group/rename", requireAdmin, async (req, res) => {
     res.status(502).json({ error: "Unable to rename group", details: error.message });
   }
 });
+app.post("/api/admin/group/open-messages", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group permission changes; try again later" });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured operational group" });
+  try {
+    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+    if (typeof chat.setMessagesAdminsOnly !== "function") return res.status(502).json({ error: "WhatsApp group message permissions are unavailable" });
+    await chat.setMessagesAdminsOnly(false);
+    audit("group.messages_opened", "group", groupId, { adminsOnly: false, groupName: chat.name || chat.formattedTitle || null });
+    res.json({ success: true, groupId, groupName: chat.name || chat.formattedTitle || null, messagesAdminsOnly: false });
+  } catch (error) {
+    audit("group.messages_open_failed", "group", groupId, { error: String(error?.message || error).slice(0, 240) });
+    res.status(502).json({ error: "Unable to open group messages", details: String(error?.message || error).slice(0, 240) });
+  }
+});
 app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   if (rejectCleanOutboundOperation(res, "group_identity_and_welcome")) return;
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
