@@ -10568,6 +10568,39 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       console.warn(`[WhatsApp][MessageDelete] chat_history_lookup_failed message=${deletionKey} error=${String(error?.message || error).slice(0, 180)}`);
     }
   }
+  if (!result?.ok && originalMessage && typeof client?.searchMessages === "function" && String(originalMessage.body || originalMessage.text || "").trim() === "تم") {
+    try {
+      const originalTimestamp = Number(originalMessage.timestamp || originalMessage.t || 0);
+      const originalSender = String(originalMessage.author || originalMessage.from || "").trim();
+      const searchResults = await withTimeout(client.searchMessages("تم", { page: 0, limit: 100, chatId: deletionContext.groupId }), 20000, []);
+      const searchCandidates = (Array.isArray(searchResults) ? searchResults : []).filter((candidate) => {
+        const body = String(candidate?.body || candidate?.text || "").trim();
+        const candidateTimestamp = Number(candidate?.timestamp || candidate?.t || 0);
+        const candidateSender = String(candidate?.author || candidate?.from || "").trim();
+        const withinWindow = originalTimestamp > 0 && candidateTimestamp > 0
+          ? Math.abs(candidateTimestamp - originalTimestamp) <= 180
+          : false;
+        const sameSender = !originalSender || !candidateSender || originalSender === candidateSender;
+        return candidate && !candidate.fromMe && body === "تم" && withinWindow && sameSender && resolveGroupChatId(candidate) === deletionContext.groupId;
+      });
+      if (searchCandidates.length === 1) {
+        const candidate = searchCandidates[0];
+        console.warn(`[WhatsApp][MessageDelete] search_unique_acceptance_fallback message=${deletionKey} candidates=1`);
+        const deletedFromSearch = typeof candidate.delete === "function"
+          ? await withTimeout(candidate.delete(true), 15000, false)
+          : false;
+        const verification = await verifyWhatsAppMessageDeletion(candidate, serializedMessageId(candidate) || messageId);
+        console.log(`[WhatsApp][MessageDelete] search_result message=${deletionKey} ok=${deletedFromSearch !== false && verification.verified} verification=${verification.reason}`);
+        if (deletedFromSearch !== false && verification.verified) {
+          result = { ok: true, requested: true, revoked: true, method: "searchMessages.message.delete", attempts: 1, acknowledgement: verification.reason };
+        }
+      } else {
+        console.warn(`[WhatsApp][MessageDelete] search_acceptance_fallback_${searchCandidates.length > 1 ? "ambiguous" : "not_found"} message=${deletionKey} candidates=${searchCandidates.length}`);
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp][MessageDelete] search_acceptance_fallback_failed message=${deletionKey} error=${String(error?.message || error).slice(0, 180)}`);
+    }
+  }
   if (!result?.ok && !client?.pupPage || !messageId) {
     result = result || { ok: false, reason: "page_unavailable_or_missing_id" };
   } else if (!result?.ok) {
