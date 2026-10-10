@@ -10593,7 +10593,10 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       try {
         const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
         const verification = await verifyWhatsAppMessageDeletion(originalMessage, messageId);
-        const deleteAcknowledged = directDeleted !== false && verification.verified;
+        // WhatsApp Web can revoke the message successfully while the WWebJS
+        // delete() wrapper returns false. A verified absence/revocation is the
+        // authoritative result for deletionStatus and must not be downgraded.
+        const deleteAcknowledged = verification.verified;
         result = deleteAcknowledged
           ? { ok: true, requested: true, revoked: true, method: "message.delete", attempts: attempt + 1, acknowledgement: verification.reason }
           : { ok: false, reason: verification.reason || "direct_delete_not_verified", requested: false, method: "message.delete", attempts: attempt + 1 };
@@ -10677,8 +10680,8 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
           ? await withTimeout(candidate.delete(true), 15000, false)
           : false;
         const verification = await verifyWhatsAppMessageDeletion(candidate, serializedMessageId(candidate) || messageId);
-        console.log(`[WhatsApp][MessageDelete] search_result message=${deletionKey} ok=${deletedFromSearch !== false && verification.verified} verification=${verification.reason}`);
-        if (deletedFromSearch !== false && verification.verified) {
+        console.log(`[WhatsApp][MessageDelete] search_result message=${deletionKey} ok=${verification.verified} deleteReturn=${deletedFromSearch !== false} verification=${verification.reason}`);
+        if (verification.verified) {
           result = { ok: true, requested: true, revoked: true, method: "searchMessages.message.delete", attempts: 1, acknowledgement: verification.reason };
         }
       } else {
