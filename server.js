@@ -10721,6 +10721,86 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   });
   return result || { ok: false, reason: "empty_deletion_result" };
 }
+async function collectRejectedAcceptanceDeletionCandidates(groupId, limit = 50) {
+  const rows = db.prepare("SELECT id,entity_id,details,created_at FROM audit_logs WHERE action='order.acceptance_rejected_insufficient_balance' AND created_at >= datetime('now','-7 days') ORDER BY id DESC LIMIT 200").all();
+  const seen = new Set();
+  const candidates = [];
+  for (const row of rows) {
+    let details = null;
+    try { details = row.details ? JSON.parse(row.details) : null; } catch (_) { continue; }
+    const messageId = String(details?.acceptanceMessageId || "").trim();
+    const candidateId = Number(row.entity_id || details?.candidateId || 0);
+    if (!messageId || !Number.isInteger(candidateId) || seen.has(messageId)) continue;
+    const candidate = db.prepare("SELECT id,group_id,raw_text,price_cents,origin,destination,created_at FROM order_candidates WHERE id=? LIMIT 1").get(candidateId);
+    if (!candidate || candidate.group_id !== groupId) continue;
+    seen.add(messageId);
+    const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000);
+    const body = String(liveMessage?.body || liveMessage?.text || "").trim();
+    const liveGroupId = liveMessage ? resolveGroupChatId(liveMessage) : null;
+    const visible = Boolean(liveMessage && !liveMessage.fromMe && liveGroupId === groupId && isCaptainAcceptance(body));
+    if (!visible) continue;
+    const captain = details?.captainId ? db.prepare("SELECT id,name,phone FROM users WHERE id=? LIMIT 1").get(Number(details.captainId)) : null;
+    candidates.push({
+      auditId: row.id,
+      rejectionAt: row.created_at,
+      messageId: serializedMessageId(liveMessage) || messageId,
+      candidateId,
+      captainId: captain?.id || details?.captainId || null,
+      captainName: captain?.name || null,
+      captainPhone: captain?.phone || null,
+      body,
+      messageTimestamp: liveMessage.timestamp || liveMessage.__timestamp || null,
+      balanceCents: Number(details?.balanceCents || 0),
+      requiredCents: Number(details?.requiredCents || 0),
+      orderText: candidate.raw_text,
+      priceCents: candidate.price_cents,
+      message: liveMessage,
+    });
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+}
+app.get("/api/admin/group/rejected-acceptances", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 50));
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  const candidates = await collectRejectedAcceptanceDeletionCandidates(groupId, limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", groupId, count: candidates.length, messages: candidates.map(({ message, ...row }) => row) });
+});
+app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const requestedIds = Array.isArray(req.body?.messageIds) ? req.body.messageIds.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  if (!groupId || !isConfiguredGroup(groupId) || !requestedIds.length || requestedIds.length > 50) return res.status(400).json({ error: "configured groupId and messageIds (1-50) are required", mutation: "none" });
+  const candidates = await collectRejectedAcceptanceDeletionCandidates(groupId, 50);
+  const requested = new Set(requestedIds);
+  const matched = candidates.filter((row) => requested.has(row.messageId));
+  const missing = requestedIds.filter((messageId) => !matched.some((row) => row.messageId === messageId));
+  if (missing.length) return res.status(409).json({ error: "Requested messages changed or failed live validation; no messages were deleted", mutation: "none", missing, matched: matched.map((row) => row.messageId) });
+  const deleted = [];
+  const failed = [];
+  for (const row of matched) {
+    try {
+      const result = await deleteWhatsAppMessageForEveryone(row.messageId, {
+        message: row.message,
+        messageIdCandidates: messageIdCandidates(row.message),
+        reason: "owner_confirmed_rejected_acceptance_cleanup",
+        groupId,
+        candidateId: row.candidateId,
+        balanceCents: row.balanceCents,
+        requiredCents: row.requiredCents,
+      });
+      if (result?.ok) deleted.push({ messageId: row.messageId, auditId: row.auditId, captainId: row.captainId, result });
+      else failed.push({ messageId: row.messageId, auditId: row.auditId, reason: result?.reason || "delete_not_confirmed", result });
+    } catch (error) {
+      failed.push({ messageId: row.messageId, auditId: row.auditId, reason: String(error?.message || error).slice(0, 180) });
+    }
+  }
+  audit("order.rejected_acceptance_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
+  res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
+});
 app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
   if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {
     return res.status(400).json({ error: "Explicit cleanup confirmation is required", mutation: "none" });
