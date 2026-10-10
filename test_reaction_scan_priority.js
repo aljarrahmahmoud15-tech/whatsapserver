@@ -14,4 +14,8 @@ assert.ok(retryIndex > rowsIndex, 'confirmation retries run after reaction rows 
 assert.ok(backgroundIndex > retryIndex, 'slow order recovery starts after reaction reconciliation');
 assert.match(source, /let whatsappRecoveryBackgroundRunning = false;/);
 assert.match(source, /function startBackgroundOrderRecovery\(groupId\)/);
+assert.match(source, /WHATSAPP_REACTION_WARNING_COOLDOWN_MS/);
+assert.match(source, /const reactionVisibilityWarningAt = new Map\(\);/);
+assert.match(source, /pending acceptance has no confirmed visible thumb/);
+assert.doesNotMatch(source, /reaction exists but visible thumb was not confirmed/);
 console.log('reaction scan priority and bounded background recovery guardrails verified');

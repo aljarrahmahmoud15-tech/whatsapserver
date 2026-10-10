@@ -147,6 +147,7 @@ const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTER
 // pickup responsive while avoiding the accumulation that pushed the instance over 2GB.
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 30000);
 const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
+const WHATSAPP_REACTION_WARNING_COOLDOWN_MS = Math.max(60000, Number(process.env.WHATSAPP_REACTION_WARNING_COOLDOWN_MS || 10 * 60 * 1000));
 const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
 const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 12000)));
 // The acceptance scan used to look back only 12 hours over 6 pages and expanded the
@@ -5229,6 +5230,7 @@ async function scanPendingAcceptanceReactions() {
   }
 }
 const recentMessageEventKeys = new Map();
+const reactionVisibilityWarningAt = new Map();
 const MESSAGE_EVENT_DEDUP_TTL_MS = 10 * 60 * 1000;
 function shouldHandleMessageEvent(msg, eventName) {
   const serializedId = String(msg?.id?._serialized || msg?.id?.id || "").trim();
@@ -7571,7 +7573,17 @@ async function reconcileStoredThumbReaction(messageId) {
       }
       return;
     }
-    console.warn(`[WhatsApp] reaction exists but visible thumb was not confirmed: ${String(normalizedMessageId).slice(0, 80)}`);
+    const warningKey = String(normalizedMessageId);
+    const warningNow = Date.now();
+    const lastWarningAt = reactionVisibilityWarningAt.get(warningKey) || 0;
+    if (warningNow - lastWarningAt >= WHATSAPP_REACTION_WARNING_COOLDOWN_MS) {
+      reactionVisibilityWarningAt.set(warningKey, warningNow);
+      if (reactionVisibilityWarningAt.size > 1000) {
+        const oldestKey = reactionVisibilityWarningAt.keys().next().value;
+        if (oldestKey) reactionVisibilityWarningAt.delete(oldestKey);
+      }
+      console.warn(`[WhatsApp] pending acceptance has no confirmed visible thumb: ${warningKey.slice(0, 80)}`);
+    }
     return;
   }
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
