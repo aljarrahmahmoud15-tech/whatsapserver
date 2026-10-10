@@ -10818,6 +10818,26 @@ app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (re
   audit("order.rejected_acceptance_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
   res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
 });
+app.post("/api/admin/group/delete-single-member-message", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const messageId = String(req.body?.messageId || "").trim();
+  const expectedBody = String(req.body?.expectedBody || "تم").trim();
+  const expectedAuthor = String(req.body?.expectedAuthor || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !messageId || expectedBody !== "تم") return res.status(400).json({ error: "configured groupId, messageId, and expectedBody=تم are required", mutation: "none" });
+  let message = await getWhatsAppMessageByIdVariants(messageId, 5000);
+  if (!message) {
+    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+    message = (history.messages || []).find((candidate) => sourceMessageIdsEqual(serializedMessageId(candidate), messageId)) || null;
+  }
+  const body = String(message?.body || message?.text || "").trim();
+  const author = String(message?.author || message?.from || "").trim();
+  const valid = Boolean(message && !message.fromMe && resolveGroupChatId(message) === groupId && body === expectedBody && (!expectedAuthor || author === expectedAuthor));
+  if (!valid) return res.status(409).json({ error: "Message failed exact member-message validation; no message was deleted", mutation: "none", groupId, messageId, found: Boolean(message), fromMe: message?.fromMe ?? null, body, author, chatId: message ? resolveGroupChatId(message) : null });
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "owner_confirmed_single_member_message_force_delete", groupId });
+  audit("owner.single_member_message_force_deleted", "message", messageId, { groupId, body, author, deletion, financialMutation: false });
+  return res.json({ success: Boolean(deletion?.ok), mutation: "message_deleted", financialMutation: false, groupId, messageId, body, author, deletion });
+});
 app.get("/api/admin/group/rejected-acceptance-notices", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
