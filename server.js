@@ -2331,6 +2331,7 @@ function configureGroupId(groupId, groupName) {
     setSetting("active_group_id", groupId);
   })();
   audit("group.configured", "group", groupId, { groupName });
+  return true;
 }
 function isConfiguredGroup(groupId) {
   const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
