@@ -2536,6 +2536,26 @@ async function sendConfiguredGroupCaptainAccessCards(notification) {
   }
   return { status: "completed", sent: results.filter((item) => item.status === "sent").length, skipped: results.filter((item) => item.status.startsWith("skipped") || item.duplicate).length, results };
 }
+async function retryFailedConfiguredGroupCaptainAccessCards() {
+  const groupId = String(getSetting("group_id", "") || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !client || !isReady) return { attempted: 0, sent: 0 };
+  const failed = db.prepare("SELECT id,recipient_phone FROM notifications WHERE event='captain.auto_join.access_card' AND delivery_status='failed' ORDER BY id ASC LIMIT 50").all();
+  let sent = 0;
+  for (const row of failed) {
+    const phone = phoneWithCountry(row.recipient_phone);
+    const captain = db.prepare("SELECT id,phone,name,active,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+    if (!captain || Number(captain.active) !== 1) continue;
+    try {
+      const delivered = await sendCaptainAppLink(captain);
+      db.prepare("UPDATE notifications SET delivery_status=?,updated_at=? WHERE id=?").run(delivered ? "sent" : "failed", now(), row.id);
+      audit("captain.auto_join.access_card.retry", "user", captain.id, { phone, groupId, deliveryStatus: delivered ? "sent" : "failed" });
+      if (delivered) sent += 1;
+    } catch (error) {
+      console.warn(`[CaptainAutoJoin] retry failed for ${phone}: ${String(error?.message || error).slice(0, 180)}`);
+    }
+  }
+  return { attempted: failed.length, sent };
+}
 function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
   return phoneWithCountry(String(raw || "").replace(/@c\.us$/, "").split(":")[0]);
@@ -5495,6 +5515,9 @@ function createClient() {
       void retryCaptainStatusNotifications()
         .then((result) => { if (result.attempted) console.log(`[Captains] retried pending status notifications: ${result.attempted}`); })
         .catch((error) => console.error("[Captains] status notification retry failed:", error.message));
+      void retryFailedConfiguredGroupCaptainAccessCards()
+        .then((result) => { if (result.attempted) console.log(`[CaptainAutoJoin] retried failed access cards: attempted=${result.attempted} sent=${result.sent}`); })
+        .catch((error) => console.error("[CaptainAutoJoin] failed access-card retry failed:", error.message));
       void retryFailedBookingConfirmations()
         .then((result) => { if (result.attempted) console.log(`[WhatsApp] retried failed booking confirmations: attempted=${result.attempted} sent=${result.sent} suppressed=${result.suppressed}`); })
         .catch((error) => console.error("[WhatsApp] booking confirmation retry failed:", error.message));
