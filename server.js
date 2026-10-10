@@ -1173,7 +1173,7 @@ function createTicketCode() {
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962779110123"]);
 // Clean must never inherit Server 2 owner recipients; configure its recipients explicitly per service.
 const DEFAULT_GROUP_SETUP_OWNER_PHONES = CLEAN_INSTANCE ? [] : ["+962779110123"];
 const configuredGroupSetupOwnerPhones = process.env.GROUP_SETUP_OWNER_PHONES || (CLEAN_INSTANCE ? "" : "+962785217886");
@@ -2341,6 +2341,8 @@ function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
   if (!value) return false;
   if (CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || !isConfiguredGroup(WHATSAPP_GROUP_ID))) return false;
+  // Clean is group-only: never send messages, media, invitations, or reactions to direct chats.
+  if (CLEAN_INSTANCE && !value.endsWith("@g.us")) return false;
   if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
   // A LID is not globally meaningful across WhatsApp sessions. Accept it
   // only when this service has verified the mapping in its own SQLite store;
