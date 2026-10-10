@@ -2472,6 +2472,69 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   }
   return sent;
 }
+const captainAutoJoinAccessInFlight = new Set();
+async function sendConfiguredGroupCaptainAccessCards(notification) {
+  const groupId = String(notification?.chatId || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !Array.isArray(notification?.recipientIds)) return { status: "group_not_configured", sent: 0, skipped: 0 };
+  if (!client || !isReady) return { status: "bot_not_ready", sent: 0, skipped: 0 };
+  const results = [];
+  for (const participant of notification.recipientIds) {
+    const phone = await resolveGroupParticipantPhone(participant).catch(() => "");
+    if (!isValidJordanPhone(phone) || isProtectedOwnerIdentity(phone) || isBotPhone(phone)) {
+      results.push({ phone: phone || null, status: "skipped_protected_or_invalid" });
+      continue;
+    }
+    const key = `CAPTAIN-AUTO-JOIN-ACCESS-${groupId}-${phone}`;
+    if (captainAutoJoinAccessInFlight.has(key)) {
+      results.push({ phone, status: "pending" });
+      continue;
+    }
+    const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE event='captain.auto_join.access_card' AND idempotency_key=? LIMIT 1").get(key);
+    if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) {
+      results.push({ phone, status: existing.delivery_status, duplicate: true, messageId: existing.message_id || null });
+      continue;
+    }
+    const participantId = serializedWhatsappUserId(participant?.id || participant);
+    const contact = participantId && typeof client.getContactById === "function"
+      ? await withTimeout(client.getContactById(participantId), 8000, null).catch(() => null)
+      : null;
+    const name = String(contact?.pushname || contact?.name || contact?.shortName || "كابتن").trim();
+    const activation = activateHumanCaptainAccount({ phone, name, reactivate: true });
+    if (!activation.userId || ["skipped_invalid_or_blocked", "skipped_owner", "skipped_system", "skipped_merged", "skipped_negative_balance"].includes(activation.status)) {
+      results.push({ phone, status: activation.status || "skipped", userId: activation.userId || null });
+      continue;
+    }
+    const captain = db.prepare("SELECT * FROM users WHERE id=? AND role='captain' AND active=1 AND account_status='active'").get(activation.userId);
+    if (!captain) {
+      results.push({ phone, status: "captain_not_active" });
+      continue;
+    }
+    const stamp = now();
+    let notificationId;
+    if (existing) {
+      db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',title=?,message=?,delivery_status='pending',message_id=NULL,created_at=? WHERE id=?").run(phone, "بطاقة دخول الكابتن", "إرسال تلقائي بعد الانضمام إلى القروب المعتمد", stamp, existing.id);
+      notificationId = existing.id;
+    } else {
+      const inserted = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,idempotency_key,created_at) VALUES(?,'captain','captain.auto_join.access_card',?,?, 'pending',?,?)").run(phone, "بطاقة دخول الكابتن", "إرسال تلقائي بعد الانضمام إلى القروب المعتمد", key, stamp);
+      notificationId = inserted.lastInsertRowid;
+    }
+    captainAutoJoinAccessInFlight.add(key);
+    let deliveryStatus = "failed";
+    let messageId = null;
+    try {
+      const sent = await sendCaptainAppLink(captain);
+      deliveryStatus = sent ? "sent" : "failed";
+    } catch (error) {
+      console.warn(`[CaptainAutoJoin] failed for ${phone}: ${String(error?.message || error).slice(0, 180)}`);
+    } finally {
+      captainAutoJoinAccessInFlight.delete(key);
+    }
+    if (notificationId) db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("captain.auto_join.access_card", "user", activation.userId, { phone, groupId, deliveryStatus, idempotencyKey: key });
+    results.push({ phone, userId: activation.userId, status: deliveryStatus });
+  }
+  return { status: "completed", sent: results.filter((item) => item.status === "sent").length, skipped: results.filter((item) => item.status.startsWith("skipped") || item.duplicate).length, results };
+}
 function groupParticipantPhone(participant) {
   const raw = participant && participant.id ? (participant.id.user || participant.id._serialized || participant.id) : participant;
   return phoneWithCountry(String(raw || "").replace(/@c\.us$/, "").split(":")[0]);
@@ -5473,8 +5536,9 @@ function createClient() {
   });
   instance.on("group_join", (notification) => {
     if (generation !== connectionGeneration || !notification || !isConfiguredGroup(notification.chatId)) return;
+    void sendConfiguredGroupCaptainAccessCards(notification).catch((error) => console.warn(`[CaptainAutoJoin] group handler failed: ${String(error?.message || error).slice(0, 180)}`));
     if (CLEAN_INSTANCE) {
-      console.log("[Captains] group join welcome and auto-registration disabled on Clean");
+      console.log(`[Captains] automatic access-card delivery scheduled for Clean group members recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
       return;
     }
     scheduleConfiguredGroupCaptainSync("group_join");
