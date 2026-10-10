@@ -10801,6 +10801,41 @@ app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (re
   audit("order.rejected_acceptance_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
   res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
 });
+app.get("/api/admin/group/rejected-acceptance-notices", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+  const marker = "تعذّر حذف رسالة «تم» تلقائيًا";
+  const notices = (history.messages || []).filter((message) => message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").includes(marker));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", groupId, count: notices.length, notices: notices.map((message) => ({ messageId: serializedMessageId(message), timestamp: message.timestamp || message.__timestamp || null, body: String(message.body || "") })) });
+});
+app.post("/api/admin/group/rejected-acceptance-notices/delete", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const requestedIds = Array.isArray(req.body?.messageIds) ? req.body.messageIds.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  if (!groupId || !isConfiguredGroup(groupId) || !requestedIds.length || requestedIds.length > 100) return res.status(400).json({ error: "configured groupId and messageIds (1-100) are required", mutation: "none" });
+  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+  const marker = "تعذّر حذف رسالة «تم» تلقائيًا";
+  const requested = new Set(requestedIds);
+  const matches = (history.messages || []).filter((message) => requested.has(serializedMessageId(message)) && message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").includes(marker));
+  const matchedIds = new Set(matches.map((message) => serializedMessageId(message)));
+  const missing = requestedIds.filter((id) => !matchedIds.has(id));
+  if (missing.length) return res.status(409).json({ error: "Requested notices changed or failed validation; no notices were deleted", mutation: "none", missing });
+  const deleted = [];
+  const failed = [];
+  for (const message of matches) {
+    const messageId = serializedMessageId(message);
+    try {
+      const result = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "owner_confirmed_rejected_acceptance_notice_cleanup", groupId });
+      if (result?.ok) deleted.push({ messageId, result });
+      else failed.push({ messageId, reason: result?.reason || "delete_not_confirmed", result });
+    } catch (error) { failed.push({ messageId, reason: String(error?.message || error).slice(0, 180) }); }
+  }
+  audit("order.rejected_acceptance_notices_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
+  res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
+});
 app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (req, res) => {
   if (req.method === "GET" && String(req.query?.confirm || "") !== "KEEP_LATEST_DELETE_OTHERS") {
     return res.status(400).json({ error: "Explicit cleanup confirmation is required", mutation: "none" });
