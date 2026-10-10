@@ -12566,10 +12566,13 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
   }
   const sendPromise = Promise.resolve().then(async () => {
+    const resolvedChatId = chatId.endsWith("@c.us")
+      ? (await resolveWhatsAppRecipientId(chatId.slice(0, -5)) || chatId)
+      : chatId;
     let chat = null;
     try {
       chat = typeof client.getChatById === "function"
-        ? await withTimeout(client.getChatById(chatId), 12000, null)
+        ? await withTimeout(client.getChatById(resolvedChatId), 12000, null)
         : null;
     } catch (error) {
       console.warn(`[WhatsApp] admin send getChatById failed for ${chatId}: ${String(error?.message || error)}`);
@@ -12577,7 +12580,10 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     if (!chat && typeof client.getChats === "function") {
       try {
         const chats = await withTimeout(client.getChats(), 15000, []);
-        chat = (Array.isArray(chats) ? chats : []).find((item) => String(item?.id?._serialized || item?.id || "") === chatId) || null;
+        chat = (Array.isArray(chats) ? chats : []).find((item) => {
+          const itemId = String(item?.id?._serialized || item?.id || "");
+          return itemId === chatId || itemId === resolvedChatId;
+        }) || null;
       } catch (error) {
         console.warn(`[WhatsApp] admin send getChats fallback failed for ${chatId}: ${String(error?.message || error)}`);
       }
@@ -12591,14 +12597,14 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
         audit("message.send_chat_failed", "chat", chatId, { operationId, error: detail });
         if (typeof client.sendMessage !== "function") throw chatError;
         try {
-          return await client.sendMessage(chatId, message);
+        return await client.sendMessage(resolvedChatId, message);
         } catch (clientError) {
           clientError.cause = chatError;
           throw clientError;
         }
       }
     }
-    return client.sendMessage(chatId, message);
+    return client.sendMessage(resolvedChatId, message);
   });
   const sendTimeoutMarker = {};
   try {
