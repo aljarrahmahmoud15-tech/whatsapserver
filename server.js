@@ -8653,6 +8653,21 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
     return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
 });
+app.get("/api/admin/group/permissions", requireAdmin, async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  try {
+    const snapshot = await readGroupSnapshot(groupId);
+    const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
+    const botUsers = new Set([String(botWid || "").split("@")[0].split(":")[0], String(client.info?.wid?.user || "")].filter(Boolean));
+    const botParticipants = (snapshot?.participants || []).filter((participant) => botUsers.has(String(participant.user || String(participant.id || "").split("@")[0].split(":")[0])));
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({ success: true, mutation: "none", groupId, ready: true, botWid, botInGroup: botParticipants.length > 0, botParticipants, canDeleteOthers: botParticipants.some((participant) => participant.isAdmin === true), participantSource: snapshot?.participantSource || null, checkedAt: now() });
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
+  }
+});
 // V26 group linking: the operator needs exactly three identity fields — the group name,
 // the official group id, and the group's own invite code — with no extra tokens or codes.
 // This route is strictly read-only and never changes configuration or membership.
