@@ -30,6 +30,8 @@ assert.match(server, /const lookupIds = \[\.\.\.new Set\(/);
 assert.match(server, /collections\.Msg\.getMessagesById\(ids\)/);
 assert.match(server, /originalMessage\.delete\(true\)/);
 assert.match(server, /method: "message\.delete"/);
+assert.match(server, /const deleteAcknowledged = directDeleted !== false/);
+assert.match(server, /acknowledgement: "message\.delete_resolved"/);
 assert.match(server, /const directDeleteDelays = \[0, 400, 1000\]/);
 assert.match(server, /attempt=\$\{attempt \+ 1\}\/\$\{directDeleteDelays\.length\}/);
 assert.match(server, /const recentWhatsAppMessages = new Map\(\)/);

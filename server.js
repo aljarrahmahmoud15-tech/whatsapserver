@@ -10416,10 +10416,14 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
       try {
         const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
-        result = directDeleted === true
-          ? { ok: true, requested: true, revoked: true, method: "message.delete", attempts: attempt + 1 }
-          : { ok: false, reason: "direct_delete_not_confirmed", requested: Boolean(directDeleted), method: "message.delete", attempts: attempt + 1 };
-        console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
+        // whatsapp-web.js v1.34.x does not return the page-evaluation result from
+        // Message.delete(); a successful call normally resolves to undefined. Only
+        // an explicit false or a thrown error means that this attempt failed.
+        const deleteAcknowledged = directDeleted !== false;
+        result = deleteAcknowledged
+          ? { ok: true, requested: true, revoked: directDeleted === true ? true : null, method: "message.delete", attempts: attempt + 1, acknowledgement: "message.delete_resolved" }
+          : { ok: false, reason: "direct_delete_not_confirmed", requested: false, method: "message.delete", attempts: attempt + 1 };
+        console.log(`[WhatsApp][MessageDelete] direct_result message=${deletionKey} ok=${Boolean(result.ok)} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length} acknowledgement=${result.acknowledgement || "explicit_false"}`);
         if (result.ok) break;
       } catch (error) {
         result = { ok: false, reason: "direct_delete_failed", method: "message.delete", attempts: attempt + 1, error: String(error?.message || error).slice(0, 240) };
