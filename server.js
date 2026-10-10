@@ -5654,16 +5654,29 @@ function resolveGroupChatId(message) {
   return candidates.map(serialize).find((value) => value.endsWith("@g.us")) || "";
 }
 function serializedMessageId(message) {
+  return messageIdCandidates(message)[0] || null;
+}
+function messageIdCandidates(message) {
   const raw = message && message.id;
-  return String(
-    message?.__serializedId ||
-    (typeof raw === "string" ? raw : "") ||
-    raw?._serialized ||
-    raw?.id ||
-    message?._data?.id ||
-    message?._data?.key?.id ||
-    ""
-  ).trim() || null;
+  const values = [
+    message?.__serializedId,
+    raw?._serialized,
+    raw?._data?._serialized,
+    raw?.id,
+    raw?._data?.id,
+    raw?._data?.key?._serialized,
+    raw?._data?.key?.id,
+    typeof raw === "string" ? raw : "",
+    message?._data?.id?._serialized,
+    message?._data?.id,
+    message?._data?.key?._serialized,
+    message?._data?.key?.id,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return [...new Set(values)].sort((left, right) => {
+    const leftFull = left.includes("@g.us") ? 1 : 0;
+    const rightFull = right.includes("@g.us") ? 1 : 0;
+    return rightFull - leftFull;
+  });
 }
 function messageIdCore(value) {
   const raw = String(value || "").trim();
@@ -6130,6 +6143,13 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe ? null : await withTimeout(msg.getContact(), 8000, null);
   const senderPhone = msg.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(msg, contact);
+  if (!msg.fromMe && senderPhone) {
+    persistWhatsappIdentity(
+      msg.author || msg._data?.author || msg.id?.participant || msg._data?.id?.participant,
+      senderPhone,
+      "clean_group_message",
+    );
+  }
   const primarySender = Boolean(msg.fromMe) && senderPhone === connectedBotPhone();
   if (!isConfiguredGroup(groupId)) {
     if (setupCommand) {
@@ -6151,7 +6171,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
-    const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
+    const messageId = serializedMessageId(msg);
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -6184,7 +6204,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
+  const messageId = serializedMessageId(msg);
   if (!messageId) {
     if (captainAcceptance) {
       logOrderTrace("acceptance_missing_message_id", {
