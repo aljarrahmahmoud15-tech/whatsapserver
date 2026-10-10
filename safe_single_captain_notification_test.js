@@ -10,7 +10,7 @@
  * explicitly enabled by a later code/config change.
  */
 
-const DEFAULT_BASE_URL = 'https://whatsapserver-2.onrender.com';
+const DEFAULT_BASE_URL = 'https://whatsapserver-clean.onrender.com';
 const SEND_CONFIRMATION = 'SEND-ONE-CAPTAIN-NOTIFICATION';
 const NOTIFICATION_KEY_PREFIX = 'CAPTAIN-APPROVAL-TEST';
 
@@ -115,6 +115,11 @@ async function main() {
     usage();
     return;
   }
+  const targetUrl = new URL(options.baseUrl);
+  if (targetUrl.protocol !== 'https:' || targetUrl.hostname !== 'whatsapserver-clean.onrender.com') {
+    throw new Error('This Clean-only notification test is restricted to the Clean service');
+  }
+  options.baseUrl = targetUrl.origin;
   if (!/^\d+$/.test(options.captainId) || Number(options.captainId) < 1) throw new Error('--captain-id must be a positive integer');
   if (options.send && options.confirm !== SEND_CONFIRMATION) throw new Error(`--send requires --confirm ${SEND_CONFIRMATION}`);
   if (!options.send && options.confirm) throw new Error('--confirm is only valid with --send');

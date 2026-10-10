@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      SERVICE_URL: https://whatsapserver-2.onrender.com
+      SERVICE_URL: https://whatsapserver-clean.onrender.com
     steps:
       - name: Check public health endpoint
         run: |

@@ -2,6 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const script = fs.readFileSync('./safe_single_captain_notification_test.js', 'utf8');
+assert.match(script, /const DEFAULT_BASE_URL = 'https:\/\/whatsapserver-clean\.onrender\.com';/);
+assert.doesNotMatch(script, /whatsapserver-2\.onrender\.com|bot\.wasselni-biz\.com/);
+assert.match(script, /targetUrl\.protocol !== 'https:'/);
+assert.match(script, /targetUrl\.hostname !== 'whatsapserver-clean\.onrender\.com'/);
 assert.match(script, /const SEND_CONFIRMATION = 'SEND-ONE-CAPTAIN-NOTIFICATION';/);
 assert.match(script, /const options = \{ send: false/);
 assert.match(script, /DRY_RUN_ONLY/);
