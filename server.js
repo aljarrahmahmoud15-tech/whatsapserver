@@ -370,6 +370,20 @@ CREATE TABLE IF NOT EXISTS messages (
   sent_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS whatsapp_message_receipts (
+  message_id TEXT PRIMARY KEY,
+  message_id_variants_json TEXT NOT NULL DEFAULT '[]',
+  group_id TEXT NOT NULL,
+  sender_phone TEXT,
+  sender_name TEXT,
+  body TEXT,
+  message_type TEXT,
+  from_me INTEGER NOT NULL DEFAULT 0,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_message_receipts_group_seen
+  ON whatsapp_message_receipts(group_id, last_seen_at DESC);
 CREATE TABLE IF NOT EXISTS unresolved_order_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -1176,11 +1190,38 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
 const RECENT_WHATSAPP_MESSAGE_TTL_MS = 15 * 60 * 1000;
 const RECENT_WHATSAPP_MESSAGE_MAX = 500;
 const recentWhatsAppMessages = new Map();
+function persistWhatsAppMessageReceipt(message, messageIds, groupId, receivedAt) {
+  if (typeof db === "undefined" || !messageIds.length || !groupId) return;
+  const nowIso = new Date(receivedAt).toISOString();
+  const senderPhone = String(message?.author || message?._data?.author || "").trim() || null;
+  const senderName = String(message?._data?.notifyName || message?.notifyName || message?._data?.pushname || "").trim() || null;
+  const body = String(message?.body || message?.text || "").trim() || null;
+  const variantsJson = JSON.stringify(messageIds);
+  const upsert = db.prepare(`INSERT INTO whatsapp_message_receipts
+    (message_id,message_id_variants_json,group_id,sender_phone,sender_name,body,message_type,from_me,first_seen_at,last_seen_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(message_id) DO UPDATE SET
+      message_id_variants_json=excluded.message_id_variants_json,
+      group_id=excluded.group_id,
+      sender_phone=COALESCE(excluded.sender_phone,whatsapp_message_receipts.sender_phone),
+      sender_name=COALESCE(excluded.sender_name,whatsapp_message_receipts.sender_name),
+      body=COALESCE(excluded.body,whatsapp_message_receipts.body),
+      message_type=COALESCE(excluded.message_type,whatsapp_message_receipts.message_type),
+      from_me=excluded.from_me,
+      last_seen_at=excluded.last_seen_at`);
+  const transaction = db.transaction(() => {
+    for (const messageId of messageIds) {
+      upsert.run(messageId, variantsJson, groupId, senderPhone, senderName, body, message?.type || "text", message?.fromMe ? 1 : 0, nowIso, nowIso);
+    }
+  });
+  transaction();
+}
 function cacheIncomingWhatsAppMessage(message) {
   const messageIds = messageIdCandidates(message);
-  const groupId = String(message?.from || "").trim();
+  const groupId = resolveGroupChatId(message) || String(message?.from || "").trim();
   if (!messageIds.length || !isConfiguredGroup(groupId)) return;
   const receivedAt = Date.now();
+  persistWhatsAppMessageReceipt(message, messageIds, groupId, receivedAt);
   for (const messageId of messageIds) recentWhatsAppMessages.set(messageId, { message, receivedAt, messageIds });
   for (const [key, entry] of recentWhatsAppMessages) {
     if (receivedAt - Number(entry?.receivedAt || 0) > RECENT_WHATSAPP_MESSAGE_TTL_MS) recentWhatsAppMessages.delete(key);
@@ -1196,6 +1237,21 @@ function getCachedIncomingWhatsAppMessage(messageId) {
     return null;
   }
   return entry.message || null;
+}
+function getPersistedWhatsAppMessageReceipt(messageId) {
+  const key = String(messageId || "").trim();
+  if (!key || typeof db === "undefined") return null;
+  const variants = messageIdLookupVariants(key);
+  if (!variants.length) return null;
+  const rows = db.prepare(`SELECT message_id,message_id_variants_json,group_id,sender_phone,sender_name,body,message_type,from_me,first_seen_at,last_seen_at
+    FROM whatsapp_message_receipts
+    WHERE message_id IN (${variants.map(() => "?").join(",")})
+    ORDER BY last_seen_at DESC LIMIT 20`).all(...variants);
+  const row = rows.find((candidate) => sourceMessageIdsEqual(candidate.message_id, key)) || rows[0];
+  if (!row) return null;
+  let messageIds = [];
+  try { messageIds = JSON.parse(row.message_id_variants_json || "[]"); } catch (_) {}
+  return { ...row, messageIds: [...new Set([row.message_id, ...messageIds].map((value) => String(value || "").trim()).filter(Boolean))] };
 }
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
@@ -5445,8 +5501,9 @@ function createClient() {
     console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
   });
   instance.on("message_create", async (msg) => {
-    if (generation !== connectionGeneration || !msg || !msg.fromMe || !shouldHandleMessageEvent(msg, "message_create")) return;
-    if (isConfiguredGroup(msg.from)) cacheIncomingWhatsAppMessage(msg);
+    if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
+    if (!shouldHandleMessageEvent(msg, "message_create")) return;
     observeAdminSentMessage(msg);
     observeFinalBookingConfirmationMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
@@ -5462,8 +5519,9 @@ function createClient() {
     try { await handleCaptainAccessCardAck(msg, ack); } catch (error) { console.error("[WhatsApp] captain card ack:", error); }
   });
   instance.on("message", async (msg) => {
-    if (generation !== connectionGeneration || !shouldHandleMessageEvent(msg, "message")) return;
-    if (isConfiguredGroup(msg.from)) cacheIncomingWhatsAppMessage(msg);
+    if (generation !== connectionGeneration || !msg) return;
+    if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
+    if (!shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
     if (isConfiguredGroup(msg.from)) {
       scheduleConfiguredGroupCaptainSync("message");
@@ -10436,7 +10494,11 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionKey = orderTraceKey(messageId);
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
+  const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId);
   const originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
+  if (persistedReceipt) {
+    console.log(`[WhatsApp][MessageDelete] persistent_receipt_found message=${deletionKey} variants=${persistedReceipt.messageIds.length}`);
+  }
   if (originalMessage && typeof originalMessage.delete === "function") {
     console.log(`[WhatsApp][MessageDelete] original_message_available message=${deletionKey} source=${context.message ? "context" : "cache"}`);
     const directDeleteDelays = [0, 400, 1000];
@@ -10512,6 +10574,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     const requestedMessageIds = [...new Set([
       messageId,
       ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
+      ...(persistedReceipt?.messageIds || []),
       ...messageIdCandidates(originalMessage),
     ].map((value) => String(value || "").trim()).filter(Boolean))];
     let liveMessage = null;
