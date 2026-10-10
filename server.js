@@ -28,8 +28,8 @@ const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
 const CLEAN_INSTANCE = process.env.CLEAN_INSTANCE === "true";
-// Hard-off in the Clean branch. Re-enable only through a future explicitly approved code change.
-const CLEAN_OUTBOUND_SENDS_ENABLED = false;
+// Clean messaging requires an explicit per-service opt-in; Server 2 behavior is unchanged.
+const CLEAN_OUTBOUND_SENDS_ENABLED = !CLEAN_INSTANCE || process.env.CLEAN_OUTBOUND_SENDS_ENABLED === "true";
 const CLEAN_OUTBOUND_SENDS_DISABLED = !CLEAN_OUTBOUND_SENDS_ENABLED;
 function cleanOutboundDisabledError(operation) {
   const error = new Error("Clean outbound WhatsApp messaging is disabled by code policy");
@@ -1174,7 +1174,14 @@ function createTicketCode() {
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
 const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
-const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
+// Clean must never inherit Server 2 owner recipients; configure its recipients explicitly per service.
+const DEFAULT_GROUP_SETUP_OWNER_PHONES = CLEAN_INSTANCE ? [] : ["+962779110123"];
+const configuredGroupSetupOwnerPhones = process.env.GROUP_SETUP_OWNER_PHONES || (CLEAN_INSTANCE ? "" : "+962785217886");
+const GROUP_SETUP_OWNER_PHONES = new Set(
+  [...DEFAULT_GROUP_SETUP_OWNER_PHONES, ...configuredGroupSetupOwnerPhones.split(",")]
+    .map(phoneWithCountry)
+    .filter((phone) => phone && (!CLEAN_INSTANCE || phone !== phoneWithCountry(LEGACY_BOT_PHONE))),
+);
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));

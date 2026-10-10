@@ -6,6 +6,7 @@ const test = require("node:test");
 const { guardOutboundMethod } = require("./whatsapp-outbound-guard");
 
 const serverSource = fs.readFileSync("./server.js", "utf8");
+const cleanEnvExample = fs.readFileSync("./.env.example", "utf8");
 
 function disabledError(operation) {
   const error = new Error("outbound disabled in fake test");
@@ -48,8 +49,8 @@ test("guard preserves the original behavior when a different service policy perm
   assert.deepEqual(calls, [["test-target", "test-body"]]);
 });
 
-test("Clean branch is wired fail-closed to both WhatsApp transport methods", () => {
-  assert.match(serverSource, /const CLEAN_OUTBOUND_SENDS_ENABLED\s*=\s*false;/);
+test("Clean branch is wired fail-closed to both WhatsApp transport methods unless explicitly enabled", () => {
+  assert.match(serverSource, /const CLEAN_OUTBOUND_SENDS_ENABLED\s*=\s*!CLEAN_INSTANCE \|\| process\.env\.CLEAN_OUTBOUND_SENDS_ENABLED === "true";/);
   const start = serverSource.indexOf("function installWhatsAppStorageSendGuard(instance)");
   const end = serverSource.indexOf("\nfunction stopWhatsAppStorageMonitor", start);
   assert.ok(start >= 0 && end > start, "central client guard exists");
@@ -58,6 +59,18 @@ test("Clean branch is wired fail-closed to both WhatsApp transport methods", () 
   assert.match(guard, /guardOutboundMethod\(instance, "sendReaction"/);
   assert.match(guard, /CLEAN_OUTBOUND_SENDS_DISABLED/);
   assert.match(serverSource, /outboundMessaging:\s*\{[\s\S]{0,180}blocked:\s*CLEAN_OUTBOUND_SENDS_DISABLED/);
+});
+
+test("Clean defaults to no outbound messages and requires an explicit service-level opt-in", () => {
+  const cleanBlueprint = fs.readFileSync("./render.clean.yaml", "utf8");
+  assert.match(cleanBlueprint, /runtime:\s*docker/);
+  assert.match(cleanBlueprint, /key:\s*CLEAN_OUTBOUND_SENDS_ENABLED\s*\n\s*value:\s*"false"/);
+  assert.match(serverSource, /CLEAN_INSTANCE \? \[\] : \["\+962779110123"\]/);
+  assert.match(serverSource, /process\.env\.GROUP_SETUP_OWNER_PHONES \|\| \(CLEAN_INSTANCE \? "" : "\+962785217886"\)/);
+  assert.match(serverSource, /phone !== phoneWithCountry\(LEGACY_BOT_PHONE\)/);
+  assert.match(cleanEnvExample, /CLEAN_OUTBOUND_SENDS_ENABLED=false/);
+  assert.match(cleanEnvExample, /WHATSAPP_GROUP_ID=\n/);
+  assert.doesNotMatch(cleanEnvExample, /0779110123|962779110123|120363410053044535/);
 });
 
 test("invite issuance and group-member sync reject before any database mutation", () => {
