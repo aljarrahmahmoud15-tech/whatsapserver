@@ -6052,9 +6052,32 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return insertedMessage;
   };
+  const quotedForRecovery = await getQuotedMessageWithFallback(msg);
+  if (body === "هذه" && !msg.fromMe && isGroupSetupOwner(senderPhone)) {
+    const quotedBody = String(quotedForRecovery?.body || quotedForRecovery?.text || "").trim();
+    const quotedMessageId = serializedMessageId(quotedForRecovery);
+    if (quotedMessageId && !quotedForRecovery?.fromMe && isCaptainAcceptance(quotedBody)) {
+      const deletion = await deleteWhatsAppMessageForEveryone(quotedMessageId, {
+        message: quotedForRecovery,
+        reason: "owner_requested_incomplete_acceptance",
+        groupId,
+      });
+      audit("whatsapp.owner_requested_acceptance_deletion", "message", quotedMessageId, {
+        groupId,
+        quotedMessageId,
+        quotedBody,
+        outcome: deletion?.ok ? "deleted" : "failed",
+        deletionResult: deletion || null,
+        financialMutation: false,
+      });
+      console.log(`[WhatsApp][MessageDelete] owner_requested_quoted_acceptance message=${orderTraceKey(quotedMessageId)} ok=${Boolean(deletion?.ok)}`);
+    } else {
+      console.warn(`[WhatsApp][MessageDelete] owner_requested_quoted_acceptance_skipped group=${orderTraceKey(groupId)} reason=quote_not_an_incoming_acceptance`);
+    }
+    return;
+  }
   // لا نحفظ «تم» قبل حارس الرصيد؛ القبول المرفوض لا يدخل جدول messages أصلًا.
   if (body && !captainAcceptance) persistIncomingMessage();
-  const quotedForRecovery = await getQuotedMessageWithFallback(msg);
   if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
     const sourceMessageId = quotedForRecovery.id._serialized;
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
