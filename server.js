@@ -12560,44 +12560,28 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
     }
     return client.sendMessage(chatId, message);
   });
-  const sendTimeoutMarker = {};
-  try {
-    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
-    if (sent === sendTimeoutMarker) {
-      audit("message.send_pending", "chat", chatId, { operationId, timeoutMs: ADMIN_SEND_TIMEOUT_MS, messageLength: message.length });
-      void sendPromise.then((lateSent) => {
-        if (serializedMessageId(lateSent)) {
-          const completed = completeAdminSend({ chatId, message, sent: lateSent, operationId, late: true });
-          console.warn(`[WhatsApp] admin send completed after timeout: operation=${operationId} message=${completed?.messageId || "none"}`);
-        } else {
-          console.warn(`[WhatsApp] admin send returned without a message object after timeout: operation=${operationId}; waiting for message_create`);
-        }
-      }).catch((error) => {
-        failAdminSend(operationId, error);
-        audit("message.send_failed_after_timeout", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240) });
-        console.error(`[WhatsApp] admin send failed after timeout: operation=${operationId}:`, error.message);
-      });
-      return res.status(202).json({
-        ...adminSendResponse(adminSendResults.get(operationId)),
-        error: "WhatsApp is still processing the message; waiting for message_create confirmation.",
-      });
-    }
+  // Return immediately. WWebJS can keep sendMessage pending while the
+  // message_create event is delivered; awaiting it made the dashboard timeout.
+  audit("message.send_pending", "chat", chatId, { operationId, mode: "background", messageLength: message.length });
+  audit("message.send_started", "chat", chatId, { operationId, messageLength: message.length });
+  void sendPromise.then((sent) => {
     if (serializedMessageId(sent)) {
       const completed = completeAdminSend({ chatId, message, sent, operationId });
-      return res.json(adminSendResponse(completed));
+      console.log(`[WhatsApp] admin send completed in background: operation=${operationId} message=${completed?.messageId || "none"}`);
+      return;
     }
     audit("message.send_waiting_confirmation", "chat", chatId, { operationId, responseObject: Boolean(sent), observationTimeoutMs: ADMIN_SEND_OBSERVATION_TIMEOUT_MS });
-    return res.status(202).json({
-      ...adminSendResponse(adminSendResults.get(operationId)),
-      error: "WhatsApp accepted the send request without a message object; waiting for message_create confirmation.",
-    });
-  } catch (error) {
+    console.warn(`[WhatsApp] admin send returned without a message object: operation=${operationId}; waiting for message_create`);
+  }).catch((error) => {
     failAdminSend(operationId, error);
     const detail = String(error?.stack || error?.message || error).slice(0, 500);
     audit("message.send_failed", "chat", chatId, { operationId, error: detail });
-    console.error(`[WhatsApp] admin send failed: operation=${operationId}: ${detail}`);
-    return res.status(502).json({ success: false, sendState: "failed", operationId, error: detail.slice(0, 240) });
-  }
+    console.error(`[WhatsApp] admin send failed in background: operation=${operationId}: ${detail}`);
+  });
+  return res.status(202).json({
+    ...adminSendResponse(adminSendResults.get(operationId)),
+    error: "تم قبول الإرسال في الخلفية؛ ستظهر النتيجة عبر تأكيد WhatsApp.",
+  });
 });
 app.get("/api/admin/send-status/:operationId", requireAdmin, (req, res) => {
   const operationId = String(req.params.operationId || "").trim();

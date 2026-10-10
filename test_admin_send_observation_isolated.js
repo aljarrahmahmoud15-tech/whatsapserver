@@ -39,6 +39,8 @@ assert.equal(matches(pending, { fromMe: true, from: pending.chatId, body: pendin
 
 const sendRoute = server.slice(server.indexOf('app.post("/api/admin/send"'), server.indexOf('function reconcileConfiguredGroupFromEnvironment'));
 assert.match(sendRoute, /message\.send_waiting_confirmation/);
+assert.match(sendRoute, /void sendPromise\.then\(\(sent\) =>/);
+assert.match(sendRoute, /message\.send_started/);
 assert.match(sendRoute, /\/api\/admin\/send-status\/:operationId/);
 assert.match(sendRoute, /serializedMessageId\(sent\)/);
 assert.doesNotMatch(sendRoute, /if \(!sent\) \{[\s\S]{0,300}WhatsApp returned no confirmed message/);
