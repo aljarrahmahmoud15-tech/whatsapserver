@@ -2587,7 +2587,9 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   let messageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
-    const result = await sendWhatsAppAtMostOnce(recipient, message, undefined, 30000);
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(name), 30000, null);
+    if (!media) throw new Error("captain welcome card render returned no media");
+    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: "ترحيب الكابتن الجديد" }, 30000);
     if (result.status === "sent" || result.status === "uncertain") {
       deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
       messageId = result.message?.id?._serialized || null;
@@ -3756,6 +3758,38 @@ async function renderOperationsMessageMedia(title, lines = []) {
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
+}
+async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
+  let logoData = "";
+  try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
+  const safeName = escapeXml(name || "كابتن");
+  const safeUrl = escapeXml(captainLoginUrl(baseUrl));
+  const welcomeLines = [
+    `أهلًا بك يا كابتن ${safeName} في وصلني الآن`,
+    "تم انضمامك إلى شبكة التشغيل الرسمية.",
+    "لتنزيل طلب: اكتب السعر ثم القيمة، مثل: السعر 10",
+    "يرد كابتن التنفيذ على الطلب نفسه بكلمة «تم».",
+    "بعد 👍 من كابتن الطلب يتم التثبيت والتسوية مرة واحدة.",
+    `رابط دخول الكابتن: ${safeUrl}`,
+  ];
+  const logo = logoData
+    ? `<image href="data:image/png;base64,${logoData}" x="454" y="72" width="172" height="172" preserveAspectRatio="xMidYMid meet" opacity=".82"/>`
+    : `<text x="540" y="190" text-anchor="middle" fill="#a7f3d0" font-size="64" font-weight="700">ج</text>`;
+  const lineMarkup = welcomeLines.map((line, index) => `<text x="92" y="${330 + index * 42}" fill="${index === 0 ? "#a7f3d0" : "#e4f7f2"}" font-size="${index === 0 ? 26 : 22}" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="${index === 0 ? 700 : 500}">${escapeXml(line).slice(0, 105)}</text>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760">
+    <defs><linearGradient id="welcome-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071b2a"/><stop offset=".55" stop-color="#0d3b46"/><stop offset="1" stop-color="#06231f"/></linearGradient><linearGradient id="welcome-border" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a7f3d0"/><stop offset=".5" stop-color="#34d399"/><stop offset="1" stop-color="#f6c84c"/></linearGradient><radialGradient id="welcome-glow"><stop offset="0" stop-color="#34d399" stop-opacity=".34"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/></radialGradient></defs>
+    <rect width="1080" height="760" fill="#04121c"/><rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#welcome-bg)" stroke="url(#welcome-border)" stroke-width="6"/>
+    <circle cx="540" cy="156" r="190" fill="url(#welcome-glow)" opacity=".72"/><circle cx="540" cy="156" r="122" fill="none" stroke="#a7f3d0" stroke-opacity=".48" stroke-width="3"/><circle cx="540" cy="156" r="104" fill="#06252b" stroke="#f6c84c" stroke-opacity=".72" stroke-width="3"/>
+    ${logo}<circle cx="540" cy="38" r="9" fill="#34d399"/><circle cx="540" cy="38" r="22" fill="none" stroke="#34d399" stroke-opacity=".45" stroke-width="3"/>
+    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">WASLNI NOW • CAPTAIN WELCOME</text>
+    <rect x="62" y="300" width="956" height="330" rx="28" fill="#041822" fill-opacity=".72" stroke="#a7f3d0" stroke-opacity=".34" stroke-width="2"/>
+    ${lineMarkup}
+    <text x="92" y="610" fill="#f6c84c" font-size="19" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">ترحيب وتعليمات التشغيل فقط</text>
+    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">وصلني الآن | WASLNI NOW</text>
+  </svg>`;
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  return new MessageMedia("image/png", png.toString("base64"), "waslni-captain-welcome-card.png");
 }
 async function sendGroupBrandedMessage(groupId, title, lines) {
   if (!isServer2OutboundTargetAllowed(groupId)) return null;
