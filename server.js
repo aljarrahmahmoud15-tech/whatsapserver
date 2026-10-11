@@ -12819,7 +12819,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "No configured Server 2 group" });
   try {
-    const chat = await withTimeout(client.getChatById(groupId), 25000, null);
+    const chat = await withTimeout(client.getChatById(groupId), 25000, null) || await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
     const media = await withTimeout(MessageMedia.fromUrl(GROUP_BRAND_IMAGE_URL, { unsafeMime: true }), 30000, null);
     if (!media) return res.status(502).json({ error: "Unable to load group identity image" });
