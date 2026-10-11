@@ -4255,6 +4255,7 @@ let lastReadyAt = null;
 let lastDisconnectAt = null;
 let lastInitializationStartedAt = null;
 let lastInitializationFinishedAt = null;
+let lastWhatsAppLoadingAt = null;
 let initializing = false;
 let initializationRunId = 0;
 let groupCreateInFlight = false;
@@ -4990,6 +4991,12 @@ function startWhatsAppWatchdog() {
       void restartWhatsApp("stale WhatsApp initialization").catch((error) => console.error("[WhatsApp] stale-init restart:", error.message));
       return;
     }
+    const loadingAt = Date.parse(lastWhatsAppLoadingAt || "");
+    if (Number.isFinite(loadingAt) && Date.now() - loadingAt < Math.max(WHATSAPP_WATCHDOG_INTERVAL_MS * 3, 10 * 60 * 1000)) {
+      // WhatsApp Web can legitimately take several minutes to load its cached
+      // session. Do not interrupt an active loading stream at the watchdog tick.
+      return;
+    }
     if (qrCodeData || whatsappState === "qr" || whatsappState === "wrong_account") {
       console.warn(`[WhatsApp] watchdog waiting for operator action: state=${whatsappState}`);
       return;
@@ -5581,6 +5588,7 @@ function createClient() {
     scheduleReconnect();
   });
   instance.on("loading_screen", (percent, message) => {
+    lastWhatsAppLoadingAt = new Date().toISOString();
     console.log(`[WhatsApp] loading ${percent}%${message ? `: ${message}` : ""}`);
   });
   instance.on("change_state", (state) => {
