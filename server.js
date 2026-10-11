@@ -3770,18 +3770,16 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
 function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime }) {
   const normalizedOrderNo = String(orderNo || "غير محدد");
   return [
-    `✅ تم تثبيت الطلب #${normalizedOrderNo}`,
-    `🧾 رقم الرحلة: #${normalizedOrderNo}`,
-    `👤 كابتن تنزيل الطلب: ${String(downloaderName || "غير مسجل")}`,
-    `🚕 الكابتن المنفذ: ${String(executorName || "غير مسجل")}`,
-    Number.isFinite(Number(priceCents)) ? `💰 القيمة: ${money(priceCents)} JOD` : "",
-    origin || destination ? `🛣️ المسار: ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
-    tripTime ? `🕒 الموعد: ${tripTime}` : "",
+    `🟢 تثبيت الطلب #${normalizedOrderNo}`,
+    `🚕 المنفذ: ${String(executorName || "غير مسجل")}`,
+    origin || destination ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
+    Number.isFinite(Number(priceCents)) ? `💰 ${money(priceCents)} JOD` : "",
+    tripTime ? `🕒 ${tripTime}` : "",
   ].filter(Boolean).join("\n");
 }
 function finalBookingConfirmationOrderNo(body) {
   const text = String(body || "").trim();
-  const shortMatch = text.match(/^✅ تم تثبيت الطلب\s*#(\d+)/m);
+  const shortMatch = text.match(/^(?:🟢\s*)?(?:تثبيت الطلب|تم تثبيت الطلب)\s*#(\d+)/m);
   if (shortMatch) return Number(shortMatch[1]);
   const legacyMatch = text.match(/رقم الرحلة:\s*#(\d+)/);
   return Number(legacyMatch?.[1] || 0);
@@ -3789,19 +3787,15 @@ function finalBookingConfirmationOrderNo(body) {
 function finalBookingCancellationText(order = null) {
   if (order?.order_no) {
     return [
-      `❌ تم إلغاء الحجز #${order.order_no}`,
-      "",
-      `🛣️ المسار: ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
-      `💰 القيمة: ${money(order.price_cents)} JOD`,
-      "📌 الحالة: ملغى ومعكوس ماليًا بقرار المالك V26.",
-      "تم إرجاع الحصص والخصم في دفتر المحافظ، ولن تُحتسب عمولة لهذا الحجز.",
+      `🔴 إلغاء الحجز #${order.order_no}`,
+      `📍 ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
+      `💰 ${money(order.price_cents)} JOD`,
+      "↩️ عُكست التسوية ولا توجد عمولة.",
     ].join("\n");
   }
   return [
-    "❌ تم رفض أو إلغاء الطلب",
-    "",
-    "📌 الحالة: غير معتمد",
-    "لا يتم احتساب أي عمولة أو تسوية مالية.",
+    "🔴 رفض أو إلغاء الطلب",
+    "📌 غير معتمد — لا توجد عمولة أو تسوية.",
   ].join("\n");
 }
 const confirmationDeliveryInFlight = new Set();

@@ -4,7 +4,7 @@ const fs = require("fs");
 const source = fs.readFileSync("./server.js", "utf8");
 assert(source.includes("function finalBookingConfirmationText"), "يوجد مسار مستقل لتأكيد التثبيت النصي");
 assert(source.includes("async function sendFinalBookingConfirmation"), "إرسال التأكيد النصي بمهلة آمنة");
-assert(source.includes("✅ تم تثبيت الطلب #"), "التأكيد يحمل رسالة التثبيت المختصرة");
+assert(source.includes("🟢 تثبيت الطلب #"), "التأكيد يحمل رسالة التثبيت المختصرة");
 assert(source.includes("function finalBookingConfirmationOrderNo"), "يمكن تتبع رقم الطلب من رسالة التثبيت");
 assert(source.includes("function finalBookingCancellationText"), "يوجد نص مستقل للرفض أو الإلغاء");
 assert(source.includes("Image booking cards are disabled"), "بطاقات الصور معطلة");

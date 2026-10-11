@@ -137,10 +137,10 @@ const context = {
   sendFinalBookingConfirmation: async (groupId, details) => {
     messages.push({
       groupId,
-      text: `✅ تم تثبيت الطلب #${details.orderNo}\n🧾 رقم الرحلة: #${details.orderNo}\n👤 كابتن تنزيل الطلب: ${details.downloaderName}\n🚕 الكابتن المنفذ: ${details.executorName}`,
+      text: `🟢 تثبيت الطلب #${details.orderNo}\n🚕 المنفذ: ${details.executorName}`,
     });
   },
-  finalBookingCancellationText: () => "❌ تم رفض أو إلغاء الطلب",
+  finalBookingCancellationText: () => "🔴 رفض أو إلغاء الطلب",
   sendBotText: async () => true,
   enforceCaptainWalletThresholds: async () => {},
   console,
@@ -178,8 +178,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 260, "تضاف 13% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 40, "تضاف 2% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.match(messages[0].text, /✅ تم تثبيت الطلب #7/);
-  assert.match(messages[0].text, /👤 كابتن تنزيل الطلب: المنتج/);
-  assert.match(messages[0].text, /🚕 الكابتن المنفذ: الكابتن/);
+  assert.match(messages[0].text, /🟢 تثبيت الطلب #7/);
+  assert.match(messages[0].text, /🚕 المنفذ: الكابتن/);
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

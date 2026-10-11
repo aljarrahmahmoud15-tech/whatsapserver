@@ -204,7 +204,7 @@ function createApprovalCycle({ client, db, groupId, isCaptainEligible = async ()
 
       let confirmationMessageId = null;
       if (sendConfirmation && typeof client.sendMessage === "function") {
-        const text = `✅ تم تثبيت الطلب #${orderId}`;
+        const text = `🟢 تثبيت الطلب #${orderId}`;
         try {
           const sent = await client.sendMessage(groupId, text);
           confirmationMessageId = messageId(sent);
