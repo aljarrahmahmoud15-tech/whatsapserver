@@ -12898,6 +12898,36 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
     return res.status(502).json({ success: false, sendState: "failed", operationId, mediaType: "image/png", filename: "waslni-now-media-test.png", error: detail.slice(0, 240) });
   }
 });
+app.post("/api/admin/group/send-captain-welcome-test", requireAdmin, async (req, res) => {
+  const officialGroupId = configuredRuntimeGroupId();
+  const groupId = String(req.body?.groupId || "").trim();
+  const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || "").trim().slice(0, 120);
+  if (groupId !== officialGroupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(403).json({ error: "Only the verified official group is allowed" });
+  if (req.body?.confirm !== true || operationId.length < 16) return res.status(400).json({ error: "Owner confirmation and operation id are required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });
+  const registration = registerAdminSend({ operationId, chatId: groupId, message: "بطاقة ترحيب الكابتن التجريبية" });
+  if (!registration.created) return res.status(registration.state.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(registration.state), mutation: "none", walletChanged: false });
+  const sendPromise = Promise.resolve().then(async () => {
+    const media = await withTimeout(renderCaptainWelcomeCardMedia("كابتن تجريبي"), 30000, null);
+    if (!media) throw new Error("captain welcome card render returned no media");
+    return sendWhatsAppAtMostOnce(groupId, media, { caption: "" }, 30000);
+  });
+  try {
+    const result = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
+    if (result?.status === "sent") {
+      const completed = completeAdminSend({ operationId, chatId: groupId, message: "بطاقة ترحيب الكابتن التجريبية", sent: result.message, confirmationSource: "captain_welcome_test" });
+      audit("message.captain_welcome_test.sent", "chat", groupId, { operationId, messageId: serializedMessageId(result.message), mutation: "none", walletChanged: false });
+      return res.json({ ...adminSendResponse(completed), mutation: "none", walletChanged: false });
+    }
+    failAdminSend(operationId, new Error(result?.error || `delivery_${result?.status || "unknown"}`));
+    return res.status(502).json({ success: false, operationId, sendState: "failed", error: result?.error || result?.status || "unknown", mutation: "none", walletChanged: false });
+  } catch (error) {
+    failAdminSend(operationId, error);
+    audit("message.captain_welcome_test.failed", "chat", groupId, { operationId, error: String(error?.message || error).slice(0, 240), mutation: "none", walletChanged: false });
+    return res.status(502).json({ success: false, operationId, sendState: "failed", error: String(error?.message || error).slice(0, 240), mutation: "none", walletChanged: false });
+  }
+});
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
