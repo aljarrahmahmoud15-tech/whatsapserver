@@ -2589,7 +2589,7 @@ async function sendCaptainGroupWelcome(participant, groupId) {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
     const media = await withTimeout(renderCaptainWelcomeCardMedia(name), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
-    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: "ترحيب الكابتن الجديد" }, 30000);
+    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: "" }, 30000);
     if (result.status === "sent" || result.status === "uncertain") {
       deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
       messageId = result.message?.id?._serialized || null;

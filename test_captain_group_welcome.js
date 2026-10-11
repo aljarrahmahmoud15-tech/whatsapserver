@@ -16,7 +16,7 @@ test('captain welcome is idempotent by normalized phone and does not target owne
   assert.match(source, /isProtectedOwnerIdentity\(phone\) \|\| isBotPhone\(phone\)/);
   assert.match(source, /\["sent", "delivered", "pending", "uncertain"\]/);
   assert.match(source, /renderCaptainWelcomeCardMedia\(name\)/);
-  assert.match(source, /sendWhatsAppAtMostOnce\(recipient, media, \{ caption: "ترحيب الكابتن الجديد" \}/);
+  assert.match(source, /sendWhatsAppAtMostOnce\(recipient, media, \{ caption: "" \}/);
 });
 
 test('welcome instructions accept quoted or unquoted تم and use the captain portal', () => {
