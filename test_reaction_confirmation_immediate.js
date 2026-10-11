@@ -28,6 +28,16 @@ assert.match(
   "the sender must recognize the immediate reaction path",
 );
 assert.match(
+  source,
+  /const IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS = 1000/,
+  "live confirmation has a one-second send budget",
+);
+assert.match(
+  confirmation,
+  /const sendTimeoutMs = immediateReaction \? IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS : ADMIN_SEND_TIMEOUT_MS/,
+  "live confirmation must use the one-second timeout",
+);
+assert.match(
   confirmation,
   /deliveryAgeMs < CONFIRMATION_RETRY_BACKOFF_MS/,
   "confirmation retries must respect the backoff",

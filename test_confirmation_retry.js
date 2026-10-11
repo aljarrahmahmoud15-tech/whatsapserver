@@ -35,7 +35,8 @@ assert.match(source, /async function sendFinalBookingConfirmationViaConfiguredCh
 assert.match(source, /client\.getChatById\(groupId\)/);
 assert.match(source, /return await chat\.sendMessage\(message\)/);
 assert.match(source, /retrying client\.sendMessage/);
-assert.match(source, /withTimeoutStrict\(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker\)/);
+assert.match(source, /const sendTimeoutMs = immediateReaction \? IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS : ADMIN_SEND_TIMEOUT_MS/);
+assert.match(source, /withTimeoutStrict\(sendPromise, sendTimeoutMs, sendTimeoutMarker\)/);
 assert.match(source, /status='pending',last_error=\?,updated_at=\?/);
 
 console.log('Confirmation retry guard tests passed');

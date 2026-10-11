@@ -17,7 +17,8 @@ assert.ok(senderStart >= 0 && senderEnd > senderStart, "confirmation sender must
 const sender = source.slice(senderStart, senderEnd);
 assert.match(sender, /const deliveryMode = options\.deliveryMode === "fallback" \? "fallback" : "direct"/);
 assert.match(sender, /deliveryMode === "fallback"\s*\?\s*sendFinalBookingConfirmationViaConfiguredChat\(groupId, message\)\s*:\s*sendFinalBookingConfirmationDirect\(groupId, message\)/s, "direct is the first path and configured-chat discovery is fallback-only");
-assert.match(sender, /withTimeoutStrict\(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker\)/);
+assert.match(sender, /const sendTimeoutMs = immediateReaction \? IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS : ADMIN_SEND_TIMEOUT_MS/);
+assert.match(sender, /withTimeoutStrict\(sendPromise, sendTimeoutMs, sendTimeoutMarker\)/);
 assert.match(sender, /send_pending_waiting_message_create/);
 assert.match(sender, /status='sent',message_id=/);
 assert.match(sender, /status='failed',last_error=/);

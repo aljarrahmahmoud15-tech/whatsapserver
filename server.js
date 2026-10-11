@@ -135,6 +135,7 @@ const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
+const IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS = 1000;
 const ADMIN_SEND_OBSERVATION_TIMEOUT_MS = Math.max(10000, Math.min(120000, Number(process.env.ADMIN_SEND_OBSERVATION_TIMEOUT_MS || 30000)));
 const ADMIN_SEND_RESULT_TTL_MS = Math.max(60000, Math.min(6 * 60 * 60 * 1000, Number(process.env.ADMIN_SEND_RESULT_TTL_MS || 2 * 60 * 60 * 1000)));
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
@@ -4021,7 +4022,8 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       ? sendFinalBookingConfirmationViaConfiguredChat(groupId, message)
       : sendFinalBookingConfirmationDirect(groupId, message);
     const sendTimeoutMarker = {};
-    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
+    const sendTimeoutMs = immediateReaction ? IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS : ADMIN_SEND_TIMEOUT_MS;
+    const sent = await withTimeoutStrict(sendPromise, sendTimeoutMs, sendTimeoutMarker);
     if (sent === sendTimeoutMarker) {
       releaseInFlightAfterSendPromise = Boolean(orderId);
       if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_pending_waiting_message_create", now(), orderId);
