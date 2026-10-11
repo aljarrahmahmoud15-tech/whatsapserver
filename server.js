@@ -724,6 +724,10 @@ if (!existingStaffColumns.includes("permissions_json")) db.exec("ALTER TABLE sta
 const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
 if (!existingNotificationColumns.includes("source_message_id")) db.exec("ALTER TABLE notifications ADD COLUMN source_message_id TEXT");
 if (!existingNotificationColumns.includes("idempotency_key")) db.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT");
+if (!existingNotificationColumns.includes("updated_at")) {
+  db.exec("ALTER TABLE notifications ADD COLUMN updated_at TEXT");
+  db.exec("UPDATE notifications SET updated_at=created_at WHERE updated_at IS NULL OR TRIM(updated_at)=''");
+}
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
 db.exec("CREATE INDEX IF NOT EXISTS idx_notifications_source_message ON notifications(source_message_id)");
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
@@ -4429,6 +4433,17 @@ async function installWhatsAppSendDiagnostics(instance, generation) {
         name: boundedDiagnosticText(error?.name, 120),
         message: boundedDiagnosticText(error?.message || error, 1200),
       }));
+      page.on("error", (error) => {
+        if (generation !== connectionGeneration || client !== instance) return;
+        whatsappLastEvent = "browser_page_error";
+        whatsappLastError = boundedDiagnosticText(error?.message || error || "WhatsApp page crashed", 500);
+        isReady = false;
+        initializing = false;
+        stopWhatsAppStorageMonitor();
+        recordOwnerControlCheckpoint("whatsapp.browser_page_error", { force: true });
+        console.warn(`[WhatsApp] browser page crashed; scheduling controlled reconnect: ${whatsappLastError}`);
+        void restartWhatsApp("WhatsApp Web page crash").catch((restartError) => console.error("[WhatsApp] page-crash restart:", restartError.message));
+      });
       page.on("console", (message) => {
         let level = "";
         try { level = typeof message?.type === "function" ? message.type() : ""; } catch (_) { level = ""; }
@@ -4966,7 +4981,15 @@ function scheduleReconnect() {
 function startWhatsAppWatchdog() {
   if (whatsappWatchdogTimer || WHATSAPP_WATCHDOG_INTERVAL_MS <= 0) return;
   whatsappWatchdogTimer = setInterval(() => {
-    if (isReady || initializing || reconnectTimer) return;
+    if (isReady || reconnectTimer) return;
+    if (initializing) {
+      const startedAt = Date.parse(lastInitializationStartedAt || "");
+      const staleAfterMs = Math.max(WHATSAPP_INIT_TIMEOUT_MS * 2, 10 * 60 * 1000);
+      if (!Number.isFinite(startedAt) || Date.now() - startedAt < staleAfterMs) return;
+      console.warn(`[WhatsApp] watchdog detected stale initialization for ${Math.round((Date.now() - startedAt) / 1000)}s; forcing controlled restart`);
+      void restartWhatsApp("stale WhatsApp initialization").catch((error) => console.error("[WhatsApp] stale-init restart:", error.message));
+      return;
+    }
     if (qrCodeData || whatsappState === "qr" || whatsappState === "wrong_account") {
       console.warn(`[WhatsApp] watchdog waiting for operator action: state=${whatsappState}`);
       return;
@@ -5486,6 +5509,11 @@ function createClient() {
       return;
     }
     isReady = true;
+    // whatsapp-web.js can emit `ready` while initialize() remains pending
+    // (especially after an IndexedDB/page crash). Do not leave the service in
+    // initializing=true, otherwise all watchdog/recovery paths stay disabled.
+    initializing = false;
+    lastInitializationFinishedAt = new Date().toISOString();
     reconnectAttempts = 0;
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
