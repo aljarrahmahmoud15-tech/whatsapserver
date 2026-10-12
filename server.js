@@ -10610,32 +10610,47 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
 async function verifyWhatsAppMessageDeletion(message, messageId, timeoutMs = 5000) {
-  if (!message) return { verified: false, reason: "message_unavailable" };
-  try {
-    if (typeof message.reload === "function") {
-      const reloaded = await withTimeout(message.reload(), timeoutMs, null);
-      if (reloaded && String(reloaded.type || "").toLowerCase() === "revoked") {
-        return { verified: true, reason: "revoked_after_reload" };
+  if (!message) return { verified: false, reason: "message_unavailable", attempts: 0 };
+  const verificationDelays = [0, 500, 1200];
+  let lastReason = "message_not_confirmed";
+  let sawMessage = false;
+  for (let attempt = 0; attempt < verificationDelays.length; attempt += 1) {
+    if (verificationDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, verificationDelays[attempt]));
+    try {
+      if (typeof message.reload === "function") {
+        const reloaded = await withTimeout(message.reload(), timeoutMs, null);
+        if (reloaded && String(reloaded.type || "").toLowerCase() === "revoked") {
+          return { verified: true, reason: "revoked_after_reload", attempts: attempt + 1 };
+        }
       }
+      if (typeof message.getChat !== "function") return { verified: false, reason: "chat_unavailable", attempts: attempt + 1 };
+      const chat = await withTimeout(message.getChat(), timeoutMs, null);
+      const history = chat && typeof chat.fetchMessages === "function"
+        ? await withTimeout(chat.fetchMessages({ limit: 100 }), timeoutMs, [])
+        : [];
+      const targetId = serializedMessageId(message) || String(messageId || "");
+      const matching = (Array.isArray(history) ? history : []).filter((candidate) => {
+        const candidateId = serializedMessageId(candidate);
+        return candidate && candidateId && sourceMessageIdsEqual(candidateId, targetId);
+      });
+      if (matching.some((candidate) => String(candidate.type || "").toLowerCase() === "revoked")) {
+        return { verified: true, reason: "revoked_in_chat_history", attempts: attempt + 1 };
+      }
+      if (matching.length) {
+        sawMessage = true;
+        lastReason = "message_still_present";
+      } else {
+        lastReason = "message_absent_not_confirmed";
+      }
+    } catch (error) {
+      lastReason = String(error?.message || error).slice(0, 180);
     }
-    if (typeof message.getChat !== "function") return { verified: false, reason: "chat_unavailable" };
-    const chat = await withTimeout(message.getChat(), timeoutMs, null);
-    const history = chat && typeof chat.fetchMessages === "function"
-      ? await withTimeout(chat.fetchMessages({ limit: 100 }), timeoutMs, [])
-      : [];
-    const targetId = serializedMessageId(message) || String(messageId || "");
-    const matching = (Array.isArray(history) ? history : []).filter((candidate) => {
-      const candidateId = serializedMessageId(candidate);
-      return candidate && candidateId && sourceMessageIdsEqual(candidateId, targetId);
-    });
-    if (!matching.length) return { verified: true, reason: "absent_from_chat_history" };
-    if (matching.some((candidate) => String(candidate.type || "").toLowerCase() === "revoked")) {
-      return { verified: true, reason: "revoked_in_chat_history" };
-    }
-    return { verified: false, reason: "message_still_present" };
-  } catch (error) {
-    return { verified: false, reason: String(error?.message || error).slice(0, 180) };
   }
+  return {
+    verified: false,
+    reason: sawMessage ? "message_still_present" : lastReason,
+    attempts: verificationDelays.length,
+  };
 }
 
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {

@@ -48,8 +48,12 @@ assert.match(server, /async function verifyWhatsAppMessageDeletion\(message, mes
 assert.match(server, /const verification = await verifyWhatsAppMessageDeletion\(originalMessage, messageId\)/);
 assert.match(server, /const deleteAcknowledged = verification\.verified/);
 assert.match(server, /deleteReturn=\$\{deletedFromSearch !== false\} verification=\$\{verification\.reason\}/);
-assert.match(server, /reason: "message_still_present"/);
+assert.match(server, /lastReason = "message_still_present"/);
 assert.match(server, /reason: "revoked_after_reload"/);
+assert.match(server, /const verificationDelays = \[0, 500, 1200\]/);
+assert.match(server, /lastReason = "message_absent_not_confirmed"/);
+assert.doesNotMatch(server, /if \(!matching\.length\) return \{ verified: true, reason: "absent_from_chat_history" \}/);
+assert.match(server, /verified: false,\s*reason: sawMessage \? "message_still_present" : lastReason/s);
 assert.match(server, /const directDeleteDelays = \[0, 400, 1000\]/);
 assert.match(server, /attempt=\$\{attempt \+ 1\}\/\$\{directDeleteDelays\.length\}/);
 assert.match(server, /const recentWhatsAppMessages = new Map\(\)/);
