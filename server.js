@@ -97,6 +97,9 @@ const CAPTAIN_SUBSCRIPTION_PERIOD_DAYS = 7;
 const CAPTAIN_SUBSCRIPTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CAPTAIN_DAILY_CHARGE_CENTS = 10;
 const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
+const TOPUP_CARD_ARCHIVE_AFTER_MS = 60 * 60 * 1000;
+const TOPUP_CARD_ARCHIVE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.TOPUP_CARD_ARCHIVE_INTERVAL_MS || 5 * 60 * 1000));
+const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
 // Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
 // Keep this hard-off until a future code change explicitly re-enables the policy.
 const CAPTAIN_DAILY_CHARGE_ENABLED = false;
@@ -530,6 +533,22 @@ CREATE TABLE IF NOT EXISTS topup_cards (
   created_at TEXT NOT NULL,
   FOREIGN KEY(redeemed_by) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS topup_card_archive (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL UNIQUE,
+  captain_id INTEGER,
+  captain_name_snapshot TEXT,
+  captain_phone_snapshot TEXT,
+  value_cents INTEGER NOT NULL,
+  prior_status TEXT NOT NULL,
+  final_status TEXT NOT NULL,
+  sent_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL,
+  destroyed_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  FOREIGN KEY(card_id) REFERENCES topup_cards(id)
+);
+CREATE INDEX IF NOT EXISTS idx_topup_card_archive_archived_at ON topup_card_archive(archived_at DESC);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor_user_id INTEGER,
@@ -805,6 +824,25 @@ if (!existingCardColumns.includes("issue_idempotency_key")) db.exec("ALTER TABLE
 if (!existingCardColumns.includes("code_ciphertext")) db.exec("ALTER TABLE topup_cards ADD COLUMN code_ciphertext TEXT");
 if (!existingCardColumns.includes("void_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN void_idempotency_key TEXT");
 if (!existingCardColumns.includes("redemption_idempotency_key")) db.exec("ALTER TABLE topup_cards ADD COLUMN redemption_idempotency_key TEXT");
+if (!existingCardColumns.includes("archived_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN archived_at TEXT");
+if (!existingCardColumns.includes("archive_reason")) db.exec("ALTER TABLE topup_cards ADD COLUMN archive_reason TEXT");
+if (!existingCardColumns.includes("destroyed_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN destroyed_at TEXT");
+db.exec(`CREATE TABLE IF NOT EXISTS topup_card_archive (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL UNIQUE,
+  captain_id INTEGER,
+  captain_name_snapshot TEXT,
+  captain_phone_snapshot TEXT,
+  value_cents INTEGER NOT NULL,
+  prior_status TEXT NOT NULL,
+  final_status TEXT NOT NULL,
+  sent_at TEXT NOT NULL,
+  archived_at TEXT NOT NULL,
+  destroyed_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  FOREIGN KEY(card_id) REFERENCES topup_cards(id)
+);
+CREATE INDEX IF NOT EXISTS idx_topup_card_archive_archived_at ON topup_card_archive(archived_at DESC);`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON topup_cards(issue_idempotency_key) WHERE issue_idempotency_key IS NOT NULL AND issue_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_void_idempotency ON topup_cards(void_idempotency_key) WHERE void_idempotency_key IS NOT NULL AND void_idempotency_key <> ''");
@@ -3380,6 +3418,54 @@ function applyCaptainDailyCharges(stamp = now()) {
   }
   if (applied.length) console.log(`[DailyCharge] date=${chargeDate} applied=${applied.length} amountCents=${CAPTAIN_DAILY_CHARGE_CENTS}`);
   return { status: "completed", chargeDate, applied, eligibleCount: captains.length };
+}
+let topupCardArchiveRunning = false;
+function archiveExpiredTopupCards() {
+  if (topupCardArchiveRunning) return { archived: 0, skipped: true };
+  topupCardArchiveRunning = true;
+  try {
+    let policyStart = getSetting(TOPUP_CARD_ARCHIVE_POLICY_START_SETTING, null);
+    if (!policyStart) {
+      policyStart = now();
+      setSetting(TOPUP_CARD_ARCHIVE_POLICY_START_SETTING, policyStart);
+      audit("topup_card.archive_policy.enabled", "topup_card_archive", TOPUP_CARD_ARCHIVE_POLICY_START_SETTING, { policyStart, archiveAfterMs: TOPUP_CARD_ARCHIVE_AFTER_MS });
+    }
+    const cutoff = new Date(Date.now() - TOPUP_CARD_ARCHIVE_AFTER_MS).toISOString();
+    const cards = db.prepare(`SELECT c.id,c.value_cents,c.status,c.sent_at,c.assigned_captain_id,u.name AS captain_name,u.phone AS captain_phone
+      FROM topup_cards c LEFT JOIN users u ON u.id=c.assigned_captain_id
+      WHERE c.sent_at IS NOT NULL AND c.sent_at > ? AND c.sent_at <= ? AND c.archived_at IS NULL
+      ORDER BY c.id ASC LIMIT 200`).all(policyStart, cutoff);
+    if (!cards.length) return { archived: 0, policyStart };
+    const archiveOne = db.transaction((card) => {
+      const archivedAt = now();
+      const finalStatus = card.status === "issued" ? "void" : card.status;
+      const reason = card.status === "issued"
+        ? "انتهت ساعة الإرسال دون استخدام البطاقة؛ أُبطل الرمز وأُتلفت المادة السرية."
+        : "انتهت ساعة الإرسال؛ أُرشفت البطاقة وأُتلفت المادة السرية مع الحفاظ على سجل استخدامها.";
+      const inserted = db.prepare(`INSERT OR IGNORE INTO topup_card_archive
+        (card_id,captain_id,captain_name_snapshot,captain_phone_snapshot,value_cents,prior_status,final_status,sent_at,archived_at,destroyed_at,reason)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(card.id, card.assigned_captain_id || null, card.captain_name || null, card.captain_phone || null, card.value_cents, card.status, finalStatus, card.sent_at, archivedAt, archivedAt, reason);
+      if (!inserted.changes) return false;
+      db.prepare("UPDATE topup_cards SET status=?,code_ciphertext=NULL,archived_at=?,destroyed_at=?,archive_reason=? WHERE id=? AND archived_at IS NULL").run(finalStatus, archivedAt, archivedAt, reason, card.id);
+      audit("topup_card.archived_destroyed", "topup_card", card.id, { priorStatus: card.status, finalStatus, sentAt: card.sent_at, archivedAt, destroyedAt: archivedAt, reason });
+      return true;
+    });
+    let archived = 0;
+    for (const card of cards) if (archiveOne(card)) archived += 1;
+    if (archived) {
+      void notifyOperations({ event: "topup_card.archive_sweep", title: "أرشفة وإتلاف بطاقات الشحن", lines: [`عدد البطاقات المؤرشفة: ${archived}`, "تم إبطال غير المستخدمة وإتلاف المادة السرية، مع الحفاظ على سجل البطاقات المستخدمة.", `مهلة الأرشفة: ${TOPUP_CARD_ARCHIVE_AFTER_MS / 60000} دقيقة.`], ownersOnly: true });
+    }
+    return { archived, policyStart };
+  } finally {
+    topupCardArchiveRunning = false;
+  }
+}
+function startTopupCardArchiveScheduler() {
+  archiveExpiredTopupCards();
+  const timer = setInterval(() => {
+    try { archiveExpiredTopupCards(); } catch (error) { console.error("[TopupArchive] sweep failed:", error.message); }
+  }, TOPUP_CARD_ARCHIVE_INTERVAL_MS);
+  timer.unref?.();
 }
 function startCaptainSubscriptionScheduler() {
   if (CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) {
@@ -11443,6 +11529,14 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
   audit("order.candidate.recovered_from_group_history", "order_candidate", staged.id, { groupId, sourceMessageId: candidate.id._serialized });
   res.status(201).json({ success: true, recovered: true, candidateId: staged.id, status: staged.status });
 });
+app.get("/api/admin/topup-card-archive", requireAdmin, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 500)) : 100;
+  const rows = db.prepare(`SELECT id,card_id,captain_id,captain_name_snapshot,captain_phone_snapshot,value_cents,prior_status,final_status,sent_at,archived_at,destroyed_at,reason
+    FROM topup_card_archive ORDER BY archived_at DESC LIMIT ?`).all(limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, policy: { archiveAfterMinutes: TOPUP_CARD_ARCHIVE_AFTER_MS / 60000, startedAt: getSetting(TOPUP_CARD_ARCHIVE_POLICY_START_SETTING, null) }, records: rows.map((row) => ({ ...row, value: money(row.value_cents) })) });
+});
 app.get("/api/admin/cards", requireAdmin, (req, res) => {
   const requestedLimit = Number(req.query.limit || 50);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
@@ -13203,6 +13297,7 @@ app.listen(PORT, () => {
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
+  startTopupCardArchiveScheduler();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
   startConfirmationDeliveryMonitor();
