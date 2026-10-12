@@ -11,6 +11,10 @@ assert(source.includes("💰 ${money(priceCents)} JOD"), "التأكيد يعر�
 assert(!source.includes("tripTime ? `🕒 ${tripTime}`"), "التأكيد المختصر لا يعرض وقت الرحلة");
 assert(source.includes("function finalBookingConfirmationOrderNo"), "يمكن تتبع رقم الطلب من رسالة التثبيت");
 assert(source.includes("function finalBookingCancellationText"), "يوجد نص مستقل للرفض أو الإلغاء");
+assert(source.includes("🔴 إلغاء الحجز #${order.order_no}"), "الإلغاء يعرض رقم الحجز");
+assert(source.includes("📍 ${order.origin || \"غير محدد\"} ← ${order.destination || \"غير محدد\"}"), "الإلغاء يعرض المسار");
+assert(source.includes("💰 ${money(order.price_cents)} JOD"), "الإلغاء يعرض قيمة الحجز");
+assert(source.includes("↩️ عُكست التسوية ولا توجد عمولة."), "الإلغاء يوضح عكس التسوية وعدم وجود عمولة");
 assert(source.includes("Image booking cards are disabled"), "بطاقات الصور معطلة");
 assert(!source.includes("sendFinalBookingCard("), "لا يوجد إرسال لبطاقة صورة عند تثبيت الطلب");
 assert(!source.includes('client.sendMessage(target.from, `تم تثبيت الطلب:'), "لا توجد رسالة مطولة خارج التأكيد المختصر");
