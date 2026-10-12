@@ -1306,14 +1306,8 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
-  const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-CARD-${sourceKey}`;
-  const title = "تنبيه: قبول غير معتمد";
-  const message = [
-    "⚠️ تنبيه للمجموعة:",
-    "تعذّر حذف رسالة «تم» تلقائيًا، لكنها مرفوضة وغير معتمدة بسبب عدم كفاية رصيد الكابتن.",
-    `الرصيد الحالي: ${money(balanceCents)} JOD | العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    "لن يتم اعتماد الطلب أو إجراء أي تسوية بناءً على هذه الرسالة.",
-  ].join("\n");
+  const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
+  const message = "تم إلغاء الرحلة لعدم استكفاء الرصيد";
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
@@ -1322,8 +1316,8 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const notificationId = row.lastInsertRowid || existing?.id;
   if (!notificationId) return { status: "duplicate" };
   try {
-    const result = await sendCompanyOperationsCard(targetGroupId, title, message.split("\n"), { returnMessage: true });
-    const deliveryStatus = result?.sent && result?.card ? "sent" : result?.uncertain ? "uncertain" : "failed";
+    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
     const messageId = result?.messageId || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
     audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
@@ -1341,11 +1335,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     requiredCents,
     sourceMessageId: messageId,
   });
-  const alertConfirmed = Boolean(
-    correction &&
-    ["sent", "already_sent"].includes(correction.status) &&
-    correction.messageId,
-  );
+  const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status) && correction.messageId);
   if (!alertConfirmed) {
     return {
       correction,
