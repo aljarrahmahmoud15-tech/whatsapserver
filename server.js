@@ -3928,7 +3928,6 @@ function finalBookingConfirmationText({ orderNo, executorName, downloaderName, c
     `🚕 المنفذ: ${String(executorName || "غير مسجل")}`,
     origin || destination ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
     Number.isFinite(Number(priceCents)) ? `💰 ${money(priceCents)} JOD` : "",
-    tripTime ? `🕒 ${tripTime}` : "",
   ].filter(Boolean).join("\n");
 }
 function finalBookingConfirmationOrderNo(body) {
