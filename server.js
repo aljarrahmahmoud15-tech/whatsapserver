@@ -3906,7 +3906,8 @@ const confirmationDeliveryInFlight = new Set();
 const confirmationSendQueue = [];
 const confirmationQueuedOrderIds = new Set();
 let confirmationSendQueueRunning = false;
-const CONFIRMATION_RETRY_BACKOFF_MS = 120000;
+// Keep confirmation retries responsive; order_id plus the delivery row remain idempotent.
+const CONFIRMATION_RETRY_BACKOFF_MS = Math.max(5000, Number(process.env.CONFIRMATION_RETRY_BACKOFF_MS || 5000));
 const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
 const CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS = Math.max(30000, Number(process.env.CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS || 60000));
@@ -4163,6 +4164,7 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
 }
 async function retryFailedBookingConfirmations() {
   if (!client || !isReady) return { attempted: 0, sent: 0, suppressed: 0 };
+  const retryCutoff = new Date(Date.now() - CONFIRMATION_RETRY_BACKOFF_MS).toISOString();
   const rows = db.prepare(`
     SELECT d.order_id,d.group_id,d.status,d.attempts,
            o.order_no,o.price_cents,o.origin,o.destination,o.trip_time,
@@ -4174,10 +4176,10 @@ async function retryFailedBookingConfirmations() {
     LEFT JOIN users downloader ON downloader.id=o.producer_user_id
     WHERE d.status IN ('failed','pending')
       AND (d.attempts < ? OR d.final_recovery_attempts < ?)
-      AND julianday(d.updated_at) <= julianday('now', '-120 seconds')
+      AND d.updated_at <= ?
     ORDER BY d.updated_at ASC
     LIMIT ?
-  `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS, 20);
+  `).all(MAX_CONFIRMATION_DELIVERY_ATTEMPTS, MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS, retryCutoff, 20);
   const result = { attempted: 0, sent: 0, suppressed: 0 };
   for (const row of rows) {
     result.attempted += 1;
