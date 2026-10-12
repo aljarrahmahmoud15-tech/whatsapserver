@@ -846,6 +846,16 @@ async function resolveWhatsAppRecipientId(phoneValue) {
     if (/@lid$/.test(serialized)) persistWhatsappIdentity(serialized, phone, "recipient_resolution");
     return serialized;
   }
+  // WhatsApp LID migration can make getNumberId return no usable id even
+  // when the captain is registered. Ask the migration API directly before
+  // falling back to the legacy contact lookup.
+  if (typeof client.getContactLidAndPhone === "function") {
+    const mappings = await withTimeout(client.getContactLidAndPhone([`${phone}@c.us`]), 10000, []);
+    const mapping = Array.isArray(mappings) ? mappings[0] : mappings;
+    const lid = serializedWhatsappUserId(mapping?.lid);
+    const mappedPhone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+    if (/@lid$/.test(lid) && mappedPhone === phone && persistWhatsappIdentity(lid, phone, "recipient_lid_resolution")) return lid;
+  }
   const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 10000, null);
   const contactId = String(contact?.id?._serialized || contact?.id || "").trim();
   if (/@(c\.us|lid)$/.test(contactId)) {
