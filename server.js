@@ -6358,9 +6358,33 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     msg.hasQuotedMsg || msg.quotedStanzaID || msg.quotedMessageId || msg._data?.quotedStanzaID
       || msg._data?.quotedMessageId || msg._data?.quotedMsgId || msg._data?.quotedMsg
   );
+  const quotedMessageIdFromEvent = [
+    msg.quotedStanzaID,
+    msg.quotedMessageId,
+    msg._data?.quotedStanzaID,
+    msg._data?.quotedMessageId,
+    msg._data?.quotedMsgId,
+    msg._data?.quotedMsg?.id?._serialized,
+    msg._data?.quotedMsg?.id?.id,
+  ].map((value) => String(value || "").trim()).find(Boolean) || null;
   let acceptanceMode = "quoted";
   let candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
-  if (!quoted && quoteMetadataPresent) {
+  // WhatsApp can expose the quote metadata while getQuotedMsgObj returns null
+  // or a wrapper without the canonical source ID. Match the raw stanza ID
+  // against the candidate core before abandoning the acceptance.
+  if (!candidate && quotedMessageIdFromEvent) {
+    candidate = findOrderByQuotedId(groupId, quotedMessageIdFromEvent);
+    if (candidate) {
+      acceptanceMode = "quoted_id_fallback";
+      logOrderTrace("acceptance_quote_id_fallback_match", {
+        groupKey: orderTraceKey(groupId),
+        acceptanceKey: orderTraceKey(messageId),
+        quotedKey: orderTraceKey(quotedMessageIdFromEvent),
+        candidateId: candidate.id,
+      });
+    }
+  }
+  if (!candidate && !quoted && quoteMetadataPresent) {
     logOrderTrace("acceptance_quote_lookup_failed", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),

@@ -13,6 +13,10 @@ const registerIdentityIndex = server.indexOf('persistWhatsappIdentity(identityVa
 assert.ok(registerIdentityIndex >= 0 && registerIdentityIndex < registerGuardIndex, 'LID identity is persisted before the balance rejection can return');
 assert.match(server, /if \(acceptanceResult\.state === "insufficient_balance"\)/);
 assert.match(server, /acceptanceMode,/);
+assert.match(server, /const quotedMessageIdFromEvent = \[/);
+assert.match(server, /acceptance_quote_id_fallback_match/);
+assert.match(server, /acceptanceMode = "quoted_id_fallback"/);
+assert.match(server, /candidate = findOrderByQuotedId\(groupId, quotedMessageIdFromEvent\)/);
 const rejectionStart = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
 const rejectionEnd = server.indexOf('if (["captain_ineligible"', rejectionStart);
 assert.match(server.slice(rejectionStart, rejectionEnd), /deleteAcceptanceOnlyAfterGroupAlert\(/);
