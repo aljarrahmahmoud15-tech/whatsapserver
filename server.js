@@ -1307,6 +1307,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
+  const title = "إلغاء الرحلة";
   const message = "تم إلغاء الرحلة لعدم استكفاء الرصيد";
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
