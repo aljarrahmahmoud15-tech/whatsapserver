@@ -3566,11 +3566,14 @@ function registerAcceptance({ groupId, messageId, senderPhone, senderName, candi
   }
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return { state: "producer_missing_or_same_captain", captain, producer };
-  const balanceGuard = acceptanceBalanceGuard(candidate, captain);
-  if (!balanceGuard.allowed) return { ...balanceGuard, captain, producer };
+  // Persist the sender's LID before the balance guard returns. Low-balance
+  // rejections still need the LID↔PN mapping to re-find and revoke the exact
+  // acceptance message after the live object leaves memory.
   for (const identityValue of [candidate.acceptance_author, candidate.acceptance_author_lid]) {
     if (/@lid$/i.test(serializedWhatsappUserId(identityValue))) persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender");
   }
+  const balanceGuard = acceptanceBalanceGuard(candidate, captain);
+  if (!balanceGuard.allowed) return { ...balanceGuard, captain, producer };
   const recorded = db.transaction(() => {
     const stamp = now();
     const inserted = db.prepare("INSERT OR IGNORE INTO order_candidate_acceptances(candidate_id,captain_user_id,acceptance_message_id,acceptance_mode,status,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?)").run(candidate.id, captain.id, messageId, normalizedAcceptanceMode, stamp, stamp);
