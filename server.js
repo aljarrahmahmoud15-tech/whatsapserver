@@ -10837,12 +10837,32 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       if (!canSenderRevoke && !canAdminRevoke) return { ok: false, reason: "revoke_not_permitted", canSenderRevoke, canAdminRevoke };
       const { Cmd } = window.require("WAWebCmd");
       const modern = window.WWebJS.compareWwebVersions(window.Debug.VERSION, ">=", "2.3000.0");
-      if (modern) await Cmd.sendRevokeMsgs(chat, { list: [message], type: "message" }, { clearMedia: true });
-      else await Cmd.sendRevokeMsgs(chat, [message], { clearMedia: true, type: message.id.fromMe ? "Sender" : "Admin" });
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const current = collections.Msg.get(id) || message;
-      const revoked = Boolean(current.isRevoked || current.revoked || current.type === "revoked");
-      return { ok: revoked, requested: true, canSenderRevoke, canAdminRevoke, revoked, currentType: current.type || null, currentBody: String(current.body || current.text || "").trim() };
+      const revokeAttempts = modern
+        ? [
+            { payload: { list: [message], type: "message" }, options: { clearMedia: true } },
+            { payload: { list: [message], type: "Admin" }, options: { clearMedia: true } },
+          ]
+        : [
+            { payload: [message], options: { clearMedia: true, type: message.id.fromMe ? "Sender" : "Admin" } },
+            { payload: [message], options: { clearMedia: true, type: "Admin" } },
+          ];
+      let lastCurrent = message;
+      let lastRevokeError = null;
+      for (const attempt of revokeAttempts) {
+        try {
+          await Cmd.sendRevokeMsgs(chat, attempt.payload, attempt.options);
+        } catch (error) {
+          lastRevokeError = String(error?.message || error).slice(0, 240);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        lastCurrent = collections.Msg.get(id) || message;
+        const current = lastCurrent;
+        const revoked = Boolean(current.isRevoked || current.revoked || current.type === "revoked");
+        if (revoked) {
+          return { ok: true, requested: true, canSenderRevoke, canAdminRevoke, revoked: true, revokeType: attempt.payload.type || attempt.options.type, currentType: lastCurrent.type || null, currentBody: String(lastCurrent.body || lastCurrent.text || "").trim() };
+        }
+      }
+      return { ok: false, requested: true, canSenderRevoke, canAdminRevoke, revoked: false, currentType: lastCurrent.type || null, currentBody: String(lastCurrent.body || lastCurrent.text || "").trim(), revokeError: lastRevokeError };
     } catch (error) {
       return { ok: false, reason: String(error?.message || error).slice(0, 240), stack: String(error?.stack || "").slice(0, 800) };
     }
