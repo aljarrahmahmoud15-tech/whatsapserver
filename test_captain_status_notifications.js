@@ -21,6 +21,12 @@ assert.match(server, /تم استلام طلب تسجيلك، وبانتظار �
 assert.match(server, /تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك/);
 assert.match(server, /تم إرسال بطاقة دخولك إلى واتساب/);
 assert.match(server, /تم تسليم بطاقة الدخول إلى واتسابك/);
+assert.match(server, /مرحبًا بك يا كابتن/);
+assert.match(server, /مرحبًا بك، حسابك جاهز للدخول/);
+assert.match(server, /رابط الدخول: \$\{captainLoginUrl\(baseUrl\)\}/);
+assert.match(server, /اختر WhatsApp واطلب رمز الدخول/);
+assert.doesNotMatch(server, /الخطوة 1: افتح رابط الدخول المباشر المرفق/);
+assert.doesNotMatch(server, /لا تستخدم رابطًا آخر ولا تشارك رمز الدخول/);
 assert.match(server, /message\.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH/);
 assert.match(server, /CAPTAIN-REQUEST-RECEIVED-\$\{invite\.id\}/);
 assert.match(server, /CAPTAIN-APPROVAL-\$\{id\}/);

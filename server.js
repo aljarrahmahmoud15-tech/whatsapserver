@@ -2565,15 +2565,11 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const whatsappAuth = normalizeCaptainAuthMethod(prepared.captain_auth_method) === "whatsapp";
   const lines = [
     `الكابتن: ${prepared.name || "حساب الكابتن"}`,
-    "تم تسجيلك لدينا ككابتن، وحسابك جاهز للدخول.",
-    `رابط الدخول المباشر: ${captainLoginUrl(baseUrl)}`,
-    "الخطوة 1: افتح رابط الدخول المباشر المرفق.",
-    whatsappAuth ? "الخطوة 2: اختر WhatsApp واطلب رمز التحقق على رقمك." : "الخطوة 2: أدخل رقم هاتفك والرقم السري.",
-    "الخطوة 3: اضغط «دخول البوابة» للوصول إلى حسابك.",
-    whatsappAuth ? "رمز WhatsApp صالح لمدة 10 دقائق ويُرسل عند الطلب." : (prepared.temporaryPin ? `الرقم السري المؤقت: ${prepared.temporaryPin}` : "الرقم السري محفوظ في النظام."),
-    "لا تستخدم رابطًا آخر ولا تشارك رمز الدخول مع أي شخص."
+    "مرحبًا بك، حسابك جاهز للدخول.",
+    `رابط الدخول: ${captainLoginUrl(baseUrl)}`,
+    whatsappAuth ? "اختر WhatsApp واطلب رمز الدخول." : "أدخل رقم الهاتف والرقم السري.",
   ];
-  const cardResult = await sendCompanyOperationsCard(`${phone}@c.us`, "تم تجهيز دخول الكابتن", lines, { returnMessage: true }).catch(() => ({ sent: false, messageId: null }));
+  const cardResult = await sendCompanyOperationsCard(`${phone}@c.us`, "مرحبًا بك يا كابتن", lines, { returnMessage: true }).catch(() => ({ sent: false, messageId: null }));
   const sent = Boolean(cardResult && cardResult.sent);
   if (sent) {
     const cardMessageId = cardResult.messageId || null;
