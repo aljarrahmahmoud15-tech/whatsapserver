@@ -3626,7 +3626,9 @@ function acceptanceBalanceGuard(candidate, captain) {
   if (!walletOwner) return { allowed: false, state: "stale" };
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
-  if (balanceCents < requiredCents) {
+  // A non-negative balance below the order fee blocks acceptance and revokes «تم».
+  // Negative balances follow the approved debt policy and may continue through settlement.
+  if (balanceCents >= 0 && balanceCents < requiredCents) {
     return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
   }
   return { allowed: true, walletOwner, balanceCents, requiredCents };
