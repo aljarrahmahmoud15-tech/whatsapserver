@@ -47,15 +47,14 @@
       <form id="registration-form" class="login-card">
         <div class="eyebrow">CAPTAIN INVITATION</div>
         <h1>بطاقة دعوة الكابتن</h1>
-        <p class="muted">أدخل اسمك ورقم هاتفك، ثم اختر الدخول برمز سري من 5 أرقام أو برمز تحقق يصل إلى WhatsApp على الرقم نفسه.</p>
+        <p class="muted">أدخل اسمك ورقم هاتفك، ثم استخدم رقم هاتفك ورمز الدخول السري المكوّن من 5 أرقام.</p>
         <label class="label">اسم الكابتن<input class="input" id="reg-name" autocomplete="name" required></label>
         <label class="label">رقم الهاتف<input class="input" id="reg-phone" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required></label>
-        <label class="label">طريقة المصادقة<select class="input" id="reg-auth-method"><option value="pin">رقم الهاتف + رمز سري من 5 أرقام</option><option value="whatsapp">رمز تحقق على WhatsApp لنفس الرقم</option></select></label>
         <div id="reg-pin-fields"><label class="label">رقم سري من 5 أرقام<input class="input" id="reg-pin" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required></label>
         <label class="label">تأكيد الرقم السري<input class="input" id="reg-pin-confirm" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password" required></label></div>
         <button class="primary" id="register-btn" type="submit">إرسال الطلب للشركة</button>
         <div id="register-error" class="error" role="alert"></div>
-        <div class="hint">لن يُفعل الحساب إلا بعد موافقة الشركة. رمز WhatsApp صالح لمدة 10 دقائق.</div>
+        <div class="hint">لن يُفعل الحساب إلا بعد موافقة الشركة. استخدم رمز الدخول السري من 5 أرقام عند تسجيل الدخول.</div>
       </form>
     </section>
     <section id="pending" class="login hidden">
@@ -124,10 +123,9 @@
     let submittedCaptain = null;
     let invitePoll = null;
     function syncAuthFields() {
-      const registrationMethod = $('#reg-auth-method')?.value || 'pin';
-      $('#reg-pin-fields')?.classList.toggle('hidden', registrationMethod !== 'pin');
-      if ($('#reg-pin')) $('#reg-pin').required = registrationMethod === 'pin';
-      if ($('#reg-pin-confirm')) $('#reg-pin-confirm').required = registrationMethod === 'pin';
+      $('#reg-pin-fields')?.classList.remove('hidden');
+      if ($('#reg-pin')) $('#reg-pin').required = true;
+      if ($('#reg-pin-confirm')) $('#reg-pin-confirm').required = true;
       if ($('#pin')) $('#pin').required = true;
     }
     async function api(url, options = {}) {
@@ -176,13 +174,12 @@
       await api('/api/captain/login', {method:'POST', body:JSON.stringify({phone, pin})});
       await loadOverview(); showSection('app');
     }
-    $('#reg-auth-method')?.addEventListener('change', syncAuthFields);
     syncAuthFields();
     $('#registration-form').addEventListener('submit', async (event) => {
       event.preventDefault(); const button = $('#register-btn'); button.disabled = true; $('#register-error').textContent = '';
-      const name = $('#reg-name').value.trim(), phone = $('#reg-phone').value.trim(), authMethod = $('#reg-auth-method').value, pin = $('#reg-pin').value.trim(), confirmPin = $('#reg-pin-confirm').value.trim();
-      if (authMethod === 'pin' && pin !== confirmPin) { $('#register-error').textContent = 'الرقمان السريان غير متطابقين'; button.disabled = false; return; }
-      try { const applied = await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,authMethod,pin:authMethod==='pin'?pin:''})}); if (applied.token) { inviteToken = applied.token; history.replaceState({}, '', '/captain?invite=' + encodeURIComponent(inviteToken)); } submittedCaptain = {phone,pin,authMethod}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
+      const name = $('#reg-name').value.trim(), phone = $('#reg-phone').value.trim(), authMethod = 'pin', pin = $('#reg-pin').value.trim(), confirmPin = $('#reg-pin-confirm').value.trim();
+      if (pin !== confirmPin) { $('#register-error').textContent = 'الرقمان السريان غير متطابقين'; button.disabled = false; return; }
+      try { const applied = await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,authMethod,pin})}); if (applied.token) { inviteToken = applied.token; history.replaceState({}, '', '/captain?invite=' + encodeURIComponent(inviteToken)); } submittedCaptain = {phone,pin,authMethod}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
     });
     $('#entry-register')?.addEventListener('click', () => showSection('registration'));
     $('#entry-login')?.addEventListener('click', () => showSection('login'));
