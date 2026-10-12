@@ -3707,9 +3707,8 @@ function isCaptainAcceptance(text) {
   return /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(normalized);
 }
 function calculateOrderSettlement(row) {
-  if (Number(row?.booking_mode) === 1) {
-    return { orderKind: "booking", grossCents: Number(row.price_cents || 0), externalOrderValueCents: Number(row.price_cents || 0), producerRateBps: 0, producerFeeCents: 100, companyCents: 0, producerNetCents: 100, companyFeeCents: 0, captainFeeCents: 100, confirmingCaptainFeeCents: 100, executorWalletCreditCents: 0, captainGrossCents: 0 };
-  }
+  // booking_mode controls the quoted-reply workflow only; it must not override
+  // the financial policy selected by order_kind (including price orders).
   return calculateSettlement({ priceCents: row.price_cents, orderKind: row.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS });
 }
 function acceptanceBalanceGuard(candidate, captain) {
