@@ -3939,7 +3939,11 @@ function finalBookingConfirmationOrderNo(body) {
 }
 function finalBookingCancellationText(order = null) {
   if (order?.order_no) {
+    const downloaderName = order.producer_name_snapshot || order.producer_name || order.downloader_name || order.producer?.name || "غير محدد";
+    const executorName = order.captain_name_snapshot || order.captain_name || order.executor_name || order.captain?.name || "غير محدد";
     return [
+      `🏠 المنزل: ${downloaderName}`,
+      `🚕 المنفذ: ${executorName}`,
       `🔴 إلغاء الحجز #${order.order_no}`,
       `📍 ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
       `💰 ${money(order.price_cents)} JOD`,

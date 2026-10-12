@@ -11,6 +11,8 @@ assert(source.includes("💰 ${money(priceCents)} JOD"), "التأكيد يعر�
 assert(!source.includes("tripTime ? `🕒 ${tripTime}`"), "التأكيد المختصر لا يعرض وقت الرحلة");
 assert(source.includes("function finalBookingConfirmationOrderNo"), "يمكن تتبع رقم الطلب من رسالة التثبيت");
 assert(source.includes("function finalBookingCancellationText"), "يوجد نص مستقل للرفض أو الإلغاء");
+assert(source.includes("🏠 المنزل: ${downloaderName}"), "الإلغاء يعرض اسم المنزل");
+assert(source.includes("🚕 المنفذ: ${executorName}"), "الإلغاء يعرض اسم المنفذ");
 assert(source.includes("🔴 إلغاء الحجز #${order.order_no}"), "الإلغاء يعرض رقم الحجز");
 assert(source.includes("📍 ${order.origin || \"غير محدد\"} ← ${order.destination || \"غير محدد\"}"), "الإلغاء يعرض المسار");
 assert(source.includes("💰 ${money(order.price_cents)} JOD"), "الإلغاء يعرض قيمة الحجز");
