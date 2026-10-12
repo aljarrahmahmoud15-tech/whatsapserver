@@ -126,13 +126,14 @@ const COMPANY_BRAND_ENGLISH = "TAKE&GO";
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
-// Approved immutable settlement policy: the value after "السعر" is external;
-// 13% goes to the captain who posted the order, 2% to the company, and both
-// are charged to the confirming captain (15% total). The fare never credits B.
+// Approved immutable settlement policy: the value after "السعر" is external.
+// Normal orders use 13% downloader + 2% company, charged to the confirming captain.
+// Price orders use 20% downloader + 0% company, charged to the confirming captain.
 const COMPANY_RATE_BPS = 200;
 const PRODUCER_RATE_BPS = 1300;
-const SPECIAL_ORDER_RATE_BPS = 1300;
+const SPECIAL_ORDER_RATE_BPS = 2000;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 0;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -3709,11 +3710,11 @@ function calculateOrderSettlement(row) {
   if (Number(row?.booking_mode) === 1) {
     return { orderKind: "booking", grossCents: Number(row.price_cents || 0), externalOrderValueCents: Number(row.price_cents || 0), producerRateBps: 0, producerFeeCents: 100, companyCents: 0, producerNetCents: 100, companyFeeCents: 0, captainFeeCents: 100, confirmingCaptainFeeCents: 100, executorWalletCreditCents: 0, captainGrossCents: 0 };
   }
-  return calculateSettlement({ priceCents: row.price_cents, orderKind: row.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+  return calculateSettlement({ priceCents: row.price_cents, orderKind: row.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS });
 }
 function acceptanceBalanceGuard(candidate, captain) {
   if (!candidate || !captain) return { allowed: false, state: "stale" };
-  const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(candidate) : calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+  const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(candidate) : calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS });
   const company = companyUser();
   const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
   if (!walletOwner) return { allowed: false, state: "stale" };
@@ -4250,7 +4251,7 @@ function formatAcceptance(order, captain, producer) {
     `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 15%" : "طلب عادي · خصم 15%"}`,
+    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر السعر · خصم 20%" : "طلب عادي · خصم 15%"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
     "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
@@ -6896,7 +6897,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
     if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
-    const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(current) : calculateSettlement({ priceCents: current.price_cents, orderKind: current.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBPS: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+    const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(current) : calculateSettlement({ priceCents: current.price_cents, orderKind: current.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBPS: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS });
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "stale" };
@@ -6971,7 +6972,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
       regularProducerRateBps: PRODUCER_RATE_BPS,
       specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
       companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
+      specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
     });
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
