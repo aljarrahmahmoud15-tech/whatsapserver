@@ -8168,7 +8168,7 @@ app.get("/api/captain/overview", requireCaptain, (req, res) => {
     COALESCE(SUM(CASE WHEN s.producer_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN 1 ELSE 0 END),0) AS posted_orders,
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN 1 ELSE 0 END),0) AS executed_orders
     FROM order_settlements s JOIN orders o ON o.id=s.order_id`).get(user.id, user.id, user.id, user.id);
-  const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
+  const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at,code_ciphertext FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at, activationCode: card.status === "issued" && card.code_ciphertext ? decryptCardCode(card.code_ciphertext) : null }));
   res.setHeader("Cache-Control", "no-store");
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
@@ -9011,25 +9011,39 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
       card = db.prepare("SELECT * FROM topup_cards WHERE id=?").get(result.lastInsertRowid);
       audit("topup_card.issued", "topup_card", card.id, { valueCents: amountCents, captainId: captain.id, issueIdempotencyKey, source: "company_direct_transfer" });
     }
-    if (!client || !isReady) return res.status(503).json({ error: "تم إصدار بطاقة الرصيد لكن WhatsApp غير جاهز للإرسال حاليًا", cardId: card.id, status: "issued" });
-    try {
-      const code = decryptCardCode(card.code_ciphertext);
-      const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-      const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
-      const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
-      const recipient = await resolveWhatsAppRecipientId(captain.phone);
-      if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
-      const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
-      if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
-      db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
-      audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
-      notifyCaptainCreditSent({ captain, valueCents: amountCents, cardId: card.id });
-      void notifyOperations({ event: "topup_card.sent", title: "تأكيد تحويل رصيد عبر بطاقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم إصدار بطاقة الرصيد من الشركة وإرسالها للكابتن.", "يُضاف الرصيد عند استرداد البطاقة من الكابتن."], ownersOnly: true });
-      return res.status(201).json({ success: true, cardId: card.id, status: "sent", balance: money(captain.wallet_cents), credited: "0.00", message: "تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ سيُضاف الرصيد عند إدخال رمز البطاقة." });
-    } catch (error) {
-      audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", error: String(error?.message || error) });
-      return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
+    const activationCode = decryptCardCode(card.code_ciphertext);
+    let whatsappSent = false;
+    let deliveryMode = "captain_app";
+    if (client && isReady) {
+      try {
+        const appUrl = captainAppUrl(captainInviteBaseUrl(req));
+        const caption = brandedMessage("بطاقة شحن رسمية", ["الكابتن: " + captain.name, "القيمة: " + money(amountCents) + " JOD", "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", "الدخول: " + appUrl, "أدخل رمز البطاقة في تطبيق Captain لإضافة الرصيد مباشرة."]);
+        const recipient = await resolveWhatsAppRecipientId(captain.phone);
+        if (recipient) {
+          let sent = false;
+          try {
+            const media = await renderTopupCardMedia({ cardId: card.id, code: activationCode, valueCents: amountCents, captainName: captain.name, appUrl });
+            sent = Boolean(await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000));
+            if (sent) deliveryMode = "whatsapp_image";
+          } catch (imageError) {
+            audit("topup_card.image_delivery_failed", "topup_card", card.id, { captainId: captain.id, error: String(imageError?.message || imageError).slice(0, 180) });
+          }
+          if (!sent) {
+            sent = Boolean(await sendServer2DirectAtMostOnce(recipient, caption, undefined, 30000));
+            if (sent) deliveryMode = "whatsapp_text_fallback";
+          }
+          if (sent) {
+            whatsappSent = true;
+            db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), "WALLET-DELIVERY-" + idempotencyKey, card.id);
+          }
+        }
+      } catch (deliveryError) {
+        audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", error: String(deliveryError?.message || deliveryError).slice(0, 180) });
+      }
     }
+    audit("topup_card.issued_app_and_whatsapp", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer", deliveryMode, whatsappSent });
+    void notifyOperations({ event: "topup_card.issued_app_and_whatsapp", title: "تأكيد إصدار بطاقة رصيد", lines: ["الكابتن: " + captain.name, "القيمة: " + money(amountCents) + " JOD", "رقم البطاقة الداخلي: #" + card.id, whatsappSent ? "تم إرسال البطاقة عبر WhatsApp (" + deliveryMode + " )." : "البطاقة محفوظة في تطبيق Captain، وتعذر إرسال WhatsApp مؤقتًا.", "رمز التفعيل ظاهر في تطبيق Captain."], ownersOnly: true });
+    return res.status(201).json({ success: true, cardId: card.id, status: "issued", balance: money(captain.wallet_cents), credited: "0.00", activationCode, whatsappSent, deliveryMode, message: whatsappSent ? "تم إصدار البطاقة داخل تطبيق Captain وإرسالها عبر WhatsApp." : "تم إصدار البطاقة داخل تطبيق Captain، وسيظهر رقم التفعيل هناك." });
   }
   const signedAmount = direction === "credit" ? amountCents : -amountCents;
   const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
