@@ -2350,8 +2350,16 @@ function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
   if (!value) return false;
   if (CLEAN_INSTANCE && (!WHATSAPP_GROUP_ID || !isConfiguredGroup(WHATSAPP_GROUP_ID))) return false;
-  // Clean is group-only: never send messages, media, invitations, or reactions to direct chats.
-  if (CLEAN_INSTANCE && !value.endsWith("@g.us")) return false;
+  // Clean is group-first, but allow direct delivery only to an active, verified captain.
+  // This is required for captain top-up cards and operational captain notifications.
+  if (CLEAN_INSTANCE && !value.endsWith("@g.us")) {
+    const directCaptain = value.endsWith("@lid")
+      ? db.prepare("SELECT 1 FROM whatsapp_identities wi JOIN users u ON u.phone=wi.phone WHERE wi.whatsapp_lid=? AND wi.active=1 AND u.role='captain' AND u.active=1 AND u.account_status='active' LIMIT 1").get(value)
+      : value.endsWith("@c.us")
+        ? db.prepare("SELECT 1 FROM users WHERE phone=? AND role='captain' AND active=1 AND account_status='active' LIMIT 1").get(phoneWithCountry(value.slice(0, -5)))
+        : null;
+    if (!directCaptain) return false;
+  }
   if (value.endsWith("@g.us")) return value === configuredRuntimeGroupId() && (!WHATSAPP_GROUP_ID || value === WHATSAPP_GROUP_ID);
   // A LID is not globally meaningful across WhatsApp sessions. Accept it
   // only when this service has verified the mapping in its own SQLite store;
