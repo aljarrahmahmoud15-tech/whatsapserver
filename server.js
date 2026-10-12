@@ -11724,7 +11724,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
   if (ticket.category !== "topup_card") return res.status(409).json({ error: "هذا الطلب ليس طلب شحن رصيد" });
   if (["resolved", "closed"].includes(ticket.status)) return res.status(409).json({ error: "تم تنفيذ هذا الطلب مسبقًا" });
   const phone = phoneWithCountry(ticket.account_ref || "");
-  const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  const captain = findCaptainByPhone(phone, { activeOnly: true });
   if (!captain || !captain.active) return res.status(409).json({ error: "الكابتن غير موجود أو غير نشط" });
   const valueCents = Number(ticket.requested_value_cents || 0);
   if (valueCents <= 0) return res.status(400).json({ error: "قيمة الشحن غير صالحة" });
@@ -11748,17 +11748,27 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
     const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
-    const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
     const recipient = await resolveWhatsAppRecipientId(phone);
     if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
-    const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
+    let deliveryMode = "media";
+    let sent = null;
+    try {
+      const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
+      sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
+    } catch (_) {
+      sent = null;
+    }
+    if (!sent) {
+      deliveryMode = "text_fallback";
+      sent = await sendServer2DirectAtMostOnce(recipient, topupCardTextMessage({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl }), undefined, 30000);
+    }
     if (!sent) throw new Error("send timeout");
     db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
-    audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.id, captainId: captain.id });
+    audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.id, captainId: captain.id, deliveryMode });
     notifyCaptainCreditSent({ captain, valueCents, cardId: card.id });
-    void notifyOperations({ event: "topup_card.sent", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "تم توليد البطاقة وإرسالها عبر WhatsApp.", "يُضاف الرصيد عند إدخال رمز البطاقة."], ownersOnly: true });
-    res.json({ success: true, status: "resolved", cardId: card.id });
+    void notifyOperations({ event: deliveryMode === "media" ? "topup_card.sent" : "topup_card.sent_text_fallback", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, deliveryMode === "media" ? "تم توليد البطاقة المصوّرة وإرسالها عبر WhatsApp." : "تعذر إرسال الصورة، فتم إرسال البطاقة نصيًا عبر WhatsApp.", "يُضاف الرصيد عند إدخال رمز البطاقة."], ownersOnly: true });
+    res.json({ success: true, status: "resolved", cardId: card.id, deliveryMode });
   } catch (error) {
     db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.id} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);
     res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id });
