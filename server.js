@@ -842,10 +842,16 @@ async function resolveWhatsAppRecipientId(phoneValue) {
   if (persisted?.whatsapp_lid) return String(persisted.whatsapp_lid).trim();
   const resolved = await withTimeout(client.getNumberId(phone), 20000, null);
   const serialized = String(resolved?._serialized || "").trim();
-  if (/@(c\.us|lid)$/.test(serialized)) return serialized;
+  if (/@(c\.us|lid)$/.test(serialized)) {
+    if (/@lid$/.test(serialized)) persistWhatsappIdentity(serialized, phone, "recipient_resolution");
+    return serialized;
+  }
   const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 10000, null);
   const contactId = String(contact?.id?._serialized || contact?.id || "").trim();
-  if (/@(c\.us|lid)$/.test(contactId)) return contactId;
+  if (/@(c\.us|lid)$/.test(contactId)) {
+    if (/@lid$/.test(contactId)) persistWhatsappIdentity(contactId, phone, "recipient_resolution");
+    return contactId;
+  }
   const registered = typeof client.isRegisteredUser === "function"
     ? await withTimeout(client.isRegisteredUser(phone), 10000, false)
     : false;
