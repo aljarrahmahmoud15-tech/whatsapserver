@@ -9756,6 +9756,45 @@ app.get("/api/admin/audit/order/:orderId", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, readOnly: true, order, candidates, acceptances, audit: auditRows.map((row) => ({ ...row, details: row.details ? JSON.parse(row.details) : null })), reactions, ledger });
 });
+app.get("/api/admin/audit/message-deletion", requireAdmin, (req, res) => {
+  const messageId = String(req.query.messageId || "").trim().slice(0, 500);
+  const requestedLimit = Number(req.query.limit || 20);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
+  const like = messageId ? `%${messageId}%` : null;
+  const rows = db.prepare(`
+    SELECT id,action,entity_type,entity_id,details,created_at
+    FROM audit_logs
+    WHERE action='whatsapp.message_deletion'
+      AND (? IS NULL OR entity_id=? OR details LIKE ?)
+    ORDER BY id DESC LIMIT ?
+  `).all(messageId || null, messageId || null, like, limit);
+  const logs = rows.map((row) => {
+    let details = null;
+    try { details = row.details ? JSON.parse(row.details) : null; } catch (_) { details = { parseError: true }; }
+    return {
+      id: row.id,
+      action: row.action,
+      entityType: row.entity_type,
+      messageId: row.entity_id,
+      createdAt: row.created_at,
+      outcome: details?.outcome || null,
+      revoked: details?.deletionResult?.revoked === true,
+      ok: details?.deletionResult?.ok === true,
+      method: details?.deletionResult?.method || null,
+      reason: details?.deletionResult?.reason || details?.deletionResult?.acknowledgement || null,
+      deletionResult: details?.deletionResult || null,
+      context: details ? {
+        reason: details.reason || null,
+        groupId: details.groupId || null,
+        candidateId: details.candidateId || null,
+        balanceCents: details.balanceCents ?? null,
+        requiredCents: details.requiredCents ?? null,
+      } : null,
+    };
+  });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, readOnly: true, filter: { messageId: messageId || null, limit }, count: logs.length, logs });
+});
 app.patch("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const captain = db.prepare("SELECT id,phone,name,active FROM users WHERE id=? AND role='captain'").get(id);
