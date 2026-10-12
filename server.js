@@ -12146,40 +12146,7 @@ app.post("/api/redeem", (req, res) => {
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
-  if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول بعد قليل" });
-  const code = String(req.body?.code || "").trim().toUpperCase();
-  const redemptionIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
-  if (!/^[A-Z0-9-]{8,80}$/.test(code) || redemptionIdempotencyKey.length < 16 || redemptionIdempotencyKey.length > 100) return res.status(400).json({ error: "أدخل رمز بطاقة صحيحًا" });
-  try {
-    const result = db.transaction(() => {
-      const existingKey = db.prepare("SELECT id,value_cents,redeemed_by FROM topup_cards WHERE redemption_idempotency_key=? LIMIT 1").get(redemptionIdempotencyKey);
-      if (existingKey) {
-        if (Number(existingKey.redeemed_by) !== Number(req.captainSession.userId)) throw new Error("مفتاح العملية مرتبط بحساب آخر");
-        const user = db.prepare("SELECT wallet_cents FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
-        return { balanceCents: Number(user?.wallet_cents || 0), valueCents: existingKey.value_cents, cardId: existingKey.id, alreadyRedeemed: true };
-      }
-      const card = db.prepare("SELECT * FROM topup_cards WHERE code_hash=? LIMIT 1").get(hashCode(code));
-      if (!card) throw new Error("رمز البطاقة غير صحيح");
-      if (card.status !== "issued") throw new Error("تم استخدام هذه البطاقة أو إلغاؤها مسبقًا");
-      if (card.assigned_captain_id && Number(card.assigned_captain_id) !== Number(req.captainSession.userId)) throw new Error("هذه البطاقة مخصصة لكابتن آخر");
-      const user = db.prepare("SELECT id,wallet_cents,active FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
-      if (!user || !user.active) throw new Error("حساب الكابتن غير نشط");
-      const newBalance = Number(user.wallet_cents || 0) + Number(card.value_cents || 0);
-      const stamp = now();
-      const update = db.prepare("UPDATE topup_cards SET status='redeemed',redeemed_by=?,redeemed_at=?,redemption_idempotency_key=? WHERE id=? AND status='issued'").run(user.id, stamp, redemptionIdempotencyKey, card.id);
-      if (!update.changes) throw new Error("تم استخدام هذه البطاقة أو إلغاؤها مسبقًا");
-      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=?").run(newBalance, stamp, user.id);
-      db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, "topup", card.value_cents, newBalance, `CARD-${card.id}`, "شحن بطاقة من بوابة التشغيل", stamp);
-      audit("topup_card.redeemed", "topup_card", card.id, { userId: user.id, valueCents: card.value_cents, source: "captain_portal" }, user.id);
-      return { balanceCents: newBalance, valueCents: card.value_cents, cardId: card.id, alreadyRedeemed: false };
-    })();
-    if (!result.alreadyRedeemed) {
-      const captain = db.prepare("SELECT id,name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
-      void notifyCaptainCreditRedeemed({ captain, valueCents: result.valueCents, balanceCents: result.balanceCents, cardId: result.cardId });
-      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
-    }
-    res.json({ success: true, credited: money(result.valueCents), balance: money(result.balanceCents), currency: "JOD", alreadyRedeemed: result.alreadyRedeemed });
-  } catch (error) { res.status(400).json({ error: error.message || "تعذر استرداد البطاقة" }); }
+  return res.status(403).json({ error: "إضافة الرصيد تتم من المالك فقط؛ لا يمكن للكابتن تفعيل بطاقة أو إضافة رصيد من البوابة" });
 });
 app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
   const captain = db.prepare("SELECT id,name,phone,active FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
