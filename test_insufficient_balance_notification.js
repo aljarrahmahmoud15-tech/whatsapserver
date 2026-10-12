@@ -26,7 +26,7 @@ const helperStart = server.indexOf('async function deleteAcceptanceOnlyAfterGrou
 const correctionIndex = server.indexOf('await notifyOfficialGroupInsufficientAcceptanceDeletionFailure(', helperStart);
 const helperDeleteIndex = server.indexOf('await deleteWhatsAppMessageForEveryone(messageId, {', helperStart);
 assert.ok(correctionIndex >= 0 && helperDeleteIndex > correctionIndex, 'group alert runs before the guarded deletion');
-assert.match(server, /const alertConfirmed = Boolean\(correction && \["sent", "already_sent"\]\.includes\(correction\.status\) && correction\.messageId\)/);
+assert.match(server, /const alertConfirmed = Boolean\(correction && \["sent", "already_sent"\]\.includes\(correction\.status\)\)/);
 assert.match(server, /sendWhatsAppAtMostOnce\(targetGroupId, message, undefined, 20000\)/);
 assert.match(server, /result\?\.message\?\.id\?\._serialized/);
 assert.match(server, /serializedMessageId\(result\?\.message\)/);

@@ -1336,7 +1336,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     requiredCents,
     sourceMessageId: messageId,
   });
-  const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status) && correction.messageId);
+  const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status));
   if (!alertConfirmed) {
     return {
       correction,
