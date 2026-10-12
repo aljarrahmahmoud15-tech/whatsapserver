@@ -1492,6 +1492,7 @@ const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
 // Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
 const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
 const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
+const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST";
 // No live test exception remains enabled after the controlled verification attempt.
 const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set();
 const captainStatusNotificationInFlight = new Set();
@@ -8228,6 +8229,54 @@ app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, asy
   audit("captain.approval_notification.test", "user", captain.id, { deliveryStatus: notice.status, idempotencyKey, duplicate: Boolean(notice.duplicate) });
   if (!['sent', 'delivered'].includes(notice.status)) return res.status(502).json({ error: "تعذر إرسال إشعار الاختبار", status: notice.status, mutation: "none", walletChanged: false });
   res.json({ success: true, status: notice.status, duplicate: Boolean(notice.duplicate), messageId: notice.messageId || null, message: "تم إرسال إشعار الاختبار دون تغيير حالة الحساب أو الرصيد" });
+});
+app.post("/api/admin/captains/:phone/private-media-test", requireAdmin, async (req, res) => {
+  const phone = phoneWithCountry(String(req.params.phone || ""));
+  const operationId = String(req.get("X-Idempotency-Key") || req.body?.operationId || "").trim();
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (!isValidJordanPhone(phone) || req.body?.test !== true || confirmation !== PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION || operationId.length < 16 || operationId.length > 120) {
+    return res.status(400).json({ error: "رقم الكابتن وتأكيد الاختبار ومفتاح التكرار مطلوبون" });
+  }
+  const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE phone=? LIMIT 1").get(phone);
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || !captain.active || captain.account_status !== "active") {
+    return res.status(409).json({ error: "يجب اختيار كابتن مسجل ومعتمد ونشط", mutation: "none", walletChanged: false });
+  }
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(operationId);
+  if (existing && ["sent", "delivered", "uncertain"].includes(existing.delivery_status)) {
+    return res.json({ success: true, duplicate: true, status: existing.delivery_status, messageId: existing.message_id || null, mutation: "none", walletChanged: false });
+  }
+  const title = "اختبار صورة خاصة للكابتن";
+  const message = "اختبار وسائط خاص — لا ينشئ طلبًا ولا يغيّر أي رصيد.";
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,idempotency_key,created_at) VALUES(?,'captain','captain.private_media_test',?,?, 'pending',?,?)").run(phone, title, message, operationId, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (existing) db.prepare("UPDATE notifications SET recipient_phone=?,title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(phone, title, message, existing.id);
+  if (!client || !isReady) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    return res.status(503).json({ error: "WhatsApp غير جاهز للإرسال حاليًا", mutation: "none", walletChanged: false });
+  }
+  let deliveryStatus = "failed";
+  let messageId = null;
+  let errorDetail = null;
+  try {
+    const recipient = await resolveWhatsAppRecipientId(phone);
+    if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
+    const media = await withTimeout(renderOperationsMessageMedia(title, [message, `الكابتن: ${captain.name}`, "هذه صورة اختبار فقط."]), 30000, null);
+    if (!media) throw new Error("private media test render returned no media");
+    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: message }, 30000);
+    deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    messageId = result.message?.id?._serialized || null;
+    errorDetail = result.error || null;
+  } catch (error) {
+    errorDetail = String(error?.message || error).slice(0, 240);
+  }
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit("captain.private_media_test", "user", captain.id, { deliveryStatus, messageId, operationId, mutation: "none", walletChanged: false, error: errorDetail });
+  if (!['sent', 'uncertain'].includes(deliveryStatus)) {
+    return res.status(502).json({ error: "تعذر إرسال صورة الاختبار الخاصة", status: deliveryStatus, detail: errorDetail, mutation: "none", walletChanged: false });
+  }
+  res.json({ success: true, status: deliveryStatus, messageId, operationId, mutation: "none", walletChanged: false, message: "تم إرسال صورة الاختبار الخاصة دون تغيير حالة الحساب أو الرصيد" });
 });
 app.post("/api/captain/login", (req, res) => {
   const pin = String(req.body?.pin || "").trim();
