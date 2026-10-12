@@ -24,6 +24,9 @@ assert.doesNotMatch(deleteGuardBlock, /if \(typeof msg\?\.delete === "function"\
 assert.match(deleteGuardBlock, /try \{\s*deletionResult = await deleteWhatsAppMessageForEveryone\(messageId, \{/s);
 assert.match(server, /whatsapp\.message_deletion/);
 assert.match(server, /function messageIdCandidates\(message\)/);
+assert.match(server, /function messageIdIdentityVariants\(value\)/);
+assert.match(server, /findPersistedWhatsappPhone\(participant\)/);
+assert.match(server, /SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=\? AND active=1/);
 assert.match(server, /for \(const messageId of messageIds\) recentWhatsAppMessages\.set\(messageId/);
 assert.match(server, /messageIdCandidates: messageIdCandidates\(msg\)/);
 assert.match(server, /const requestedMessageIds = \[\.\.\.new Set\(/);

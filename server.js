@@ -5736,13 +5736,34 @@ function messageIdCore(value) {
   const decorated = raw.match(/^(?:true|false)_([^_]+@g\.us)_([^_]+)(?:_|$)/i);
   return decorated ? decorated[2] : raw;
 }
+function messageIdIdentityVariants(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(true|false)_([^_]+@g\.us)_([^_]+)_([^_]+@(?:lid|c\.us))$/i);
+  if (!match) return [];
+  const [, direction, groupId, core, participant] = match;
+  const participants = new Set([participant]);
+  const phone = /@lid$/i.test(participant)
+    ? findPersistedWhatsappPhone(participant)
+    : directJordanPhoneFromWhatsappValue(participant);
+  if (phone) {
+    participants.add(`${phone}@c.us`);
+    if (typeof db !== "undefined") {
+      const mapped = db.prepare("SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=? AND active=1 LIMIT 1").get(phone);
+      if (mapped?.whatsapp_lid) participants.add(String(mapped.whatsapp_lid));
+    }
+  }
+  return [...participants].flatMap((identity) => [
+    `${direction}_${groupId}_${core}_${identity}`,
+    `${core}_${identity}`,
+  ]);
+}
 function messageIdLookupVariants(value) {
   const raw = String(value || "").trim();
   if (!raw) return [];
   const parts = raw.split("_");
   const rawWithoutDirection = parts.slice(2).join("_");
   const core = messageIdCore(raw);
-  return [...new Set([raw, core, rawWithoutDirection].filter(Boolean))];
+  return [...new Set([raw, ...messageIdIdentityVariants(raw), core, rawWithoutDirection].filter(Boolean))];
 }
 async function getWhatsAppMessageByIdVariants(value, timeoutMs = 6000) {
   if (!client || typeof client.getMessageById !== "function") return null;
