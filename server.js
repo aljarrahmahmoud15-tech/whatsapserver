@@ -5734,6 +5734,17 @@ function resolveGroupChatId(message) {
 function serializedMessageId(message) {
   return messageIdCandidates(message)[0] || null;
 }
+function messageIdValueString(value, depth = 0) {
+  if (!value || depth > 4) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (typeof value !== "object") return "";
+  const direct = value._serialized || value.serialized || value.messageId;
+  if (typeof direct === "string" || typeof direct === "number") return String(direct).trim();
+  if (value.id && value.id !== value) return messageIdValueString(value.id, depth + 1);
+  if (value._data && value._data !== value) return messageIdValueString(value._data, depth + 1);
+  if (value.key && value.key !== value) return messageIdValueString(value.key, depth + 1);
+  return "";
+}
 function messageIdCandidates(message) {
   const raw = message && message.id;
   const values = [
@@ -5749,7 +5760,7 @@ function messageIdCandidates(message) {
     message?._data?.id,
     message?._data?.key?._serialized,
     message?._data?.key?.id,
-  ].map((value) => String(value || "").trim()).filter(Boolean);
+  ].map((value) => messageIdValueString(value)).filter(Boolean);
   return [...new Set(values)].sort((left, right) => {
     const leftFull = left.includes("@g.us") ? 1 : 0;
     const rightFull = right.includes("@g.us") ? 1 : 0;
