@@ -1818,15 +1818,11 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
   const title = "تحذير انخفاض رصيد المحفظة";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const topupCents = Math.max(0, CAPTAIN_LOW_BALANCE_WARNING_CENTS - Number(balanceCents));
-  const lines = [
-    `عزيزي الكابتن ${captain.name}،`,
-    `رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
-    `الحد الأدنى للتشغيل هو ${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD.`,
-    `يرجى شحن ${money(topupCents)} JOD على الأقل لتجنب توقف الحساب عند دخول الرصيد في السالب.`,
-    `سبب التنبيه: ${String(reason || "انخفاض الرصيد").trim().slice(0, 160)}`,
+  const message = [
+    "⚠️ تنبيه رصيد",
+    `عزيزي الكابتن ${captain.name}، رصيدك ${money(balanceCents)} JOD. يرجى شحن ${money(topupCents)} JOD لتجنب إيقاف الحساب.`,
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
-  ];
-  const message = brandedMessage(title, lines);
+  ].join("\n");
   const phone = phoneWithCountry(captain.phone);
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.low_balance' AND title=? AND message=? LIMIT 1").get(phone, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };

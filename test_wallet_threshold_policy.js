@@ -53,6 +53,11 @@ assert.match(server, /member\.suspended_for_negative_balance/);
 assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied"/);
 assert.match(server, /skipped_negative_balance/);
 assert.match(server, /sendWhatsAppAtMostOnce\(recipient, message/);
+assert.match(server, /⚠️ تنبيه رصيد/);
+assert.match(server, /رصيدك \$\{money\(balanceCents\)\} JOD/);
+assert.match(server, /يرجى شحن \$\{money\(topupCents\)\} JOD لتجنب إيقاف الحساب/);
+assert.match(server, /بوابة الكابتن: \$\{captainAppUrl\(PUBLIC_APP_URL\)\}/);
+assert.doesNotMatch(server, /الحد الأدنى للتشغيل هو \$\{money\(CAPTAIN_LOW_BALANCE_WARNING_CENTS\)\} JOD/);
 
 const threshold = 100;
 const classify = (balanceCents) => balanceCents < 0 ? "remove_and_due_message" : balanceCents < threshold ? "warning" : "normal";
