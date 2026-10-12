@@ -29,6 +29,7 @@ assert.ok(correctionIndex >= 0 && helperDeleteIndex > correctionIndex, 'group al
 assert.match(server, /const alertConfirmed = Boolean\(correction && \["sent", "already_sent"\]\.includes\(correction\.status\) && correction\.messageId\)/);
 assert.match(server, /sendWhatsAppAtMostOnce\(targetGroupId, message, undefined, 20000\)/);
 assert.match(server, /result\?\.message\?\.id\?\._serialized/);
+assert.match(server, /serializedMessageId\(result\?\.message\)/);
 
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances');
 const notifyFunctionIndex = server.indexOf('async function notifyCaptainInsufficientAcceptanceBalance');
