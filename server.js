@@ -3924,10 +3924,12 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
 function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime }) {
   const normalizedOrderNo = String(orderNo || "غير محدد");
   return [
-    `🟢 تثبيت الطلب #${normalizedOrderNo}`,
+    `🏠 المنزل: ${String(downloaderName || "غير مسجل")}`,
     `🚕 المنفذ: ${String(executorName || "غير مسجل")}`,
+    `🟢 تثبيت الطلب #${normalizedOrderNo}`,
     origin || destination ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
     Number.isFinite(Number(priceCents)) ? `💰 ${money(priceCents)} JOD` : "",
+    tripTime ? `🕒 الوقت: ${tripTime}` : "",
   ].filter(Boolean).join("\n");
 }
 function finalBookingConfirmationOrderNo(body) {
