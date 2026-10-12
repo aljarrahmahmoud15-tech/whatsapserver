@@ -64,6 +64,8 @@ assert.match(server, /originalMessage\.getChat\(\)/);
 assert.doesNotMatch(server, /chat\.fetchMessages\(\{ limit: 50 \}\)/);
 assert.match(server, /chat_history_lookup/);
 assert.match(server, /chat\.fetchMessages\.message\.delete/);
+assert.match(server, /const verification = await verifyWhatsAppMessageDeletion\(candidate, messageId\)/);
+assert.match(server, /if \(verification\.verified\) \{/);
 assert.match(server, /chat\.fetchMessages\(\{ limit: 100 \}\)/);
 assert.match(server, /chat_history_unique_text_fallback/);
 assert.match(server, /chat_history_text_ambiguous/);

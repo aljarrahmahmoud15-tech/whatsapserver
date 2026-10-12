@@ -10729,9 +10729,10 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
         if (typeof candidate.delete !== "function") continue;
         try {
           const deletedFromHistory = await withTimeout(candidate.delete(true), 15000, false);
-          console.log(`[WhatsApp][MessageDelete] chat_history_result message=${deletionKey} ok=${deletedFromHistory === true} attempt=${index + 1}/${liveCandidates.length}`);
-          if (deletedFromHistory === true) {
-            result = { ok: true, requested: true, revoked: true, method: "chat.fetchMessages.message.delete", attempts: index + 1 };
+          const verification = await verifyWhatsAppMessageDeletion(candidate, messageId);
+          console.log(`[WhatsApp][MessageDelete] chat_history_result message=${deletionKey} ok=${verification.verified} deleteReturn=${deletedFromHistory === true} verification=${verification.reason} attempt=${index + 1}/${liveCandidates.length}`);
+          if (verification.verified) {
+            result = { ok: true, requested: true, revoked: true, method: "chat.fetchMessages.message.delete", attempts: index + 1, acknowledgement: verification.reason };
             break;
           }
         } catch (error) {
