@@ -8299,6 +8299,18 @@ app.get("/api/public/operations-feed", (req, res) => {
 });
 
 app.get("/status", (req, res) => {
+  if (CLEAN_INSTANCE) {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      ready: Boolean(isReady),
+      groupConfigured: Boolean(configuredRuntimeGroupId()),
+      outboundMessaging: { enabled: CLEAN_OUTBOUND_SENDS_ENABLED, blocked: CLEAN_OUTBOUND_SENDS_DISABLED, scope: ["messages", "media", "invitations", "reactions"] },
+      groupIsolation: { exactMatchRequired: true, crossGroupOperations: false, unverifiedLidOutbound: false },
+      groupReceiverReady: Boolean(isReady || baileysReady),
+      groupReceiverMode: baileysReady ? "webhook" : (isReady ? "whatsapp" : "offline"),
+      whatsappState: whatsappState === "ready" ? "ready" : (whatsappState === "qr" ? "qr" : "offline"),
+    });
+  }
   const currentTime = Date.now();
   if (publicStatusCache.payload && publicStatusCache.expiresAt > currentTime) {
     res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=5");
@@ -8592,6 +8604,7 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
     status: health.whatsapp?.ready ? "connected" : "offline",
     bot: {
       ready: Boolean(health.whatsapp?.ready),
+      groupId: configuredRuntimeGroupId() || null,
       state: health.whatsapp?.state || "unknown",
       lastEvent: health.whatsapp?.lastEvent || null,
       lastError: health.whatsapp?.lastError || null,
@@ -9064,6 +9077,7 @@ function extractInviteCode(value = "") {
   return match ? match[1] : raw.replace(/[^A-Za-z0-9_-]/g, "");
 }
 app.get("/code", async (req, res) => {
+    if (CLEAN_INSTANCE) return res.status(404).json({ error: "Not found" });
     try {
         const phone = req.query.phone || "962779110123";
         let code = "";
