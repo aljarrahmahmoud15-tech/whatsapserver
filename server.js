@@ -430,6 +430,7 @@ CREATE TABLE IF NOT EXISTS orders (
   destination TEXT,
   trip_time TEXT,
   order_kind TEXT NOT NULL DEFAULT 'normal' CHECK(order_kind IN ('normal','order')),
+  booking_mode INTEGER NOT NULL DEFAULT 0,
   producer_user_id INTEGER,
   status TEXT NOT NULL CHECK(status IN ('open','accepted','completed','cancelled')) DEFAULT 'open',
   captain_user_id INTEGER,
@@ -453,6 +454,7 @@ CREATE TABLE IF NOT EXISTS order_candidates (
   destination TEXT,
   trip_time TEXT,
   order_kind TEXT NOT NULL DEFAULT 'normal' CHECK(order_kind IN ('normal','order')),
+  booking_mode INTEGER NOT NULL DEFAULT 0,
   producer_user_id INTEGER NOT NULL,
   producer_phone_snapshot TEXT,
   producer_name_snapshot TEXT,
@@ -758,6 +760,7 @@ const existingInviteAuthColumns = db.prepare("PRAGMA table_info(captain_invites)
 if (!existingInviteAuthColumns.includes("auth_method")) db.exec("ALTER TABLE captain_invites ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'pin'");
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
 if (!existingOrderColumns.includes("order_kind")) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'normal'");
+if (!existingOrderColumns.includes("booking_mode")) db.exec("ALTER TABLE orders ADD COLUMN booking_mode INTEGER NOT NULL DEFAULT 0");
 if (!existingOrderColumns.includes("pending_captain_user_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_captain_user_id INTEGER");
 if (!existingOrderColumns.includes("pending_message_id")) db.exec("ALTER TABLE orders ADD COLUMN pending_message_id TEXT");
 if (!existingOrderColumns.includes("pending_at")) db.exec("ALTER TABLE orders ADD COLUMN pending_at TEXT");
@@ -772,6 +775,7 @@ if (!existingOrderColumns.includes("archive_state")) db.exec("ALTER TABLE orders
 if (!existingOrderColumns.includes("archived_at")) db.exec("ALTER TABLE orders ADD COLUMN archived_at TEXT");
 if (!existingOrderColumns.includes("archive_reason")) db.exec("ALTER TABLE orders ADD COLUMN archive_reason TEXT");
 const existingCandidateColumns = db.prepare("PRAGMA table_info(order_candidates)").all().map((column) => column.name);
+if (!existingCandidateColumns.includes("booking_mode")) db.exec("ALTER TABLE order_candidates ADD COLUMN booking_mode INTEGER NOT NULL DEFAULT 0");
 if (!existingCandidateColumns.includes("lifecycle_stage")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created'");
 if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_blocker TEXT");
 if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
@@ -3466,13 +3470,15 @@ function scheduleOfficialGroupWalletSweep(trigger = "official_group_message") {
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
-  const startsWithPriceKeyword = /^السعر(?=\s|[:：]|$|[0-9٠-٩۰-۹])/u.test(normalized);
+  const bookingPrefixMatch = normalized.match(/^اوردر\s+السعر(?=\s|[:：]|$|[0-9٠-٩۰-۹])/u);
+  const startsWithPriceKeyword = Boolean(bookingPrefixMatch) || /^السعر(?=\s|[:：]|$|[0-9٠-٩۰-۹])/u.test(normalized);
+  const pricePrefix = bookingPrefixMatch ? "اوردر\\s+السعر" : "السعر";
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
   const numberPattern = digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?";
   const numberValue = (value) => Number(normalizeDigits(value).replace(/[٫,]/g, "."));
-  const rangeMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i")) : null;
-  const singleMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(" + numberPattern + ")", "i")) : null;
+  const rangeMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^" + pricePrefix + "\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i")) : null;
+  const singleMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^" + pricePrefix + "\\s*[:：]?\\s*(" + numberPattern + ")", "i")) : null;
   let priceMin = null;
   let priceMax = null;
   let price = null;
@@ -3507,7 +3513,8 @@ function parseOrder(text) {
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
     tripTime: null,
-    orderKind: /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
+    orderKind: bookingPrefixMatch || /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
+    bookingOrder: Boolean(bookingPrefixMatch),
   };
 }
 function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
@@ -3520,6 +3527,7 @@ function createOrderRecord({ messageId, groupId, body, producer, parsed }) {
   const stamp = now();
   const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
   const result = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "open", stamp, stamp);
+  if (parsed.bookingOrder) db.prepare("UPDATE orders SET booking_mode=1 WHERE id=?").run(result.lastInsertRowid);
   audit("order.created", "order", result.lastInsertRowid, { orderNo, groupId, producerPhone: producer.phone });
   console.log(`[Order] #${orderNo} created from ${groupId}`);
   return db.prepare("SELECT * FROM orders WHERE id=?").get(result.lastInsertRowid);
@@ -3543,6 +3551,7 @@ function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
   if (recentDuplicate) return recentDuplicate;
   const stamp = now();
   const result = db.prepare("INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)").run(messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, stamp, stamp);
+  if (parsed.bookingOrder) db.prepare("UPDATE order_candidates SET booking_mode=1 WHERE id=?").run(result.lastInsertRowid);
   db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=? WHERE id=?").run(stamp, result.lastInsertRowid);
   audit("order.candidate.created", "order_candidate", result.lastInsertRowid, { groupId, producerPhone: producer.phone });
   console.log(`[OrderCandidate] candidate created from ${groupId}`);
@@ -3644,6 +3653,7 @@ function findPendingAcceptanceByMessage(groupId, acceptanceMessageId) {
 function registerAcceptance({ groupId, messageId, senderPhone, senderName, candidate, acceptanceMode = "quoted" }) {
   if (!groupId || !messageId || !senderPhone || !candidate) return { state: "invalid" };
   const normalizedAcceptanceMode = acceptanceMode === "unquoted" ? "unquoted" : "quoted";
+  if (Number(candidate.booking_mode) === 1 && normalizedAcceptanceMode !== "quoted") return { state: "booking_requires_quoted_reply" };
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) {
     return { state: "captain_ineligible", captain: null };
@@ -3695,16 +3705,15 @@ function isCaptainAcceptance(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
   return /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(normalized);
 }
+function calculateOrderSettlement(row) {
+  if (Number(row?.booking_mode) === 1) {
+    return { orderKind: "booking", grossCents: Number(row.price_cents || 0), externalOrderValueCents: Number(row.price_cents || 0), producerRateBps: 0, producerFeeCents: 100, companyCents: 0, producerNetCents: 100, companyFeeCents: 0, captainFeeCents: 100, confirmingCaptainFeeCents: 100, executorWalletCreditCents: 0, captainGrossCents: 0 };
+  }
+  return calculateSettlement({ priceCents: row.price_cents, orderKind: row.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+}
 function acceptanceBalanceGuard(candidate, captain) {
   if (!candidate || !captain) return { allowed: false, state: "stale" };
-  const settlement = calculateSettlement({
-    priceCents: candidate.price_cents,
-    orderKind: candidate.order_kind,
-    regularProducerRateBps: PRODUCER_RATE_BPS,
-    specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-    companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-    specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-  });
+  const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(candidate) : calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const company = companyUser();
   const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
   if (!walletOwner) return { allowed: false, state: "stale" };
@@ -3854,13 +3863,15 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime }) {
+function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime, bookingMode = false }) {
   const normalizedOrderNo = String(orderNo || "غير محدد");
   return [
     `✅ تم تثبيت الطلب #${normalizedOrderNo}`,
     `🧾 رقم الرحلة: #${normalizedOrderNo}`,
     `👤 كابتن تنزيل الطلب: ${String(downloaderName || "غير مسجل")}`,
     `🚕 الكابتن المنفذ: ${String(executorName || "غير مسجل")}`,
+    bookingMode ? "🏷️ النوع: حجز أوردر" : "",
+    bookingMode ? "💰 التسوية: +1.00 JOD للمنزل · -1.00 JOD من المنفذ · 0.00 JOD للشركة" : "",
     Number.isFinite(Number(priceCents)) ? `💰 القيمة: ${money(priceCents)} JOD` : "",
     origin || destination ? `🛣️ المسار: ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
     tripTime ? `🕒 الموعد: ${tripTime}` : "",
@@ -6883,14 +6894,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
     if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
-    const settlement = calculateSettlement({
-      priceCents: current.price_cents,
-      orderKind: current.order_kind,
-      regularProducerRateBps: PRODUCER_RATE_BPS,
-      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-    });
+    const settlement = typeof calculateOrderSettlement === "function" ? calculateOrderSettlement(current) : calculateSettlement({ priceCents: current.price_cents, orderKind: current.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBPS: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "stale" };
@@ -6939,6 +6943,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
         trip_time: current.trip_time,
         status: "accepted",
         settlement_state: "settled",
+        booking_mode: Number(current.booking_mode) === 1 ? 1 : 0,
       },
       captain: db.prepare("SELECT * FROM users WHERE id=?").get(captain.id),
       chargedWallet: db.prepare("SELECT * FROM users WHERE id=?").get(walletOwner.id),
@@ -7573,6 +7578,7 @@ async function handleMessageReaction(reaction) {
     origin: result.order?.origin,
     destination: result.order?.destination,
     tripTime: result.order?.trip_time,
+    bookingMode: Number(result.order?.booking_mode) === 1,
   };
   // A producer 👍 must not wait behind an unrelated confirmation job. The
   // delivery table and in-flight order lock still provide idempotency.
