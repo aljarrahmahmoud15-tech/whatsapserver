@@ -8832,13 +8832,18 @@ app.post("/api/dashboard/cards", requireCompanyOwner, (req, res) => {
   if (!cardEncryptionKey) return res.status(503).json({ error: "Card encryption is not configured" });
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many card issuance attempts; try again later" });
   const value = Number(req.body?.value);
-  const captainId = Number(req.body?.captainId);
+  const requestedCaptainId = Number(req.body?.captainId);
+  const requestedPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "").trim();
   const issueIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
-  if (!Number.isFinite(value) || value <= 0 || value > 1000 || !Number.isInteger(captainId) || captainId < 1 || issueIdempotencyKey.length < 16 || issueIdempotencyKey.length > 100) {
-    return res.status(400).json({ error: "Valid value, captainId, and idempotencyKey are required" });
+  if (!Number.isFinite(value) || value <= 0 || value > 1000 || issueIdempotencyKey.length < 16 || issueIdempotencyKey.length > 100 || (!Number.isInteger(requestedCaptainId) && !requestedPhone)) {
+    return res.status(400).json({ error: "Valid value, captainId or captain phone, and idempotencyKey are required" });
   }
-  const captain = db.prepare("SELECT id,phone,name,active,role FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
-  if (!captain) return res.status(404).json({ error: "Captain not found" });
+  let captainId = Number.isInteger(requestedCaptainId) && requestedCaptainId > 0 ? requestedCaptainId : 0;
+  const captain = captainId
+    ? db.prepare("SELECT id,phone,name,active,role FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId)
+    : db.prepare("SELECT id,phone,name,active,role FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phoneWithCountry(requestedPhone));
+  if (!captain) return res.status(404).json({ error: "Captain not found for the supplied id or phone" });
+  captainId = captain.id;
   if (!captain.active) return res.status(409).json({ error: "Captain is inactive" });
   const existing = db.prepare("SELECT id,value_cents,status,assigned_captain_id,code_ciphertext FROM topup_cards WHERE issue_idempotency_key=? LIMIT 1").get(issueIdempotencyKey);
   if (existing) {
