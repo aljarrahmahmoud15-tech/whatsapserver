@@ -10666,7 +10666,22 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   let result;
   let searchFallbackMessageId = null;
   const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId);
-  const originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
+  let originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
+  // Incoming LID events can carry a stale/plain wrapper whose delete() method
+  // does not address the canonical WhatsApp message. Refresh by all known ID
+  // variants first so the direct revoke path operates on the live WWebJS object.
+  const refreshIds = [...new Set([
+    messageId,
+    ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
+  ].flatMap((value) => messageIdLookupVariants(value)))];
+  for (const refreshId of refreshIds) {
+    const refreshedMessage = await getWhatsAppMessageByIdVariants(refreshId, 5000);
+    if (refreshedMessage) {
+      originalMessage = refreshedMessage;
+      console.log(`[WhatsApp][MessageDelete] canonical_message_refreshed message=${deletionKey} lookup=${orderTraceKey(refreshId)}`);
+      break;
+    }
+  }
   if (persistedReceipt) {
     console.log(`[WhatsApp][MessageDelete] persistent_receipt_found message=${deletionKey} variants=${persistedReceipt.messageIds.length}`);
   }
