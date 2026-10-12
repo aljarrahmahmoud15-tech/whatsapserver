@@ -1319,7 +1319,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   try {
     const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
     const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
-    const messageId = result?.messageId || null;
+    const messageId = result?.message?.id?._serialized || result?.message?.id?.id || result?.messageId || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
     audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
     return { status: deliveryStatus, notificationId, messageId };

@@ -28,6 +28,7 @@ const helperDeleteIndex = server.indexOf('await deleteWhatsAppMessageForEveryone
 assert.ok(correctionIndex >= 0 && helperDeleteIndex > correctionIndex, 'group alert runs before the guarded deletion');
 assert.match(server, /const alertConfirmed = Boolean\(correction && \["sent", "already_sent"\]\.includes\(correction\.status\) && correction\.messageId\)/);
 assert.match(server, /sendWhatsAppAtMostOnce\(targetGroupId, message, undefined, 20000\)/);
+assert.match(server, /result\?\.message\?\.id\?\._serialized/);
 
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances');
 const notifyFunctionIndex = server.indexOf('async function notifyCaptainInsufficientAcceptanceBalance');
