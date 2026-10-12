@@ -1306,7 +1306,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
-  const idempotencyKey = `GROUP-ACCEPTANCE-DELETE-FAILED-${sourceKey}`;
+  const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-CARD-${sourceKey}`;
   const title = "تنبيه: قبول غير معتمد";
   const message = [
     "⚠️ تنبيه للمجموعة:",
@@ -1323,7 +1323,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   if (!notificationId) return { status: "duplicate" };
   try {
     const result = await sendCompanyOperationsCard(targetGroupId, title, message.split("\n"), { returnMessage: true });
-    const deliveryStatus = result?.sent ? "sent" : result?.uncertain ? "uncertain" : "failed";
+    const deliveryStatus = result?.sent && result?.card ? "sent" : result?.uncertain ? "uncertain" : "failed";
     const messageId = result?.messageId || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
     audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
@@ -1436,17 +1436,17 @@ async function sendCompanyOperationsCard(to, title, lines, { returnMessage = fal
     const result = await sendWhatsAppAtMostOnce(to, media, { caption }, 30000);
     if (result.status !== "sent") {
       console.warn(`[WhatsApp] operations card delivery ${result.status}; no text fallback will be attempted`);
-      return returnMessage ? { sent: false, uncertain: result.status === "uncertain", messageId: null } : false;
+      return returnMessage ? { sent: false, card: false, uncertain: result.status === "uncertain", messageId: null } : false;
     }
-    return returnMessage ? { sent: true, messageId: result.message?.id?._serialized || null } : true;
+    return returnMessage ? { sent: true, card: true, messageId: result.message?.id?._serialized || null } : true;
   } catch (error) {
     if (error?.message !== "operations card render returned no media") {
       console.error("[WhatsApp] operations card send failed; no retry to avoid duplicate delivery:", error.message);
-      return returnMessage ? { sent: false, messageId: null } : false;
+      return returnMessage ? { sent: false, card: false, messageId: null } : false;
     }
     console.warn("[WhatsApp] operations card media failed; using text fallback");
     const result = await sendWhatsAppAtMostOnce(to, caption, undefined, 20000);
-    return returnMessage ? { sent: result.status === "sent", uncertain: result.status === "uncertain", messageId: result.message?.id?._serialized || null } : result.status === "sent";
+    return returnMessage ? { sent: result.status === "sent", card: false, uncertain: result.status === "uncertain", messageId: result.message?.id?._serialized || null } : result.status === "sent";
   }
 }
 async function sendBotText(to, text) {

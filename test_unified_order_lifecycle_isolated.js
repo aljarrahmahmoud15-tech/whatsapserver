@@ -221,7 +221,7 @@ const context = {
   notifyCaptainInsufficientAcceptanceBalance: async () => ({ status: "sent" }),
   notifyOfficialGroupInsufficientAcceptanceDeletionFailure: async () => ({ status: "sent" }),
   deleteAcceptanceOnlyAfterGroupAlert: async () => ({
-    correction: { status: "sent", messageId: "alert-1" },
+    correction: { status: "sent", card: true, messageId: "alert-1" },
     deletionStatus: "deleted",
     deletionResult: { ok: true },
   }),

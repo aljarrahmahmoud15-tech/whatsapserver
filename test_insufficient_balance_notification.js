@@ -13,7 +13,7 @@ assert.match(server, /captain\.acceptance\.insufficient_balance/);
 assert.match(server, /await notifyCaptainInsufficientAcceptanceBalance\(/);
 assert.match(server, /notificationStatus: notification\.status/);
 assert.match(server, /async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure/);
-assert.match(server, /GROUP-ACCEPTANCE-DELETE-FAILED-\$\{sourceKey\}/);
+assert.match(server, /GROUP-ACCEPTANCE-ALERT-CARD-\$\{sourceKey\}/);
 assert.match(server, /order\.acceptance\.insufficient_balance_deletion_failed/);
 assert.match(server, /تعذّر حذف رسالة «تم» تلقائيًا/);
 assert.match(server, /await notifyOfficialGroupInsufficientAcceptanceDeletionFailure\(/);
@@ -28,6 +28,7 @@ const helperDeleteIndex = server.indexOf('await deleteWhatsAppMessageForEveryone
 assert.ok(correctionIndex >= 0 && helperDeleteIndex > correctionIndex, 'group alert runs before the guarded deletion');
 assert.match(server, /const alertConfirmed = Boolean\(/);
 assert.match(server, /\["sent", "already_sent"\]\.includes\(correction\.status\)/);
+assert.match(server, /result\?\.sent && result\?\.card/);
 
 const insertIndex = server.indexOf('INSERT INTO order_candidate_acceptances');
 const notifyFunctionIndex = server.indexOf('async function notifyCaptainInsufficientAcceptanceBalance');
