@@ -220,6 +220,11 @@ const context = {
   notifyCaptainNegativeBalance: async () => {},
   notifyCaptainInsufficientAcceptanceBalance: async () => ({ status: "sent" }),
   notifyOfficialGroupInsufficientAcceptanceDeletionFailure: async () => ({ status: "sent" }),
+  deleteAcceptanceOnlyAfterGroupAlert: async () => ({
+    correction: { status: "sent", messageId: "alert-1" },
+    deletionStatus: "deleted",
+    deletionResult: { ok: true },
+  }),
   reactToCaptainAcceptance: async () => true,
   enforceCaptainWalletThresholds: async () => {},
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },

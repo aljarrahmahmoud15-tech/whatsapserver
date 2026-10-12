@@ -1322,9 +1322,9 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const notificationId = row.lastInsertRowid || existing?.id;
   if (!notificationId) return { status: "duplicate" };
   try {
-    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
-    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
-    const messageId = result.message?.id?._serialized || null;
+    const result = await sendCompanyOperationsCard(targetGroupId, title, message.split("\n"), { returnMessage: true });
+    const deliveryStatus = result?.sent ? "sent" : result?.uncertain ? "uncertain" : "failed";
+    const messageId = result?.messageId || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
     audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
     return { status: deliveryStatus, notificationId, messageId };
@@ -1332,6 +1332,50 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
     db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
     audit("order.acceptance.insufficient_balance_deletion_correction_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
     return { status: "failed", notificationId };
+  }
+}
+async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents }) {
+  const correction = await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
+    groupId,
+    balanceCents,
+    requiredCents,
+    sourceMessageId: messageId,
+  });
+  const alertConfirmed = Boolean(
+    correction &&
+    ["sent", "already_sent"].includes(correction.status) &&
+    correction.messageId,
+  );
+  if (!alertConfirmed) {
+    return {
+      correction,
+      deletionStatus: "blocked_until_group_alert_confirmed",
+      deletionResult: null,
+    };
+  }
+  let deletionResult = null;
+  try {
+    deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
+      message,
+      messageIdCandidates,
+      reason,
+      groupId,
+      candidateId,
+      balanceCents,
+      requiredCents,
+    });
+    return {
+      correction,
+      deletionStatus: deletionResult?.ok ? "deleted" : "failed",
+      deletionResult,
+    };
+  } catch (error) {
+    console.warn(`[Order] guarded acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
+    return {
+      correction,
+      deletionStatus: "failed",
+      deletionResult: { ok: false, reason: String(error?.message || error).slice(0, 180) },
+    };
   }
 }
 async function mediaFromRemoteVideoUrl(url, index = 0) {
@@ -5176,31 +5220,19 @@ async function recoverPendingAcceptanceMessages(groupId) {
         acceptanceMode: "unquoted",
         recoveryMode: "unquoted",
       });
-      let deletionStatus = "not_requested";
-      let deletionResult = null;
-      try {
-        deletionResult = await deleteWhatsAppMessageForEveryone(rowMessageId, {
-          message: acceptance,
-          messageIdCandidates: messageIdCandidates(acceptance),
-          reason: "insufficient_balance_acceptance_recovery",
-          groupId,
-          candidateId: unquoted.candidate.id,
-          balanceCents: unquotedResult.balanceCents,
-          requiredCents: unquotedResult.requiredCents,
-        });
-        deletionStatus = deletionResult?.ok ? "deleted" : "failed";
-      } catch (error) {
-        deletionStatus = "failed";
-        console.warn(`[Order] recovered insufficient-balance acceptance deletion failed message=${orderTraceKey(rowMessageId)} error=${String(error?.message || error).slice(0, 180)}`);
-      }
-      const correction = deletionStatus === "deleted"
-        ? { status: "not_needed" }
-        : await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
-          groupId,
-          balanceCents: unquotedResult.balanceCents,
-          requiredCents: unquotedResult.requiredCents,
-          sourceMessageId: rowMessageId,
-        });
+      const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
+        groupId,
+        messageId: rowMessageId,
+        message: acceptance,
+        messageIdCandidates: messageIdCandidates(acceptance),
+        reason: "insufficient_balance_acceptance_recovery",
+        candidateId: unquoted.candidate.id,
+        balanceCents: unquotedResult.balanceCents,
+        requiredCents: unquotedResult.requiredCents,
+      });
+      const deletionStatus = guardedDeletion.deletionStatus;
+      const deletionResult = guardedDeletion.deletionResult;
+      const correction = guardedDeletion.correction;
       const notification = await notifyCaptainInsufficientAcceptanceBalance({
         captain: unquotedResult.captain,
         balanceCents: unquotedResult.balanceCents,
@@ -6392,32 +6424,19 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       messageDeletionRequested: Boolean(messageId),
       acceptanceMode,
     });
-    let deletionStatus = "not_requested";
-    let deletionResult = null;
-    try {
-      deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
-        message: msg,
-        messageIdCandidates: messageIdCandidates(msg),
-        reason: "insufficient_balance_acceptance",
-        groupId,
-        candidateId: candidate.id,
-        balanceCents: acceptanceResult.balanceCents,
-        requiredCents: acceptanceResult.requiredCents,
-      });
-      deletionStatus = deletionResult?.ok ? "deleted" : "failed";
-      if (!deletionResult?.ok) console.warn(`[Order] insufficient-balance acceptance was not deleted message=${orderTraceKey(messageId)} reason=${deletionResult?.reason || "unknown"}`);
-    } catch (error) {
-      deletionStatus = "failed";
-      console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
-    }
-    const correction = deletionStatus === "deleted"
-      ? { status: "not_needed" }
-      : await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
-        groupId,
-        balanceCents: acceptanceResult.balanceCents,
-        requiredCents: acceptanceResult.requiredCents,
-        sourceMessageId: messageId,
-      });
+    const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
+      groupId,
+      messageId,
+      message: msg,
+      messageIdCandidates: messageIdCandidates(msg),
+      reason: "insufficient_balance_acceptance",
+      candidateId: candidate.id,
+      balanceCents: acceptanceResult.balanceCents,
+      requiredCents: acceptanceResult.requiredCents,
+    });
+    const deletionStatus = guardedDeletion.deletionStatus;
+    const deletionResult = guardedDeletion.deletionResult;
+    const correction = guardedDeletion.correction;
     if (!['sent', 'already_sent', 'uncertain', 'not_needed'].includes(correction.status)) {
       console.warn(`[Order] insufficient-balance group correction ${correction.status} message=${orderTraceKey(messageId)}`);
     }
