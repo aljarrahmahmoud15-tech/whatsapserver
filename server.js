@@ -1340,13 +1340,19 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId }) {
+async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId, downloaderName, executorName }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
   const title = "إلغاء الرحلة";
-  const message = "تم إلغاء الرحلة لعدم استكفاء الرصيد";
+  const message = [
+    "🔴 إلغاء الرحلة",
+    `🏠 المنزل: ${String(downloaderName || "غير محدد")}`,
+    `🚕 المنفذ: ${String(executorName || "غير محدد")}`,
+    `💰 العمولة المطلوبة: ${money(requiredCents)} JOD`,
+    "❌ الرصيد غير كافٍ.",
+  ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
@@ -1367,12 +1373,14 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
     return { status: "failed", notificationId };
   }
 }
-async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents }) {
+async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, downloaderName, executorName }) {
   const correction = await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
     groupId,
     balanceCents,
     requiredCents,
     sourceMessageId: messageId,
+    downloaderName,
+    executorName,
   });
   const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status));
   if (!alertConfirmed) {
@@ -5304,6 +5312,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
         candidateId: unquoted.candidate.id,
         balanceCents: unquotedResult.balanceCents,
         requiredCents: unquotedResult.requiredCents,
+        downloaderName: unquoted.candidate.producer_name_snapshot,
+        executorName: unquotedResult.captain?.name,
       });
       const deletionStatus = guardedDeletion.deletionStatus;
       const deletionResult = guardedDeletion.deletionResult;
@@ -6543,6 +6553,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       candidateId: candidate.id,
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
+      downloaderName: candidate.producer_name_snapshot,
+      executorName: acceptanceResult.captain?.name,
     });
     const deletionStatus = guardedDeletion.deletionStatus;
     const deletionResult = guardedDeletion.deletionResult;

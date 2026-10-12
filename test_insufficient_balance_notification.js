@@ -15,7 +15,11 @@ assert.match(server, /notificationStatus: notification\.status/);
 assert.match(server, /async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure/);
 assert.match(server, /GROUP-ACCEPTANCE-ALERT-TEXT-\$\{sourceKey\}/);
 assert.match(server, /order\.acceptance\.insufficient_balance_deletion_failed/);
-assert.match(server, /تم إلغاء الرحلة لعدم استكفاء الرصيد/);
+assert.match(server, /🔴 إلغاء الرحلة/);
+assert.match(server, /🏠 المنزل: \$\{String\(downloaderName \|\| "غير محدد"\)\}/);
+assert.match(server, /🚕 المنفذ: \$\{String\(executorName \|\| "غير محدد"\)\}/);
+assert.match(server, /💰 العمولة المطلوبة: \$\{money\(requiredCents\)\} JOD/);
+assert.match(server, /❌ الرصيد غير كافٍ\./);
 assert.match(server, /await notifyOfficialGroupInsufficientAcceptanceDeletionFailure\(/);
 
 const guardIndex = server.indexOf('if (acceptanceResult.state === "insufficient_balance")');
