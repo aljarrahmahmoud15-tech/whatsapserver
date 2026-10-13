@@ -1,0 +1,10 @@
+const assert = require('assert');
+const fs = require('fs');
+const server = fs.readFileSync('./server.js', 'utf8');
+const index = fs.readFileSync('./public/index.html', 'utf8');
+assert.match(server, /return `\$\{normalized \|\| PUBLIC_APP_URL\}\/captain\/register`;/);
+assert.match(server, /return `\$\{normalized \|\| PUBLIC_APP_URL\}\/captain\?invite=\$\{encodeURIComponent\(inviteToken\)\}`;/);
+assert.match(server, /captainLoginUrl\(baseUrl\)/);
+assert.match(index, /https:\/\/whatsapserver-2\.onrender\.com\/captain\/register/);
+assert.match(index, /رابط التسجيل المباشر للكابتن/);
+console.log('direct captain registration link guardrails verified');

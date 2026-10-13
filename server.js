@@ -2535,16 +2535,19 @@ function ensureCaptainUser(phone, name) {
   }
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
-  const normalized = String(baseUrl || "").replace(/\/$/, "");
-  return `${normalized || PUBLIC_APP_URL}/join.html`;
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return `${normalized || PUBLIC_APP_URL}/captain/register`;
 }
 function captainLoginUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   return `${normalized || PUBLIC_APP_URL}/captain?mode=login`;
 }
 function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
-  const gateway = captainAppUrl(baseUrl);
-  return inviteToken ? `${gateway}?invite=${encodeURIComponent(inviteToken)}` : gateway;
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  if (!inviteToken) return captainAppUrl(baseUrl);
+  // Private invite tokens must remain on the captain page; the public
+  // /captain/register route intentionally uses the public invite token.
+  return `${normalized || PUBLIC_APP_URL}/captain?invite=${encodeURIComponent(inviteToken)}`;
 }
 async function addCaptainToConfiguredGroup(captain) {
   const groupId = getSetting("group_id", null);
