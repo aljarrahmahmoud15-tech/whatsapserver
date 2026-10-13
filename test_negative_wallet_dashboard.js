@@ -9,7 +9,7 @@ assert.match(html, /id="negativeWalletSearch"/);
 assert.match(html, /id="negativeWalletSummary"/);
 assert.match(html, /id="negativeWallets"/);
 assert.match(html, /function renderNegativeWallets\(\)/);
-assert.match(html, /Number\.parseFloat\(c\.balance\|\|'0'\)<0/);
+assert.match(html, /Number\.parseFloat\(c\.balance\|\|'0'\)<=0/);
 assert.match(html, /sort\(\(a,b\)=>Number\.parseFloat\(a\.balance\|\|'0'\)-Number\.parseFloat\(b\.balance\|\|'0'\)\)/);
 assert.match(html, /Math\.abs\(total\)\.toFixed\(2\)/);
 assert.match(html, /openCaptainProfile\(/);

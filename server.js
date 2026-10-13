@@ -1750,11 +1750,15 @@ async function enforceConfirmedOrderDebtRemoval({ orderId, captainId, balanceCen
   });
 }
 
-async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference, removalContext = null }) {
-  if (!Number.isInteger(Number(captainId)) || Number(balanceCents) >= 0) return { status: "not_required" };
+async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, reference, removalContext = null, allowZero = false }) {
+  const numericBalance = Number(balanceCents);
+  const zeroBalanceEligible = allowZero && numericBalance === 0;
+  if (!Number.isInteger(Number(captainId)) || (numericBalance >= 0 && !zeroBalanceEligible)) return { status: "not_required" };
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
-  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && Number(balanceCents) >= 0)) return { status: "ineligible" };
-  const title = "إشعار رصيد مستحق من وصلني الآن";
+  if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && !zeroBalanceEligible && numericBalance >= 0)) return { status: "ineligible" };
+  const isZeroBalance = numericBalance === 0;
+  const title = isZeroBalance ? "إشعار نفاد رصيد المحفظة" : "إشعار رصيد مستحق من وصلني الآن";
+  const notificationEvent = isZeroBalance ? "captain.wallet.zero_balance" : "captain.wallet.negative";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const removalEvidence = removalContext?.allowUnconfirmedRemoval === true
     ? { adminOverride: true }
@@ -1765,7 +1769,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     ? await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }))
     : { status: "removal_deferred_confirmation_required", error: "confirmed_settlement_and_card_required" };
   if (!removalEvidence) {
-    audit("captain.wallet.negative_removal_deferred", "user", captain.id, {
+    audit(isZeroBalance ? "captain.wallet.zero_removal_deferred" : "captain.wallet.negative_removal_deferred", "user", captain.id, {
       balanceCents: Number(balanceCents),
       reference: safeReference,
       financialMutation: false,
@@ -1773,7 +1777,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     });
   }
   if (removalContext?.allowUnconfirmedRemoval === true) {
-    audit("captain.wallet.negative_removal.admin_override", "user", captain.id, {
+    audit(isZeroBalance ? "captain.wallet.zero_removal.admin_override" : "captain.wallet.negative_removal.admin_override", "user", captain.id, {
       balanceCents: Number(balanceCents),
       reference: safeReference,
       financialMutation: false,
@@ -1788,8 +1792,8 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
-    `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
+    isZeroBalance ? "عند وصول الرصيد إلى صفر، يُوقف الحساب ويُزال من القروب عند الإمكان." : `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
+    isZeroBalance ? "تُحفظ السجلات دون تسوية أو تثبيت أي طلب معلّق." : "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
@@ -1797,11 +1801,11 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
-  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.negative' AND title=? AND message=? LIMIT 1").get(phone, title, message);
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? AND title=? AND message=? LIMIT 1").get(phone, notificationEvent, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status, removalError: removal.error || null };
   const row = existing
     ? { lastInsertRowid: existing.id }
-    : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain','captain.wallet.negative',?,?,'pending',?)").run(phone, title, message, now());
+    : db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,'captain',?,?,?,'pending',?)").run(phone, notificationEvent, title, message, now());
   if (existing) db.prepare("UPDATE notifications SET delivery_status='pending',message_id=NULL WHERE id=?").run(existing.id);
   let deliveryStatus = "failed";
   let messageId = null;
@@ -1816,7 +1820,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     }
   } catch (_) {}
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, row.lastInsertRowid);
-  audit("captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, removalStatus: removal.status });
+  audit(isZeroBalance ? "captain.wallet.zero_balance_notified" : "captain.wallet.negative_notified", "user", captain.id, { balanceCents: Number(balanceCents), reference: safeReference, deliveryStatus, removalStatus: removal.status });
   return { status: deliveryStatus, notificationId: row.lastInsertRowid, removalStatus: removal.status, removalError: removal.error || null };
 }
 async function notifyCaptainLowBalance({ captainId, balanceCents, reason, reference }) {
@@ -1857,15 +1861,15 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
 async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference, removalContext = null }) {
   const balance = Number(balanceCents);
   if (!Number.isFinite(balance)) return { status: "invalid_balance" };
-  if (balance < 0) {
-    // A negative wallet immediately isolates the captain. This only changes
+  if (balance <= 0) {
+    // A zero or negative wallet immediately isolates the captain. This only changes
     // access/group membership; it never settles, creates, or confirms an order.
     const automaticIsolationContext = {
       ...(removalContext || {}),
       allowUnconfirmedRemoval: true,
-      source: "automatic_negative_balance_isolation",
+      source: balance === 0 ? "automatic_zero_balance_isolation" : "automatic_negative_balance_isolation",
     };
-    return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext: automaticIsolationContext });
+    return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext: automaticIsolationContext, allowZero: true });
   }
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
@@ -1874,7 +1878,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
   const captains = negativeOnly
-    ? db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < 0 ORDER BY id").all()
+    ? db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents <= 0 ORDER BY id").all()
     : db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
   const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, deferred: 0, failed: 0, startedAt: now(), completedAt: null };
   progress.total = captains.length;
@@ -1897,7 +1901,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}`, removalContext }).catch(() => null);
       progress.scanned = index + 1;
       progress.lastCaptainId = captain.id;
-      if (Number(captain.wallet_cents) < 0) {
+      if (Number(captain.wallet_cents) <= 0) {
         progress.negative += 1;
         const removalStatus = result?.removalStatus;
         if (removalStatus === "removed") progress.removed += 1;
@@ -2388,11 +2392,11 @@ async function cacheOfficialGroupChatFromMessage(msg) {
 async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext = null) {
   const normalized = phoneWithCountry(phone);
   const officialGroupId = String(groupId || "").trim();
-  if (!isValidJordanPhone(normalized) || Number(balanceCents) >= 0) return { status: "not_required" };
+  if (!isValidJordanPhone(normalized) || Number(balanceCents) > 0) return { status: "not_required" };
   if (!officialGroupId || !officialGroupId.endsWith("@g.us") || !isConfiguredGroup(officialGroupId)) return { status: "group_not_configured" };
   const stamp = now();
   db.prepare("UPDATE users SET active=0,account_status='suspended',updated_at=? WHERE phone=?").run(stamp, normalized);
-  audit("member.suspended_for_negative_balance", "user", normalized, { groupId: officialGroupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "remove_any_negative_balance" });
+  audit("member.suspended_for_negative_balance", "user", normalized, { groupId: officialGroupId, balanceCents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: Number(balanceCents) === 0 ? "remove_zero_balance" : "remove_any_negative_balance" });
   if (!client || !isReady) return { status: "account_suspended_whatsapp_unavailable" };
   const context = removalContext || await readGroupRemovalContext(officialGroupId);
   const chat = context?.chat || await withTimeout(client.getChatById(officialGroupId), 20000, null);
@@ -12109,23 +12113,23 @@ app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmi
   res.json({ success: true, ...run });
 });
 app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, res) => {
-  if (String(req.body?.confirmation || "") !== "REMOVE_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_NEGATIVE_CAPTAINS_NOW مطلوب" });
+  if (String(req.body?.confirmation || "") !== "REMOVE_ZERO_OR_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_ZERO_OR_NEGATIVE_CAPTAINS_NOW مطلوب" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const runKey = String(req.body?.runKey || `NEG-REMOVE-${Date.now().toString(36).toUpperCase()}`).trim();
   if (!/^NEG-REMOVE-[A-Z0-9-]{8,80}$/.test(runKey)) return res.status(400).json({ error: "مفتاح العملية غير صالح" });
-  if (captainWalletPolicyRuns.has(runKey)) return res.json({ success: true, started: true, ...captainWalletPolicyRuns.get(runKey), mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  if (captainWalletPolicyRuns.has(runKey)) return res.json({ success: true, started: true, ...captainWalletPolicyRuns.get(runKey), mutation: "zero_or_negative_captains_removed_and_notified", financialMutation: false });
   if (captainWalletPolicySweepInFlight) return res.status(409).json({ error: "توجد عملية إزالة أخرى قيد التنفيذ؛ لا تُكرر الطلب" });
   const run = { runKey, status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   captainWalletPolicyRuns.set(runKey, run);
   void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true, allowUnconfirmedRemoval: true }).then((result) => {
-    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false, settlementGate: "bypassed_by_owner_admin_action" });
+    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "zero_or_negative_captains_removed_and_notified", financialMutation: false, settlementGate: "bypassed_by_owner_admin_action" });
   });
-  res.status(202).json({ success: true, started: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  res.status(202).json({ success: true, started: true, ...run, mutation: "zero_or_negative_captains_removed_and_notified", financialMutation: false });
 });
 app.get("/api/admin/captains/enforce-wallet-policy/:runKey", requireAdmin, (req, res) => {
   const run = captainWalletPolicyRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية إزالة المحافظ غير موجودة أو انتهت من الذاكرة" });
-  res.json({ success: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  res.json({ success: true, ...run, mutation: "zero_or_negative_captains_removed_and_notified", financialMutation: false });
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });

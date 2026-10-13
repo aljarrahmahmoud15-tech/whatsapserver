@@ -40,12 +40,14 @@ assert(server.includes('const resolved = await resolveWhatsAppRecipientId(recipi
 assert(server.includes('event: "captain.approval"'), 'captain approval sends a dedicated short notification');
 assert(server.includes('تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.'), 'captain approval notification uses the approved short wording');
 assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative captain wallet notification service exists');
-assert(server.includes('const title = "إشعار رصيد مستحق من وصلني الآن"'), 'negative wallet alert uses the approved Waslni title');
+assert(server.includes('إشعار رصيد مستحق من وصلني الآن'), 'negative wallet alert uses the approved Waslni title');
+assert(server.includes('إشعار نفاد رصيد المحفظة'), 'zero wallet alert uses a dedicated title');
 assert(server.includes('عزيزي الكابتن ${captain.name}،'), 'negative wallet alert addresses the captain politely');
 assert(server.includes('أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.'), 'negative wallet alert shows the current balance');
 assert(server.includes('المبلغ المستحق لشحن المحفظة وتصفير الدين'), 'negative wallet alert includes the approved due amount');
 assert(server.includes('شكرًا لتعاونك مع وصلني الآن – Waslni Now.'), 'negative wallet alert uses the approved closing');
-assert(server.includes("event='captain.wallet.negative'"), 'negative wallet notifications use a dedicated event');
+assert(server.includes('captain.wallet.negative'), 'negative wallet notifications use a dedicated event');
+assert(server.includes('captain.wallet.zero_balance'), 'zero wallet notifications use a dedicated event');
 assert(server.includes('["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)'), 'negative wallet notifications are idempotent and retry known failures only');
 assert(server.includes('app.post("/api/admin/notifications/negative-balance-warning", requireAdmin'), 'negative balance warning broadcast is admin protected');
 assert(server.includes('SEND_NEGATIVE_BALANCE_WARNING_TO_ALL'), 'negative balance warning requires explicit confirmation');
