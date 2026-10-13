@@ -10,18 +10,19 @@ assert.match(server, /event='captain\.wallet\.low_balance'/);
 assert.match(server, /async function enforceCaptainWalletThresholds\(/);
 assert.match(server, /async function enforceCaptainWalletThresholdsForAll\(/);
 assert.match(server, /app\.post\("\/api\/admin\/captains\/enforce-wallet-policy", requireAdmin/);
-assert.match(server, /REMOVE_ZERO_OR_NEGATIVE_CAPTAINS_NOW/);
+assert.match(server, /REMOVE_NEGATIVE_CAPTAINS_NOW/);
 assert.match(server, /captainWalletPolicySweepInFlight/);
 assert.match(server, /allowUnconfirmedRemoval: true/);
 assert.match(server, /owner_confirmed_negative_balance_without_settlement_gate/);
-assert.match(server, /balance <= 0/);
-assert.match(server, /wallet_cents <= 0/);
-assert.match(server, /remove_zero_balance/);
-assert.match(server, /captain.wallet.zero_balance/);
+assert.match(server, /balance < 0/);
+assert.doesNotMatch(server, /if \(balance <= 0\)/);
+assert.match(server, /wallet_cents < 0/);
+assert.doesNotMatch(server, /automatic_zero_balance_isolation/);
+assert.match(server, /captain\.wallet\.zero_balance/);
 assert.match(admin, /enforceNegativeWalletPolicy/);
-assert.match(admin, /REMOVE_ZERO_OR_NEGATIVE_CAPTAINS_NOW/);
+assert.match(admin, /REMOVE_NEGATIVE_CAPTAINS_NOW/);
 assert.match(admin, /دون تسوية أو بطاقة تثبيت ودون تغيير الرصيد/);
-assert.match(admin, /صفر أو أقل/);
+assert.doesNotMatch(admin, /صفر أو أقل/);
 assert.match(server, /CAPTAIN_BALANCE_POLICY_INTERVAL_MS/);
 assert.match(server, /async function suspendMemberForDebt\(/);
 assert.match(server, /async function readGroupRemovalContext\(/);
@@ -65,9 +66,9 @@ assert.match(server, /بوابة الكابتن: \$\{captainAppUrl\(PUBLIC_APP_U
 assert.doesNotMatch(server, /الحد الأدنى للتشغيل هو \$\{money\(CAPTAIN_LOW_BALANCE_WARNING_CENTS\)\} JOD/);
 
 const threshold = 100;
-const classify = (balanceCents) => balanceCents <= 0 ? "remove_and_isolate" : balanceCents < threshold ? "warning" : "normal";
+const classify = (balanceCents) => balanceCents < 0 ? "remove_and_isolate" : balanceCents < threshold ? "warning" : "normal";
 assert.equal(classify(-1), "remove_and_isolate");
-assert.equal(classify(0), "remove_and_isolate");
+assert.equal(classify(0), "warning");
 assert.equal(classify(99), "warning");
 assert.equal(classify(100), "normal");
 
