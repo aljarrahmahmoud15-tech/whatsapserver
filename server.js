@@ -2224,7 +2224,7 @@ function ensureSystemUsers() {
 }
 function normalizeBotIdentity(stamp = now()) {
   const primary = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
-  const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
+  const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary, LEGACY_BOT_PHONE, LEGACY_BOT_PHONE_INTL].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
   if (!targets.size) return 0;
   const rows = db.prepare("SELECT id,phone FROM users").all();
   const ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
@@ -2240,7 +2240,10 @@ ensureSystemUsers();
 
 function isBotPhone(phone) {
   const normalized = phoneWithCountry(phone);
-  return normalized === phoneWithCountry(BOT_PHONE) || normalized === phoneWithCountry(BOT_PHONE_INTL);
+  return [BOT_PHONE, BOT_PHONE_INTL, LEGACY_BOT_PHONE, LEGACY_BOT_PHONE_INTL]
+    .map(phoneWithCountry)
+    .filter(Boolean)
+    .includes(normalized);
 }
 function botEmployeeUser() {
   const existing = db.prepare("SELECT * FROM users WHERE is_bot=1 LIMIT 1").get();
@@ -6398,7 +6401,10 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  const botGenerated = isBotGeneratedMessage(msg);
+  // The retired operational number remains an approved bot identity during the
+  // reversible migration. Messages authored by it must follow the same
+  // bot-owned automatic confirmation path as the current connected number.
+  const botGenerated = isBotGeneratedMessage(msg) || isBotPhone(senderPhone);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
   if (botGenerated && !parseOrder(body).isOrder) return;
   const captainAcceptance = isCaptainAcceptance(body);
