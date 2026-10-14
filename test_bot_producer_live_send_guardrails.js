@@ -5,7 +5,7 @@ const server = fs.readFileSync('./server.js', 'utf8');
 const dashboard = fs.readFileSync('./public/index.html', 'utf8');
 
 assert.match(server, /async function reactToCaptainAcceptance\(message, messageId, emoji = "👍"\)/);
-assert.match(server, /if \(producer\.is_bot === 1 \|\| producer\.role === "company"\)/);
+assert.match(server, /if \(producer\.is_bot === 1 \|\| producer\.role === "company" \|\| isLegacyBotCaptainPhone\(producer\.phone\)\)/);
 assert.match(server, /async function approveBotOwnedAcceptance\(\{ groupId, message, candidateId, acceptanceMessageId \}\)/);
 assert.match(server, /const result = settlePendingOrder\(candidateId, acceptanceMessageId, connectedBotPhone\(\)\)/);
 assert.match(server, /void approveBotOwnedAcceptance\(\{ groupId, message: msg, candidateId: candidate\.id, acceptanceMessageId \}\)/);

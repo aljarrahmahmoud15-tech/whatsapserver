@@ -2224,7 +2224,7 @@ function ensureSystemUsers() {
 }
 function normalizeBotIdentity(stamp = now()) {
   const primary = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
-  const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary, LEGACY_BOT_PHONE, LEGACY_BOT_PHONE_INTL].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
+  const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
   if (!targets.size) return 0;
   const rows = db.prepare("SELECT id,phone FROM users").all();
   const ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
@@ -2240,10 +2240,11 @@ ensureSystemUsers();
 
 function isBotPhone(phone) {
   const normalized = phoneWithCountry(phone);
-  return [BOT_PHONE, BOT_PHONE_INTL, LEGACY_BOT_PHONE, LEGACY_BOT_PHONE_INTL]
-    .map(phoneWithCountry)
-    .filter(Boolean)
-    .includes(normalized);
+  return normalized === phoneWithCountry(BOT_PHONE) || normalized === phoneWithCountry(BOT_PHONE_INTL);
+}
+function isLegacyBotCaptainPhone(phone) {
+  const normalized = phoneWithCountry(phone);
+  return normalized === phoneWithCountry(LEGACY_BOT_PHONE) || normalized === phoneWithCountry(LEGACY_BOT_PHONE_INTL);
 }
 function botEmployeeUser() {
   const existing = db.prepare("SELECT * FROM users WHERE is_bot=1 LIMIT 1").get();
@@ -6401,10 +6402,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  // The retired operational number remains an approved bot identity during the
-  // reversible migration. Messages authored by it must follow the same
-  // bot-owned automatic confirmation path as the current connected number.
-  const botGenerated = isBotGeneratedMessage(msg) || isBotPhone(senderPhone);
+  const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
   if (botGenerated && !parseOrder(body).isOrder) return;
   const captainAcceptance = isCaptainAcceptance(body);
@@ -6670,7 +6668,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     captainId: captain.id,
     producerId: producer.id,
   });
-  if (producer.is_bot === 1 || producer.role === "company") {
+  if (producer.is_bot === 1 || producer.role === "company" || isLegacyBotCaptainPhone(producer.phone)) {
     void approveBotOwnedAcceptance({ groupId, message: msg, candidateId: candidate.id, acceptanceMessageId })
       .catch((error) => console.error(`[WhatsApp] bot-owned acceptance settlement failed: ${error.message}`));
     return;
