@@ -16,5 +16,9 @@ assert.match(server, /settlePendingOrder\(candidateId, acceptanceMessageId, conn
 
 const botIdentityBody = server.slice(server.indexOf('function isBotPhone(phone)'), server.indexOf('function isLegacyBotCaptainPhone(phone)'));
 assert.doesNotMatch(botIdentityBody, /LEGACY_BOT_PHONE/);
+assert.match(server, /The former bot number is now an ordinary captain/);
+assert.match(server, /SET role='captain', is_bot=0/);
+assert.match(server, /const currentBotPhones = new Set\(\[BOT_PHONE, BOT_PHONE_INTL\]/);
+assert.match(server, /const legacyCaptainPhone = phoneWithCountry\(LEGACY_BOT_PHONE_INTL \|\| LEGACY_BOT_PHONE\)/);
 
 console.log('legacy number remains a captain and requires its own 👍 for settlement');

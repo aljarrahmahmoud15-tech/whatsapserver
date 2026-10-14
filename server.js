@@ -28,8 +28,8 @@ app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || "962779752230";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779752230";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
@@ -2197,6 +2197,17 @@ function runtimeHealth() {
 function ensureSystemUsers() {
   const stamp = now();
   normalizeBotIdentity(stamp);
+  // The former bot number is now an ordinary captain. Preserve its name,
+  // wallet, ledger, and historical orders; only remove the bot classification.
+  const currentBotPhones = new Set([BOT_PHONE, BOT_PHONE_INTL].map(phoneWithCountry).filter(Boolean));
+  const legacyCaptainPhone = phoneWithCountry(LEGACY_BOT_PHONE_INTL || LEGACY_BOT_PHONE);
+  if (legacyCaptainPhone && !currentBotPhones.has(legacyCaptainPhone)) {
+    db.prepare(`UPDATE users
+      SET role='captain', is_bot=0,
+          account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,
+          updated_at=?
+      WHERE phone=?`).run(stamp, legacyCaptainPhone);
+  }
   // Every human subscriber is a captain. Only the internal company and bot
   // identities and the protected owner retain their operational roles.
   const legacyHumanProducers = db.prepare("SELECT id,phone,active FROM users WHERE is_bot=0 AND role='producer'").all();
