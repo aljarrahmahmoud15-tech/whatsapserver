@@ -30,6 +30,7 @@ const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
 if (process.env.RENDER && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
@@ -5678,6 +5679,11 @@ function createClient() {
     reconnectAttempts = 0;
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
+    if (WHATSAPP_DISPLAY_NAME && typeof instance.setDisplayName === "function") {
+      void withTimeout(instance.setDisplayName(WHATSAPP_DISPLAY_NAME), 20000, null)
+        .then((updated) => console.log(`[WhatsApp] display name update requested: ${WHATSAPP_DISPLAY_NAME} result=${updated === null ? "timeout_or_unconfirmed" : String(updated)}`))
+        .catch((error) => console.warn(`[WhatsApp] display name update failed: ${String(error?.message || error).slice(0, 240)}`));
+    }
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
     recordOwnerControlCheckpoint("whatsapp.ready", { force: true });
     const readyGeneration = generation;
