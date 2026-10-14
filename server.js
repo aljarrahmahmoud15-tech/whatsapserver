@@ -6668,7 +6668,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     captainId: captain.id,
     producerId: producer.id,
   });
-  if (producer.is_bot === 1 || producer.role === "company" || isLegacyBotCaptainPhone(producer.phone)) {
+  if (producer.is_bot === 1 || producer.role === "company") {
     void approveBotOwnedAcceptance({ groupId, message: msg, candidateId: candidate.id, acceptanceMessageId })
       .catch((error) => console.error(`[WhatsApp] bot-owned acceptance settlement failed: ${error.message}`));
     return;
