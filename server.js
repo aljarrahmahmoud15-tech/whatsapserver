@@ -4975,6 +4975,35 @@ async function destroyClient() {
   await disposeClientInstance(current, "destroy");
 }
 
+function archiveWhatsAppSessionDirectories() {
+  const archiveRoot = path.join(AUTH_PATH, ".archived-sessions");
+  const activeProfile = `session-${WHATSAPP_CLIENT_ID}`;
+  if (!fs.existsSync(AUTH_PATH)) return { archived: [], skipped: [], archiveRoot };
+  fs.mkdirSync(archiveRoot, { recursive: true });
+  const archived = [];
+  const skipped = [];
+  for (const entry of fs.readdirSync(AUTH_PATH, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === ".archived-sessions" || !/^session(?:-.+)?$/.test(entry.name)) continue;
+    if (entry.name === activeProfile) { skipped.push(entry.name); continue; }
+    const source = path.join(AUTH_PATH, entry.name);
+    const destination = path.join(archiveRoot, `${entry.name}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`);
+    fs.renameSync(source, destination);
+    archived.push({ name: entry.name, archive: path.basename(destination) });
+  }
+  return { archived, skipped, archiveRoot };
+}
+
+async function stopAndArchiveOldWhatsAppSession() {
+  await withTimeout(destroyClient(), 15000, null);
+  qrCodeData = null;
+  const result = archiveWhatsAppSessionDirectories();
+  whatsappState = "session_archived";
+  whatsappLastEvent = "session_archived";
+  whatsappLastError = null;
+  recordOwnerControlCheckpoint("whatsapp.session_archived", { force: true });
+  return result;
+}
+
 async function restartWhatsApp(reason = "manual restart") {
   if (whatsappRestartInFlight) return whatsappRestartInFlight;
   whatsappRestartInFlight = (async () => {
@@ -13128,6 +13157,17 @@ app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
     scheduleReconnect();
     res.redirect(303, "/qr?session=cleared");
   } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
+});
+app.post("/api/admin/whatsapp/archive-session", requireAdmin, async (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  try {
+    const result = await stopAndArchiveOldWhatsAppSession();
+    scheduleReconnect();
+    res.json({ success: true, message: "Old WhatsApp session stopped and archived; no session files were deleted", ...result });
+  } catch (error) {
+    console.error("[WhatsApp] session archive failed:", error.message);
+    res.status(500).json({ error: "Unable to archive WhatsApp session" });
+  }
 });
 app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group identity actions; try again later" });
