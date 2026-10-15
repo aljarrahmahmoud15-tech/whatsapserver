@@ -1468,7 +1468,21 @@ async function sendBotTextRaw(to, text) {
     return false;
   }
 }
+function isBotOutboundTarget(target) {
+  const value = String(target || "").trim();
+  if (!value || value.endsWith("@g.us")) return false;
+  if (value.endsWith("@lid")) {
+    const mapped = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? AND active=1 LIMIT 1").get(value);
+    return Boolean(mapped?.phone && isBotPhone(phoneWithCountry(mapped.phone)));
+  }
+  const phone = phoneWithCountry(value.replace(/@c\.us$/, ""));
+  return Boolean(phone && isBotPhone(phone));
+}
 async function sendCompanyOperationsCard(to, title, lines, { returnMessage = false } = {}) {
+  if (isBotOutboundTarget(to)) {
+    console.info(`[WhatsApp] branded card suppressed for bot identity: ${String(to || "").slice(0, 80)}`);
+    return returnMessage ? { sent: false, card: false, blocked: "bot_identity", messageId: null } : false;
+  }
   if (!client || !isReady) return false;
   const caption = brandedMessage(title, lines);
   try {
