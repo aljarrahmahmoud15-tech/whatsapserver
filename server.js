@@ -771,6 +771,8 @@ if (!existingUserColumns.includes("account_status")) db.exec("ALTER TABLE users 
 if (!existingUserColumns.includes("approved_at")) db.exec("ALTER TABLE users ADD COLUMN approved_at TEXT");
 if (!existingUserColumns.includes("activated_at")) db.exec("ALTER TABLE users ADD COLUMN activated_at TEXT");
 if (!existingUserColumns.includes("merged_into_user_id")) db.exec("ALTER TABLE users ADD COLUMN merged_into_user_id INTEGER");
+if (!existingUserColumns.includes("archived_at")) db.exec("ALTER TABLE users ADD COLUMN archived_at TEXT");
+if (!existingUserColumns.includes("archive_reason")) db.exec("ALTER TABLE users ADD COLUMN archive_reason TEXT");
 const existingInviteAuthColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
 if (!existingInviteAuthColumns.includes("auth_method")) db.exec("ALTER TABLE captain_invites ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'pin'");
 const existingOrderColumns = db.prepare("PRAGMA table_info(orders)").all().map((column) => column.name);
@@ -9832,7 +9834,7 @@ app.get("/api/admin/users", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.sent_at IS NOT NULL),0) AS cards_sent_cents,
     COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.status='redeemed'),0) AS cards_redeemed_cents,
     COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id AND c.status='issued' AND c.sent_at IS NULL),0) AS cards_pending_cents
-    FROM users u ORDER BY u.is_bot DESC,u.role,u.name,u.id`).all();
+    FROM users u WHERE u.archived_at IS NULL AND u.account_status<>'merged' ORDER BY u.is_bot DESC,u.role,u.name,u.id`).all();
   res.json({ users: users.map((user) => ({ ...user, balance: money(user.wallet_cents), cardsIssued: money(user.cards_issued_cents), cardsSent: money(user.cards_sent_cents), cardsRedeemed: money(user.cards_redeemed_cents), cardsPending: money(user.cards_pending_cents), protected: Boolean(user.is_bot || user.role === "company") })) });
 });
 app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
@@ -9840,6 +9842,7 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(id);
   if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
   if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن تغيير دوره أو حذفه" });
+  if (user.archived_at || user.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف ولا يمكن تعديله من الواجهة" });
   const name = req.body.name === undefined ? user.name : String(req.body.name).trim();
   const phone = req.body.phone === undefined ? user.phone : phoneWithCountry(String(req.body.phone));
   const role = req.body.role === undefined ? user.role : String(req.body.role).trim().toLowerCase();
@@ -9863,24 +9866,17 @@ app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
 });
 app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot FROM users WHERE id=? LIMIT 1").get(id);
+  const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,archived_at FROM users WHERE id=? LIMIT 1").get(id);
   if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
-  if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن حذفه" });
-  const refs = {
-    orders: db.prepare("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id=? OR captain_user_id=? OR pending_captain_user_id=?").get(id, id, id).count,
-    ledger: db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(id).count,
-    settlements: db.prepare("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id=? OR producer_user_id=?").get(id, id).count,
-    cards: db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?").get(id, id).count,
-  };
-  if (Object.values(refs).some((count) => Number(count) > 0) || Number(user.wallet_cents) !== 0) return res.status(409).json({ error: "لا يمكن حذف مستخدم مرتبط بطلبات أو محاسبة أو بطاقات أو رصيد. استخدم الإيقاف بدل الحذف.", reasons: { ...refs, balance: money(user.wallet_cents) } });
-  db.transaction(() => {
-    db.prepare("DELETE FROM captain_phone_aliases WHERE captain_user_id=?").run(id);
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(id);
-    db.prepare("UPDATE captain_invites SET approved_user_id=NULL WHERE approved_user_id=?").run(id);
-    db.prepare("DELETE FROM users WHERE id=?").run(id);
-  })();
-  audit("admin.user.deleted", "user", id, { phone: user.phone, name: user.name, role: user.role });
-  res.json({ success: true, deleted: id });
+  if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن أرشفته" });
+  if (user.role !== "captain") return res.status(400).json({ error: "الأرشفة متاحة لحسابات الكباتن فقط" });
+  if (user.archived_at || user.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف مسبقًا", archived: true });
+  const reason = String(req.body?.reason || "حذف من واجهة المالك").trim().slice(0, 240) || "حذف من واجهة المالك";
+  const stamp = now();
+  const result = db.prepare("UPDATE users SET active=0,account_status='suspended',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND archived_at IS NULL").run(stamp, reason, stamp, id);
+  if (!result.changes) return res.status(409).json({ error: "تعذر أرشفة الحساب؛ أعد تحميل القائمة" });
+  audit("admin.user.deleted", "user", id, { phone: user.phone, name: user.name, role: user.role, reason, archived: true, financialMutation: false, settlementMutation: false });
+  res.json({ success: true, archived: id, archivedAt: stamp, removedFromInterface: true, financialMutation: false, settlementMutation: false });
 });
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
@@ -9893,7 +9889,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(s.producer_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_share_cents,
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_debit_cents,
     (SELECT MAX(o.accepted_at) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE (s.producer_user_id=u.id OR s.captain_user_id=u.id) AND s.status='applied' AND o.status IN ('accepted','completed')) AS last_confirmed_at
-    FROM users u WHERE u.role='captain' AND u.account_status<>'merged'
+    FROM users u WHERE u.role='captain' AND u.account_status<>'merged' AND u.archived_at IS NULL
     ORDER BY u.active DESC,u.id DESC`).all();
   res.json({ captains: rows.map((row) => ({
     ...row,
@@ -10155,16 +10151,16 @@ app.post("/api/admin/captains/:id/suspend-and-remove", requireAdmin, async (req,
 app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
-  const captain = db.prepare("SELECT id,phone,name,wallet_cents FROM users WHERE id=? AND role='captain'").get(id);
+  const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,archived_at FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
-  const trips = db.prepare("SELECT COUNT(*) AS count FROM orders WHERE captain_user_id=?").get(id).count;
-  const ledger = db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=?").get(id).count;
-  const cards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by=? OR assigned_captain_id=?").get(id, id).count;
-  const aliases = db.prepare("SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id=?").get(id).count;
-  if (captain.wallet_cents !== 0 || trips || ledger || cards || aliases) return res.status(409).json({ error: "لا يمكن حذف كابتن لديه رحلات أو حركات مالية أو رصيد أو أسماء بديلة مرتبطة. استخدم الإيقاف عن العمل بدلًا من الحذف.", reasons: { balance: money(captain.wallet_cents), trips, ledger, cards, aliases } });
-  db.transaction(() => { db.prepare("DELETE FROM captain_invites WHERE approved_user_id=?").run(id); db.prepare("DELETE FROM users WHERE id=? AND role='captain'").run(id); })();
-  audit("captain.deleted", "user", id, { phone: captain.phone, name: captain.name });
-  res.json({ success: true, deleted: id });
+  if (captain.is_bot) return res.status(403).json({ error: "حساب البوت محمي ولا يمكن أرشفته" });
+  if (captain.archived_at || captain.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف مسبقًا", archived: true });
+  const reason = String(req.body?.reason || "حذف من واجهة المالك").trim().slice(0, 240) || "حذف من واجهة المالك";
+  const stamp = now();
+  const result = db.prepare("UPDATE users SET active=0,account_status='suspended',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND archived_at IS NULL").run(stamp, reason, stamp, id);
+  if (!result.changes) return res.status(409).json({ error: "تعذر أرشفة الحساب؛ أعد تحميل القائمة" });
+  audit("captain.archived", "user", id, { phone: captain.phone, name: captain.name, reason, financialMutation: false, settlementMutation: false });
+  res.json({ success: true, archived: id, archivedAt: stamp, removedFromInterface: true, financialMutation: false, settlementMutation: false });
 });
 app.get("/api/admin/captains/:id/merge-preview", requireAdmin, (req, res) => {
   const sourceId = Number(req.params.id);
@@ -10727,11 +10723,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
   db.transaction(() => {
     for (const candidate of deletable) {
       const id = candidate.user.id;
-      db.prepare("DELETE FROM captain_phone_aliases WHERE captain_user_id=?").run(id);
-      db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(id);
-      db.prepare("DELETE FROM whatsapp_identities WHERE user_id=?").run(id);
-      db.prepare("UPDATE captain_invites SET approved_user_id=NULL WHERE approved_user_id=?").run(id);
-      const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND account_status<>'merged' AND is_bot=0").run(id);
+      const result = db.prepare("UPDATE users SET active=0,account_status='suspended',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND account_status<>'merged' AND is_bot=0 AND archived_at IS NULL").run(stamp, "تنظيف حساب كابتن فارغ من واجهة المالك", stamp, id);
       if (result.changes === 1) deleted.push({ id, phone: candidate.user.phone, name: candidate.user.registration_name || candidate.user.name });
     }
     for (const candidate of preserveHistory) {
@@ -10741,7 +10733,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
     }
   })();
   audit("captains.cleanup.applied", "group", groupId, { backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, expected });
-  void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تم حذف حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
+  void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تمت أرشفة حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
