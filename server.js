@@ -3394,16 +3394,22 @@ function captainDisplayName(name) {
   if (!original || (digits.length >= 8 && digits === original.replace(/[^0-9]/g, ""))) return "كابتن بدون اسم";
   return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
 }
-function applyCaptainSubscriptionCharges(stamp = now()) {
-  if (!CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
+function weeklyChargeEligibleCaptains(stamp = now()) {
+  const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  return db.prepare(`SELECT DISTINCT u.id,u.phone,u.name,u.wallet_cents
+    FROM users u JOIN orders o ON o.captain_user_id=u.id
+    JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+    WHERE u.role='captain' AND u.active=1 AND u.is_bot=0 AND u.account_status='active'
+      AND o.status='completed' AND o.settlement_state='settled'
+      AND COALESCE(o.updated_at,o.created_at)>=? AND COALESCE(o.updated_at,o.created_at)<=?
+    ORDER BY u.id`).all(cutoff, stamp);
+}
+function applyCaptainSubscriptionCharges(stamp = now(), { manual = false } = {}) {
+  if (!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [] };
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const captains = db.prepare(`SELECT id,phone,name,wallet_cents FROM users
-    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active'
-    AND (EXISTS (SELECT 1 FROM orders o WHERE (o.producer_user_id=users.id OR o.captain_user_id=users.id) AND o.created_at>=? AND o.created_at<=?)
-      OR EXISTS (SELECT 1 FROM order_candidates oc WHERE oc.producer_user_id=users.id AND oc.created_at>=? AND oc.created_at<=?))
-    ORDER BY id`).all(cutoff, stamp, cutoff, stamp);
+  const captains = weeklyChargeEligibleCaptains(stamp);
   const applied = [];
   const skipped = [];
   for (const captain of captains) {
@@ -13056,6 +13062,24 @@ app.get("/api/admin/wallets", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u ORDER BY u.role,u.id`).all();
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
+});
+app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, (req, res) => {
+  const stamp = now();
+  const period = currentCaptainSubscriptionPeriod(stamp);
+  if (!period) return res.json({ success: true, period: null, eligibleCount: 0, totalCents: 0, captains: [] });
+  const captains = weeklyChargeEligibleCaptains(stamp);
+  const alreadyCharged = db.prepare("SELECT user_id,status FROM captain_subscription_charges WHERE period_start=?").all(period.start);
+  const charged = new Map(alreadyCharged.map((row) => [Number(row.user_id), row.status]));
+  const pending = captains.filter((captain) => !charged.has(Number(captain.id)));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.name), phone: captain.phone, balance: money(captain.wallet_cents) })) });
+});
+app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req, res) => {
+  if (String(req.body?.confirmation || "") !== "APPLY_WEEKLY_CAPTAIN_CHARGE") return res.status(400).json({ error: "التأكيد APPLY_WEEKLY_CAPTAIN_CHARGE مطلوب" });
+  const stamp = now();
+  const result = applyCaptainSubscriptionCharges(stamp, { manual: true });
+  audit("captain.subscription.manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS });
+  res.json({ success: true, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
 });
 app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
   const requestedPeriod = String(req.query.periodStart || "").trim();
