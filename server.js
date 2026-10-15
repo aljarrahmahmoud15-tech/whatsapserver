@@ -1525,6 +1525,9 @@ const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
 const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST";
 // No live test exception remains enabled after the controlled verification attempt.
 const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set();
+// Owner policy: suppress the branded pending-booking approval card. The candidate
+// remains pending and visible in V26; this switch only stops the WhatsApp card.
+const PENDING_BOOKING_OWNER_APPROVAL_CARD_ENABLED = false;
 const captainStatusNotificationInFlight = new Set();
 async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null, testOverride = false, testCaptainId = null }) {
   const recipientPhone = phoneWithCountry(phone);
@@ -3698,6 +3701,14 @@ function notifyOrderLifecycleBlocker(candidateId, blocker, details = {}) {
 function notifyPendingBookingApproval(candidateId, { acceptanceMessageId = null, captain = null } = {}) {
   if (!candidateId) return;
   const event = `order.pending_owner_approval.${candidateId}`;
+  if (!PENDING_BOOKING_OWNER_APPROVAL_CARD_ENABLED) {
+    audit(`${event}.suppressed`, "order_candidate", candidateId, {
+      deliveryStatus: "suppressed",
+      reason: "pending_booking_owner_approval_card_disabled",
+      acceptanceMessageId: acceptanceMessageId ? orderTraceKey(acceptanceMessageId) : null,
+    });
+    return;
+  }
   if (db.prepare("SELECT id FROM notifications WHERE event=? LIMIT 1").get(event)) return;
   const candidate = db.prepare(`SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id,
       p.name AS producer_name
