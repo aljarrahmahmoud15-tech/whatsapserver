@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS staff_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  phone TEXT,
   role TEXT NOT NULL CHECK(role IN ('accountant','operations')),
   password_hash TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
@@ -736,10 +737,12 @@ CREATE TABLE IF NOT EXISTS captain_wallet_pool_operations (
   completed_at TEXT NOT NULL
 );
 `);
-const existingStaffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all().map((column) => column.name);
-if (!existingStaffColumns.includes("permissions_json")) db.exec("ALTER TABLE staff_accounts ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
+	const existingStaffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all().map((column) => column.name);
+	if (!existingStaffColumns.includes("permissions_json")) db.exec("ALTER TABLE staff_accounts ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
+	if (!existingStaffColumns.includes("phone")) db.exec("ALTER TABLE staff_accounts ADD COLUMN phone TEXT");
+	db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_accounts_phone ON staff_accounts(phone) WHERE phone IS NOT NULL AND phone <> ''");
 
-const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
+	const existingNotificationColumns = db.prepare("PRAGMA table_info(notifications)").all().map((column) => column.name);
 if (!existingNotificationColumns.includes("source_message_id")) db.exec("ALTER TABLE notifications ADD COLUMN source_message_id TEXT");
 if (!existingNotificationColumns.includes("idempotency_key")) db.exec("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency ON notifications(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
@@ -8498,7 +8501,7 @@ app.get("/api/staff/support-tickets", requireStaffPermission("support"), (req, r
   res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
 });
 app.get("/api/admin/staff", requireAdmin, (req, res) => {
-  const accounts = db.prepare("SELECT id,username,name,role,active,permissions_json,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all().map((account) => ({ ...account, permissions: staffAccountPermissions(account), permissionLabels: STAFF_PERMISSION_LABELS }));
+  const accounts = db.prepare("SELECT id,username,name,phone,role,active,permissions_json,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all().map((account) => ({ ...account, permissions: staffAccountPermissions(account), permissionLabels: STAFF_PERMISSION_LABELS, financialLinked: false }));
   res.json({ accounts, portalUrl: staffPortalUrl(req), permissionOptions: STAFF_PERMISSION_OPTIONS });
 });
 function requestedStaffPermissions(value, role) {
@@ -8509,40 +8512,49 @@ function requestedStaffPermissions(value, role) {
 app.post("/api/admin/staff", requireAdmin, (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
   const name = String(req.body?.name || "").trim();
+  const rawPhone = String(req.body?.phone || "").trim();
+  const phone = rawPhone ? phoneWithCountry(rawPhone) : null;
   const role = String(req.body?.role || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
   const permissions = requestedStaffPermissions(req.body?.permissions, role);
-  if (!/^[a-z0-9._-]{3,40}$/.test(username) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || password.length < 10 || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات الموظف غير صالحة؛ اختر صلاحية واحدة على الأقل وكلمة مرور 10 أحرف على الأقل" });
+  if (!/^\d{10,15}$/.test(phone || "") || !isValidJordanPhone(phone) || !/^[a-z0-9._-]{3,40}$/.test(username) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || password.length < 10 || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات الموظف غير صالحة؛ أدخل رقمًا أردنيًا وصلاحية واحدة على الأقل وكلمة مرور 10 أحرف على الأقل" });
   try {
     const stamp = now();
-    const result = db.prepare("INSERT INTO staff_accounts(username,name,role,password_hash,active,permissions_json,created_at,updated_at) VALUES(?,?,?,?,1,?,?,?)").run(username, name, role, bcrypt.hashSync(password, 12), JSON.stringify(permissions), stamp, stamp);
-    audit("staff.account.created", "staff_account", result.lastInsertRowid, { username, role, permissions });
-    res.status(201).json({ success: true, id: result.lastInsertRowid, username, name, role, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
-  } catch (error) { res.status(409).json({ error: error.code === "SQLITE_CONSTRAINT_UNIQUE" ? "اسم المستخدم مستخدم مسبقًا" : "تعذر إنشاء الحساب" }); }
+    const result = db.prepare("INSERT INTO staff_accounts(username,name,phone,role,password_hash,active,permissions_json,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?)").run(username, name, phone, role, bcrypt.hashSync(password, 12), JSON.stringify(permissions), stamp, stamp);
+    audit("staff.account.created", "staff_account", result.lastInsertRowid, { username, phone, role, permissions });
+    res.status(201).json({ success: true, id: result.lastInsertRowid, username, name, phone, role, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
+  } catch (error) { res.status(409).json({ error: error.code === "SQLITE_CONSTRAINT_UNIQUE" ? "اسم المستخدم أو الرقم مستخدم مسبقًا" : "تعذر إنشاء الحساب" }); }
 });
 app.patch("/api/admin/staff/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const account = db.prepare("SELECT * FROM staff_accounts WHERE id=? LIMIT 1").get(id);
   if (!account) return res.status(404).json({ error: "حساب الموظف غير موجود" });
   const name = req.body.name === undefined ? account.name : String(req.body.name).trim();
+  const rawPhone = req.body.phone === undefined ? String(account.phone || "") : String(req.body.phone || "").trim();
+  const phone = rawPhone ? phoneWithCountry(rawPhone) : null;
   const role = req.body.role === undefined ? account.role : String(req.body.role).trim().toLowerCase();
   const active = req.body.active === undefined ? account.active : (req.body.active ? 1 : 0);
   const password = req.body.password === undefined ? "" : String(req.body.password);
   const permissions = requestedStaffPermissions(req.body.permissions, role);
-  if (!name || name.length > 100 || !["accountant", "operations"].includes(role) || (password && password.length < 10) || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات التعديل غير صالحة؛ اختر صلاحية واحدة على الأقل" });
+  if (!/^\d{10,15}$/.test(phone || "") || !isValidJordanPhone(phone) || !name || name.length > 100 || !["accountant", "operations"].includes(role) || (password && password.length < 10) || !permissions || !permissions.length) return res.status(400).json({ error: "بيانات التعديل غير صالحة؛ أدخل رقمًا أردنيًا وصلاحية واحدة على الأقل" });
+  const duplicate = db.prepare("SELECT id FROM staff_accounts WHERE phone=? AND id<>? LIMIT 1").get(phone, id);
+  if (duplicate) return res.status(409).json({ error: "رقم الهاتف مستخدم لحساب عمليات آخر" });
   const stamp = now();
-  if (password) db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,permissions_json=?,password_hash=?,updated_at=? WHERE id=?").run(name, role, active, JSON.stringify(permissions), bcrypt.hashSync(password, 12), stamp, id);
-  else db.prepare("UPDATE staff_accounts SET name=?,role=?,active=?,permissions_json=?,updated_at=? WHERE id=?").run(name, role, active, JSON.stringify(permissions), stamp, id);
-  audit("staff.account.updated", "staff_account", id, { name, role, active, permissions, passwordChanged: Boolean(password) });
-  res.json({ success: true, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
+  if (password) db.prepare("UPDATE staff_accounts SET name=?,phone=?,role=?,active=?,permissions_json=?,password_hash=?,updated_at=? WHERE id=?").run(name, phone, role, active, JSON.stringify(permissions), bcrypt.hashSync(password, 12), stamp, id);
+  else db.prepare("UPDATE staff_accounts SET name=?,phone=?,role=?,active=?,permissions_json=?,updated_at=? WHERE id=?").run(name, phone, role, active, JSON.stringify(permissions), stamp, id);
+  audit("staff.account.updated", "staff_account", id, { name, phone, role, active, permissions, passwordChanged: Boolean(password) });
+  res.json({ success: true, phone, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
 });
 app.delete("/api/admin/staff/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const account = db.prepare("SELECT id,username,role FROM staff_accounts WHERE id=? LIMIT 1").get(id);
+  const account = db.prepare("SELECT id,username,phone,role FROM staff_accounts WHERE id=? LIMIT 1").get(id);
   if (!account) return res.status(404).json({ error: "حساب الموظف غير موجود" });
+  // staff_accounts is deliberately separate from users, wallets, orders, and settlements.
+  // Keep this guard explicit so a future schema link cannot turn deletion into a financial mutation.
+  const financialRefs = { walletLedger: 0, orders: 0, settlements: 0, topupCards: 0 };
   db.prepare("DELETE FROM staff_accounts WHERE id=?").run(id);
-  audit("staff.account.deleted", "staff_account", id, { username: account.username, role: account.role });
-  res.json({ success: true, deleted: id });
+  audit("staff.account.deleted", "staff_account", id, { username: account.username, phone: account.phone, role: account.role, financialRefs });
+  res.json({ success: true, deleted: id, financialRefs });
 });
 app.get("/api/public/operations-feed", (req, res) => {
   const redact = (value) => String(value || "")
