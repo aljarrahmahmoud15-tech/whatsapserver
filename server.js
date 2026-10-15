@@ -1472,7 +1472,8 @@ function isBotOutboundTarget(target) {
   const value = String(target || "").trim();
   if (!value || value.endsWith("@g.us")) return false;
   if (value.endsWith("@lid")) {
-    const mapped = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? AND active=1 LIMIT 1").get(value);
+    // A stale/inactive LID mapping must not bypass the bot-recipient guard.
+    const mapped = db.prepare("SELECT phone FROM whatsapp_identities WHERE whatsapp_lid=? LIMIT 1").get(value);
     return Boolean(mapped?.phone && isBotPhone(phoneWithCountry(mapped.phone)));
   }
   const phone = phoneWithCountry(value.replace(/@c\.us$/, ""));
@@ -1525,9 +1526,6 @@ const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
 const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST";
 // No live test exception remains enabled after the controlled verification attempt.
 const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set();
-// Owner policy: suppress the branded pending-booking approval card. The candidate
-// remains pending and visible in V26; this switch only stops the WhatsApp card.
-const PENDING_BOOKING_OWNER_APPROVAL_CARD_ENABLED = false;
 const captainStatusNotificationInFlight = new Set();
 async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null, testOverride = false, testCaptainId = null }) {
   const recipientPhone = phoneWithCountry(phone);
@@ -1601,6 +1599,11 @@ async function notifyOperations({ event, title, lines, captainPhone = null, owne
   const results = [];
   for (const phone of recipients) {
     const recipientRole = owners.includes(phone) ? "owner" : "captain";
+    if (isBotPhone(phone)) {
+      audit(`notification.${event}.suppressed`, "user", phone, { deliveryStatus: "suppressed", reason: "bot_identity" });
+      results.push({ id: null, phone, recipientRole, deliveryStatus: "suppressed" });
+      continue;
+    }
     const message = lines.filter(Boolean).join("\n");
     const row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,?,?,?,'pending',?)").run(phone, recipientRole, event, title, message, now());
     let deliveryStatus = "failed";
@@ -3701,7 +3704,11 @@ function notifyOrderLifecycleBlocker(candidateId, blocker, details = {}) {
 function notifyPendingBookingApproval(candidateId, { acceptanceMessageId = null, captain = null } = {}) {
   if (!candidateId) return;
   const event = `order.pending_owner_approval.${candidateId}`;
-  if (!PENDING_BOOKING_OWNER_APPROVAL_CARD_ENABLED) {
+  // Owner policy: the candidate remains pending and visible in V26; only its
+  // branded WhatsApp approval card is suppressed. Keep this local so isolated
+  // lifecycle simulations can exercise the function without bootstrapping all constants.
+  const pendingBookingOwnerApprovalCardEnabled = false;
+  if (!pendingBookingOwnerApprovalCardEnabled) {
     audit(`${event}.suppressed`, "order_candidate", candidateId, {
       deliveryStatus: "suppressed",
       reason: "pending_booking_owner_approval_card_disabled",
