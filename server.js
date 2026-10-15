@@ -3406,6 +3406,57 @@ function weeklyChargeEligibleCaptains(stamp = now()) {
       AND COALESCE(o.updated_at,o.created_at)>=? AND COALESCE(o.updated_at,o.created_at)<=?
     ORDER BY u.id`).all(cutoff, stamp);
 }
+function ammanDateKey(stamp = now()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Amman", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(stamp));
+  const value = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+function manualWeeklyChargeEligibleCaptains(stamp = now()) {
+  const today = ammanDateKey(stamp);
+  return db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
+    FROM users
+    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
+      AND wallet_cents>=?
+    ORDER BY id`).all(CAPTAIN_SUBSCRIPTION_CENTS).filter((captain) => ammanDateKey(captain.created_at) !== today);
+}
+function applyManualWeeklyCaptainCharges(stamp = now()) {
+  const period = currentCaptainSubscriptionPeriod(stamp);
+  if (!period) return { status: "before_start", applied: [], skipped: [], eligibleCount: 0 };
+  const today = ammanDateKey(stamp);
+  const candidates = db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
+    FROM users
+    WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND archived_at IS NULL
+    ORDER BY id`).all();
+  const applied = [];
+  const skipped = [];
+  for (const captain of candidates) {
+    const reference = `SUB-${period.start.slice(0, 10)}-${captain.id}`;
+    try {
+      const result = db.transaction(() => {
+        const existing = db.prepare("SELECT id,status,ledger_id FROM captain_subscription_charges WHERE user_id=? AND period_start=? LIMIT 1").get(captain.id, period.start);
+        if (existing) return { state: "already_recorded", chargeId: existing.id, status: existing.status };
+        const current = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,is_bot,account_status,created_at FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status='active' AND archived_at IS NULL").get(captain.id);
+        if (!current || !current.active) return { state: "ineligible" };
+        if (ammanDateKey(current.created_at) === today) return { state: "registered_today" };
+        if (Number(current.wallet_cents || 0) < CAPTAIN_SUBSCRIPTION_CENTS) return { state: "below_balance_threshold" };
+        const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
+        db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, captain.id);
+        const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
+          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, registeredDate: ammanDateKey(current.created_at), chargeDate: today, manual: true }), reference);
+        const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,ledger_id,reference,created_at,applied_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)")
+          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ registeredDate: ammanDateKey(current.created_at), chargeDate: today, manual: true }));
+        audit("captain.subscription.charged", "user", captain.id, { phone: current.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference, manual: true }, null);
+        return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance };
+      })();
+      if (result.state === "applied") applied.push({ ...captain, ...result, reference });
+      else if (["registered_today", "below_balance_threshold"].includes(result.state)) skipped.push({ ...captain, ...result, reference });
+    } catch (error) {
+      console.error(`[Subscription] manual charge failed for captain ${captain.id}:`, error.message);
+      skipped.push({ ...captain, state: "error", reference, error: error.message });
+    }
+  }
+  return { status: "completed", period, chargeDate: today, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, applied, skipped, eligibleCount: applied.length, totalCents: applied.length * CAPTAIN_SUBSCRIPTION_CENTS };
+}
 function applyCaptainSubscriptionCharges(stamp = now(), { manual = false } = {}) {
   if (!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
   const period = currentCaptainSubscriptionPeriod(stamp);
@@ -13059,20 +13110,19 @@ app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, (req,
   const stamp = now();
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return res.json({ success: true, period: null, eligibleCount: 0, totalCents: 0, captains: [] });
-  const captains = weeklyChargeEligibleCaptains(stamp);
+  const candidates = manualWeeklyChargeEligibleCaptains(stamp);
   const alreadyCharged = db.prepare("SELECT user_id,status FROM captain_subscription_charges WHERE period_start=?").all(period.start);
   const charged = new Map(alreadyCharged.map((row) => [Number(row.user_id), row.status]));
-  const pending = captains.filter((captain) => !charged.has(Number(captain.id)));
+  const pending = candidates.filter((captain) => !charged.has(Number(captain.id)));
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.name), phone: captain.phone, balance: money(captain.wallet_cents) })) });
+  res.json({ success: true, manualOnly: true, automaticDeductions: false, chargeDate: ammanDateKey(stamp), period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.registration_name || captain.name), phone: captain.phone, balance: money(captain.wallet_cents), createdAt: captain.created_at })) });
 });
 app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req, res) => {
-  return res.status(423).json({ error: "الخصم الأسبوعي متوقف حاليًا؛ تُترك تسوية الطلب المكتمل فقط فعالة", code: "WEEKLY_DEDUCTIONS_DISABLED" });
   if (String(req.body?.confirmation || "") !== "APPLY_WEEKLY_CAPTAIN_CHARGE") return res.status(400).json({ error: "التأكيد APPLY_WEEKLY_CAPTAIN_CHARGE مطلوب" });
   const stamp = now();
-  const result = applyCaptainSubscriptionCharges(stamp, { manual: true });
-  audit("captain.subscription.manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS });
-  res.json({ success: true, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
+  const result = applyManualWeeklyCaptainCharges(stamp);
+  audit("captain.subscription.manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, manualOnly: true });
+  res.json({ success: true, manualOnly: true, automaticDeductions: false, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
 });
 app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
   const requestedPeriod = String(req.query.periodStart || "").trim();
