@@ -13075,6 +13075,7 @@ app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, (req,
   res.json({ success: true, period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.name), phone: captain.phone, balance: money(captain.wallet_cents) })) });
 });
 app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req, res) => {
+  return res.status(423).json({ error: "الخصم الأسبوعي متوقف حاليًا؛ تُترك تسوية الطلب المكتمل فقط فعالة", code: "WEEKLY_DEDUCTIONS_DISABLED" });
   if (String(req.body?.confirmation || "") !== "APPLY_WEEKLY_CAPTAIN_CHARGE") return res.status(400).json({ error: "التأكيد APPLY_WEEKLY_CAPTAIN_CHARGE مطلوب" });
   const stamp = now();
   const result = applyCaptainSubscriptionCharges(stamp, { manual: true });
