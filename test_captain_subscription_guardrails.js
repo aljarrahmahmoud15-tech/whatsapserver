@@ -16,7 +16,7 @@ assert.match(source, /ammanDateKey\(captain\.created_at\) !== today/);
 assert.match(source, /"skipped_debt_limit"/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);
-assert.match(source, /if \(!CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED\) return \{ status: "disabled_by_owner"/);
+assert.match(source, /!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED/);
 assert.match(source, /startCaptainSubscriptionScheduler\(\);/);
 assert.match(source, /app\.get\("\/api\/admin\/subscriptions", requireAdmin/);
 assert.match(source, /currentBalance: money\(row\.wallet_cents\)/);
