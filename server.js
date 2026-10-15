@@ -1479,6 +1479,10 @@ function isBotOutboundTarget(target) {
   return Boolean(phone && isBotPhone(phone));
 }
 async function sendCompanyOperationsCard(to, title, lines, { returnMessage = false } = {}) {
+  if (String(to || "").trim().endsWith("@g.us") && !isOfficialGroupTarget(to)) {
+    console.warn(`[WhatsApp] branded card blocked: non-official group target=${String(to || "").slice(0, 80)}`);
+    return returnMessage ? { sent: false, card: false, blocked: "non_official_group", messageId: null } : false;
+  }
   if (isBotOutboundTarget(to)) {
     console.info(`[WhatsApp] branded card suppressed for bot identity: ${String(to || "").slice(0, 80)}`);
     return returnMessage ? { sent: false, card: false, blocked: "bot_identity", messageId: null } : false;
@@ -1490,18 +1494,18 @@ async function sendCompanyOperationsCard(to, title, lines, { returnMessage = fal
     if (!media) throw new Error("operations card render returned no media");
     const result = await sendWhatsAppAtMostOnce(to, media, { caption }, 30000);
     if (result.status !== "sent") {
-      console.warn(`[WhatsApp] operations card delivery ${result.status}; no text fallback will be attempted`);
-      return returnMessage ? { sent: false, card: false, uncertain: result.status === "uncertain", messageId: null } : false;
+      console.warn(`[WhatsApp] operations card delivery ${result.status}; error=${result.error || "none"}; no text fallback will be attempted`);
+      return returnMessage ? { sent: false, card: false, blocked: result.status === "blocked" ? result.error : null, uncertain: result.status === "uncertain", error: result.error || null, messageId: null } : false;
     }
     return returnMessage ? { sent: true, card: true, messageId: result.message?.id?._serialized || null } : true;
   } catch (error) {
     if (error?.message !== "operations card render returned no media") {
       console.error("[WhatsApp] operations card send failed; no retry to avoid duplicate delivery:", error.message);
-      return returnMessage ? { sent: false, card: false, messageId: null } : false;
+      return returnMessage ? { sent: false, card: false, error: String(error?.message || error).slice(0, 240), messageId: null } : false;
     }
     console.warn("[WhatsApp] operations card media failed; using text fallback");
     const result = await sendWhatsAppAtMostOnce(to, caption, undefined, 20000);
-    return returnMessage ? { sent: result.status === "sent", card: false, uncertain: result.status === "uncertain", messageId: result.message?.id?._serialized || null } : result.status === "sent";
+    return returnMessage ? { sent: result.status === "sent", card: false, uncertain: result.status === "uncertain", error: result.error || null, messageId: result.message?.id?._serialized || null } : result.status === "sent";
   }
 }
 async function sendBotText(to, text) {
@@ -2507,6 +2511,10 @@ function configuredRuntimeGroupId() {
   if (!WHATSAPP_GROUP_ID) return "";
   const configured = String(getSetting("active_group_id", getSetting("group_id", "")) || "").trim();
   return configured === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID) ? WHATSAPP_GROUP_ID : "";
+}
+function isOfficialGroupTarget(target) {
+  const value = String(target || "").trim();
+  return Boolean(value && value === WHATSAPP_GROUP_ID && value === configuredRuntimeGroupId());
 }
 function isServer2OutboundTargetAllowed(target) {
   const value = String(target || "").trim();
@@ -4133,12 +4141,12 @@ function enqueueFinalBookingConfirmation(groupId, details, options = {}) {
   });
 }
 async function sendFinalBookingConfirmationDirect(groupId, message) {
-  if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
+  if (!isOfficialGroupTarget(groupId) || !isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_official_group_target_required");
   if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
   return client.sendMessage(groupId, message);
 }
 async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
-  if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
+  if (!isOfficialGroupTarget(groupId) || !isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_official_group_target_required");
   if (!client || !isReady) throw new Error("whatsapp_not_ready");
   let chat = null;
   try {
@@ -4335,7 +4343,10 @@ function observeFinalBookingConfirmationMessage(message) {
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
 async function sendFinalBookingCancellation(groupId, order = null) {
-  if (!client || !groupId) return null;
+  if (!client || !isOfficialGroupTarget(groupId)) {
+    console.warn(`[WhatsApp] final booking cancellation blocked: official group required target=${String(groupId || "").slice(0, 80)}`);
+    return null;
+  }
   try {
     const sent = await sendServer2DirectAtMostOnce(groupId, finalBookingCancellationText(order), undefined, 15000);
     if (!sent) throw new Error("cancellation message was not acknowledged");

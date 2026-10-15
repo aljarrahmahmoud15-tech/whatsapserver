@@ -10,6 +10,11 @@ assert.match(source, /function isBotOutboundTarget\(target\)/);
 assert.match(source, /whatsapp_identities WHERE whatsapp_lid=\? AND active=1/);
 assert.match(sendCard, /isBotOutboundTarget\(to\)/);
 assert.match(sendCard, /blocked: "bot_identity"/);
+assert.match(sendCard, /non_official_group/);
+assert.match(sendCard, /result\.error/);
+assert.match(source, /function isOfficialGroupTarget\(target\)/);
+assert.match(source, /server2_official_group_target_required/);
+assert.match(source, /final booking cancellation blocked: official group required/);
 assert.match(source, /isProtectedOwnerIdentity\(phone\) \|\| isBotPhone\(phone\)/);
 
 console.log('bot branding guardrail and captain-only welcome path verified');
