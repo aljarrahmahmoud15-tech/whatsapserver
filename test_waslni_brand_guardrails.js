@@ -9,11 +9,11 @@ assert.match(server, /const COMPANY_BRAND_NAME = "وصلني الآن"/);
 assert.match(server, /const COMPANY_BRAND_ENGLISH = "WASLNI NOW"/);
 assert.match(server, /`┃ \$\{COMPANY_BRAND_NAME\} \| بوابة التشغيل الرسمية`/);
 assert.match(server, /🟢 تثبيت الطلب/);
-assert.match(owner, /لوحة وصلني الآن/);
-assert.match(captain, /وصلني الآن/);
+assert.match(owner, /لوحة الشيخ للتوصيل/);
+assert.match(captain, /الشيخ للتوصيل/);
 assert.doesNotMatch(server, /شركة الجراح \| بوابة التشغيل الرسمية/);
 assert.doesNotMatch(server, /AL-JARAH OPERATIONS NETWORK/);
 assert.doesNotMatch(owner, /شركة الجراح/);
 assert.doesNotMatch(captain, /<strong>الجراح<\/strong>/);
 
-console.log('Waslni Now branding guardrails verified');
+console.log('Sheikh Delivery branding guardrails verified');
