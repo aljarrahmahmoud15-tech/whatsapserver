@@ -125,6 +125,7 @@ const context = {
   SPECIAL_ORDER_RATE_BPS: 1250,
   COMPANY_FROM_PRODUCER_RATE_BPS: 250,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 250,
+  currentSettlementPolicy: () => ({ producerRateBps: 1250, companyRateBps: 250, totalRateBps: 1500, regularProducerRateBps: 1250, specialOrderProducerRateBps: 1250, companyFromProducerRateBps: 250, specialOrderCompanyFromProducerRateBps: 250 }),
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,

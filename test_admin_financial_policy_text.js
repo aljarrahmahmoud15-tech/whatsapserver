@@ -9,9 +9,9 @@ const {
 const admin = fs.readFileSync('admin.html', 'utf8');
 const settlement = calculateSettlement({ priceCents: 500, orderKind: 'normal' });
 
-assert.match(admin, /12\.5% لصاحب الطلب و2\.5% للشركة/);
-assert.match(admin, /التسوية لجميع الأنواع: 12\.5% للكابتن الأول و2\.5% للشركة، بإجمالي خصم 15%/);
-assert.match(admin, /12\.5% لصاحب الطلب و2\.5% للشركة/);
+assert.match(admin, /id="ownerSettingsCard"/);
+assert.match(admin, /saveSettlementPolicy/);
+assert.match(admin, /التعديل يؤثر على الطلبات التي تُثبت بعد الحفظ فقط/);
 assert.match(admin, /الشركة/);
 assert.doesNotMatch(admin, /16%|4%.*الشركة/);
 assert.equal(REGULAR_PRODUCER_RATE_BPS, 1250);

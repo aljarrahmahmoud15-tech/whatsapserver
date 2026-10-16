@@ -960,8 +960,14 @@ function settlementFinancials(row) {
     ? producerCents + companyCents
     : Number(row.settlement_captain_fee_cents || 0);
   const executorWalletCreditCents = 0;
+  const policySnapshot = settlementPolicyFromDetails(row.settlement_details_json || row.details_json);
   return {
     price: money(externalOrderValueCents),
+    policy: {
+      producerRatePercent: policySnapshot.producerRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps)),
+      companyRatePercent: policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.companyRateBps)),
+      totalRatePercent: policySnapshot.producerRateBps === undefined || policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps + policySnapshot.companyRateBps)),
+    },
     externalOrderValue: money(externalOrderValueCents),
     externalOrderValueCents,
     company: money(companyCents),
@@ -990,7 +996,7 @@ function canonicalLedgerNote(entry) {
     try { orderKind = JSON.parse(entry.details_json).orderKind || null; } catch { orderKind = null; }
   }
   if (!orderKind || !entry?.type) return entry?.note || null;
-  const notes = settlementLedgerNotes(orderKind);
+  const notes = settlementLedgerNotes(orderKind, settlementPolicyFromDetails(entry?.details_json));
   const byType = {
     commission_company: notes.company,
     commission_producer: notes.producer,
@@ -1039,13 +1045,15 @@ function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, 
   const companyShare = money(settlement.companyCents);
   const executorDebit = money(settlement.confirmingCaptainFeeCents);
   console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} external_order_value=${price} JOD executor_wallet_credit=0.00 JOD`);
-  console.log(`[Settlement] CONFIRMED order_policy=12.5%/2.5% for all order types | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
+  const producerRate = ratePercentFromBps(settlement.producerRateBps);
+  const companyRate = ratePercentFromBps(settlement.companyRateBps || currentSettlementPolicy().companyRateBps);
+  console.log(`[Settlement] CONFIRMED order_policy=${producerRate}%/${companyRate}% for all order types | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
 }
 
 function serializeSettlement(row, includeLedger = true) {
   const finance = settlementFinancials(row);
   const ledger = includeLedger
-    ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
+    ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
       ...entry,
       note: canonicalLedgerNote({ ...entry, order_kind: row.order_kind }),
       amount: money(entry.amount_cents),
@@ -1060,6 +1068,7 @@ function serializeSettlement(row, includeLedger = true) {
     settlementKey: row.settlement_key,
     price: finance.price,
     companyShare: finance.company,
+    policy: finance.policy,
     postedShare: finance.postedShare,
     executorDebit: finance.executorDebit,
     captainCash: finance.captain,
@@ -2125,6 +2134,64 @@ function operationalSettings() {
     initTimeoutMs: boundedIntegerSetting("whatsapp_init_timeout_ms", WHATSAPP_INIT_TIMEOUT_MS, 60000, 900000),
   };
 }
+function currentSettlementPolicy() {
+  const readRate = (key, fallback) => {
+    const value = Number(getSetting(key, fallback));
+    return Number.isFinite(value) && Number.isInteger(value) ? Math.max(0, Math.min(10000, value)) : fallback;
+  };
+  const producerRateBps = readRate("producer_rate_bps", PRODUCER_RATE_BPS);
+  const companyRateBps = readRate("company_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  return {
+    producerRateBps,
+    companyRateBps,
+    totalRateBps: producerRateBps + companyRateBps,
+    regularProducerRateBps: producerRateBps,
+    specialOrderProducerRateBps: producerRateBps,
+    companyFromProducerRateBps: companyRateBps,
+    specialOrderCompanyFromProducerRateBps: companyRateBps,
+  };
+}
+function ratePercentFromBps(value) {
+  const percent = Number(value || 0) / 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+function settlementPolicyResponse() {
+  const policy = currentSettlementPolicy();
+  return {
+    producerRateBps: policy.producerRateBps,
+    companyRateBps: policy.companyRateBps,
+    totalRateBps: policy.totalRateBps,
+    producerRatePercent: Number(ratePercentFromBps(policy.producerRateBps)),
+    companyRatePercent: Number(ratePercentFromBps(policy.companyRateBps)),
+    totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
+    appliesTo: "all_order_types",
+    currency: "JOD",
+  };
+}
+function calculateConfiguredSettlement(input = {}) {
+  const policy = currentSettlementPolicy();
+  return {
+    ...calculateSettlement({
+      ...input,
+      regularProducerRateBps: policy.regularProducerRateBps,
+      specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+      companyFromProducerRateBps: policy.companyFromProducerRateBps,
+      specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+    }),
+    companyRateBps: policy.companyRateBps,
+  };
+}
+function settlementPolicyFromDetails(details) {
+  let parsed = details;
+  if (typeof details === "string") {
+    try { parsed = JSON.parse(details); } catch { parsed = {}; }
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const result = {};
+  if (Number.isInteger(Number(parsed.producerRateBps))) result.producerRateBps = Number(parsed.producerRateBps);
+  if (Number.isInteger(Number(parsed.companyRateBps))) result.companyRateBps = Number(parsed.companyRateBps);
+  return result;
+}
 function safePathHealth(targetPath) {
   try {
     const stat = fs.statSync(targetPath);
@@ -2276,11 +2343,17 @@ function ensureSystemUsers() {
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
-  // Keep all order-kind settings aligned with the unified settlement policy.
-  setSetting("company_rate_bps", COMPANY_RATE_BPS);
-  setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
-  setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
-  setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  // Initialize defaults once. Never overwrite an owner-edited policy on restart.
+  const settlementDefaults = [
+    ["company_rate_bps", COMPANY_RATE_BPS],
+    ["producer_rate_bps", PRODUCER_RATE_BPS],
+    ["special_order_rate_bps", SPECIAL_ORDER_RATE_BPS],
+    ["company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS],
+    ["special_order_company_from_producer_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
+  ];
+  for (const [key, value] of settlementDefaults) {
+    if (getSetting(key) === null) setSetting(key, value);
+  }
   if (getSetting("currency") === null) setSetting("currency", "JOD");
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
 }
@@ -3889,13 +3962,9 @@ function isCaptainAcceptance(text) {
 }
 function acceptanceBalanceGuard(candidate, captain) {
   if (!candidate || !captain) return { allowed: false, state: "stale" };
-  const settlement = calculateSettlement({
+  const settlement = calculateConfiguredSettlement({
     priceCents: candidate.price_cents,
     orderKind: candidate.order_kind,
-    regularProducerRateBps: PRODUCER_RATE_BPS,
-    specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-    companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-    specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
   });
   const company = companyUser();
   const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
@@ -7036,7 +7105,7 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     if (!settlement || !captain || !company) return { state: "stale" };
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    const ledgerNotes = settlementLedgerNotes(current.order_kind);
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, settlementPolicyFromDetails(settlement.details_json));
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCompany, stamp, settlement.details_json);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.producer_cents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
@@ -7225,14 +7294,18 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
     if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
-    const settlement = calculateSettlement({
-      priceCents: current.price_cents,
-      orderKind: current.order_kind,
-      regularProducerRateBps: PRODUCER_RATE_BPS,
-      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
-    });
+    const policy = currentSettlementPolicy();
+    const settlement = {
+      ...calculateSettlement({
+        priceCents: current.price_cents,
+        orderKind: current.order_kind,
+        regularProducerRateBps: policy.regularProducerRateBps,
+        specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+        companyFromProducerRateBps: policy.companyFromProducerRateBps,
+        specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+      }),
+      companyRateBps: policy.companyRateBps,
+    };
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "stale" };
@@ -7245,10 +7318,10 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     }
     const stamp = now();
     const companyWalletCharge = walletOwner.role === "company";
-    const ledgerNotes = settlementLedgerNotes(current.order_kind);
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, policy);
     const botEmployeeProducer = producer.is_bot === 1;
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-    const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
+    const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind, producerRateBps: policy.producerRateBps, companyRateBps: policy.companyRateBps });
     const orderInsert = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,captain_user_id,captain_phone_snapshot,captain_name_snapshot,accepted_message_id,accepted_at,confirmed_by_phone,company_cents,producer_cents,captain_cents,settlement_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, current.source_message_id, current.group_id, current.raw_text, current.price_cents, current.origin, current.destination, current.trip_time, current.order_kind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "accepted", captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, "settled", current.created_at || stamp, stamp);
     const orderId = orderInsert.lastInsertRowid;
     const settlementKey = `ORDER-${orderNo}-${orderId}`;
@@ -7300,14 +7373,18 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled", order: current, captain };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     if (!producer) return { state: "missing_producer" };
-    const settlement = calculateSettlement({
-      priceCents: current.price_cents,
-      orderKind: current.order_kind,
-      regularProducerRateBps: PRODUCER_RATE_BPS,
-      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
-    });
+    const policy = currentSettlementPolicy();
+    const settlement = {
+      ...calculateSettlement({
+        priceCents: current.price_cents,
+        orderKind: current.order_kind,
+        regularProducerRateBps: policy.regularProducerRateBps,
+        specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+        companyFromProducerRateBps: policy.companyFromProducerRateBps,
+        specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+      }),
+      companyRateBps: policy.companyRateBps,
+    };
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "unlinked" };
@@ -7319,8 +7396,8 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
       audit("order.history.debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
     const stamp = acceptedAt || now();
-    const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
-    const ledgerNotes = settlementLedgerNotes(current.order_kind);
+    const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind, producerRateBps: policy.producerRateBps, companyRateBps: policy.companyRateBps });
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, policy);
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
     const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
@@ -8106,6 +8183,12 @@ function requireBotWalletOwner(req, res, next) {
 function requireCompanyOwner(req, res, next) {
   const session = getWebAdminSession(req);
   if (!session || session.role !== "company") return res.status(403).json({ error: "هذه العملية متاحة للمالك فقط" });
+  next();
+}
+function requireOwnerAdmin(req, res, next) {
+  const session = getWebAdminSession(req);
+  if (!session || session.role !== "company") return res.status(403).json({ error: "هذه العملية متاحة للمالك فقط" });
+  req.ownerSession = session;
   next();
 }
 function setSessionCookie(res, token) {
@@ -8991,7 +9074,34 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, async (req, res) =
     res.status(503).json({ success: false, mutation: "none", error: boundedDiagnosticText(error?.message || error, 500) });
   }
 });
-app.post("/api/admin/change-password", requireAdmin, (req, res) => {
+app.get("/api/admin/settings", requireOwnerAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ success: true, policy: settlementPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
+  const producerPercent = Number(req.body?.producerRatePercent);
+  const companyPercent = Number(req.body?.companyRatePercent);
+  const validPercent = (value) => Number.isFinite(value) && value >= 0 && value <= 100 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
+  if (!validPercent(producerPercent) || !validPercent(companyPercent) || producerPercent + companyPercent > 100) return res.status(400).json({ error: "أدخل نسبًا من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
+  const next = { producerRateBps: Math.round(producerPercent * 100), companyRateBps: Math.round(companyPercent * 100) };
+  const before = currentSettlementPolicy();
+  try {
+    db.transaction(() => {
+      setSetting("producer_rate_bps", next.producerRateBps);
+      setSetting("company_rate_bps", next.companyRateBps);
+      setSetting("special_order_rate_bps", next.producerRateBps);
+      setSetting("company_from_producer_rate_bps", next.companyRateBps);
+      setSetting("special_order_company_from_producer_rate_bps", next.companyRateBps);
+      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps }, after: next, appliesTo: "all_order_types" });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية للطلبات الجديدة فقط؛ السجلات السابقة لا تتغير." });
+  } catch (error) {
+    console.error("[Settings] settlement policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات التسوية" });
+  }
+});
+app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
   const newToken = String(req.body?.newToken || "");
   if (!/^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z\d]).{16,128}$/.test(newToken)) {
     return res.status(400).json({ error: "newToken must be 16-128 characters and include uppercase, lowercase, number, and symbol" });

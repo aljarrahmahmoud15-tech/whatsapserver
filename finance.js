@@ -68,29 +68,38 @@ function calculateSettlement({
   };
 }
 
-function settlementLedgerNotes(orderKind = "normal") {
-  if (orderKind === "order") {
-    return {
-      company: "2.5% من قيمة الأوردر من محفظة كابتن التنفيذ",
-      producer: "حصة المنزّل: 12.5% من قيمة الأوردر",
-      captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (12.5% + 2.5% = 15% للأوردر)",
-      companyBot: "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب (12.5% + 2.5% = 15%)",
-      reversalCompany: "عكس حصة الشركة 2.5% من الأوردر بعد إزالة 👍",
-      reversalProducer: "عكس حصة المنزّل 12.5% من الأوردر بعد إزالة 👍",
-      reversalCaptain: "إعادة حصة المنزّل والشركة (12.5% + 2.5% = 15% للأوردر) بعد إزالة 👍",
-    };
-  }
+function formatRatePercent(rateBps) {
+  const value = Number(rateBps || 0) / 100;
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+function settlementLedgerNotes(orderKind = "normal", rates = {}) {
+  const normalizedKind = orderKind === "order" ? "order" : "normal";
+  const defaultProducer = normalizedKind === "order" ? ORDER_PRODUCER_RATE_BPS : REGULAR_PRODUCER_RATE_BPS;
+  const defaultCompany = normalizedKind === "order" ? ORDER_COMPANY_RATE_BPS : COMPANY_FROM_PRODUCER_RATE_BPS;
+  const producerRateBps = Number.isFinite(Number(rates.producerRateBps))
+    ? Number(rates.producerRateBps)
+    : Number.isFinite(Number(rates.regularProducerRateBps))
+      ? Number(rates.regularProducerRateBps)
+      : defaultProducer;
+  const companyRateBps = Number.isFinite(Number(rates.companyRateBps))
+    ? Number(rates.companyRateBps)
+    : Number.isFinite(Number(rates.companyFromProducerRateBps))
+      ? Number(rates.companyFromProducerRateBps)
+      : defaultCompany;
+  const producerRate = formatRatePercent(producerRateBps);
+  const companyRate = formatRatePercent(companyRateBps);
+  const totalRate = formatRatePercent(producerRateBps + companyRateBps);
+  const kindLabel = normalizedKind === "order" ? "الأوردر" : "الطلب العادي";
   return {
-    company: "2.5% من قيمة الطلب العادي من محفظة كابتن التنفيذ",
-    producer: "حصة المنزّل: 12.5% من قيمة الطلب العادي",
-    captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (12.5% + 2.5% = 15% للطلب العادي)",
-    companyBot: "خصم حصة الطلب العادي من محفظة الشركة لأن البوت نفذ الطلب (12.5% + 2.5% = 15%)",
-    reversalCompany: "عكس حصة الشركة 2.5% من الطلب العادي بعد إزالة 👍",
-    reversalProducer: "عكس حصة المنزّل 12.5% من الطلب العادي بعد إزالة 👍",
-    reversalCaptain: "إعادة حصة المنزّل والشركة (12.5% + 2.5% = 15% للطلب العادي) بعد إزالة 👍",
+    company: `${companyRate}% من قيمة ${kindLabel} من محفظة كابتن التنفيذ`,
+    producer: `حصة المنزّل: ${producerRate}% من قيمة ${kindLabel}`,
+    captain: `خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (${producerRate}% + ${companyRate}% = ${totalRate}% لـ${kindLabel})`,
+    companyBot: `خصم حصة ${kindLabel} من محفظة الشركة لأن البوت نفذ الطلب (${producerRate}% + ${companyRate}% = ${totalRate}%)`,
+    reversalCompany: `عكس حصة الشركة ${companyRate}% من ${kindLabel} بعد إزالة 👍`,
+    reversalProducer: `عكس حصة المنزّل ${producerRate}% من ${kindLabel} بعد إزالة 👍`,
+    reversalCaptain: `إعادة حصة المنزّل والشركة (${producerRate}% + ${companyRate}% = ${totalRate}% لـ${kindLabel}) بعد إزالة 👍`,
   };
 }
-
 module.exports = {
   REGULAR_PRODUCER_RATE_BPS,
   SPECIAL_ORDER_PRODUCER_RATE_BPS,
