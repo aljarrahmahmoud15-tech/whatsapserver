@@ -9987,6 +9987,38 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     netEarnings: money(Number(row.posted_share_cents || 0) - Number(row.executed_debit_cents || 0)),
   })) });
 });
+app.get("/api/admin/captains/archived", requireAdmin, (req, res) => {
+  normalizeBotIdentity();
+  const rows = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,u.archived_at,u.archive_reason,
+    COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_orders,
+    COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_orders,
+    COALESCE((SELECT SUM(s.price_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS gross_fares_cents,
+    COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS captain_fee_cents,
+    COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS company_commission_cents,
+    COALESCE((SELECT SUM(s.producer_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_share_cents,
+    COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_debit_cents,
+    (SELECT MAX(o.accepted_at) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE (s.producer_user_id=u.id OR s.captain_user_id=u.id) AND s.status='applied' AND o.status IN ('accepted','completed')) AS last_confirmed_at
+    FROM users u WHERE u.role='captain' AND u.is_bot=0 AND u.account_status<>'merged' AND u.archived_at IS NOT NULL
+    ORDER BY u.archived_at DESC,u.id DESC`).all();
+  res.json({ captains: rows.map((row) => ({
+    ...row,
+    registrationName: row.registration_name || row.name,
+    displayName: captainDisplayName(row.registration_name || row.name),
+    authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
+    balance: money(row.wallet_cents),
+    grossFares: money(row.gross_fares_cents),
+    captainFees: money(row.captain_fee_cents),
+    companyCommission: money(row.company_commission_cents),
+    postedShare: money(row.posted_share_cents),
+    executedDebit: money(row.executed_debit_cents),
+    postedOrders: Number(row.posted_orders || 0),
+    executedOrders: Number(row.executed_orders || 0),
+    netEarnings: money(Number(row.posted_share_cents || 0) - Number(row.executed_debit_cents || 0)),
+    archived: true,
+    archivedAt: row.archived_at,
+    archiveReason: row.archive_reason || null,
+  })) });
+});
 app.post("/api/admin/group/sync-captains", requireAdmin, async (req, res) => {
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found" });
@@ -10241,6 +10273,40 @@ app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   if (!result.changes) return res.status(409).json({ error: "تعذر أرشفة الحساب؛ أعد تحميل القائمة" });
   audit("captain.archived", "user", id, { phone: captain.phone, name: captain.name, reason, financialMutation: false, settlementMutation: false });
   res.json({ success: true, archived: id, archivedAt: stamp, removedFromInterface: true, financialMutation: false, settlementMutation: false });
+});
+app.post("/api/admin/captains/:id/restore", requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (!Number.isInteger(id) || id < 1 || confirmation !== "RESTORE_ARCHIVED_CAPTAIN") {
+    return res.status(400).json({ error: "معرف الكابتن وعبارة تأكيد الاستعادة مطلوبة", mutation: "none" });
+  }
+  const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,archived_at,archive_reason FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
+  if (!captain) return res.status(404).json({ error: "الكابتن غير موجود", mutation: "none" });
+  if (!captain.archived_at) return res.status(409).json({ error: "الحساب غير موجود في الأرشيف", mutation: "none" });
+  const stamp = now();
+  const result = db.prepare("UPDATE users SET active=1,account_status='active',archived_at=NULL,archive_reason=NULL,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged' AND archived_at IS NOT NULL").run(stamp, id);
+  if (!result.changes) return res.status(409).json({ error: "تعذر استعادة الحساب؛ أعد تحميل الأرشيف", mutation: "none" });
+  audit("captain.restored", "user", id, {
+    phone: captain.phone,
+    name: captain.name,
+    previousArchiveReason: captain.archive_reason || null,
+    financialMutation: false,
+    settlementMutation: false,
+    groupMembershipChanged: false,
+    whatsappMessageSent: false,
+  });
+  res.json({
+    success: true,
+    restored: id,
+    state: "restored",
+    active: true,
+    archivedAt: null,
+    financialMutation: false,
+    settlementMutation: false,
+    groupMembershipChanged: false,
+    whatsappMessageSent: false,
+    message: "تمت استعادة الحساب إلى قائمة الكباتن دون تغيير الرصيد أو السجل المالي أو عضوية القروب تلقائيًا",
+  });
 });
 app.get("/api/admin/captains/:id/merge-preview", requireAdmin, (req, res) => {
   const sourceId = Number(req.params.id);
