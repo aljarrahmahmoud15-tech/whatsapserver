@@ -25,5 +25,7 @@ assert.match(server, /CLEAN_GROUP_INVITE_URL/);
 assert.match(server, /official_group_invite_url/);
 assert.match(server, /pinnedToClean/);
 assert.match(ui, /ops-session-state/);
+assert.match(ui, /main-group-invite-url/);
+assert.match(ui, /main-group-invite-copy/);
 
 console.log('Clean archived-session restore route, isolation guardrails, health telemetry, and UI action verified');
