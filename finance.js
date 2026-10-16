@@ -1,12 +1,12 @@
 // Settlement policy by order kind:
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
-// - Normal orders: 10% to the captain who posted the order, 2% to the company,
-//   and a 12% total debit from the confirming executor wallet.
+// - Normal orders: 12.5% to the captain who posted the order, 2.5% to the company,
+//   and a 15% total debit from the confirming executor wallet.
 // - "order" / "اوردر" orders: 16% to the posted-order captain,
 //   4% to the company, and a 20% debit from the confirming executor.
-const REGULAR_PRODUCER_RATE_BPS = 1000;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
+const REGULAR_PRODUCER_RATE_BPS = 1250;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const ORDER_PRODUCER_RATE_BPS = 1600;
 const ORDER_COMPANY_RATE_BPS = 400;
 // Legacy exports retained for callers that still pass the former percentage knobs.
@@ -81,13 +81,13 @@ function settlementLedgerNotes(orderKind = "normal") {
     };
   }
   return {
-    company: "2% من قيمة الطلب العادي من محفظة كابتن التنفيذ",
-    producer: "حصة المنزّل: 10% من قيمة الطلب العادي",
-    captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (10% + 2% = 12% للطلب العادي)",
-    companyBot: "خصم حصة الطلب العادي من محفظة الشركة لأن البوت نفذ الطلب (10% + 2% = 12%)",
-    reversalCompany: "عكس حصة الشركة 2% من الطلب العادي بعد إزالة 👍",
-    reversalProducer: "عكس حصة المنزّل 10% من الطلب العادي بعد إزالة 👍",
-    reversalCaptain: "إعادة حصة المنزّل والشركة (10% + 2% = 12% للطلب العادي) بعد إزالة 👍",
+    company: "2.5% من قيمة الطلب العادي من محفظة كابتن التنفيذ",
+    producer: "حصة المنزّل: 12.5% من قيمة الطلب العادي",
+    captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (12.5% + 2.5% = 15% للطلب العادي)",
+    companyBot: "خصم حصة الطلب العادي من محفظة الشركة لأن البوت نفذ الطلب (12.5% + 2.5% = 15%)",
+    reversalCompany: "عكس حصة الشركة 2.5% من الطلب العادي بعد إزالة 👍",
+    reversalProducer: "عكس حصة المنزّل 12.5% من الطلب العادي بعد إزالة 👍",
+    reversalCaptain: "إعادة حصة المنزّل والشركة (12.5% + 2.5% = 15% للطلب العادي) بعد إزالة 👍",
   };
 }
 

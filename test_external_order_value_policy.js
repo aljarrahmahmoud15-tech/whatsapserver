@@ -7,8 +7,8 @@ const settlement = calculateSettlement({ priceCents: 1000, orderKind: 'normal' }
 
 assert.equal(settlement.externalOrderValueCents, 1000);
 assert.equal(settlement.executorWalletCreditCents, 0);
-assert.equal(settlement.producerNetCents, 130);
-assert.equal(settlement.companyCents, 20);
+assert.equal(settlement.producerNetCents, 125);
+assert.equal(settlement.companyCents, 25);
 assert.equal(settlement.confirmingCaptainFeeCents, 150);
 assert.match(server, /externalOrderValue: money\(externalOrderValueCents\)/);
 assert.match(server, /executorWalletCredit: money\(executorWalletCreditCents\)/);
