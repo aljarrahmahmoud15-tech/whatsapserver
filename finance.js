@@ -68,6 +68,29 @@ function calculateSettlement({
   };
 }
 
+function settlementLedgerNotes(orderKind = "normal") {
+  if (orderKind === "order") {
+    return {
+      company: "4% من قيمة الأوردر من محفظة كابتن التنفيذ",
+      producer: "حصة المنزّل: 16% من قيمة الأوردر",
+      captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (16% + 4% = 20% للأوردر)",
+      companyBot: "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب (16% + 4% = 20%)",
+      reversalCompany: "عكس حصة الشركة 4% من الأوردر بعد إزالة 👍",
+      reversalProducer: "عكس حصة المنزّل 16% من الأوردر بعد إزالة 👍",
+      reversalCaptain: "إعادة حصة المنزّل والشركة (16% + 4% = 20% للأوردر) بعد إزالة 👍",
+    };
+  }
+  return {
+    company: "2% من قيمة الطلب العادي من محفظة كابتن التنفيذ",
+    producer: "حصة المنزّل: 10% من قيمة الطلب العادي",
+    captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (10% + 2% = 12% للطلب العادي)",
+    companyBot: "خصم حصة الطلب العادي من محفظة الشركة لأن البوت نفذ الطلب (10% + 2% = 12%)",
+    reversalCompany: "عكس حصة الشركة 2% من الطلب العادي بعد إزالة 👍",
+    reversalProducer: "عكس حصة المنزّل 10% من الطلب العادي بعد إزالة 👍",
+    reversalCaptain: "إعادة حصة المنزّل والشركة (10% + 2% = 12% للطلب العادي) بعد إزالة 👍",
+  };
+}
+
 module.exports = {
   REGULAR_PRODUCER_RATE_BPS,
   SPECIAL_ORDER_PRODUCER_RATE_BPS,
@@ -76,4 +99,5 @@ module.exports = {
   ORDER_PRODUCER_RATE_BPS,
   ORDER_COMPANY_RATE_BPS,
   calculateSettlement,
+  settlementLedgerNotes,
 };

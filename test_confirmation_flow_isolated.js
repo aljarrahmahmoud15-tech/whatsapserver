@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotReactionSender } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -128,6 +128,7 @@ const context = {
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
+  settlementLedgerNotes,
   companyUser: () => ({ ...users[1] }),
   now: () => "2026-01-01T00:00:00.000Z",
   audit: () => {},

@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotGeneratedMessage } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -201,6 +201,7 @@ const context = {
   maskSettlementPhone: (value) => String(value || ""),
   money: (value) => (Number(value || 0) / 100).toFixed(2),
   calculateSettlement,
+  settlementLedgerNotes,
   PRODUCER_RATE_BPS: 1000,
   SPECIAL_ORDER_RATE_BPS: 1600,
   SPECIAL_ORDER_PRODUCER_RATE_BPS: 1000,

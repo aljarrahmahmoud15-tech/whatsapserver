@@ -17,7 +17,7 @@ const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const sharp = require("sharp");
 sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
@@ -985,6 +985,26 @@ function settlementFinancials(row) {
   };
 }
 
+function canonicalLedgerNote(entry) {
+  let orderKind = entry?.order_kind || null;
+  if (!orderKind && entry?.details_json) {
+    try { orderKind = JSON.parse(entry.details_json).orderKind || null; } catch { orderKind = null; }
+  }
+  if (!orderKind || !entry?.type) return entry?.note || null;
+  const notes = settlementLedgerNotes(orderKind);
+  const byType = {
+    commission_company: notes.company,
+    commission_producer: notes.producer,
+    commission_bot_producer: notes.producer,
+    captain_fee: notes.captain,
+    company_bot_fee: notes.companyBot,
+    reversal_company: notes.reversalCompany,
+    reversal_producer: notes.reversalProducer,
+    reversal_captain_fee: notes.reversalCaptain,
+  };
+  return byType[entry.type] || entry.note || null;
+}
+
 function settlementRows(limit = 200) {
   const safeLimit = Number.isInteger(Number(limit)) ? Math.max(1, Math.min(Number(limit), 500)) : 200;
   return db.prepare(`SELECT
@@ -1028,6 +1048,7 @@ function serializeSettlement(row, includeLedger = true) {
   const ledger = includeLedger
     ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
       ...entry,
+      note: canonicalLedgerNote({ ...entry, order_kind: row.order_kind }),
       amount: money(entry.amount_cents),
       balanceAfter: money(entry.balance_after_cents),
     }))
@@ -2318,7 +2339,7 @@ function companyWalletSummary() {
   const credited = db.prepare("SELECT COALESCE(SUM(CASE WHEN amount_cents>0 THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN amount_cents>0 THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const debited = db.prepare("SELECT COALESCE(SUM(CASE WHEN amount_cents<0 THEN -amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN amount_cents<0 THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const settlements = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(company_cents),0) AS company_cents, COALESCE(SUM(CASE WHEN charged_user_id=? THEN captain_fee_cents ELSE 0 END),0) AS bot_debits_cents FROM order_settlements WHERE status='applied'").get(company.id);
-  const recentLedger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 50").all(company.id).map((entry) => ({ ...entry, amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents) }));
+  const recentLedger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 50").all(company.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents) }));
   return {
     id: company.id,
     name: company.name,
@@ -7016,13 +7037,14 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     if (!settlement || !captain || !company) return { state: "stale" };
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة الشركة بعد إزالة 👍", stamp, settlement.details_json);
+    const ledgerNotes = settlementLedgerNotes(current.order_kind);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCompany, stamp, settlement.details_json);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.producer_cents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة كابتن تنزيل الطلب بعد إزالة 👍", stamp, settlement.details_json);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalProducer, stamp, settlement.details_json);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.captain_fee_cents, stamp, captain.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "reversal_captain_fee", settlement.captain_fee_cents, captainBalance, `ORDER-${current.order_no}-CANCEL`, "إعادة خصم الكابتن بعد إزالة 👍", stamp, settlement.details_json);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "reversal_captain_fee", settlement.captain_fee_cents, captainBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCaptain, stamp, settlement.details_json);
     db.prepare("UPDATE order_settlements SET status='reversed' WHERE order_id=? AND status='applied'").run(orderId);
     db.prepare("UPDATE orders SET status='cancelled',settlement_state='reversed',updated_at=? WHERE id=? AND status='accepted' AND accepted_message_id=?").run(stamp, orderId, expectedMessageId);
     audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, captainId: captain.id, reversed: true, messageId: expectedMessageId });
@@ -7224,6 +7246,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     }
     const stamp = now();
     const companyWalletCharge = walletOwner.role === "company";
+    const ledgerNotes = settlementLedgerNotes(current.order_kind);
     const botEmployeeProducer = producer.is_bot === 1;
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
     const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
@@ -7234,13 +7257,13 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, "4% من قيمة الأوردر من محفظة كابتن التنفيذ", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, ledgerNotes.company, stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "حصة المنزل حسب نوع الطلب: 16% للأوردر أو 10% للطلب العادي", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, ledgerNotes.producer, stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب" : "خصم حصة المنزل والشركة من محفظة كابتن التنفيذ (20% للأوردر أو 12% للطلب العادي)", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? ledgerNotes.companyBot : ledgerNotes.captain, stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
@@ -7298,19 +7321,20 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     }
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
+    const ledgerNotes = settlementLedgerNotes(current.order_kind);
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
     const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
     db.prepare("UPDATE orders SET status='accepted',archive_state='active',archived_at=NULL,archive_reason=NULL,captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, importSource, now(), orderId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "تسوية طلب مؤكد مستورد من سجل القروب", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, ledgerNotes.company, now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, now(), producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, ledgerNotes.producer, now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم حصة الأوردر من محفظة الشركة لطلب مؤكد مستورد" : "خصم 16% للمنزل و4% للشركة من محفظة كابتن التنفيذ للأوردر (20% إجمالًا)", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? ledgerNotes.companyBot : ledgerNotes.captain, now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
@@ -8525,7 +8549,7 @@ app.post("/api/captain/logout", (req, res) => {
 app.get("/api/captain/overview", requireCaptain, (req, res) => {
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
-  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
   const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
       p.name AS producer_name,c.name AS captain_name
@@ -9300,7 +9324,7 @@ app.get("/api/dashboard/captains/portal/:phone", requireDashboardApi, (req, res)
   const user = db.prepare("SELECT id,phone,name,role,active FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (!user) return res.status(404).json({ error: "Captain account not found" });
   const wallet = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(user.id);
-  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
   const trips = db.prepare("SELECT id,order_no,status,price_cents,origin,destination,trip_time,created_at,updated_at FROM orders WHERE captain_user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((trip) => ({ ...trip, price: money(trip.price_cents) }));
   res.setHeader("Cache-Control", "no-store");
   res.json({ user, wallet: { currency: "JOD", balance: money(wallet?.wallet_cents || 0), balanceCents: wallet?.wallet_cents || 0, entries }, trips });
@@ -10040,7 +10064,7 @@ app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
     p.name AS producer_name,c.name AS captain_name
     FROM orders o LEFT JOIN order_settlements s ON s.order_id=o.id LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
     WHERE o.producer_user_id=? OR o.captain_user_id=? OR s.producer_user_id=? OR s.captain_user_id=? ORDER BY o.id DESC LIMIT 200`).all(id, id, id, id);
-  const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const ledger = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200").all(id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
   const totals = db.prepare(`SELECT COUNT(*) AS trips,
     COALESCE(SUM(CASE WHEN s.producer_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.producer_cents ELSE 0 END),0) AS posted_share_cents,
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.captain_fee_cents ELSE 0 END),0) AS executed_debit_cents,
@@ -10080,7 +10104,7 @@ app.get("/api/admin/audit/order/:orderId", requireAdmin, (req, res) => {
   const ledger = db.prepare(`SELECT l.id,l.order_id,l.user_id,l.type,l.amount_cents,l.balance_after_cents,l.reference,l.note,l.created_at,l.details_json,u.name AS user_name,u.phone AS user_phone
     FROM wallet_ledger l LEFT JOIN users u ON u.id=l.user_id WHERE l.order_id=? ORDER BY l.id ASC`).all(orderId);
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, readOnly: true, order, candidates, acceptances, audit: auditRows.map((row) => ({ ...row, details: row.details ? JSON.parse(row.details) : null })), reactions, ledger });
+  res.json({ success: true, readOnly: true, order, candidates, acceptances, audit: auditRows.map((row) => ({ ...row, details: row.details ? JSON.parse(row.details) : null })), reactions, ledger: ledger.map((entry) => ({ ...entry, note: canonicalLedgerNote(entry) })) });
 });
 app.get("/api/admin/audit/message-deletion", requireAdmin, (req, res) => {
   const messageId = String(req.query.messageId || "").trim().slice(0, 500);
@@ -10433,7 +10457,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);
   if (!user) return res.status(404).json({ error: "Subscriber wallet not found" });
-  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC").all(user.id).map((entry) => ({ ...entry, details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
   res.json({ user, wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents, entries } });
 });
 
