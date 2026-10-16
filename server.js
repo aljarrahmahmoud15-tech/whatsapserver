@@ -1448,6 +1448,86 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     };
   }
 }
+async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null }) {
+  const targetGroupId = String(groupId || "").trim();
+  const candidateId = Number(candidate?.id || 0);
+  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+    return { status: "invalid", candidateId };
+  }
+  const event = `order.acceptance.reopened.${candidateId}`;
+  const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
+  const route = candidate.origin || candidate.destination
+    ? `📍 ${candidate.origin || "غير محدد"} ← ${candidate.destination || "غير محدد"}`
+    : "";
+  const message = [
+    "🔁 إعادة فتح الحجز",
+    `🏠 المنزل: ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")}`,
+    `💰 القيمة: ${money(candidate.price_cents)} JOD`,
+    route,
+    `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
+    rejectedCaptainName ? `⚠️ تم رفض «تم» من ${String(rejectedCaptainName)} بسبب عدم كفاية الرصيد.` : "⚠️ تم رفض رسالة «تم» السابقة بسبب عدم كفاية رصيد المنفّذ.",
+    "🗑️ تنبيه: تم حذف رد الكابتن «تم» السابق من القروب بعد التحقق، ولن يُعتمد هذا الرد.",
+    "✅ الحجز متاح من جديد.",
+    "يرجى الرد على هذه الرسالة بكلمة «تم» لمن يستطيع التنفيذ.",
+    "بعدها يضع صاحب السعر 👍 على رسالة «تم» لتثبيت الحجز.",
+    "لم تُنفذ أي تسوية مالية لهذا الحجز حتى الآن.",
+  ].filter(Boolean).join("\n");
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
+    return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null, candidateId };
+  }
+  if (orderReopenNotificationInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true, candidateId };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)").run(targetGroupId, event, "إعادة فتح الحجز", message, candidate.source_message_id || null, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate", candidateId };
+  orderReopenNotificationInFlight.add(idempotencyKey);
+  try {
+    const sent = await sendServer2DirectAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = sent ? "sent" : "failed";
+    const messageId = serializedMessageId(sent) || sent?.id?._serialized || sent?.id?.id || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit(deliveryStatus === "sent" ? "order.acceptance.reopened" : "order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      messageId,
+      sourceMessageId: candidate.source_message_id || null,
+      requiredCents,
+      rejectedCaptainName: rejectedCaptainName || null,
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: deliveryStatus, notificationId, messageId, candidateId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      sourceMessageId: candidate.source_message_id || null,
+      error: String(error?.message || error).slice(0, 180),
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: "failed", notificationId, candidateId };
+  } finally {
+    orderReopenNotificationInFlight.delete(idempotencyKey);
+  }
+}
+
+async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus }) {
+  if (deletionStatus !== "deleted") {
+    return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
+  }
+  const reopened = await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
+  if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
+    updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
+      reason: "captain_acceptance_rejected_insufficient_balance",
+      reopenedMessageId: reopened.messageId || null,
+      financialMutation: false,
+    });
+  }
+  return reopened;
+}
+
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const requested = new URL(String(url || ""), PUBLIC_APP_URL);
   const serviceOrigin = new URL(PUBLIC_APP_URL).origin;
