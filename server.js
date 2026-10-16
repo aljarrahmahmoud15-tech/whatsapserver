@@ -195,6 +195,7 @@ const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
+const orderReopenNotificationInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
 const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
@@ -4111,6 +4112,21 @@ function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(groupId, serializedMessageId(quoted));
   return byId && byId.group_id === groupId ? byId : null;
 }
+function findReopenedCandidateByMessage(groupId, messageId) {
+  if (!groupId || !messageId) return null;
+  const lookupIds = [...new Set(messageIdLookupVariants(messageId))];
+  if (!lookupIds.length) return null;
+  const rows = db.prepare(`SELECT event,idempotency_key,message_id FROM notifications WHERE recipient_role='group' AND recipient_phone=? AND event LIKE 'order.acceptance.reopened.%' AND message_id IN (${lookupIds.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 20`).all(groupId, ...lookupIds);
+  for (const row of rows) {
+    if (!sourceMessageIdsEqual(row.message_id, messageId)) continue;
+    const match = String(row.idempotency_key || "").match(/^ORDER-REOPEN-INSUFFICIENT-BALANCE-(\d+)$/);
+    const candidateId = Number(match?.[1] || 0);
+    if (!candidateId) continue;
+    const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='candidate' AND pending_message_id IS NULL AND final_order_id IS NULL LIMIT 1").get(candidateId, groupId);
+    if (candidate) return candidate;
+  }
+  return null;
+}
 function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs = Date.now(), windowMs = UNQUOTED_ACCEPTANCE_WINDOW_MS) {
   const timestampMs = Math.max(0, Number(acceptanceTimestampMs || Date.now()));
   const requestedWindowMs = Number(windowMs);
@@ -4123,8 +4139,8 @@ function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimesta
     LEFT JOIN users p ON p.id=c.producer_user_id
     WHERE c.group_id=? AND c.status='candidate' AND c.pending_message_id IS NULL
       AND c.final_order_id IS NULL
-      AND datetime(c.created_at)>=datetime(?)
-      AND datetime(c.created_at)<=datetime(?)
+      AND datetime(CASE WHEN c.lifecycle_stage='candidate_reopened' THEN c.updated_at ELSE c.created_at END)>=datetime(?)
+      AND datetime(CASE WHEN c.lifecycle_stage='candidate_reopened' THEN c.updated_at ELSE c.created_at END)<=datetime(?)
     ORDER BY c.created_at DESC,c.id DESC
     LIMIT 20
   `).all(groupId, cutoff, upperBound);
@@ -5707,6 +5723,16 @@ async function recoverPendingAcceptanceMessages(groupId) {
         sourceMessageId: rowMessageId,
         deletionStatus,
       });
+      const reopened = await reopenOrderAfterInsufficientBalance({
+        groupId,
+        candidate: unquoted.candidate,
+        requiredCents: unquotedResult.requiredCents,
+        rejectedCaptainName: unquotedResult.captain?.name,
+        deletionStatus,
+      });
+      if (!["sent", "already_sent"].includes(reopened.status)) {
+        console.warn(`[Order] recovery insufficient-balance order reopen ${reopened.status} candidate=${unquoted.candidate.id}`);
+      }
       logOrderTrace("acceptance_rejected_insufficient_balance", {
         groupKey: orderTraceKey(groupId),
         acceptanceKey: orderTraceKey(rowMessageId),
@@ -5719,6 +5745,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
         acceptanceMode: "unquoted",
         correctionStatus: correction.status,
         notificationStatus: notification.status,
+        reopenStatus: reopened.status,
+        reopenMessageId: reopened.messageId || null,
         recoveryMode: "unquoted",
       });
       continue;
@@ -6881,7 +6909,20 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     msg._data?.quotedMsg?.id?.id,
   ].map((value) => String(value || "").trim()).find(Boolean) || null;
   let acceptanceMode = "quoted";
+  let acceptanceSource = "original_order";
   let candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
+  if (!candidate && quoted) {
+    candidate = findReopenedCandidateByMessage(groupId, serializedMessageId(quoted));
+    if (candidate) {
+      acceptanceSource = "reopened_order_notice";
+      logOrderTrace("acceptance_reopened_notice_match", {
+        groupKey: orderTraceKey(groupId),
+        acceptanceKey: orderTraceKey(messageId),
+        reopenedKey: orderTraceKey(serializedMessageId(quoted)),
+        candidateId: candidate.id,
+      });
+    }
+  }
   // WhatsApp can expose the quote metadata while getQuotedMsgObj returns null
   // or a wrapper without the canonical source ID. Match the raw stanza ID
   // against the candidate core before abandoning the acceptance.
@@ -6951,6 +6992,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
       messageDeletionRequested: Boolean(messageId),
       acceptanceMode,
+      acceptanceSource,
     });
     const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
       groupId,
@@ -6980,6 +7022,16 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
       console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
     }
+    const reopened = await reopenOrderAfterInsufficientBalance({
+      groupId,
+      candidate,
+      requiredCents: acceptanceResult.requiredCents,
+      rejectedCaptainName: acceptanceResult.captain?.name,
+      deletionStatus,
+    });
+    if (!["sent", "already_sent"].includes(reopened.status)) {
+      console.warn(`[Order] insufficient-balance order reopen ${reopened.status} candidate=${candidate.id}`);
+    }
     logOrderTrace("acceptance_rejected_insufficient_balance", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
@@ -6991,6 +7043,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptanceMode,
       correctionStatus: correction.status,
       notificationStatus: notification.status,
+      reopenStatus: reopened.status,
+      reopenMessageId: reopened.messageId || null,
+      acceptanceSource,
     });
     return;
   }
