@@ -17,5 +17,9 @@ assert.match(server, /archivedSessionCount/);
 assert.match(ui, /ops-restore-last-session/);
 assert.match(ui, /\/api\/admin\/whatsapp\/restore-last-session/);
 assert.match(ui, /confirm:true/);
+assert.match(ui, /CLEAN_IDENTITY_CACHE_KEY/);
+assert.match(ui, /Promise\.allSettled/);
+assert.match(ui, /ops-bot-phone/);
+assert.match(ui, /ops-main-group-url/);
 
 console.log('Clean archived-session restore route, isolation guardrails, health telemetry, and UI action verified');
