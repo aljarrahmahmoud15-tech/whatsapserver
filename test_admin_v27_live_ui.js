@@ -3,23 +3,30 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-v27.html', 'utf8');
+const css = fs.readFileSync('./public/assets/v27-command.css', 'utf8');
 const server = fs.readFileSync('./server.js', 'utf8');
+const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+const escaped = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-assert.match(page, /<title>وصلني الآن · عمليات V27<\/title>/);
-assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>/);
-assert.match(server, /sendFile\(path\.join\(__dirname, "public", "admin-v27\.html"\)\)/);
+assert.match(page, /<title>وصلني الآن · Owner Control V27<\/title>/);
+assert.match(page, /href="\/assets\/v27-command\.css"/);
+assert.doesNotMatch(page, /NEXORA|brand\/nexora/);
+assert.match(page, /class="hero-signal"/);
+assert.match(page, /class="v27-quickbar"/);
+assert.match(page, /id="decisionCabinet"/);
+assert.match(page, /id="v27ReadinessPanel"/);
+assert.match(page, /function renderV27Readiness\(\)/);
+assert.match(page, /id="v27DiagnosticsRefresh"/);
+assert.match(page, /class="v27-signal-mark"/);
 
-for (const marker of [
-  'id="v27ReadinessPanel"',
-  'id="v27ReadinessBadge"',
-  'id="v27SyncAge"',
-  'id="v27DiagnosticAge"',
-  'id="v27AlertCount"',
-  'id="v27OperationalFeed"',
-  'function renderV27Readiness()',
-  'id="v27DiagnosticsRefresh"',
-]) assert.match(page, new RegExp(marker.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')));
+for (const decision of ['invites', 'finance', 'cards', 'wallet', 'subscriptions', 'orders', 'captains', 'staff', 'advanced']) {
+  assert.match(page, new RegExp(`data-decision-open="${decision}"`));
+}
+for (const action of ['invites', 'cards', 'leads', 'finance', 'weekly-charge']) {
+  assert.match(page, new RegExp(`data-admin-action="${action}"`));
+}
 
+// Live reads come from the protected current bot, control-plane, and service APIs.
 for (const endpoint of [
   '/status',
   '/api/admin/bot/status',
@@ -29,29 +36,84 @@ for (const endpoint of [
   '/api/admin/captains',
   '/api/admin/orders',
   '/api/admin/orders/open?summary=1',
+  '/api/admin/unconfirmed-bookings?limit=300',
   '/api/admin/settlements?limit=300',
   '/api/admin/company-wallet',
+  '/api/admin/subscriptions?compact=1',
+  '/api/admin/captain-invites',
+  '/api/admin/cards?limit=100',
+  '/api/admin/leads',
+  '/api/admin/support-tickets',
   '/api/admin/owner-vault',
   '/api/admin/group/summary',
-]) assert.match(page, new RegExp(endpoint.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')));
+]) {
+  assert.match(page, new RegExp(escaped(endpoint)));
+}
 
-// V27 keeps the same protected owner actions and the backend's existing cancellation contract.
+// Membership decisions include the captain invitation link and approval/rejection.
+for (const marker of [
+  'function inviteRows(items)',
+  'function createCaptainInvite(send)',
+  'v27IssueInvite',
+  'v27SendInvite',
+  'data-invite-decision="approve"',
+  'data-invite-decision="reject"',
+  '/api/admin/captain-invites/send',
+  "/api/admin/captain-invites/'+encodeURIComponent(id)+'/decision",
+]) assert.match(page, new RegExp(escaped(marker)));
+
+// Real owner decision surfaces and their protected mutation contracts.
+for (const marker of [
+  'function renderFinanceDecision',
+  'function renderWalletDecision',
+  'function renderTopupDecision',
+  'function renderSubscriptionDecision',
+  'function renderOrdersDecision',
+  'function renderCaptainsDecision',
+  'function renderStaffDecision',
+  'function renderAdvancedDecision',
+  'function openWalletLedger',
+  'function openOrderCancelModal',
+  'function openBookingApprovalModal',
+  'function openOrderRejectModal',
+  'function openSystemIdentityDecision',
+  'function openQrDecision',
+  'function openSupportDecision',
+  'function openV27Decision',
+  '/api/admin/captains/${encodeURIComponent(captainId)}/direct-credit',
+  '/api/admin/captains/${encodeURIComponent(captainId)}/wallet-adjustment',
+  '/api/admin/cards',
+  '/api/admin/cards/${encodeURIComponent(id)}/send-text',
+  '/api/admin/cards/${encodeURIComponent(id)}/void',
+  '/api/admin/wallet/${encodeURIComponent(phone)}',
+  '/api/admin/captain-subscriptions/schedule',
+  '/api/admin/captain-subscriptions/preview',
+  '/api/admin/captain-subscriptions/execute',
+  '/api/admin/unconfirmed-bookings/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/reject',
+  "/api/admin/support-tickets/'+encodeURIComponent(id)+'/fulfill-topup",
+  "/api/admin/support-tickets/'+encodeURIComponent(id)",
+]) assert.match(page, new RegExp(escaped(marker)));
+
+assert.match(page, /المالك · القرار الأول والأخير/);
+assert.match(page, /لا يُضاف الرصيد عند الإصدار/);
+assert.match(page, /لا تنفيذ خفي/);
+assert.match(page, /رقم البوت المتصل/);
+assert.match(page, /رابط الدعوة/);
 assert.match(page, /confirmation:'V26_CANCEL_ORDER'/);
-assert.match(page, /`V26-CANCEL-ORDER-\$\{id\}-\$\{Date\.now\(\)\}`/);
-assert.match(page, /لا يوجد تنفيذ كود حر/);
-assert.doesNotMatch(page, /OWNER_VAULT_SECRET/);
-assert.doesNotMatch(page, /owner-vault\.key/);
+assert.match(page, /X-Idempotency-Key/);
+assert.doesNotMatch(page, /OWNER_VAULT_SECRET|owner-vault\.key/);
 
-// The refreshed readiness layer must remain observational and must not add broad mutations.
-for (const forbidden of [
-  '/api/admin/captain-wallet-pool/execute',
-  '/api/admin/captain-wallet-pool/distribute',
-  '/api/admin/captain-wallet-pool/withdraw',
-  '/api/admin/group/sync-captains',
-]) assert.doesNotMatch(page, new RegExp(forbidden.replace(/[.*+?^${}()|[\[\]\\]/g, '\\$&')));
+// The unified production entry points use V27; V26 remains a rollback page.
+assert.match(server, /app\.get\("\/admin", \(req, res\) =>/);
+assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>/);
+assert.match(server, /app\.get\("\/admin-v26\.html", \(req, res\) =>/);
+const adminRoute = server.slice(server.indexOf('app.get("/admin.html"'), server.indexOf('app.get("/admin-v26.html"'));
+assert.match(adminRoute, /admin-v27\.html/);
 
-const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-assert.ok(scripts.length > 0, 'V27 page must contain a script');
-new vm.Script(scripts.at(-1), { filename: 'public/admin-v27.html#script' });
+for (const marker of ['backdrop-filter', 'prefers-reduced-motion', '.decision-grid', '.decision-detail', '.decision-kpi-grid', '.v27-readiness-grid', '.v27-feed']) {
+  assert.match(css, new RegExp(escaped(marker)));
+}
+assert.ok(scripts.length > 0, 'V27 inline JavaScript exists');
+assert.doesNotThrow(() => new vm.Script(scripts.at(-1), { filename: 'public/admin-v27.html#script' }));
 
-console.log('admin V27 readiness UI, route, diagnostics, and mutation guard: PASS');
+console.log('current V27 owner decision center, readiness, invitation, support, and route guardrails: PASS');
