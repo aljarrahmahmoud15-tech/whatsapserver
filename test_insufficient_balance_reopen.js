@@ -7,6 +7,8 @@ assert.match(server, /isOfficialGroupTarget\(targetGroupId\)/);
 assert.match(server, /orderReopenNotificationInFlight/);
 assert.match(server, /ORDER-REOPEN-INSUFFICIENT-BALANCE-\$\{candidateId\}/);
 assert.match(server, /🔁 إعادة فتح الحجز/);
+assert.match(server, /تم حذف رد الكابتن «تم» السابق من القروب/);
+assert.match(server, /لن يُعتمد هذا الرد/);
 assert.match(server, /الحجز متاح من جديد/);
 assert.match(server, /يرجى الرد على هذه الرسالة بكلمة «تم»/);
 assert.match(server, /لم تُنفذ أي تسوية مالية لهذا الحجز حتى الآن/);
