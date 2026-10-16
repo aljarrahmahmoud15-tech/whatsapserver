@@ -32,7 +32,9 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || BOT_PHONE;
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
-if (process.env.RENDER && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on the official service; refusing an unlocked WhatsApp session");
+// Do not open a persisted WhatsApp session until both identities are explicitly configured.
+// An unconfigured service must not generate a QR or attach to an old account/group.
+const WHATSAPP_CONFIGURED = Boolean(BOT_PHONE_INTL && WHATSAPP_GROUP_ID);
 // Keep LocalAuth namespaces independent across cloned Render services. When
 // WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
 // service's own phone and group instead of using a shared constant.
@@ -13502,21 +13504,35 @@ function reconcileConfiguredGroupFromEnvironment() {
   console.log(`[Config] synchronized active WhatsApp group from environment: ${WHATSAPP_GROUP_ID}`);
 }
 
-reconcileConfiguredGroupFromEnvironment();
+function clearUnconfiguredGroupState() {
+  db.transaction(() => {
+    db.prepare("DELETE FROM settings WHERE key IN ('group_id','active_group_id')").run();
+    db.prepare("DELETE FROM groups_config").run();
+  })();
+  console.log("[Config] no bot phone or official group configured; cleared active group state and skipped WhatsApp initialization");
+}
+
+if (WHATSAPP_CONFIGURED) reconcileConfiguredGroupFromEnvironment();
+else clearUnconfiguredGroupState();
 
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] isolated identity configured data=${DATA_DIR}`);
   startRuntimeMemoryCleanup();
-  startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
-  startConfirmationDeliveryMonitor();
-  initializeWhatsApp();
-  startWhatsAppWatchdog();
-  startWhatsAppReactionScanner();
-  if (BAILEYS_ENABLED) initializeBaileys();
+  if (WHATSAPP_CONFIGURED) {
+    startRuntimeMemoryWatchdog();
+    startConfirmationDeliveryMonitor();
+    initializeWhatsApp();
+    startWhatsAppWatchdog();
+    startWhatsAppReactionScanner();
+    if (BAILEYS_ENABLED) initializeBaileys();
+  } else {
+    whatsappState = "unconfigured";
+    whatsappLastEvent = "configuration_required";
+  }
 });
 
 function isRecoverableBrowserLifecycleError(error) {
