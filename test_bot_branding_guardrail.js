@@ -13,7 +13,7 @@ assert.match(sendCard, /blocked: "bot_identity"/);
 assert.match(sendCard, /non_official_group/);
 assert.match(sendCard, /result\.error/);
 assert.match(source, /function isOfficialGroupTarget\(target\)/);
-assert.match(source, /server2_official_group_target_required/);
+assert.match(source, /official_group_target_required/);
 assert.match(source, /final booking cancellation blocked: official group required/);
 assert.match(source, /isProtectedOwnerIdentity\(phone\) \|\| isBotPhone\(phone\)/);
 

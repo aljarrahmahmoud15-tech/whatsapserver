@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: whatsapserver-2
+    name: alshaikh-delivery
     runtime: node
     plan: standard
     buildCommand: npm ci --omit=dev
@@ -27,7 +27,11 @@ services:
       - key: RENDER_DATA_DIR
         value: /var/data
       - key: WHATSAPP_GROUP_ID
-        value: 120363426604560611@g.us
+        sync: false
+      - key: ADMIN_USERNAME
+        value: Aljarah
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: AUTH_PATH
         value: /var/data/.wwebjs_auth
       - key: BAILEYS_AUTH_PATH

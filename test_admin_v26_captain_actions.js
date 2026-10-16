@@ -16,7 +16,7 @@ assert.match(route, /readGroupRemovalContext\(groupId\)/);
 assert.match(route, /removeParticipants/);
 assert.match(route, /accountChanged: false/);
 assert.match(route, /financialMutation: false/);
-assert.doesNotMatch(route, /wallet_cents|sendCaptainStatusText|sendServer2DirectAtMostOnce|sendMessage/);
+assert.doesNotMatch(route, /wallet_cents|sendCaptainStatusText|sendOfficialDirectAtMostOnce|sendMessage/);
 
 for (const marker of [
   'data-safe-action="edit"',

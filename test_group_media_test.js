@@ -7,7 +7,7 @@ const routeEnd = server.indexOf('app.post("/api/admin/send"', routeStart);
 assert.ok(routeStart >= 0 && routeEnd > routeStart, 'مسار اختبار الوسائط موجود قبل مسار النص العام');
 const route = server.slice(routeStart, routeEnd);
 
-assert.match(route, /const officialGroupId = configuredRuntimeGroupId\(\)/, 'المسار يستخدم القروب الرسمي المهيأ على Server 2');
+assert.match(route, /const officialGroupId = configuredRuntimeGroupId\(\)/, 'المسار يستخدم القروب الرسمي المهيأ على the official service');
 assert.match(route, /groupId !== officialGroupId/, 'المسار يرفض أي قروب خارج القروب المهيأ');
 assert.match(route, /req\.body\?\.confirm !== true/, 'المسار يتطلب تأكيد المالك');
 assert.match(route, /X-Idempotency-Key/, 'المسار يستخدم مفتاح منع التكرار');

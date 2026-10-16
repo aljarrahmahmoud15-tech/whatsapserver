@@ -62,7 +62,7 @@ assert(server.includes('operations card not sent because branded media failed'),
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.id'), 'top-up request fulfillment renders a card image');
 assert(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'top-up request resolves the captain WhatsApp identity');
-assert(server.includes('sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000)'), 'top-up request sends the generated card through the guarded Server 2 path');
+assert(server.includes('sendOfficialDirectAtMostOnce(recipient, media, { caption }, 30000)'), 'top-up request sends the generated card through the guarded the official service path');
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
 assert(index.includes('id="topup-requests-open"'), 'top-up requests remain accessible from the compact console');
 assert(index.includes('data-topup-fulfill'), 'top-up approval remains a single fulfill-and-send action');
@@ -105,7 +105,7 @@ assert(server.includes('groupInviteInFlight'), 'member invite delivery is protec
 assert(server.includes('sharp.concurrency(1)'), 'card rendering limits native image concurrency');
 assert(server.includes('const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines)'), 'invite cards reuse one rendered media asset per batch');
 assert(server.includes('app.get("/api/admin/group/use-original", requireAdmin'), 'original WhatsApp group can be reactivated safely');
-assert(server.includes('const groupId = WHATSAPP_GROUP_ID'), 'original active group id is the configured Server 2 group');
+assert(server.includes('const groupId = WHATSAPP_GROUP_ID'), 'original active group id is the configured the official service group');
 assert(server.includes('UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?'), 'new or historical groups are deactivated without deletion');
 assert(server.includes('newGroupUnused: true'), 'relink response confirms the new group is unused');
 assert(server.includes('app.get("/api/admin/group/delete-unapproved", requireAdmin'), 'unapproved group deletion is admin protected');

@@ -9,7 +9,7 @@ assert.match(server, /pre-captain-cleanup-/);
 assert.match(server, /await db\.backup\(backupPath\)/);
 assert.match(server, /Live group\/account data changed since preview/);
 assert.match(server, /UPDATE users SET active=0,account_status='suspended'/);
-assert.match(server, /DELETE FROM users WHERE id=\? AND role='captain' AND account_status<>'merged' AND is_bot=0/);
+assert.match(server, /UPDATE users SET active=0,account_status='suspended',archived_at=.*?WHERE id=\? AND role='captain' AND account_status<>'merged' AND is_bot=0/);
 assert.match(server, /captains\.cleanup\.applied/);
 assert.match(server, /captain_subscription_charges WHERE user_id=\?/);
 assert.match(admin, /id="captainCleanupCard"/);

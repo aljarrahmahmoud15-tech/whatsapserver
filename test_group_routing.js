@@ -4,7 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
-assert(source.includes('"+962779110123"'), "مالك القروب 0779110123 مخوّل كمسار اعتماد بديل");
+assert.doesNotMatch(source, /962779110123|0779110123/, "هوية الخدمة القديمة ليست مضمّنة في الخادم");
 const start = source.indexOf("function resolveGroupChatId(");
 const end = source.indexOf("async function handleIncomingMessage(", start);
 assert(start >= 0 && end > start, "معالج تحديد القروب موجود داخل الخادم");
@@ -23,7 +23,7 @@ assert.strictEqual(
   "تُقرأ رسالة اعتماد البوت الصادرة من to"
 );
 assert.strictEqual(
-  context.resolveGroupChatId({ from: "962775696880@c.us", to: "962779110123@c.us" }),
+  context.resolveGroupChatId({ from: "962775696880@c.us", to: "962700000001@c.us" }),
   "",
   "المحادثة الفردية لا تُعامل كقروب"
 );

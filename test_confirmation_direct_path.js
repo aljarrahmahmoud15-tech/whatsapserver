@@ -6,7 +6,7 @@ const directStart = source.indexOf("async function sendFinalBookingConfirmationD
 const directEnd = source.indexOf("async function sendFinalBookingConfirmationViaConfiguredChat", directStart);
 assert.ok(directStart >= 0 && directEnd > directStart, "direct confirmation sender must exist");
 const direct = source.slice(directStart, directEnd);
-assert.match(direct, /isServer2OutboundTargetAllowed\(groupId\)/, "direct sender must keep the Server 2 target guard");
+assert.match(direct, /isOfficialOutboundTargetAllowed\(groupId\)/, "direct sender must keep the the official service target guard");
 assert.match(direct, /!client \|\| !isReady \|\| typeof client\.sendMessage !== "function"/, "direct sender must require a ready WhatsApp client");
 assert.match(direct, /return client\.sendMessage\(groupId, message\)/, "direct sender must use the configured group id directly");
 assert.doesNotMatch(direct, /getChatById|getChats/, "direct sender must not perform chat discovery");

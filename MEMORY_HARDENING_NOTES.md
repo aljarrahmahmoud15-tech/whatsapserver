@@ -1,4 +1,4 @@
-# Memory hardening — server 2 (whatsapserver-2)
+# Memory hardening — Aljarah official service (aljarah-delivery)
 
 ## Root cause found in Render event log
 `Ran out of memory (used over 2GB) while running your code.` occurred 11 times before

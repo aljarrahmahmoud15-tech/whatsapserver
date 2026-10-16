@@ -27,7 +27,8 @@ assert.match(server, /const walletOwner = captain\.is_bot === 1 && BOT_FINANCIAL
 assert.match(server, /companyWalletCharge \? "company_bot_fee" : "captain_fee"/);
 assert.match(server, /INSERT OR IGNORE INTO order_settlements\(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id/);
 assert.match(server, /function companyWalletSummary\(\)/);
-assert.match(server, /operationalBotPhone/);
+assert.doesNotMatch(server, /operationalBotPhone/);
+assert.match(server, /operationalBotName/);
 assert.match(server, /app\.get\("\/api\/admin\/company-wallet"/);
 assert.match(server, /app\.get\("\/api\/staff\/company-wallet"/);
 assert.match(server, /companyWallet: companyWalletSummary\(\)/);
