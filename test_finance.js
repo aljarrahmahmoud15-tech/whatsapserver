@@ -17,25 +17,26 @@ const expectedNormal = (priceCents) => ({
   settlementMode: "percentage_normal_order",
 });
 
-const expectedFixedOrder = (priceCents) => ({
+const expectedOrder = (priceCents) => ({
   orderKind: "order",
   grossCents: priceCents,
   externalOrderValueCents: priceCents,
-  producerRateBps: null,
-  producerFeeCents: 85,
-  companyCents: 15,
-  producerNetCents: 85,
-  companyFeeCents: 15,
-  captainFeeCents: 15,
-  confirmingCaptainFeeCents: 100,
+  producerRateBps: 1600,
+  producerFeeCents: Math.round(priceCents * 0.16),
+  companyCents: Math.round(priceCents * 0.04),
+  producerNetCents: Math.round(priceCents * 0.16),
+  companyFeeCents: Math.round(priceCents * 0.04),
+  captainFeeCents: Math.round(priceCents * 0.04),
+  confirmingCaptainFeeCents: Math.round(priceCents * 0.20),
   executorWalletCreditCents: 0,
   captainGrossCents: 0,
-  settlementMode: "fixed_order_values",
+  settlementMode: "percentage_order",
 });
 
 assert.deepStrictEqual(calculateSettlement({ priceCents: 2000, orderKind: "normal" }), expectedNormal(2000));
-assert.deepStrictEqual(calculateSettlement({ priceCents: 2000, orderKind: "order" }), expectedFixedOrder(2000));
-assert.deepStrictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }), expectedFixedOrder(500), "اوردر يستخدم القيم الثابتة مهما تغير السعر");
+assert.deepStrictEqual(calculateSettlement({ priceCents: 2000, orderKind: "order" }), expectedOrder(2000));
+assert.deepStrictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }), expectedOrder(500), "اوردر يستخدم 16% للمنزل و4% للشركة مهما تغير السعر");
+assert.strictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }).confirmingCaptainFeeCents, 100);
 
 const fifteen = calculateSettlement({ priceCents: 1500 });
 assert.strictEqual(fifteen.producerFeeCents, 195, "15 JOD: downloader receives 1.95 JOD");
@@ -51,4 +52,4 @@ assert.strictEqual(five.confirmingCaptainFeeCents, 75, "5 JOD: executor pays 0.7
 assert.strictEqual(five.externalOrderValueCents, 500);
 assert.strictEqual(five.executorWalletCreditCents, 0);
 
-console.log("finance policy verified: fixed order values and percentage normal-order values");
+console.log("finance policy verified: 16%/4% order and 13%/2% normal-order values");
