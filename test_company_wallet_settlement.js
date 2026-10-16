@@ -9,14 +9,14 @@ const staff = fs.readFileSync('./public/staff.html', 'utf8');
 const settlement = calculateSettlement({
   priceCents: 5000,
   orderKind: 'normal',
-  regularProducerRateBps: 1300,
-  specialOrderProducerRateBps: 1300,
+  regularProducerRateBps: 1000,
+  specialOrderProducerRateBps: 1600,
   companyFromProducerRateBps: 200,
   specialOrderCompanyFromProducerRateBps: 200,
 });
-assert.equal(settlement.producerNetCents, 650, '13% downloader share for 50 JOD');
+assert.equal(settlement.producerNetCents, 500, '10% downloader share for 50 JOD');
 assert.equal(settlement.companyCents, 100, '2% company share for 50 JOD');
-assert.equal(settlement.confirmingCaptainFeeCents, 750, '15% confirming debit for 50 JOD');
+assert.equal(settlement.confirmingCaptainFeeCents, 600, '12% confirming debit for 50 JOD');
 
 assert.match(server, /charged_user_id INTEGER REFERENCES users\(id\)/);
 assert.match(server, /charged_user_id=CASE WHEN captain_user_id IN \(SELECT id FROM users WHERE is_bot=1\)/);

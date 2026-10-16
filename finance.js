@@ -1,11 +1,11 @@
 // Settlement policy by order kind:
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
-// - Normal orders: 13% to the captain who posted the order, 2% to the company,
-//   and a 15% total debit from the confirming executor wallet.
+// - Normal orders: 10% to the captain who posted the order, 2% to the company,
+//   and a 12% total debit from the confirming executor wallet.
 // - "order" / "اوردر" orders: 16% to the posted-order captain,
 //   4% to the company, and a 20% debit from the confirming executor.
-const REGULAR_PRODUCER_RATE_BPS = 1300;
+const REGULAR_PRODUCER_RATE_BPS = 1000;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
 const ORDER_PRODUCER_RATE_BPS = 1600;
 const ORDER_COMPANY_RATE_BPS = 400;
