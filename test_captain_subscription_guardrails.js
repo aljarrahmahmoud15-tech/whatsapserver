@@ -12,7 +12,7 @@ assert.match(source, /UNIQUE\(user_id, period_start\)/);
 assert.match(source, /role='captain' AND active=1 AND is_bot=0 AND account_status='active'/);
 assert.match(source, /function manualWeeklyChargeEligibleCaptains\(stamp = now\(\)\)/);
 assert.match(source, /wallet_cents>=\?/);
-assert.match(source, /ammanDateKey\(captain\.created_at\) !== today/);
+assert.match(source, /ammanDateKey\(captain\.created_at\) < today/);
 assert.match(source, /"skipped_debt_limit"/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);
@@ -36,7 +36,7 @@ assert.match(source, /app\.get\("\/api\/admin\/daily-charges", requireAdmin/);
 assert.match(source, /chargeAmountCents: CAPTAIN_DAILY_CHARGE_CENTS/);
 assert.match(source, /activeCount: rows\.filter\(\(row\) => Boolean\(row\.active\)\)\.length/);
 
-assert.match(source, /function applyManualWeeklyCaptainCharges\(stamp = now\(\)\)/);
+assert.match(source, /function applyManualWeeklyCaptainCharges\(stamp = now\(\), \{ scheduled = false/);
 assert.match(source, /manualOnly: true/);
 assert.match(source, /confirmation \|\| \"\"\) !== \"APPLY_WEEKLY_CAPTAIN_CHARGE\"/);
 console.log('captain subscription manual-only, balance, registration-date, idempotency, and scheduler guardrails verified');
