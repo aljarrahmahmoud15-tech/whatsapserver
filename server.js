@@ -44,7 +44,7 @@ const WHATSAPP_IDENTITY_SCOPE = String(
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://alshaikh-delivery.onrender.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/var/data");
 if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
