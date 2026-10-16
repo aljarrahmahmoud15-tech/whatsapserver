@@ -32,9 +32,13 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || BOT_PHONE;
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
-// Do not open a persisted WhatsApp session until both identities are explicitly configured.
-// An unconfigured service must not generate a QR or attach to an old account/group.
+// Normal operation requires both the bot identity and the exact group allowlist.
 const WHATSAPP_CONFIGURED = Boolean(BOT_PHONE_INTL && WHATSAPP_GROUP_ID);
+// QR bootstrap intentionally opens only the primary account. It never processes
+// messages or group events until an exact group ID is configured and the service restarts.
+const WHATSAPP_QR_BOOTSTRAP = process.env.WHATSAPP_QR_BOOTSTRAP === "true"
+  && Boolean(BOT_PHONE_INTL)
+  && !WHATSAPP_GROUP_ID;
 // Keep LocalAuth namespaces independent across cloned Render services. When
 // WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
 // service's own phone and group instead of using a shared constant.
@@ -5951,6 +5955,10 @@ function createClient() {
     }
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
     recordOwnerControlCheckpoint("whatsapp.ready", { force: true });
+    if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) {
+      console.log("[WhatsApp] ready in QR bootstrap mode; group processing remains disabled until an exact group is configured");
+      return;
+    }
     const readyGeneration = generation;
     setTimeout(() => {
       if (readyGeneration !== connectionGeneration || !isReady || client !== instance) return;
@@ -6023,6 +6031,7 @@ function createClient() {
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) return;
     if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
     if (!shouldHandleMessageEvent(msg, "message_create")) return;
     observeAdminSentMessage(msg);
@@ -6036,11 +6045,13 @@ function createClient() {
   });
   instance.on("message_ack", async (msg, ack) => {
     if (generation !== connectionGeneration) return;
+    if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) return;
     try { recordConfirmationMessageAck(msg, ack); } catch (error) { console.error("[DeliveryMonitor] ACK handler:", error.message); }
     try { await handleCaptainAccessCardAck(msg, ack); } catch (error) { console.error("[WhatsApp] captain card ack:", error); }
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !msg) return;
+    if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) return;
     if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
     if (!shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
@@ -6052,6 +6063,7 @@ function createClient() {
   });
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
+    if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) return;
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
     const reactionValue = String(reaction?.reaction || "").trim();
     if (reactionValue === "👍" || reactionValue === "❌") {
@@ -6638,6 +6650,7 @@ async function getQuotedMessageWithFallback(message) {
 
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
+  if (typeof WHATSAPP_QR_BOOTSTRAP !== "undefined" && WHATSAPP_QR_BOOTSTRAP && typeof WHATSAPP_CONFIGURED !== "undefined" && !WHATSAPP_CONFIGURED) return;
   const groupId = resolveGroupChatId(msg);
   const isGroup = Boolean(groupId);
   if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
@@ -13818,6 +13831,12 @@ app.listen(PORT, () => {
     startWhatsAppWatchdog();
     startWhatsAppReactionScanner();
     if (BAILEYS_ENABLED) initializeBaileys();
+  } else if (WHATSAPP_QR_BOOTSTRAP) {
+    startRuntimeMemoryWatchdog();
+    whatsappState = "qr_bootstrap";
+    whatsappLastEvent = "configuration_waiting_for_group";
+    initializeWhatsApp();
+    startWhatsAppWatchdog();
   } else {
     whatsappState = "unconfigured";
     whatsappLastEvent = "configuration_required";
