@@ -9342,11 +9342,17 @@ app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
 app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
   const health = runtimeHealth();
   const inventory = storageInventory();
+  const botPhone = connectedBotPhone();
+  const botPhoneDisplay = displayPhone(botPhone);
+  const whatsappLink = isValidJordanPhone(botPhone) ? `https://wa.me/${botPhone}` : null;
   res.setHeader("Cache-Control", "no-store");
   res.json({
     success: true,
     status: health.whatsapp?.ready ? "connected" : "offline",
     bot: {
+      phone: botPhone,
+      phoneDisplay: botPhoneDisplay,
+      whatsappLink,
       ready: Boolean(health.whatsapp?.ready),
       state: health.whatsapp?.state || "unknown",
       lastEvent: health.whatsapp?.lastEvent || null,
