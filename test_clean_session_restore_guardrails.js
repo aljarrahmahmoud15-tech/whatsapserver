@@ -27,5 +27,10 @@ assert.match(server, /pinnedToClean/);
 assert.match(ui, /ops-session-state/);
 assert.match(ui, /main-group-invite-url/);
 assert.match(ui, /main-group-invite-copy/);
+assert.match(ui, /clean-identity-panel/);
+assert.match(ui, /main-clean-bot-phone/);
+assert.match(ui, /main-clean-group-id/);
+assert.match(ui, /main-clean-group-invite/);
+assert.match(ui, /refreshCleanIdentity/);
 
 console.log('Clean archived-session restore route, isolation guardrails, health telemetry, and UI action verified');
