@@ -60,9 +60,10 @@ assert.ok(
   'the approved 12.5% downloader and 2.5% company rates are immutable policy constants'
 );
 assert.ok(
-  server.includes('setSetting("producer_rate_bps", PRODUCER_RATE_BPS);') &&
-  server.includes('setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);'),
-  'legacy stored settlement settings are normalized during startup'
+  server.includes('if (getSetting(key) === null) setSetting(key, value);') &&
+  server.includes('["producer_rate_bps", PRODUCER_RATE_BPS]') &&
+  server.includes('["company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS]'),
+  'settlement defaults are initialized without overwriting owner-edited settings'
 );
 assert.doesNotMatch(
   server,

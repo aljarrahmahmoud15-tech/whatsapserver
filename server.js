@@ -1554,7 +1554,7 @@ async function sendBotText(to, text) {
 }
 const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
 // Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
-const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
+const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = true; // master capability; owner setting defaults to off
 const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
 const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST";
 // No live test exception remains enabled after the controlled verification attempt.
@@ -1568,9 +1568,10 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
     return { status: "invalid" };
   }
   const allowPausedTest = testOverride && event === "captain.approval_notification.test" && CAPTAIN_STATUS_TEST_ALLOWLIST.has(Number(testCaptainId));
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED && !allowPausedTest) {
-    audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason: "captain_status_notifications_paused" });
-    return { status: "suppressed", duplicate: false, reason: "captain_status_notifications_paused" };
+  if ((!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus")) && !allowPausedTest) {
+    const reason = !notificationEnabled("captainStatus") ? "owner_notification_setting_disabled" : "captain_status_notifications_paused";
+    audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason, category: "captainStatus" });
+    return { status: "suppressed", duplicate: false, reason };
   }
   if (captainStatusNotificationInFlight.has(key)) return { status: "pending", duplicate: true };
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
@@ -1611,7 +1612,7 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   return { status: deliveryStatus, notificationId, messageId };
 }
 async function retryCaptainStatusNotifications() {
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED };
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") };
   const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
   const placeholders = events.map(() => "?").join(",");
   const rows = db.prepare(`SELECT recipient_phone,event,title,message,idempotency_key,source_message_id FROM notifications WHERE recipient_role='captain' AND delivery_status IN ('pending','failed') AND event IN (${placeholders}) ORDER BY id DESC LIMIT 50`).all(...events);
@@ -1627,6 +1628,10 @@ function ownerNotificationPhones() {
   return [...GROUP_SETUP_OWNER_PHONES].map(phoneWithCountry).filter((phone, index, all) => phone && !isBotPhone(phone) && all.indexOf(phone) === index);
 }
 async function notifyOperations({ event, title, lines, captainPhone = null, ownersOnly = false }) {
+  if (!notificationEnabled("operationsAlerts")) {
+    audit(`notification.${event}.suppressed`, "system", "owner", { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "operationsAlerts" });
+    return [];
+  }
   const owners = ownerNotificationPhones();
   const recipients = (ownersOnly ? owners : [...owners, phoneWithCountry(captainPhone)]).filter((phone, index, all) => phone && all.indexOf(phone) === index);
   const results = [];
@@ -1659,6 +1664,12 @@ function balanceSnapshotMessage({ name, balance }) {
 async function runBalanceNotificationBroadcast({ runKey, members }) {
   const run = balanceNotificationBroadcasts.get(runKey);
   if (!run) return;
+  if (!notificationEnabled("balanceAlerts")) {
+    run.status = "suppressed";
+    run.completedAt = now();
+    audit("notification.captain.balance_snapshot.suppressed", "system", runKey, { reason: "owner_notification_setting_disabled", category: "balanceAlerts" });
+    return;
+  }
   for (const member of members) {
     if (run.cancelled) break;
     const phone = phoneWithCountry(member.phone);
@@ -1705,6 +1716,12 @@ function captainCompletionAnnouncementContent() {
 async function runCaptainCompletionAnnouncement({ runKey, captains }) {
   const run = captainAnnouncementBroadcasts.get(runKey);
   if (!run) return;
+  if (!notificationEnabled("captainAnnouncements")) {
+    run.status = "suppressed";
+    run.completedAt = now();
+    audit("notification.captain.company_completion.suppressed", "system", runKey, { reason: "owner_notification_setting_disabled", category: "captainAnnouncements" });
+    return;
+  }
   const { title, lines, caption } = captainCompletionAnnouncementContent();
   try {
     if (!client || !isReady) throw new Error("WhatsApp غير جاهز حاليًا");
@@ -1862,6 +1879,10 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
+  if (!notificationEnabled("balanceAlerts")) {
+    audit(`notification.${notificationEvent}.suppressed`, "user", captain.id, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "balanceAlerts", removalStatus: removal.status, financialMutation: false });
+    return { status: "suppressed", removalStatus: removal.status, removalError: removal.error || null };
+  }
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? AND title=? AND message=? LIMIT 1").get(phone, notificationEvent, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status, removalError: removal.error || null };
   const row = existing
@@ -1897,6 +1918,10 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
   ].join("\n");
   const phone = phoneWithCountry(captain.phone);
+  if (!notificationEnabled("balanceAlerts")) {
+    audit("notification.captain.wallet.low_balance.suppressed", "user", captain.id, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "balanceAlerts", financialMutation: false });
+    return { status: "suppressed" };
+  }
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.low_balance' AND title=? AND message=? LIMIT 1").get(phone, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
   const row = existing
@@ -2122,6 +2147,30 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
 }
+const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
+  operationsAlerts: { key: "notification_operations_alerts", label: "تنبيهات التشغيل للمالك", defaultValue: true },
+  captainStatus: { key: "notification_captain_status", label: "رسائل حالة الكابتن", defaultValue: false },
+  balanceAlerts: { key: "notification_balance_alerts", label: "تنبيهات الرصيد للكابتن", defaultValue: true },
+  bookingCards: { key: "notification_booking_cards", label: "بطاقات تثبيت وإلغاء الحجز في القروب الرسمي", defaultValue: true },
+  captainWelcome: { key: "notification_captain_welcome", label: "ترحيب الكابتن الجديد داخل القروب", defaultValue: true },
+  captainAnnouncements: { key: "notification_captain_announcements", label: "إعلانات التشغيل العامة للكباتن", defaultValue: true },
+  pendingBookingApproval: { key: "notification_pending_booking_approval", label: "تنبيه الحجز المعلّق للمالك", defaultValue: false },
+});
+function readBooleanSetting(key, fallback = false) {
+  const value = getSetting(key, fallback ? "1" : "0");
+  return value === true || value === 1 || ["1", "true", "on", "enabled"].includes(String(value).trim().toLowerCase());
+}
+function currentNotificationSettings() {
+  return Object.fromEntries(Object.entries(OWNER_NOTIFICATION_DEFINITIONS).map(([name, definition]) => [name, readBooleanSetting(definition.key, definition.defaultValue)]));
+}
+function notificationSettingsResponse() {
+  return { ...currentNotificationSettings(), protected: { authentication: true, settlementEvidence: true, whatsappInboundProcessing: true } };
+}
+function notificationEnabled(name) {
+  const definition = OWNER_NOTIFICATION_DEFINITIONS[name];
+  return Boolean(definition && readBooleanSetting(definition.key, definition.defaultValue));
+}
+
 function boundedIntegerSetting(key, fallback, minimum, maximum) {
   const value = Number(getSetting(key, fallback));
   return Number.isInteger(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback;
@@ -2353,6 +2402,9 @@ function ensureSystemUsers() {
   ];
   for (const [key, value] of settlementDefaults) {
     if (getSetting(key) === null) setSetting(key, value);
+  }
+  for (const definition of Object.values(OWNER_NOTIFICATION_DEFINITIONS)) {
+    if (getSetting(definition.key) === null) setSetting(definition.key, definition.defaultValue ? "1" : "0");
   }
   if (getSetting("currency") === null) setSetting("currency", "JOD");
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
@@ -2779,6 +2831,10 @@ function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL 
   ].join("\n");
 }
 async function sendCaptainGroupWelcome(participant, groupId) {
+  if (!notificationEnabled("captainWelcome")) {
+    audit("notification.captain.group_welcome.suppressed", "system", String(groupId || ""), { reason: "owner_notification_setting_disabled", category: "captainWelcome" });
+    return { status: "suppressed" };
+  }
   if (!client || !isReady || !isConfiguredGroup(groupId)) return { status: "not_ready" };
   const phone = await resolveGroupParticipantPhone(participant).catch(() => "");
   if (!isValidJordanPhone(phone) || isProtectedOwnerIdentity(phone) || isBotPhone(phone)) return { status: "skipped", phone: phone || null };
@@ -3865,7 +3921,7 @@ function notifyPendingBookingApproval(candidateId, { acceptanceMessageId = null,
   // Owner policy: the candidate remains pending and visible in V26; only its
   // branded WhatsApp approval card is suppressed. Keep this local so isolated
   // lifecycle simulations can exercise the function without bootstrapping all constants.
-  const pendingBookingOwnerApprovalCardEnabled = false;
+  const pendingBookingOwnerApprovalCardEnabled = notificationEnabled("pendingBookingApproval");
   if (!pendingBookingOwnerApprovalCardEnabled) {
     audit(`${event}.suppressed`, "order_candidate", candidateId, {
       deliveryStatus: "suppressed",
@@ -4356,6 +4412,10 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
 }
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
+  if (!notificationEnabled("bookingCards")) {
+    audit("notification.order.confirmation_card.suppressed", "order", orderId || null, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "bookingCards", financialMutation: false });
+    return null;
+  }
   const forceFinalRecovery = options.forceFinalRecovery === true;
   const immediateReaction = options.immediateReaction === true;
   const deliveryMode = options.deliveryMode === "fallback" ? "fallback" : "direct";
@@ -4515,6 +4575,10 @@ function observeFinalBookingConfirmationMessage(message) {
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
 async function sendFinalBookingCancellation(groupId, order = null) {
+  if (!notificationEnabled("bookingCards")) {
+    audit("notification.order.cancellation_card.suppressed", "order", order?.id || null, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "bookingCards", financialMutation: false });
+    return null;
+  }
   if (!client || !isOfficialGroupTarget(groupId)) {
     console.warn(`[WhatsApp] final booking cancellation blocked: official group required target=${String(groupId || "").slice(0, 80)}`);
     return null;
@@ -9076,7 +9140,29 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, async (req, res) =
 });
 app.get("/api/admin/settings", requireOwnerAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
-  res.json({ success: true, policy: settlementPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+app.patch("/api/admin/settings/notifications", requireOwnerAdmin, (req, res) => {
+  const requested = req.body?.notifications && typeof req.body.notifications === "object" ? req.body.notifications : req.body || {};
+  const updates = [];
+  for (const [name, definition] of Object.entries(OWNER_NOTIFICATION_DEFINITIONS)) {
+    if (requested[name] === undefined) continue;
+    if (typeof requested[name] !== "boolean") return res.status(400).json({ error: `إعداد الإشعار ${name} يجب أن يكون true أو false.` });
+    updates.push({ name, key: definition.key, value: requested[name] });
+  }
+  if (!updates.length) return res.status(400).json({ error: "لم يتم إرسال إعداد إشعار صالح." });
+  const before = currentNotificationSettings();
+  try {
+    db.transaction(() => {
+      for (const item of updates) setSetting(item.key, item.value ? "1" : "0");
+      audit("admin.notification_policy.changed", "system", "notifications", { before, after: currentNotificationSettings(), updated: updates.map(item => item.name), financialMutation: false, settlementMutation: false });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, notifications: notificationSettingsResponse(), message: "تم حفظ إعدادات الإشعارات. استقبال الرسائل والتسويات لا يتوقفان." });
+  } catch (error) {
+    console.error("[Settings] notification policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات الإشعارات" });
+  }
 });
 app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
   const producerPercent = Number(req.body?.producerRatePercent);
