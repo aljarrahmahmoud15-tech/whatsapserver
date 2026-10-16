@@ -3919,7 +3919,7 @@ function escapeXml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
 }
 async function renderTopupCardMedia({ cardId, code, valueCents, captainName, appUrl }) {
-  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
+  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(captainName || `كابتن شبكة ${COMPANY_BRAND_NAME}`);
@@ -3952,8 +3952,8 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
   return new MessageMedia("image/png", png.toString("base64"), `sheikh-delivery-topup-card-${cardId}.png`);
 }
 async function renderOperationsMessageMedia(title, lines = []) {
-  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
-  const portalPath = path.join(__dirname, "public", "aljarah-portal-bg-card.png");
+  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
+  const portalPath = path.join(__dirname, "public", "sheikh-delivery-portal-bg-card.png");
   let logoData = "";
   let portalData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
@@ -3987,7 +3987,7 @@ async function renderOperationsMessageMedia(title, lines = []) {
   return new MessageMedia("image/png", png.toString("base64"), "sheikh-delivery-operations-message.png");
 }
 async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
-  const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
+  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(name || "كابتن");
@@ -13305,7 +13305,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   try {
     const chat = await withTimeout(client.getChatById(groupId), 25000, null) || await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
-    const media = await withTimeout(MessageMedia.fromFilePath(path.join(__dirname, "public", "aljarah-logo-mark-card.png")), 30000, null);
+    const media = await withTimeout(MessageMedia.fromFilePath(path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png")), 30000, null);
     if (!media) return res.status(502).json({ error: "Unable to load group identity image" });
     const updated = { picture: await chat.setPicture(media), subject: await chat.setSubject(GROUP_BRAND_NAME), description: await chat.setDescription(GROUP_BRAND_DESCRIPTION) };
     if (!isOfficialOutboundTargetAllowed(groupId)) return res.status(403).json({ error: "Group is outside the official service allowlist" });
