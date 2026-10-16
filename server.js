@@ -48,6 +48,8 @@ const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
+// Clean-only pinned invite fallback supplied by the owner; Server 2 never reads it.
+const CLEAN_GROUP_INVITE_URL = CLEAN_INSTANCE ? (process.env.CLEAN_GROUP_INVITE_URL?.trim() || "https://chat.whatsapp.com/GmWVdGXXrL89mTvBLOM1Xd?s=sh&p=a&mlu=4&ilr=4") : "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "TAKE&GO الشمال";
 if (process.env.RENDER && !CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
 // Keep LocalAuth namespaces independent across cloned Render services. When
@@ -2119,6 +2121,7 @@ function ensureSystemUsers() {
   setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
   setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
   if (getSetting("currency") === null) setSetting("currency", "JOD");
+  if (CLEAN_INSTANCE && getSetting("official_group_invite_url") === null && CLEAN_GROUP_INVITE_URL) setSetting("official_group_invite_url", CLEAN_GROUP_INVITE_URL);
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
 }
 function normalizeBotIdentity(stamp = now()) {
@@ -8702,6 +8705,8 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
       authPath: health.storage?.authPath || AUTH_PATH,
       qrAvailable: Boolean(health.whatsapp?.qrAvailable),
       authPathWritable: Boolean(health.storage?.authPathHealth?.writable),
+      persistent: Boolean(health.storage?.authPathHealth?.exists && health.storage?.authPathHealth?.writable),
+      pinnedToClean: Boolean(CLEAN_INSTANCE),
     },
     storage: {
       dataDirExists: Boolean(health.storage?.dataDirHealth?.exists),
@@ -8799,6 +8804,7 @@ app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
   let groupName = storedName || null;
   let inviteCode = null;
   let liveNameRead = false;
+  const savedInviteUrl = CLEAN_INSTANCE ? String(getSetting("official_group_invite_url", CLEAN_GROUP_INVITE_URL) || "").trim() : "";
   if (ready) {
     try {
       const chat = await withTimeout(resolveGroupChat(groupId), 20000, null);
@@ -8815,8 +8821,8 @@ app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
     identityMatch: Boolean(WHATSAPP_GROUP_ID && groupId === WHATSAPP_GROUP_ID),
     groupName,
     liveNameRead,
-    inviteCode: inviteCode ? String(inviteCode).trim() : null,
-    inviteUrl: inviteCode ? `https://chat.whatsapp.com/${String(inviteCode).trim()}` : null,
+    inviteCode: inviteCode ? String(inviteCode).trim() : (savedInviteUrl.match(/chat\.whatsapp\.com\/([^?\s]+)/i)?.[1] || null),
+    inviteUrl: inviteCode ? `https://chat.whatsapp.com/${String(inviteCode).trim()}` : (savedInviteUrl || null),
     ready,
     generatedAt: now(),
   });
