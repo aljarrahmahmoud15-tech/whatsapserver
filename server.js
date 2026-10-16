@@ -8646,6 +8646,8 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
     status: health.whatsapp?.ready ? "connected" : "offline",
     bot: {
       ready: Boolean(health.whatsapp?.ready),
+      phone: BOT_PHONE || null,
+      phoneInternational: BOT_PHONE_INTL || null,
       groupId: configuredRuntimeGroupId() || null,
       state: health.whatsapp?.state || "unknown",
       lastEvent: health.whatsapp?.lastEvent || null,
