@@ -1983,12 +1983,14 @@ function safePathHealth(targetPath) {
 function whatsappSessionPersistenceHealth() {
   const authDirectory = safePathHealth(AUTH_PATH);
   const profileDirectory = safePathHealth(path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`));
+  const archive = whatsappSessionArchiveHealth();
   return {
     configured: !runningOnRender || path.resolve(DATA_DIR) === expectedRenderDataDir,
     authDirectoryExists: Boolean(authDirectory.exists),
     authDirectoryWritable: Boolean(authDirectory.writable),
     profileDirectoryExists: Boolean(profileDirectory.exists),
     profileDirectoryWritable: Boolean(profileDirectory.writable),
+    ...archive,
   };
 }
 function storageInventory() {
@@ -4928,6 +4930,45 @@ async function destroyClient() {
   await disposeClientInstance(current, "destroy");
 }
 
+function archivedWhatsAppSessionDirectories() {
+  const archiveRoot = path.join(AUTH_PATH, ".archived-sessions");
+  if (!fs.existsSync(archiveRoot)) return [];
+  return fs.readdirSync(archiveRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^session(?:-.+)?-\d+-[a-f0-9]+$/i.test(entry.name))
+    .map((entry) => {
+      const fullPath = path.join(archiveRoot, entry.name);
+      let modifiedAt = 0;
+      try { modifiedAt = fs.statSync(fullPath).mtimeMs; } catch (_) { /* stale entry */ }
+      return { name: entry.name, fullPath, modifiedAt };
+    })
+    .sort((a, b) => b.modifiedAt - a.modifiedAt);
+}
+function whatsappSessionArchiveHealth() {
+  const archived = archivedWhatsAppSessionDirectories();
+  return {
+    archivedSessionCount: archived.length,
+    latestArchivedSessionAt: archived[0]?.modifiedAt ? new Date(archived[0].modifiedAt).toISOString() : null,
+  };
+}
+async function restoreLatestArchivedWhatsAppSession() {
+  if (!CLEAN_INSTANCE) throw new Error("Archived session restore is restricted to the clean service");
+  const activeProfile = path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`);
+  if (fs.existsSync(activeProfile)) {
+    const error = new Error("An active WhatsApp profile already exists; refusing to replace it");
+    error.code = "ACTIVE_WHATSAPP_PROFILE_EXISTS";
+    throw error;
+  }
+  const [latest] = archivedWhatsAppSessionDirectories();
+  if (!latest) {
+    const error = new Error("No archived WhatsApp session exists on the clean persistent disk");
+    error.code = "NO_ARCHIVED_WHATSAPP_SESSION";
+    throw error;
+  }
+  fs.mkdirSync(AUTH_PATH, { recursive: true });
+  fs.renameSync(latest.fullPath, activeProfile);
+  clearChromiumProfileLocks();
+  return { restoredFrom: latest.name, activeProfile: `session-${WHATSAPP_CLIENT_ID}` };
+}
 async function restartWhatsApp(reason = "manual restart") {
   if (whatsappRestartInFlight) return whatsappRestartInFlight;
   whatsappRestartInFlight = (async () => {
@@ -12687,6 +12728,26 @@ app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
     scheduleReconnect();
     res.redirect(303, "/qr?session=cleared");
   } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
+});
+app.post("/api/admin/whatsapp/restore-last-session", requireAdmin, async (req, res) => {
+  if (!CLEAN_INSTANCE) return res.status(404).json({ error: "This recovery route is only available on the clean service" });
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 2)) return res.status(429).json({ error: "Too many session recovery attempts; try again later" });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  try {
+    const result = await restoreLatestArchivedWhatsAppSession();
+    await withTimeout(destroyClient(), 15000, null);
+    qrCodeData = null;
+    reconnectAttempts = 0;
+    whatsappState = "session_restore_scheduled";
+    whatsappLastEvent = "session_restore_scheduled";
+    whatsappLastError = null;
+    scheduleReconnect();
+    res.json({ success: true, message: "The latest clean archived WhatsApp session was restored; reconnect scheduled", ...result });
+  } catch (error) {
+    const status = error.code === "NO_ARCHIVED_WHATSAPP_SESSION" ? 404 : error.code === "ACTIVE_WHATSAPP_PROFILE_EXISTS" ? 409 : 500;
+    console.error("[WhatsApp] archived session restore:", error.message);
+    res.status(status).json({ error: error.message });
+  }
 });
 app.post("/api/admin/group/rename", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many group rename actions; try again later" });
