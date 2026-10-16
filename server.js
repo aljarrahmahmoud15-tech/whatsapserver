@@ -47,7 +47,6 @@ const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
-const CLEAN_IGNORED_DIRECT_BOT_PHONE = "0779110123";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "TAKE&GO الشمال";
 if (process.env.RENDER && !CLEAN_INSTANCE && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
@@ -1198,7 +1197,9 @@ function createTicketCode() {
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", "+962779110123"]);
+// Owner-approved on 2026-10-16: 0779110123 may register as a human captain in Clean only.
+// Keep Server 2 identity policy and the other blocked numbers unchanged.
+const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320", ...(!CLEAN_INSTANCE ? ["+962779110123"] : [])]);
 // Clean must never inherit Server 2 owner recipients; configure its recipients explicitly per service.
 const DEFAULT_GROUP_SETUP_OWNER_PHONES = CLEAN_INSTANCE ? [] : ["+962779110123"];
 const configuredGroupSetupOwnerPhones = process.env.GROUP_SETUP_OWNER_PHONES || (CLEAN_INSTANCE ? "" : "+962785217886");
@@ -1944,6 +1945,13 @@ function sanitizeLegacyPhone() {
   db.prepare("DELETE FROM blocked_phones WHERE phone=?").run(legacyPhone);
 }
 
+function sanitizeApprovedCleanCaptainPhone() {
+  if (!CLEAN_INSTANCE) return;
+  // Remove only this approved phone's stale persisted block. Account activation
+  // still follows the official invitation and explicit owner approval flow.
+  db.prepare("DELETE FROM blocked_phones WHERE phone=?").run(phoneWithCountry(LEGACY_BOT_PHONE));
+}
+
 function getSetting(key, fallback = null) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
   return row ? row.value : fallback;
@@ -2125,6 +2133,7 @@ function normalizeBotIdentity(stamp = now()) {
 }
 ensureBlockedPhones();
 sanitizeLegacyPhone();
+sanitizeApprovedCleanCaptainPhone();
 ensureSystemUsers();
 
 function isBotPhone(phone) {
@@ -6228,7 +6237,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!isGroup) {
     if (CLEAN_INSTANCE) {
       const directSenderPhone = await resolveMessageSenderPhone(msg);
-      if (phoneWithCountry(directSenderPhone) === phoneWithCountry(CLEAN_IGNORED_DIRECT_BOT_PHONE)) return;
+      if (isBlockedPhone(directSenderPhone)) return;
     }
     return handleCustomerMessage(msg);
 		  }
