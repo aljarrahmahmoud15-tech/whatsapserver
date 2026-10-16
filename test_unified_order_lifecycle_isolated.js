@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotGeneratedMessage } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -32,7 +32,7 @@ const BOT = "962790000001";
 const users = {
   producer: { id: 2, phone: PRODUCER, name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
   executor: { id: 3, phone: EXECUTOR, name: "المنفذ", role: "captain", wallet_cents: 5000, active: 1, account_status: "active", is_bot: 0 },
-  company: { id: 1, phone: "system-company", name: "وصلني الآن", role: "company", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
+  company: { id: 1, phone: "system-company", name: "الشيخ للتوصيل", role: "company", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
 };
 
 const state = {
@@ -195,17 +195,22 @@ const context = {
   cents: (value) => Math.round(Number(value) * 100),
   now: () => "2026-01-01T00:00:00.000Z",
   audit: () => {},
+  notificationEnabled: () => false,
   logOrderTrace: () => {},
   logSettlementCompleted: () => {},
   orderTraceKey: (value) => `trace:${String(value)}`,
   maskSettlementPhone: (value) => String(value || ""),
   money: (value) => (Number(value || 0) / 100).toFixed(2),
   calculateSettlement,
+  settlementLedgerNotes,
   PRODUCER_RATE_BPS: 1300,
   SPECIAL_ORDER_RATE_BPS: 1300,
   SPECIAL_ORDER_PRODUCER_RATE_BPS: 1300,
   COMPANY_FROM_PRODUCER_RATE_BPS: 200,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 200,
+  currentSettlementPolicy: () => ({ producerRateBps: 1300, companyRateBps: 200, totalRateBps: 1500, regularProducerRateBps: 1300, specialOrderProducerRateBps: 1300, companyFromProducerRateBps: 200, specialOrderCompanyFromProducerRateBps: 200 }),
+  effectiveSettlementRates: (policy, orderKind) => orderKind === "order" ? { producerRateBps: policy.specialOrderProducerRateBps, companyRateBps: policy.specialOrderCompanyFromProducerRateBps } : { producerRateBps: policy.regularProducerRateBps, companyRateBps: policy.companyFromProducerRateBps },
+  calculateConfiguredSettlement: (input = {}) => ({ ...calculateSettlement({ ...input, regularProducerRateBps: 1300, specialOrderProducerRateBps: 1300, companyFromProducerRateBps: 200, specialOrderCompanyFromProducerRateBps: 200 }), companyRateBps: 200 }),
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   serializedMessageId: (msg) => msg?.id?._serialized || msg?.id || null,

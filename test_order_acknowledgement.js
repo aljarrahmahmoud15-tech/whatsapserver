@@ -23,4 +23,4 @@ assert(!source.includes("sendFinalBookingCard("), "لا يوجد إرسال لب
 assert(!source.includes('client.sendMessage(target.from, `تم تثبيت الطلب:'), "لا توجد رسالة مطولة خارج التأكيد المختصر");
 assert(!source.includes('sendGroupBrandedMessage(groupId, "تم تسجيل الطلب"'), "لا يوجد رد عند تنزيل الطلب");
 assert(!source.includes('sendGroupBrandedMessage(groupId, "بانتظار اعتماد كابتن تنزيل الطلب"'), "لا يوجد رد عند كتابة تم");
-console.log("silent intermediate replies and named Waslni Now booking confirmation guardrails verified");
+console.log("silent intermediate replies and named Sheikh Delivery booking confirmation guardrails verified");

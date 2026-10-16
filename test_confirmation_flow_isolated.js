@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotReactionSender } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -125,9 +125,13 @@ const context = {
   SPECIAL_ORDER_RATE_BPS: 1300,
   COMPANY_FROM_PRODUCER_RATE_BPS: 200,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 400,
+  currentSettlementPolicy: () => ({ producerRateBps: 1300, companyRateBps: 200, totalRateBps: 1500, regularProducerRateBps: 1300, specialOrderProducerRateBps: 1300, companyFromProducerRateBps: 200, specialOrderCompanyFromProducerRateBps: 400 }),
+  effectiveSettlementRates: (policy, orderKind) => orderKind === "order" ? { producerRateBps: policy.specialOrderProducerRateBps, companyRateBps: policy.specialOrderCompanyFromProducerRateBps } : { producerRateBps: policy.regularProducerRateBps, companyRateBps: policy.companyFromProducerRateBps },
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
+  settlementLedgerNotes,
+  calculateConfiguredSettlement: (input = {}) => ({ ...calculateSettlement({ ...input, regularProducerRateBps: 1300, specialOrderProducerRateBps: 1300, companyFromProducerRateBps: 200, specialOrderCompanyFromProducerRateBps: 400 }), companyRateBps: input.orderKind === "order" ? 400 : 200 }),
   companyUser: () => ({ ...users[1] }),
   now: () => "2026-01-01T00:00:00.000Z",
   audit: () => {},

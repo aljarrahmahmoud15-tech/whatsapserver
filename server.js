@@ -17,7 +17,7 @@ const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const sharp = require("sharp");
 sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
-const { calculateSettlement } = require("./finance");
+const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
@@ -106,8 +106,8 @@ const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 // Owner policy: manual wallet changes are available only through
 // owner-authenticated routes. Staff and dashboard-token callers are blocked.
 const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
-const COMPANY_BRAND_NAME = "وصلني الآن";
-const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
+const COMPANY_BRAND_NAME = "الشيخ للتوصيل";
+const COMPANY_BRAND_ENGLISH = "SHEIKH DELIVERY";
 // The configured Sheikh Delivery bot is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
@@ -183,9 +183,9 @@ const MEMORY_PRUNE_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.MEMORY_P
 const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
 const RUNTIME_TEMP_CLEANUP_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.RUNTIME_TEMP_CLEANUP_INTERVAL_MS || 15 * 60 * 1000));
 const RUNTIME_TEMP_FILE_MAX_AGE_MS = Math.max(15 * 60 * 1000, Number(process.env.RUNTIME_TEMP_FILE_MAX_AGE_MS || 60 * 60 * 1000));
-const GROUP_BRAND_NAME = "وصلني الآن | شبكة التشغيل اللوجستي";
-const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لوصلني الآن للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
-const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لوصلني الآن.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
+const GROUP_BRAND_NAME = "الشيخ للتوصيل | شبكة التشغيل اللوجستي";
+const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لالشيخ للتوصيل للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
+const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لالشيخ للتوصيل.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
 const pendingAdminSends = new Map();
 const adminSendResults = new Map();
 const loginRate = new Map();
@@ -958,8 +958,14 @@ function settlementFinancials(row) {
     ? producerCents + companyCents
     : Number(row.settlement_captain_fee_cents || 0);
   const executorWalletCreditCents = 0;
+  const policySnapshot = settlementPolicyFromDetails(row.settlement_details_json || row.details_json);
   return {
     price: money(externalOrderValueCents),
+    policy: {
+      producerRatePercent: policySnapshot.producerRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps)),
+      companyRatePercent: policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.companyRateBps)),
+      totalRatePercent: policySnapshot.producerRateBps === undefined || policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps + policySnapshot.companyRateBps)),
+    },
     externalOrderValue: money(externalOrderValueCents),
     externalOrderValueCents,
     company: money(companyCents),
@@ -982,6 +988,25 @@ function settlementFinancials(row) {
   };
 }
 
+function canonicalLedgerNote(entry) {
+  let orderKind = entry?.order_kind || null;
+  if (!orderKind && entry?.details_json) {
+    try { orderKind = JSON.parse(entry.details_json).orderKind || null; } catch { orderKind = null; }
+  }
+  if (!orderKind || !entry?.type) return entry?.note || null;
+  const notes = settlementLedgerNotes(orderKind, settlementPolicyFromDetails(entry?.details_json));
+  const byType = {
+    commission_company: notes.company,
+    commission_producer: notes.producer,
+    commission_bot_producer: notes.producer,
+    captain_fee: notes.captain,
+    company_bot_fee: notes.companyBot,
+    reversal_company: notes.reversalCompany,
+    reversal_producer: notes.reversalProducer,
+    reversal_captain_fee: notes.reversalCaptain,
+  };
+  return byType[entry.type] || entry.note || null;
+}
 function settlementRows(limit = 200) {
   const safeLimit = Number.isInteger(Number(limit)) ? Math.max(1, Math.min(Number(limit), 500)) : 200;
   return db.prepare(`SELECT
@@ -1017,13 +1042,15 @@ function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, 
   const companyShare = money(settlement.companyCents);
   const executorDebit = money(settlement.confirmingCaptainFeeCents);
   console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} external_order_value=${price} JOD executor_wallet_credit=0.00 JOD`);
-  console.log(`[Settlement] CONFIRMED order_policy=16%/4% for order or 13%/2% normal | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
+  const producerRate = ratePercentFromBps(settlement.producerRateBps);
+  const companyRate = ratePercentFromBps(settlement.companyRateBps || currentSettlementPolicy().companyRateBps);
+  console.log(`[Settlement] CONFIRMED order_policy=${producerRate}%/${companyRate}% for all order types | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
 }
 
 function serializeSettlement(row, includeLedger = true) {
   const finance = settlementFinancials(row);
   const ledger = includeLedger
-    ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
+    ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
       ...entry,
       amount: money(entry.amount_cents),
       balanceAfter: money(entry.balance_after_cents),
@@ -1037,6 +1064,7 @@ function serializeSettlement(row, includeLedger = true) {
     settlementKey: row.settlement_key,
     price: finance.price,
     companyShare: finance.company,
+    policy: finance.policy,
     postedShare: finance.postedShare,
     executorDebit: finance.executorDebit,
     captainCash: finance.captain,
@@ -1525,7 +1553,7 @@ async function sendBotText(to, text) {
 }
 const CAPTAIN_STATUS_NOTICE_MAX_LENGTH = 70;
 // Emergency kill switch: captain onboarding/status text is paused until duplicate delivery is cleared.
-const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = false;
+const CAPTAIN_STATUS_NOTIFICATIONS_ENABLED = true; // master capability; owner setting defaults to off
 const CAPTAIN_STATUS_TEST_CONFIRMATION = "SEND-ONE-CAPTAIN-NOTIFICATION";
 const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST";
 // No live test exception remains enabled after the controlled verification attempt.
@@ -1539,9 +1567,10 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
     return { status: "invalid" };
   }
   const allowPausedTest = testOverride && event === "captain.approval_notification.test" && CAPTAIN_STATUS_TEST_ALLOWLIST.has(Number(testCaptainId));
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED && !allowPausedTest) {
-    audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason: "captain_status_notifications_paused" });
-    return { status: "suppressed", duplicate: false, reason: "captain_status_notifications_paused" };
+  if ((!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus")) && !allowPausedTest) {
+    const reason = !notificationEnabled("captainStatus") ? "owner_notification_setting_disabled" : "captain_status_notifications_paused";
+    audit(`notification.${event}.suppressed`, "user", recipientPhone, { deliveryStatus: "suppressed", idempotencyKey: key, reason, category: "captainStatus" });
+    return { status: "suppressed", duplicate: false, reason };
   }
   if (captainStatusNotificationInFlight.has(key)) return { status: "pending", duplicate: true };
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
@@ -1582,7 +1611,7 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   return { status: deliveryStatus, notificationId, messageId };
 }
 async function retryCaptainStatusNotifications() {
-  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED };
+  if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") };
   const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
   const placeholders = events.map(() => "?").join(",");
   const rows = db.prepare(`SELECT recipient_phone,event,title,message,idempotency_key,source_message_id FROM notifications WHERE recipient_role='captain' AND delivery_status IN ('pending','failed') AND event IN (${placeholders}) ORDER BY id DESC LIMIT 50`).all(...events);
@@ -1598,6 +1627,10 @@ function ownerNotificationPhones() {
   return [...GROUP_SETUP_OWNER_PHONES].map(phoneWithCountry).filter((phone, index, all) => phone && !isBotPhone(phone) && all.indexOf(phone) === index);
 }
 async function notifyOperations({ event, title, lines, captainPhone = null, ownersOnly = false }) {
+  if (!notificationEnabled("operationsAlerts")) {
+    audit(`notification.${event}.suppressed`, "system", "owner", { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "operationsAlerts" });
+    return [];
+  }
   const owners = ownerNotificationPhones();
   const recipients = (ownersOnly ? owners : [...owners, phoneWithCountry(captainPhone)]).filter((phone, index, all) => phone && all.indexOf(phone) === index);
   const results = [];
@@ -1630,6 +1663,12 @@ function balanceSnapshotMessage({ name, balance }) {
 async function runBalanceNotificationBroadcast({ runKey, members }) {
   const run = balanceNotificationBroadcasts.get(runKey);
   if (!run) return;
+  if (!notificationEnabled("balanceAlerts")) {
+    run.status = "suppressed";
+    run.completedAt = now();
+    audit("notification.captain.balance_snapshot.suppressed", "system", runKey, { reason: "owner_notification_setting_disabled", category: "balanceAlerts" });
+    return;
+  }
   for (const member of members) {
     if (run.cancelled) break;
     const phone = phoneWithCountry(member.phone);
@@ -1662,20 +1701,26 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION = "company-completion-v1";
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_ANNOUNCEMENT";
 function captainCompletionAnnouncementContent() {
-  const title = "إعلان اكتمال شركة وصلني الآن";
+  const title = "إعلان اكتمال شركة الشيخ للتوصيل";
   const lines = [
-    "تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن.",
+    "تم بحمد الله اكتمال تجهيز وتشغيل شركة الشيخ للتوصيل.",
     "تم تفعيل مسار الطلبات والتأكيد والتسوية المالية.",
     "طريقة العمل المعتمدة: يُنشر السعر في القروب الرسمي، ثم يرد الكابتن المنفّذ بكلمة «تم»، ويُستكمل اعتماد الحجز والتسوية حسب المسار المعتمد.",
     "ستصلكم الإشعارات الرسمية عند تسجيل العمليات المهمة.",
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونكم مع وصلني الآن – Waslni Now.",
+    "شكرًا لتعاونكم مع الشيخ للتوصيل – Sheikh Delivery.",
   ];
   return { title, lines, caption: brandedMessage(title, lines) };
 }
 async function runCaptainCompletionAnnouncement({ runKey, captains }) {
   const run = captainAnnouncementBroadcasts.get(runKey);
   if (!run) return;
+  if (!notificationEnabled("captainAnnouncements")) {
+    run.status = "suppressed";
+    run.completedAt = now();
+    audit("notification.captain.company_completion.suppressed", "system", runKey, { reason: "owner_notification_setting_disabled", category: "captainAnnouncements" });
+    return;
+  }
   const { title, lines, caption } = captainCompletionAnnouncementContent();
   try {
     if (!client || !isReady) throw new Error("WhatsApp غير جاهز حاليًا");
@@ -1789,7 +1834,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && !zeroBalanceEligible && numericBalance >= 0)) return { status: "ineligible" };
   const isZeroBalance = numericBalance === 0;
-  const title = isZeroBalance ? "إشعار نفاد رصيد المحفظة" : "إشعار رصيد مستحق من وصلني الآن";
+  const title = isZeroBalance ? "إشعار نفاد رصيد المحفظة" : "إشعار رصيد مستحق من الشيخ للتوصيل";
   const notificationEvent = isZeroBalance ? "captain.wallet.zero_balance" : "captain.wallet.negative";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const removalEvidence = removalContext?.allowUnconfirmedRemoval === true
@@ -1817,7 +1862,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     });
   }
   const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
-    ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
+    ? "تم إيقاف الحساب وإزالتك من قروب الشيخ للتوصيل إلى حين تسديد الرصيد المستحق."
     : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
       : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
@@ -1829,10 +1874,14 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونك مع وصلني الآن – Waslni Now.",
+    "شكرًا لتعاونك مع الشيخ للتوصيل – Sheikh Delivery.",
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
+  if (!notificationEnabled("balanceAlerts")) {
+    audit(`notification.${notificationEvent}.suppressed`, "user", captain.id, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "balanceAlerts", removalStatus: removal.status, financialMutation: false });
+    return { status: "suppressed", removalStatus: removal.status, removalError: removal.error || null };
+  }
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event=? AND title=? AND message=? LIMIT 1").get(phone, notificationEvent, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, removalStatus: removal.status, removalError: removal.error || null };
   const row = existing
@@ -1868,6 +1917,10 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
   ].join("\n");
   const phone = phoneWithCountry(captain.phone);
+  if (!notificationEnabled("balanceAlerts")) {
+    audit("notification.captain.wallet.low_balance.suppressed", "user", captain.id, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "balanceAlerts", financialMutation: false });
+    return { status: "suppressed" };
+  }
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE recipient_phone=? AND recipient_role='captain' AND event='captain.wallet.low_balance' AND title=? AND message=? LIMIT 1").get(phone, title, message);
   if (existing && ["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id };
   const row = existing
@@ -2093,6 +2146,30 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
 }
+const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
+  operationsAlerts: { key: "notification_operations_alerts", label: "تنبيهات التشغيل للمالك", defaultValue: true },
+  captainStatus: { key: "notification_captain_status", label: "رسائل حالة الكابتن", defaultValue: false },
+  balanceAlerts: { key: "notification_balance_alerts", label: "تنبيهات الرصيد للكابتن", defaultValue: true },
+  bookingCards: { key: "notification_booking_cards", label: "بطاقات تثبيت وإلغاء الحجز في القروب الرسمي", defaultValue: true },
+  captainWelcome: { key: "notification_captain_welcome", label: "ترحيب الكابتن الجديد داخل القروب", defaultValue: true },
+  captainAnnouncements: { key: "notification_captain_announcements", label: "إعلانات التشغيل العامة للكباتن", defaultValue: true },
+  pendingBookingApproval: { key: "notification_pending_booking_approval", label: "تنبيه الحجز المعلّق للمالك", defaultValue: false },
+});
+function readBooleanSetting(key, fallback = false) {
+  const value = getSetting(key, fallback ? "1" : "0");
+  return value === true || value === 1 || ["1", "true", "on", "enabled"].includes(String(value).trim().toLowerCase());
+}
+function currentNotificationSettings() {
+  return Object.fromEntries(Object.entries(OWNER_NOTIFICATION_DEFINITIONS).map(([name, definition]) => [name, readBooleanSetting(definition.key, definition.defaultValue)]));
+}
+function notificationSettingsResponse() {
+  return { ...currentNotificationSettings(), protected: { authentication: true, settlementEvidence: true, whatsappInboundProcessing: true } };
+}
+function notificationEnabled(name) {
+  const definition = OWNER_NOTIFICATION_DEFINITIONS[name];
+  return Boolean(definition && readBooleanSetting(definition.key, definition.defaultValue));
+}
+
 function boundedIntegerSetting(key, fallback, minimum, maximum) {
   const value = Number(getSetting(key, fallback));
   return Number.isInteger(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback;
@@ -2104,6 +2181,82 @@ function operationalSettings() {
     reconnectMaxAttempts: boundedIntegerSetting("whatsapp_reconnect_max_attempts", WHATSAPP_RECONNECT_MAX_ATTEMPTS, 1, 100),
     initTimeoutMs: boundedIntegerSetting("whatsapp_init_timeout_ms", WHATSAPP_INIT_TIMEOUT_MS, 60000, 900000),
   };
+}
+function currentSettlementPolicy() {
+  const readRate = (key, fallback) => {
+    const value = Number(getSetting(key, fallback));
+    return Number.isFinite(value) && Number.isInteger(value) ? Math.max(0, Math.min(10000, value)) : fallback;
+  };
+  const producerRateBps = readRate("producer_rate_bps", PRODUCER_RATE_BPS);
+  const companyRateBps = readRate("company_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  const specialOrderProducerRateBps = readRate("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
+  const specialOrderCompanyRateBps = readRate("special_order_company_from_producer_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS);
+  return {
+    producerRateBps,
+    companyRateBps,
+    totalRateBps: producerRateBps + companyRateBps,
+    regularProducerRateBps: producerRateBps,
+    specialOrderProducerRateBps,
+    companyFromProducerRateBps: companyRateBps,
+    specialOrderCompanyFromProducerRateBps: specialOrderCompanyRateBps,
+    specialOrderTotalRateBps: specialOrderProducerRateBps + specialOrderCompanyRateBps,
+  };
+}
+function effectiveSettlementRates(policy, orderKind) {
+  const isSpecialOrder = orderKind === "order";
+  return {
+    producerRateBps: isSpecialOrder ? policy.specialOrderProducerRateBps : policy.regularProducerRateBps,
+    companyRateBps: isSpecialOrder ? policy.specialOrderCompanyFromProducerRateBps : policy.companyFromProducerRateBps,
+  };
+}
+function ratePercentFromBps(value) {
+  const percent = Number(value || 0) / 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+function settlementPolicyResponse() {
+  const policy = currentSettlementPolicy();
+  return {
+    producerRateBps: policy.producerRateBps,
+    companyRateBps: policy.companyRateBps,
+    totalRateBps: policy.totalRateBps,
+    producerRatePercent: Number(ratePercentFromBps(policy.producerRateBps)),
+    companyRatePercent: Number(ratePercentFromBps(policy.companyRateBps)),
+    totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
+    specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+    specialOrderCompanyRateBps: policy.specialOrderCompanyFromProducerRateBps,
+    specialOrderTotalRateBps: policy.specialOrderTotalRateBps,
+    specialOrderProducerRatePercent: Number(ratePercentFromBps(policy.specialOrderProducerRateBps)),
+    specialOrderCompanyRatePercent: Number(ratePercentFromBps(policy.specialOrderCompanyFromProducerRateBps)),
+    specialOrderTotalRatePercent: Number(ratePercentFromBps(policy.specialOrderTotalRateBps)),
+    appliesTo: "new_settlements",
+    currency: "JOD",
+  };
+}
+function calculateConfiguredSettlement(input = {}) {
+  const policy = currentSettlementPolicy();
+  const orderKind = input.orderKind === "order" ? "order" : "normal";
+  const rates = effectiveSettlementRates(policy, orderKind);
+  return {
+    ...calculateSettlement({
+      ...input,
+      regularProducerRateBps: policy.regularProducerRateBps,
+      specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+      companyFromProducerRateBps: policy.companyFromProducerRateBps,
+      specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+    }),
+    companyRateBps: rates.companyRateBps,
+  };
+}
+function settlementPolicyFromDetails(details) {
+  let parsed = details;
+  if (typeof details === "string") {
+    try { parsed = JSON.parse(details); } catch { parsed = {}; }
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const result = {};
+  if (Number.isInteger(Number(parsed.producerRateBps))) result.producerRateBps = Number(parsed.producerRateBps);
+  if (Number.isInteger(Number(parsed.companyRateBps))) result.companyRateBps = Number(parsed.companyRateBps);
+  return result;
 }
 function safePathHealth(targetPath) {
   try {
@@ -2245,11 +2398,20 @@ function ensureSystemUsers() {
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
-  // Keep legacy normal-order settings aligned; special "اوردر" rates are calculated by finance.js.
-  setSetting("company_rate_bps", COMPANY_RATE_BPS);
-  setSetting("producer_rate_bps", PRODUCER_RATE_BPS);
-  setSetting("special_order_rate_bps", SPECIAL_ORDER_RATE_BPS);
-  setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  // Initialize defaults once. Never overwrite an owner-edited policy on restart.
+  const settlementDefaults = [
+    ["company_rate_bps", COMPANY_RATE_BPS],
+    ["producer_rate_bps", PRODUCER_RATE_BPS],
+    ["special_order_rate_bps", SPECIAL_ORDER_RATE_BPS],
+    ["company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS],
+    ["special_order_company_from_producer_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
+  ];
+  for (const [key, value] of settlementDefaults) {
+    if (getSetting(key) === null) setSetting(key, value);
+  }
+  for (const definition of Object.values(OWNER_NOTIFICATION_DEFINITIONS)) {
+    if (getSetting(definition.key) === null) setSetting(definition.key, definition.defaultValue ? "1" : "0");
+  }
   if (getSetting("currency") === null) setSetting("currency", "JOD");
   if (getSetting("captain_public_invite_token") === null) setSetting("captain_public_invite_token", crypto.randomBytes(24).toString("base64url"));
 }
@@ -2660,7 +2822,7 @@ const captainGroupWelcomeInFlight = new Set();
 function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
-    `أهلًا بك يا كابتن ${displayName} في قروب «وصلني الآن».`,
+    `أهلًا بك يا كابتن ${displayName} في قروب «الشيخ للتوصيل».`,
     "تم انضمامك إلى شبكة التشغيل.",
     "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
     "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
@@ -2670,6 +2832,10 @@ function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL 
   ].join("\n");
 }
 async function sendCaptainGroupWelcome(participant, groupId) {
+  if (!notificationEnabled("captainWelcome")) {
+    audit("notification.captain.group_welcome.suppressed", "system", String(groupId || ""), { reason: "owner_notification_setting_disabled", category: "captainWelcome" });
+    return { status: "suppressed" };
+  }
   if (!client || !isReady || !isConfiguredGroup(groupId)) return { status: "not_ready" };
   const phone = await resolveGroupParticipantPhone(participant).catch(() => "");
   if (!isValidJordanPhone(phone) || isProtectedOwnerIdentity(phone) || isBotPhone(phone)) return { status: "skipped", phone: phone || null };
@@ -3741,7 +3907,7 @@ function notifyPendingBookingApproval(candidateId, { acceptanceMessageId = null,
   // Owner policy: the candidate remains pending and visible in V26; only its
   // branded WhatsApp approval card is suppressed. Keep this local so isolated
   // lifecycle simulations can exercise the function without bootstrapping all constants.
-  const pendingBookingOwnerApprovalCardEnabled = false;
+  const pendingBookingOwnerApprovalCardEnabled = notificationEnabled("pendingBookingApproval");
   if (!pendingBookingOwnerApprovalCardEnabled) {
     audit(`${event}.suppressed`, "order_candidate", candidateId, {
       deliveryStatus: "suppressed",
@@ -3838,13 +4004,9 @@ function isCaptainAcceptance(text) {
 }
 function acceptanceBalanceGuard(candidate, captain) {
   if (!candidate || !captain) return { allowed: false, state: "stale" };
-  const settlement = calculateSettlement({
+  const settlement = calculateConfiguredSettlement({
     priceCents: candidate.price_cents,
     orderKind: candidate.order_kind,
-    regularProducerRateBps: PRODUCER_RATE_BPS,
-    specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-    companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-    specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
   });
   const company = companyUser();
   const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
@@ -3993,7 +4155,7 @@ async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_
   const safeName = escapeXml(name || "كابتن");
   const safeUrl = escapeXml(captainLoginUrl(baseUrl));
   const welcomeLines = [
-    `أهلًا بك يا كابتن ${safeName} في وصلني الآن`,
+    `أهلًا بك يا كابتن ${safeName} في الشيخ للتوصيل`,
     "تم انضمامك إلى شبكة التشغيل الرسمية.",
     "لتنزيل طلب: اكتب السعر ثم القيمة، مثل: السعر 10",
     "يرد كابتن التنفيذ على الطلب نفسه بكلمة «تم».",
@@ -4009,11 +4171,11 @@ async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_
     <rect width="1080" height="760" fill="#04121c"/><rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#welcome-bg)" stroke="url(#welcome-border)" stroke-width="6"/>
     <circle cx="540" cy="156" r="190" fill="url(#welcome-glow)" opacity=".72"/><circle cx="540" cy="156" r="122" fill="none" stroke="#a7f3d0" stroke-opacity=".48" stroke-width="3"/><circle cx="540" cy="156" r="104" fill="#06252b" stroke="#f6c84c" stroke-opacity=".72" stroke-width="3"/>
     ${logo}<circle cx="540" cy="38" r="9" fill="#34d399"/><circle cx="540" cy="38" r="22" fill="none" stroke="#34d399" stroke-opacity=".45" stroke-width="3"/>
-    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">WASLNI NOW • CAPTAIN WELCOME</text>
+    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">SHEIKH DELIVERY • CAPTAIN WELCOME</text>
     <rect x="62" y="300" width="956" height="330" rx="28" fill="#041822" fill-opacity=".72" stroke="#a7f3d0" stroke-opacity=".34" stroke-width="2"/>
     ${lineMarkup}
     <text x="92" y="610" fill="#f6c84c" font-size="19" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">ترحيب وتعليمات التشغيل فقط</text>
-    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">وصلني الآن | WASLNI NOW</text>
+    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">الشيخ للتوصيل | SHEIKH DELIVERY</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "waslni-captain-welcome-card.png");
@@ -4236,6 +4398,10 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
 }
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
+  if (!notificationEnabled("bookingCards")) {
+    audit("notification.order.confirmation_card.suppressed", "order", orderId || null, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "bookingCards", financialMutation: false });
+    return null;
+  }
   const forceFinalRecovery = options.forceFinalRecovery === true;
   const immediateReaction = options.immediateReaction === true;
   const deliveryMode = options.deliveryMode === "fallback" ? "fallback" : "direct";
@@ -4395,6 +4561,10 @@ function observeFinalBookingConfirmationMessage(message) {
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
 async function sendFinalBookingCancellation(groupId, order = null) {
+  if (!notificationEnabled("bookingCards")) {
+    audit("notification.order.cancellation_card.suppressed", "order", order?.id || null, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "bookingCards", financialMutation: false });
+    return null;
+  }
   if (!client || !isOfficialGroupTarget(groupId)) {
     console.warn(`[WhatsApp] final booking cancellation blocked: official group required target=${String(groupId || "").slice(0, 80)}`);
     return null;
@@ -6985,7 +7155,8 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     if (!settlement || !captain || !company) return { state: "stale" };
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة الشركة بعد إزالة 👍", stamp, settlement.details_json);
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, settlementPolicyFromDetails(settlement.details_json));
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCompany, stamp, settlement.details_json);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.producer_cents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, "عكس حصة كابتن تنزيل الطلب بعد إزالة 👍", stamp, settlement.details_json);
@@ -7173,14 +7344,19 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const captain = acceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id) : null;
     if (!captain) return { state: "stale" };
     if (captain.active !== 1 || captain.account_status !== "active") return { state: "unauthorized", captain };
-    const settlement = calculateSettlement({
-      priceCents: current.price_cents,
-      orderKind: current.order_kind,
-      regularProducerRateBps: PRODUCER_RATE_BPS,
-      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
-    });
+    const policy = currentSettlementPolicy();
+    const rates = effectiveSettlementRates(policy, current.order_kind);
+    const settlement = {
+      ...calculateSettlement({
+        priceCents: current.price_cents,
+        orderKind: current.order_kind,
+        regularProducerRateBps: policy.regularProducerRateBps,
+        specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+        companyFromProducerRateBps: policy.companyFromProducerRateBps,
+        specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+      }),
+      companyRateBps: rates.companyRateBps,
+    };
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "stale" };
@@ -7193,9 +7369,10 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     }
     const stamp = now();
     const companyWalletCharge = walletOwner.role === "company";
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, settlement);
     const botEmployeeProducer = producer.is_bot === 1;
     const orderNo = Number(db.prepare("SELECT COALESCE(MAX(order_no),0)+1 AS next FROM orders").get().next);
-    const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind });
+    const ledgerDetails = JSON.stringify({ orderNo, sourceMessageId: current.source_message_id, priceCents: current.price_cents, origin: current.origin, destination: current.destination, tripTime: current.trip_time, orderKind: current.order_kind, producerRateBps: settlement.producerRateBps, companyRateBps: settlement.companyRateBps });
     const orderInsert = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,captain_user_id,captain_phone_snapshot,captain_name_snapshot,accepted_message_id,accepted_at,confirmed_by_phone,company_cents,producer_cents,captain_cents,settlement_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, current.source_message_id, current.group_id, current.raw_text, current.price_cents, current.origin, current.destination, current.trip_time, current.order_kind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "accepted", captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, "settled", current.created_at || stamp, stamp);
     const orderId = orderInsert.lastInsertRowid;
     const settlementKey = `ORDER-${orderNo}-${orderId}`;
@@ -7203,13 +7380,13 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, "4% من قيمة الأوردر من محفظة كابتن التنفيذ", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${orderNo}`, ledgerNotes.company, stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, "حصة المنزل حسب نوع الطلب: 16% للأوردر أو 13% للطلب العادي", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, botEmployeeProducer ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${orderNo}`, ledgerNotes.producer, stamp, ledgerDetails);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, stamp, walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب" : "خصم حصة المنزل والشركة من محفظة كابتن التنفيذ (20% للأوردر أو 15% للطلب العادي)", stamp, ledgerDetails);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, companyWalletCharge ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${orderNo}`, companyWalletCharge ? ledgerNotes.companyBot : ledgerNotes.captain, stamp, ledgerDetails);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=? AND status='pending'").run(stamp, orderId);
     db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
@@ -7247,14 +7424,19 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     if (existingSettlement && existingSettlement.status === "applied") return { state: "already_settled", order: current, captain };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     if (!producer) return { state: "missing_producer" };
-    const settlement = calculateSettlement({
-      priceCents: current.price_cents,
-      orderKind: current.order_kind,
-      regularProducerRateBps: PRODUCER_RATE_BPS,
-      specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS,
-      companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS,
-      specialOrderCompanyFromProducerRateBps: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
-    });
+    const policy = currentSettlementPolicy();
+    const rates = effectiveSettlementRates(policy, current.order_kind);
+    const settlement = {
+      ...calculateSettlement({
+        priceCents: current.price_cents,
+        orderKind: current.order_kind,
+        regularProducerRateBps: policy.regularProducerRateBps,
+        specialOrderProducerRateBps: policy.specialOrderProducerRateBps,
+        companyFromProducerRateBps: policy.companyFromProducerRateBps,
+        specialOrderCompanyFromProducerRateBps: policy.specialOrderCompanyFromProducerRateBps,
+      }),
+      companyRateBps: rates.companyRateBps,
+    };
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "unlinked" };
@@ -7266,20 +7448,21 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
       audit("order.history.debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
     const stamp = acceptedAt || now();
-    const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
+    const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind, producerRateBps: settlement.producerRateBps, companyRateBps: settlement.companyRateBps });
+    const ledgerNotes = settlementLedgerNotes(current.order_kind, settlement);
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
     const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
     db.prepare("UPDATE orders SET status='accepted',archive_state='active',archived_at=NULL,archive_reason=NULL,captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, importSource, now(), orderId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "تسوية طلب مؤكد مستورد من سجل القروب", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, ledgerNotes.company, now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, now(), producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, ledgerNotes.producer, now(), details);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم حصة الأوردر من محفظة الشركة لطلب مؤكد مستورد" : "خصم 16% للمنزل و4% للشركة من محفظة كابتن التنفيذ للأوردر (20% إجمالًا)", now(), details);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? ledgerNotes.companyBot : ledgerNotes.captain, now(), details);
     db.prepare("UPDATE order_settlements SET status='applied',applied_at=? WHERE order_id=?").run(now(), orderId);
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.history.settled", "order", orderId, { captainId, acceptedMessageId, confirmedByPhone, settlementKey });
@@ -8054,6 +8237,12 @@ function requireCompanyOwner(req, res, next) {
   if (!session || session.role !== "company") return res.status(403).json({ error: "هذه العملية متاحة للمالك فقط" });
   next();
 }
+function requireOwnerAdmin(req, res, next) {
+  const session = getWebAdminSession(req);
+  if (!session || session.role !== "company") return res.status(403).json({ error: "هذه العملية متاحة للمالك فقط" });
+  req.ownerSession = session;
+  next();
+}
 function setSessionCookie(res, token) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `aljarah_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
@@ -8164,7 +8353,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في وصلني الآن\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في الشيخ للتوصيل\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -8313,7 +8502,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (decision === "reject") {
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
-    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى وصلني الآن.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى الشيخ للتوصيل.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
@@ -8461,7 +8650,7 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في الشيخ للتوصيل: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
   if (!sent) {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
@@ -8929,7 +9118,56 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, async (req, res) =
     res.status(503).json({ success: false, mutation: "none", error: boundedDiagnosticText(error?.message || error, 500) });
   }
 });
-app.post("/api/admin/change-password", requireAdmin, (req, res) => {
+app.get("/api/admin/settings", requireOwnerAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ success: true, policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+app.patch("/api/admin/settings/notifications", requireOwnerAdmin, (req, res) => {
+  const requested = req.body?.notifications && typeof req.body.notifications === "object" ? req.body.notifications : req.body || {};
+  const updates = [];
+  for (const [name, definition] of Object.entries(OWNER_NOTIFICATION_DEFINITIONS)) {
+    if (requested[name] === undefined) continue;
+    if (typeof requested[name] !== "boolean") return res.status(400).json({ error: `إعداد الإشعار ${name} يجب أن يكون true أو false.` });
+    updates.push({ name, key: definition.key, value: requested[name] });
+  }
+  if (!updates.length) return res.status(400).json({ error: "لم يتم إرسال إعداد إشعار صالح." });
+  const before = currentNotificationSettings();
+  try {
+    db.transaction(() => {
+      for (const item of updates) setSetting(item.key, item.value ? "1" : "0");
+      audit("admin.notification_policy.changed", "system", "notifications", { before, after: currentNotificationSettings(), updated: updates.map(item => item.name), financialMutation: false, settlementMutation: false });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, notifications: notificationSettingsResponse(), message: "تم حفظ إعدادات الإشعارات. استقبال الرسائل والتسويات لا يتوقفان." });
+  } catch (error) {
+    console.error("[Settings] notification policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات الإشعارات" });
+  }
+});
+app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
+  const producerPercent = Number(req.body?.producerRatePercent);
+  const companyPercent = Number(req.body?.companyRatePercent);
+  const validPercent = (value) => Number.isFinite(value) && value >= 0 && value <= 100 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
+  if (!validPercent(producerPercent) || !validPercent(companyPercent) || producerPercent + companyPercent > 100) return res.status(400).json({ error: "أدخل نسبًا من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
+  const next = { producerRateBps: Math.round(producerPercent * 100), companyRateBps: Math.round(companyPercent * 100) };
+  const before = currentSettlementPolicy();
+  try {
+    db.transaction(() => {
+      setSetting("producer_rate_bps", next.producerRateBps);
+      setSetting("company_rate_bps", next.companyRateBps);
+      setSetting("special_order_rate_bps", next.producerRateBps);
+      setSetting("company_from_producer_rate_bps", next.companyRateBps);
+      setSetting("special_order_company_from_producer_rate_bps", next.companyRateBps);
+      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps }, after: next, appliesTo: "all_order_types" });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية للطلبات الجديدة فقط؛ السجلات السابقة لا تتغير." });
+  } catch (error) {
+    console.error("[Settings] settlement policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات التسوية" });
+  }
+});
+app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
   const newToken = String(req.body?.newToken || "");
   if (!/^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[^A-Za-z\d]).{16,128}$/.test(newToken)) {
     return res.status(400).json({ error: "newToken must be 16-128 characters and include uppercase, lowercase, number, and symbol" });
@@ -9664,7 +9902,7 @@ app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = "pre-group-reset-" + Date.now() + ".sqlite";
   const backupPath = path.join(backupDir, backupName);
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   const operationId = "RESET-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_current_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: [], reset: true, oldGroupId, backupName };
@@ -9684,7 +9922,7 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   const phones = [...new Set((groupCreateState.participants || []).map((participant) => phoneWithCountry(participant && participant.phone)).filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone)))];
   if (!phones.length) return res.status(409).json({ error: "No eligible members are available for recovery" });
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   groupCreateInFlight = true;
   groupCreateState = { ...groupCreateState, status: "recovering", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: phones.map((phone) => ({ phone, status: "pending" })), recoverable: true };
   void finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
@@ -9730,7 +9968,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
-      "تم تسجيل رقمك ضمن أعضاء شبكة وصلني الآن التشغيلية.",
+      "تم تسجيل رقمك ضمن أعضاء شبكة الشيخ للتوصيل التشغيلية.",
       "هذا ليس تسجيل كابتن جديدًا.",
       "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
       `البوابة الرسمية: ${gateway}`,
@@ -9783,7 +10021,7 @@ app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   const operationId = "INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupInviteInFlight = true;
   groupInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, inviteUrl: null, participants: [] };
@@ -9798,7 +10036,7 @@ app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.body?.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -9814,7 +10052,7 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "وصلني الآن — شبكة التشغيل الرسمية").trim().slice(0, 100) || "وصلني الآن — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -9826,7 +10064,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
   if (groupCreateState.status === "failed" && groupCreateState.groupId) return res.status(409).json({ error: "A group was created but participant addition did not finish; verify the group before retrying", groupId: groupCreateState.groupId, operationId: groupCreateState.operationId });
-  const groupName = String(req.body.groupName || "وصلني الآن للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
+  const groupName = String(req.body.groupName || "الشيخ للتوصيل للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
   if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
@@ -10319,7 +10557,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
       const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
       const previous = [...messages].reverse().find((message) => {
         const body = String(message?.body || "");
-        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة وصلني الآن)/.test(body);
+        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة الشيخ للتوصيل)/.test(body);
       });
       if (previous && typeof previous.delete === "function") {
         const removed = await withTimeout(previous.delete(true), 20000, null);
@@ -10466,7 +10704,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
 
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
-  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
+  const groupName = String(req.body.groupName || "قروب الشيخ للتوصيل").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Only the official service's configured environment group may be active" });
   configureGroupId(groupId, groupName);
@@ -10477,7 +10715,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = WHATSAPP_GROUP_ID;
-  const groupName = "🔥 وصلني الآن 🔥 🔥Waslni Now🔥";
+  const groupName = "🔥 الشيخ للتوصيل 🔥 🔥Sheikh Delivery🔥";
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
   const stamp = now();
@@ -10519,7 +10757,7 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
   const groupId = String(req.query.groupId || "").trim();
   const newGroupId = "";
   const originalGroupId = WHATSAPP_GROUP_ID;
-  const expectedName = "وصلني الآن — شبكة التشغيل الرسمية";
+  const expectedName = "الشيخ للتوصيل — شبكة التشغيل الرسمية";
   if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -10546,7 +10784,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
-  const groupName = String(req.body.groupName || "قروب وصلني الآن").trim();
+  const groupName = String(req.body.groupName || "قروب الشيخ للتوصيل").trim();
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
@@ -10590,7 +10828,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
-  const groupName = String(chat.name || "قروب وصلني الآن").trim().slice(0, 160) || "قروب وصلني الآن";
+  const groupName = String(chat.name || "قروب الشيخ للتوصيل").trim().slice(0, 160) || "قروب الشيخ للتوصيل";
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
@@ -12116,7 +12354,7 @@ app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, re
         const title = "تحديث دخول الكابتن";
         const text = brandedMessage(title, [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          "تم تحديث بيانات الدخول الخاصة بك في الشيخ للتوصيل.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -12186,7 +12424,7 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
         run.updated += 1;
         const text = brandedMessage("تحديث دخول الكابتن", [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في وصلني الآن.",
+          "تم تحديث بيانات الدخول الخاصة بك في الشيخ للتوصيل.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -12233,7 +12471,7 @@ app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, asyn
           "نحيطك علمًا بأنه تم إلغاء الخصم اليومي بقيمة 10 قروش من حسابك.",
           "لن يتم تنفيذ أي خصم يومي جديد ابتداءً من الآن.",
           "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
-          "وصلني الآن — الإدارة",
+          "الشيخ للتوصيل — الإدارة",
         ]);
         const sent = await sendOfficialDirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -12271,7 +12509,7 @@ app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, asyn
         const text = brandedMessage("تنبيه رصيد المحفظة", [
           `الكابتن: ${captain.name || "حساب الكابتن"}`,
           `رصيدك الحالي: ${money(captain.wallet_cents)} JOD`,
-          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.",
+          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب الشيخ للتوصيل.",
           "يرجى التواصل مع الإدارة لشحن الرصيد.",
         ]);
         const sent = await sendOfficialDirectAtMostOnce(recipient, text, undefined, 30000);
@@ -12394,7 +12632,7 @@ app.get("/api/admin/captains/announcement-chat-check/:phone", requireAdmin, asyn
     const { title, caption } = captainCompletionAnnouncementContent();
     const matches = (Array.isArray(messages) ? messages : []).filter((message) => {
       const body = String(message?.body || "");
-      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة وصلني الآن") || body === caption);
+      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة الشيخ للتوصيل") || body === caption);
     }).map((message) => ({
       id: message?.id?._serialized || null,
       timestamp: message?.timestamp || null,
@@ -13399,7 +13637,7 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   }
   audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
   const sendPromise = Promise.resolve().then(async () => {
-    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Waslni Now", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
+    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Sheikh Delivery", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
     if (!media) throw new Error("media test card render returned no media");
     if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
     return withTimeoutStrict(client.sendMessage(groupId, media, { caption }), ADMIN_SEND_TIMEOUT_MS, null);

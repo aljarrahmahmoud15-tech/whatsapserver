@@ -42,7 +42,7 @@ const context = {
   },
   isReady: true,
   withTimeout: async (promise) => promise,
-  getSetting: (_key, fallback) => fallback || "120363426604560611@g.us",
+  getSetting: (_key, fallback) => fallback || "test-group@g.us",
   isConfiguredGroup: () => true,
   readGroupSnapshot: async () => ({ isGroup: true }),
   orderTraceKey: (value) => String(value),

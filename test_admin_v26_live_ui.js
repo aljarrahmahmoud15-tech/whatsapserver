@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-v26.html', 'utf8');
-assert.match(page, /<title>الشيخ للتوصيل · لوحة الإدارة V26<\/title>/);
+assert.match(page, /<title>الشيخ للتوصيل · عمليات V26<\/title>/);
 assert.match(page, /id="metricCaptains"/);
 assert.match(page, /id="metricOrders"/);
 assert.match(page, /id="groupMemberCount"/);
@@ -13,6 +13,9 @@ assert.match(page, /data-admin-action="cards"/);
 assert.match(page, /data-admin-action="leads"/);
 assert.match(page, /data-admin-action="finance"/);
 assert.match(page, /data-admin-action="vault"/);
+assert.match(page, /openOwnerSettings/);
+assert.match(page, /ownerNotificationForm/);
+assert.match(page, /\/api\/admin\/settings/);
 assert.match(page, /id="captainList"/);
 assert.match(page, /id="ordersList"/);
 assert.match(page, /id="adminDetailPanel"/);

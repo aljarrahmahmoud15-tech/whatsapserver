@@ -14,7 +14,7 @@ const matches = context.result;
 
 const pending = {
   sendState: 'pending',
-  chatId: '120363426604560611@g.us',
+  chatId: 'test-group@g.us',
   message: 'السعر 1 — اختبار حي فقط',
   createdAtMs: 100000,
   observationTimeoutMs: 30000,

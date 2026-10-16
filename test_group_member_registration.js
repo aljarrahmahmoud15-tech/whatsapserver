@@ -9,7 +9,7 @@ assert(source.includes("resolveWhatsappUserPhone(contact"), "يستخدم محو
 assert(source.includes("function activateHumanCaptainAccount"), "يوحد تسجيل وتفعيل حساب الكابتن");
 assert(source.includes("role='captain',active=1,is_bot=0,account_status='active'"), "يحوّل المستخدم البشري المؤهل إلى كابتن نشط");
 assert(!source.includes("REQUESTED_CAPTAIN_NAME"), "لا توجد هوية كابتن قديمة مثبتة بالاسم داخل المصدر");
-assert(!source.includes("activate-mahmoud-aljarrah-captain-v1"), "لا توجد عملية تفعيل قديمة مرتبطة بهوية الجراح");
+assert(!source.includes("activate-mahmoud-aljarrah-captain-v1"), "لا توجد عملية تفعيل قديمة مرتبطة بهوية الشيخ للتوصيل");
 assert(source.includes("isProtectedOwnerIdentity"), "يستثني حساب المالك والنظام من التحويل");
 assert(source.includes('app.post("/api/admin/group/register-members", requireAdmin'), "مسار التسجيل محمي إداريًا");
 assert(source.includes('app.post("/api/admin/captains/normalize-all", requireAdmin'), "يوجد مسار محمي لتثبيت جميع الحسابات الحالية");

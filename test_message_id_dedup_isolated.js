@@ -7,7 +7,7 @@ const start = source.indexOf("function serializedMessageId(");
 const end = source.indexOf("function orderTraceKey(", start);
 assert(start >= 0 && end > start);
 
-const GROUP = "120363426604560611@g.us";
+const GROUP = "test-group@g.us";
 const CORE = "A5ED11D8D207646779F917C9B5BDD4D6";
 const decorated = `false_${GROUP}_${CORE}_157063112052788@lid`;
 const state = {

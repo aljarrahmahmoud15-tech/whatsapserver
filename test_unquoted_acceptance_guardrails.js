@@ -23,19 +23,19 @@ const context = {
 vm.runInNewContext(`${source.slice(helperStart, helperEnd)}\nthis.findUnquotedAcceptanceCandidate = findUnquotedAcceptanceCandidate;`, context);
 
 rows = [{ id: 41, producer_phone: '962700000001', created_at: '2026-09-24T04:00:00.000Z' }];
-let result = context.findUnquotedAcceptanceCandidate('120363426604560611@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
+let result = context.findUnquotedAcceptanceCandidate('test-group@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
 assert.equal(result.candidate.id, 41, 'a single recent order is safely selected');
 
 rows = [
   { id: 41, producer_phone: '962700000001', created_at: '2026-09-24T04:00:00.000Z' },
   { id: 42, producer_phone: '962700000003', created_at: '2026-09-24T04:01:00.000Z' },
 ];
-result = context.findUnquotedAcceptanceCandidate('120363426604560611@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
+result = context.findUnquotedAcceptanceCandidate('test-group@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
 assert.equal(result.candidate, null, 'ambiguous unquoted acceptance stays pending');
 assert.equal(result.candidates.length, 2);
 
 rows = [{ id: 41, producer_phone: '962700000002', created_at: '2026-09-24T04:00:00.000Z' }];
-result = context.findUnquotedAcceptanceCandidate('120363426604560611@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
+result = context.findUnquotedAcceptanceCandidate('test-group@g.us', '962700000002', Date.parse('2026-09-24T04:05:00.000Z'));
 assert.equal(result.candidate, null, 'the producer cannot accept their own order');
 
 const reactionStart = source.indexOf('async function handleMessageReaction(');

@@ -24,7 +24,7 @@ assert.ok(
   'all active registered users can confirm while bot and company identities remain blocked'
 );
 assert.ok(
-  server.includes('confirmingCaptainFeeCents') && server.includes('حصة المنزل حسب نوع الطلب: 16% للأوردر أو 13% للطلب العادي'),
+  server.includes('confirmingCaptainFeeCents') && server.includes('settlementLedgerNotes'),
   'confirming captain pays the downloader share plus company share'
 );
 assert.ok(
@@ -60,19 +60,11 @@ assert.ok(
   'the approved 13% downloader and 2% company rates are immutable policy constants'
 );
 assert.ok(
-  server.includes('setSetting("producer_rate_bps", PRODUCER_RATE_BPS);') &&
-  server.includes('setSetting("company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);'),
-  'legacy stored settlement settings are normalized during startup'
+  server.includes('if (getSetting(key) === null) setSetting(key, value);') &&
+  server.includes('["producer_rate_bps", PRODUCER_RATE_BPS]') &&
+  server.includes('["company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS]'),
+  'settlement defaults are initialized without overwriting owner-edited settings'
 );
-assert.doesNotMatch(
-  server,
-  /regularProducerRateBps:\s*Number\(getSetting\("producer_rate_bps"/,
-  'settlement cannot reuse stale producer-rate settings'
-);
-assert.doesNotMatch(
-  server,
-  /companyFromProducerRateBps:\s*Number\(getSetting\("company_from_producer_rate_bps"/,
-  'settlement cannot reuse stale company-rate settings'
-);
+assert.match(server, /function currentSettlementPolicy\(/, 'settlement policy is read through the owner settings helper');
 
 console.log('shared captain eligibility and registration status guardrails verified');
