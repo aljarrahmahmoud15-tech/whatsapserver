@@ -8,12 +8,12 @@ assert.equal(isBotGeneratedMessage({ fromMe: true, body: "تم" }), true);
 assert.equal(isBotGeneratedMessage({ fromMe: false, body: "تم" }), false);
 assert.equal(isBotGeneratedMessage({ body: "السعر 5 من إربد إلى عمّان" }), false);
 
-assert.equal(isBotReactionSender("0775696880", "0775696880"), true);
-assert.equal(isBotReactionSender("962775696880", "0775696880"), true);
-assert.equal(isBotReactionSender("0779110123", "0775696880"), false);
-assert.equal(isBotFinancialRole("0775696880", "0775696880", "producer"), true);
-assert.equal(isBotFinancialRole("0775696880", "0775696880", "captain"), true);
-assert.equal(isBotFinancialRole("0775696880", "0775696880", "company"), false);
+assert.equal(isBotReactionSender("0777000001", "0777000001"), true);
+assert.equal(isBotReactionSender("962777000001", "0777000001"), true);
+assert.equal(isBotReactionSender("0790000001", "0777000001"), false);
+assert.equal(isBotFinancialRole("0777000001", "0777000001", "producer"), true);
+assert.equal(isBotFinancialRole("0777000001", "0777000001", "captain"), true);
+assert.equal(isBotFinancialRole("0777000001", "0777000001", "company"), false);
 
 const server = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
 const messageGuard = server.indexOf("const botGenerated = isBotGeneratedMessage(msg);");
@@ -34,7 +34,7 @@ const handlerContext = {
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
   parseOrder: () => ({ isOrder: false }),
-  connectedBotPhone: () => "962775696880",
+  connectedBotPhone: () => "962777000001",
   phoneWithCountry: (value) => String(value).replace(/^0/, "962"),
   isValidJordanPhone: (value) => /^9627\\d{8}$/.test(String(value)),
   db: { prepare() { persistedWrites.push("db.prepare"); throw new Error("database must not be touched"); } },

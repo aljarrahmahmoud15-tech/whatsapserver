@@ -108,7 +108,7 @@ const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
-// The configured Aljarah bot is always settled through the internal company wallet.
+// The configured Sheikh Delivery bot is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Settlement policy: the value after "السعر" is external and never credits B.
@@ -1423,7 +1423,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const requested = new URL(String(url || ""), PUBLIC_APP_URL);
   const serviceOrigin = new URL(PUBLIC_APP_URL).origin;
-  if (requested.origin !== serviceOrigin) throw new Error("Guide video must be hosted by the Aljarah service");
+  if (requested.origin !== serviceOrigin) throw new Error("Guide video must be hosted by the Sheikh Delivery service");
   const response = await fetch(requested.toString(), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -2747,21 +2747,6 @@ function activateHumanCaptainAccount({ phone, name, reactivate = false }) {
     .run(normalized, displayName, displayName, stamp, stamp, stamp, stamp);
   return { status: "registered", phone: normalized, userId: result.lastInsertRowid, name: displayName };
 }
-const REQUESTED_CAPTAIN_NAME = "محمود الجراح";
-const REQUESTED_CAPTAIN_ACTIVATION_VERSION = "activate-mahmoud-aljarrah-captain-v1";
-function activateRequestedCaptain() {
-  if (getSetting("requested_captain_activation_version", "") === REQUESTED_CAPTAIN_ACTIVATION_VERSION) return { status: "already_completed" };
-  const existing = db.prepare("SELECT phone,name FROM users WHERE name=? AND is_bot=0 AND role<>'company' ORDER BY id LIMIT 1").get(REQUESTED_CAPTAIN_NAME);
-  if (!existing) return { status: "not_found", name: REQUESTED_CAPTAIN_NAME };
-  const result = activateHumanCaptainAccount({ phone: existing.phone, name: existing.name, reactivate: true });
-  if (["registered", "activated_captain", "existing_captain"].includes(result.status)) {
-    setSetting("requested_captain_activation_version", REQUESTED_CAPTAIN_ACTIVATION_VERSION);
-    audit("captain.requested_account_activated", "user", result.userId, { name: REQUESTED_CAPTAIN_NAME });
-  }
-  console.log(`[CaptainActivation] ${REQUESTED_CAPTAIN_NAME}: ${result.status}`);
-  return result;
-}
-activateRequestedCaptain();
 function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
   const rows = db.prepare("SELECT id,phone,name,role,active,account_status,is_bot FROM users WHERE is_bot=0 AND role<>'company' ORDER BY id").all();
   const results = rows.map((row) => activateHumanCaptainAccount({ phone: row.phone, name: row.name, reactivate }));
@@ -3964,7 +3949,7 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
     <text x="1000" y="602" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">CARD-${escapeXml(cardId)}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
-  return new MessageMedia("image/png", png.toString("base64"), `aljarah-topup-card-${cardId}.png`);
+  return new MessageMedia("image/png", png.toString("base64"), `sheikh-delivery-topup-card-${cardId}.png`);
 }
 async function renderOperationsMessageMedia(title, lines = []) {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
@@ -3999,7 +3984,7 @@ async function renderOperationsMessageMedia(title, lines = []) {
     <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">${COMPANY_BRAND_ENGLISH} / OFFICIAL</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
-  return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
+  return new MessageMedia("image/png", png.toString("base64"), "sheikh-delivery-operations-message.png");
 }
 async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
@@ -9430,9 +9415,9 @@ app.get("/qr-main", requireQrAccess, async (req, res) => {
   const refreshTarget = req.query.access ? `/qr-main?access=${encodeURIComponent(String(req.query.access))}` : "/qr-main";
   if (qrCodeData) {
     const image = await qrcode.toDataURL(qrCodeData);
-    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط بوت Aljarah</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
+    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط بوت الشيخ للتوصيل</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت Aljarah متصل</h2></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت الشيخ للتوصيل متصل</h2></body></html>`);
   res.send(`<html dir="rtl"><meta charset="utf-8"><meta http-equiv="refresh" content="3;url=${refreshTarget}"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>جاري تجهيز QR البوت الرئيسي...</h2><p>لا تعرض هذه الصفحة QR مستقبل المجموعة.</p></body></html>`);
 });
 app.get("/qr", requireQrAccess, async (req, res) => {
@@ -9443,7 +9428,7 @@ app.get("/qr", requireQrAccess, async (req, res) => {
     const image = await qrcode.toDataURL(qrCodeData);
     return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>امسح QR لربط البوت الرئيسي</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت Aljarah متصل</h2></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت الشيخ للتوصيل متصل</h2></body></html>`);
   if (baileysReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>مستقبل رسائل القروب متصل</h2><p>بانتظار QR البوت الرئيسي</p></body></html>`);
   if (!baileysQrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
   const image = await qrcode.toDataURL(baileysQrCodeData);

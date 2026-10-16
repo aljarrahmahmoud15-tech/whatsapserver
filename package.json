@@ -1,7 +1,7 @@
 {
   "name": "whatsapserver",
   "version": "3.0.0",
-  "description": "Al-Jarah Logistics WhatsApp operations and wallet system",
+  "description": "Sheikh Delivery WhatsApp operations and wallet system",
   "main": "server.js",
   "scripts": {
     "start": "node --expose-gc --max-old-space-size=${NODE_HEAP_MB:-768} server.js",

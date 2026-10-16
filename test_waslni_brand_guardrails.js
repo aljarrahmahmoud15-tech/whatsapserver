@@ -14,9 +14,9 @@ assert.match(owner, /value="\/captain\?mode=login"/);
 assert.match(owner, /\/captain\/register/);
 assert.doesNotMatch(owner, /whatsapserver-2|meta-bot|server2/i);
 assert.match(captain, /الشيخ للتوصيل/);
-assert.doesNotMatch(server, /شركة الجراح \| بوابة التشغيل الرسمية/);
-assert.doesNotMatch(server, /AL-JARAH OPERATIONS NETWORK/);
-assert.doesNotMatch(owner, /شركة الجراح/);
-assert.doesNotMatch(captain, /<strong>الجراح<\/strong>/);
+const join = fs.readFileSync('public/join.html', 'utf8');
+assert.doesNotMatch(join, /\u0627\u0644\u062c\u0631\u0627\u062d/);
+assert.doesNotMatch(owner, /\bAljarah\b|\u0627\u0644\u062c\u0631\u0627\u062d/);
+assert.doesNotMatch(captain, /Orange Money|FADI|\u0627\u0644\u062c\u0631\u0627\u062d|<strong>\u0627\u0644\u062c\u0631\u0627\u062d<\/strong>/);
 
-console.log('Aljarah isolation and Sheikh Delivery branding guardrails verified');
+console.log('Sheikh Delivery branding and legacy payment guardrails verified');

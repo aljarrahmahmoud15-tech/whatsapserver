@@ -2,8 +2,8 @@ const assert = require("assert");
 const { isBotGeneratedMessage, isBotReactionSender } = require("./message_guardrails");
 
 const state = { order: null, pending: false, settlements: 0 };
-const owner = "0779110123";
-const bot = "0775696880";
+const owner = "0790000001";
+const bot = "0777000001";
 const captain = "0790000000";
 
 function receiveMessage({ fromMe, sender, body }) {

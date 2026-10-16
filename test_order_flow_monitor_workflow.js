@@ -8,7 +8,7 @@ assert.match(workflow, /cancel-in-progress: false/, 'لا يلغي الفحص ا
 assert.match(workflow, /npm test/, 'يشغل مجموعة الاختبارات الكاملة');
 assert.match(workflow, /test_confirmation_flow_isolated\.js/, 'يشغل محاكاة دورة التثبيت');
 assert.match(workflow, /test_selected_reply_reaction\.js/, 'يفحص التفاعل على الرد المختار');
-assert.match(workflow, /SERVICE_URL: https:\/\/alshaikh-delivery\.onrender\.com/, 'يفحص خدمة Aljarah الإنتاجية الحالية');
+assert.match(workflow, /SERVICE_URL: https:\/\/alshaikh-delivery\.onrender\.com/, 'يفحص خدمة الشيخ للتوصيل الإنتاجية الحالية');
 assert.doesNotMatch(workflow, /whatsapserver-2|meta-bot|server2/i, 'لا يشير إلى خدمة أخرى');
 assert.match(workflow, /Health endpoint was unavailable, non-JSON, or not ready/, 'يعيد محاولة استجابة health غير الصالحة أثناء الإقلاع');
 assert.match(workflow, /Health endpoint did not return a ready JSON payload after retries/, 'يفشل بوضوح بعد انتهاء محاولات health');

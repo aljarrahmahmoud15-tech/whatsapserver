@@ -27,7 +27,7 @@ const candidate = {
 const acceptance = { id: 21, candidate_id: 10, captain_user_id: 3, acceptance_message_id: "captain-done-1", status: "pending", ...candidate };
 const order = { id: 19, order_no: 7, status: "accepted" };
 const users = {
-  1: { id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 },
+  1: { id: 1, phone: "system-company", name: "الشيخ للتوصيل", role: "company", wallet_cents: 0 },
   2: { id: 2, phone: "962771111111", name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active" },
   3: { id: 3, phone: "962772222222", name: "الكابتن", role: "captain", wallet_cents: 400, active: 1, account_status: "active" },
 };
@@ -106,7 +106,7 @@ const context = {
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
   isConfiguredGroup: (groupId) => groupId === "test-group@g.us",
   isBlockedPhone: () => false,
-  isProtectedOwnerIdentity: (phone) => String(phone) === "962779110123",
+  isProtectedOwnerIdentity: (phone) => String(phone) === "962790000001",
   phoneWithCountry: (value) => String(value),
   isBotReactionSender,
   serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
@@ -118,7 +118,7 @@ const context = {
   notifyOrderLifecycleBlocker: () => {},
   logOrderTrace: () => {},
   orderTraceKey: (value) => String(value || ""),
-  connectedBotPhone: () => "0775696880",
+  connectedBotPhone: () => "0777000001",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
   getSetting: (_key, fallback) => fallback,
   PRODUCER_RATE_BPS: 1300,
@@ -157,7 +157,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(candidate.status, "pending", "إعجاب المنفذ لا يعتمد الطلب");
   assert.strictEqual(ledgers.length, 0, "لا توجد تسوية عند إعجاب المنفذ");
 
-  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0775696880" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0777000001" });
   assert.strictEqual(candidate.status, "pending", "الهوية غير المرتبطة لا تعتمد الطلب");
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
   assert.strictEqual(candidate.status, "finalized", "التفاعل الصالح يثبت المرشح");
@@ -172,7 +172,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(candidate.status, "finalized", "هوية صاحب التفاعل لا تمنع الطلب بعد اكتمال الشروط");
   assert.strictEqual(ledgers.length, 3, "لا تتكرر التسوية بسبب اختلاف صاحب التفاعل");
 
-  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779110123" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962790000001" });
   assert.strictEqual(candidate.status, "finalized", "تفاعل المالك المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
   assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
