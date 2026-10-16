@@ -10,9 +10,9 @@ const settlement = calculateSettlement({
   priceCents: 5000,
   orderKind: 'normal',
   regularProducerRateBps: 1250,
-  specialOrderProducerRateBps: 1600,
+  specialOrderProducerRateBps: 1250,
   companyFromProducerRateBps: 250,
-  specialOrderCompanyFromProducerRateBps: 400,
+  specialOrderCompanyFromProducerRateBps: 250,
 });
 assert.equal(settlement.producerNetCents, 625, '12.5% downloader share for 50 JOD');
 assert.equal(settlement.companyCents, 125, '2.5% company share for 50 JOD');

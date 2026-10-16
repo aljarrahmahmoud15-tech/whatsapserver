@@ -3,12 +3,12 @@
 // - It is never credited to the executor wallet.
 // - Normal orders: 12.5% to the captain who posted the order, 2.5% to the company,
 //   and a 15% total debit from the confirming executor wallet.
-// - "order" / "اوردر" orders: 16% to the posted-order captain,
-//   4% to the company, and a 20% debit from the confirming executor.
+// - "order" / "اوردر" orders use the same 12.5% captain + 2.5% company split,
+//   with a 15% total debit from the confirming executor.
 const REGULAR_PRODUCER_RATE_BPS = 1250;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
-const ORDER_PRODUCER_RATE_BPS = 1600;
-const ORDER_COMPANY_RATE_BPS = 400;
+const ORDER_PRODUCER_RATE_BPS = 1250;
+const ORDER_COMPANY_RATE_BPS = 250;
 // Legacy exports retained for callers that still pass the former percentage knobs.
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = ORDER_PRODUCER_RATE_BPS;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = ORDER_COMPANY_RATE_BPS;
@@ -71,13 +71,13 @@ function calculateSettlement({
 function settlementLedgerNotes(orderKind = "normal") {
   if (orderKind === "order") {
     return {
-      company: "4% من قيمة الأوردر من محفظة كابتن التنفيذ",
-      producer: "حصة المنزّل: 16% من قيمة الأوردر",
-      captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (16% + 4% = 20% للأوردر)",
-      companyBot: "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب (16% + 4% = 20%)",
-      reversalCompany: "عكس حصة الشركة 4% من الأوردر بعد إزالة 👍",
-      reversalProducer: "عكس حصة المنزّل 16% من الأوردر بعد إزالة 👍",
-      reversalCaptain: "إعادة حصة المنزّل والشركة (16% + 4% = 20% للأوردر) بعد إزالة 👍",
+      company: "2.5% من قيمة الأوردر من محفظة كابتن التنفيذ",
+      producer: "حصة المنزّل: 12.5% من قيمة الأوردر",
+      captain: "خصم حصة المنزّل والشركة من محفظة كابتن التنفيذ (12.5% + 2.5% = 15% للأوردر)",
+      companyBot: "خصم حصة الأوردر من محفظة الشركة لأن البوت نفذ الطلب (12.5% + 2.5% = 15%)",
+      reversalCompany: "عكس حصة الشركة 2.5% من الأوردر بعد إزالة 👍",
+      reversalProducer: "عكس حصة المنزّل 12.5% من الأوردر بعد إزالة 👍",
+      reversalCaptain: "إعادة حصة المنزّل والشركة (12.5% + 2.5% = 15% للأوردر) بعد إزالة 👍",
     };
   }
   return {

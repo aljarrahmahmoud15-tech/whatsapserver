@@ -5,7 +5,7 @@ const settlement = calculateSettlement({
   priceCents: 2000,
   orderKind: "normal",
   regularProducerRateBps: 1250,
-  specialOrderProducerRateBps: 1600,
+  specialOrderProducerRateBps: 1250,
   companyFromProducerRateBps: 250,
 });
 

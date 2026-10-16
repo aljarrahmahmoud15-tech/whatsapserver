@@ -21,13 +21,13 @@ const expectedOrder = (priceCents) => ({
   orderKind: "order",
   grossCents: priceCents,
   externalOrderValueCents: priceCents,
-  producerRateBps: 1600,
-  producerFeeCents: Math.round(priceCents * 0.16),
-  companyCents: Math.round(priceCents * 0.04),
-  producerNetCents: Math.round(priceCents * 0.16),
-  companyFeeCents: Math.round(priceCents * 0.04),
-  captainFeeCents: Math.round(priceCents * 0.04),
-  confirmingCaptainFeeCents: Math.round(priceCents * 0.20),
+  producerRateBps: 1250,
+  producerFeeCents: Math.round(priceCents * 0.125),
+  companyCents: Math.round(priceCents * 0.025),
+  producerNetCents: Math.round(priceCents * 0.125),
+  companyFeeCents: Math.round(priceCents * 0.025),
+  captainFeeCents: Math.round(priceCents * 0.025),
+  confirmingCaptainFeeCents: Math.round(priceCents * 0.125) + Math.round(priceCents * 0.025),
   executorWalletCreditCents: 0,
   captainGrossCents: 0,
   settlementMode: "percentage_order",
@@ -35,8 +35,8 @@ const expectedOrder = (priceCents) => ({
 
 assert.deepStrictEqual(calculateSettlement({ priceCents: 2000, orderKind: "normal" }), expectedNormal(2000));
 assert.deepStrictEqual(calculateSettlement({ priceCents: 2000, orderKind: "order" }), expectedOrder(2000));
-assert.deepStrictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }), expectedOrder(500), "اوردر يستخدم 16% للمنزل و4% للشركة مهما تغير السعر");
-assert.strictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }).confirmingCaptainFeeCents, 100);
+assert.deepStrictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }), expectedOrder(500), "الأوردر يستخدم 12.5% للمنزل و2.5% للشركة مثل الطلب العادي");
+assert.strictEqual(calculateSettlement({ priceCents: 500, orderKind: "order" }).confirmingCaptainFeeCents, 76);
 
 const normalExample = calculateSettlement({ priceCents: 1500 });
 assert.strictEqual(normalExample.producerFeeCents, 188, "15 JOD: downloader receives 1.875 JOD");
@@ -57,8 +57,8 @@ assert.match(normalLedgerNotes.producer, /12\.5%/);
 assert.match(normalLedgerNotes.company, /2\.5%/);
 assert.match(normalLedgerNotes.captain, /12\.5% \+ 2\.5% = 15%/);
 const orderLedgerNotes = settlementLedgerNotes("order");
-assert.match(orderLedgerNotes.producer, /16%/);
-assert.match(orderLedgerNotes.company, /4%/);
-assert.match(orderLedgerNotes.captain, /16% \+ 4% = 20%/);
+assert.match(orderLedgerNotes.producer, /12\.5%/);
+assert.match(orderLedgerNotes.company, /2\.5%/);
+assert.match(orderLedgerNotes.captain, /12\.5% \+ 2\.5% = 15%/);
 
-console.log("finance policy verified: 16%/4% order and 12.5%/2.5% normal-order values");
+console.log("finance policy verified: 12.5%/2.5% for all order types");
