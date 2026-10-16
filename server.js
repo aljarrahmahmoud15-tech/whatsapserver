@@ -31,7 +31,7 @@ const BOT_PHONE = process.env.BOT_PHONE?.trim() || process.env.BOT_PHONE_INTL?.t
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || BOT_PHONE;
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
-const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "";
 // Do not open a persisted WhatsApp session until both identities are explicitly configured.
 // An unconfigured service must not generate a QR or attach to an old account/group.
 const WHATSAPP_CONFIGURED = Boolean(BOT_PHONE_INTL && WHATSAPP_GROUP_ID);
@@ -44,7 +44,7 @@ const WHATSAPP_IDENTITY_SCOPE = String(
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://alshaikh-delivery.onrender.com").replace(/\/$/, "");
+const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://taj-delivery.onrender.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/var/data");
 if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
@@ -106,11 +106,11 @@ const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 // Owner policy: manual wallet changes are available only through
 // owner-authenticated routes. Staff and dashboard-token callers are blocked.
 const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
-const COMPANY_BRAND_NAME = "الشيخ للتوصيل";
-const COMPANY_BRAND_ENGLISH = "SHEIKH DELIVERY";
-// The configured Sheikh Delivery bot is always settled through the internal company wallet.
+const COMPANY_BRAND_NAME = "تاج";
+const COMPANY_BRAND_ENGLISH = "TAJ";
+// The configured Taj bot is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
-const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
+const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `taj-${WHATSAPP_IDENTITY_SCOPE}`;
 // Settlement policy: the value after "السعر" is external and never credits B.
 // Normal orders use 13% downloader + 2% company = 15% executor debit.
 // "اوردر" orders use 16% downloader + 4% company = 20% executor debit.
@@ -183,9 +183,9 @@ const MEMORY_PRUNE_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.MEMORY_P
 const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
 const RUNTIME_TEMP_CLEANUP_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.RUNTIME_TEMP_CLEANUP_INTERVAL_MS || 15 * 60 * 1000));
 const RUNTIME_TEMP_FILE_MAX_AGE_MS = Math.max(15 * 60 * 1000, Number(process.env.RUNTIME_TEMP_FILE_MAX_AGE_MS || 60 * 60 * 1000));
-const GROUP_BRAND_NAME = "الشيخ للتوصيل | شبكة التشغيل اللوجستي";
-const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لالشيخ للتوصيل للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
-const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لالشيخ للتوصيل.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
+const GROUP_BRAND_NAME = "تاج | شبكة التشغيل اللوجستي";
+const GROUP_BRAND_DESCRIPTION = "قروب التشغيل الرسمي لتاج للنقل والخدمات اللوجستية. هنا تُنشر الطلبات، يستلم الكابتن الرحلة، ويجري التوثيق وفق النظام.";
+const GROUP_BRAND_WELCOME = "أهلًا بكم في شبكة التشغيل اللوجستي لتاج.\n\nالطلبات والرحلات والمحافظ تُدار بمسار واضح وموثق. يرجى الالتزام بصيغة الطلب المعتمدة، وعدم إرسال أي طلب ناقص التفاصيل.\n\nخدمة العملاء جاهزة للمساعدة داخل النظام.";
 const pendingAdminSends = new Map();
 const adminSendResults = new Map();
 const loginRate = new Map();
@@ -277,7 +277,7 @@ app.use("/api", (req, res, next) => {
 });
 app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
+  res.status(200).json({ ok: true, service: "taj-delivery", whatsapp: whatsappState, ready: Boolean(isReady) });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -286,11 +286,27 @@ app.get("/captain/register", (req, res) => {
 });
 app.get("/admin.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "admin.html"));
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/admin-v26.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/admin-v27.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/index.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/staff.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
@@ -322,7 +338,7 @@ app.use(
   })
 );
 
-const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
+const db = new Database(path.join(DATA_DIR, "taj.sqlite"));
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 // This is a separate, non-authoritative owner-control projection. It never replaces
@@ -1452,7 +1468,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
 async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null }) {
   const targetGroupId = String(groupId || "").trim();
   const candidateId = Number(candidate?.id || 0);
-  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isOfficialOutboundTargetAllowed(targetGroupId)) {
     return { status: "invalid", candidateId };
   }
   const event = `order.acceptance.reopened.${candidateId}`;
@@ -1485,7 +1501,7 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   if (!notificationId) return { status: "duplicate", candidateId };
   orderReopenNotificationInFlight.add(idempotencyKey);
   try {
-    const sent = await sendServer2DirectAtMostOnce(targetGroupId, message, undefined, 20000);
+    const sent = await sendOfficialDirectAtMostOnce(targetGroupId, message, undefined, 20000);
     const deliveryStatus = sent ? "sent" : "failed";
     const messageId = serializedMessageId(sent) || sent?.id?._serialized || sent?.id?.id || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
@@ -1532,7 +1548,7 @@ async function reopenOrderAfterInsufficientBalance({ groupId, candidate, require
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const requested = new URL(String(url || ""), PUBLIC_APP_URL);
   const serviceOrigin = new URL(PUBLIC_APP_URL).origin;
-  if (requested.origin !== serviceOrigin) throw new Error("Guide video must be hosted by the Sheikh Delivery service");
+  if (requested.origin !== serviceOrigin) throw new Error("Guide video must be hosted by the Taj service");
   const response = await fetch(requested.toString(), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -1782,14 +1798,14 @@ async function runBalanceNotificationBroadcast({ runKey, members }) {
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_VERSION = "company-completion-v1";
 const CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_ANNOUNCEMENT";
 function captainCompletionAnnouncementContent() {
-  const title = "إعلان اكتمال شركة الشيخ للتوصيل";
+  const title = "إعلان اكتمال شركة تاج";
   const lines = [
-    "تم بحمد الله اكتمال تجهيز وتشغيل شركة الشيخ للتوصيل.",
+    "تم بحمد الله اكتمال تجهيز وتشغيل شركة تاج.",
     "تم تفعيل مسار الطلبات والتأكيد والتسوية المالية.",
     "طريقة العمل المعتمدة: يُنشر السعر في القروب الرسمي، ثم يرد الكابتن المنفّذ بكلمة «تم»، ويُستكمل اعتماد الحجز والتسوية حسب المسار المعتمد.",
     "ستصلكم الإشعارات الرسمية عند تسجيل العمليات المهمة.",
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونكم مع الشيخ للتوصيل – Sheikh Delivery.",
+    "شكرًا لتعاونكم مع تاج – Taj.",
   ];
   return { title, lines, caption: brandedMessage(title, lines) };
 }
@@ -1915,7 +1931,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
   const captain = db.prepare("SELECT id,phone,name,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(Number(captainId));
   if (!captain || captain.role !== "captain" || captain.is_bot === 1 || (captain.account_status !== "active" && !zeroBalanceEligible && numericBalance >= 0)) return { status: "ineligible" };
   const isZeroBalance = numericBalance === 0;
-  const title = isZeroBalance ? "إشعار نفاد رصيد المحفظة" : "إشعار رصيد مستحق من الشيخ للتوصيل";
+  const title = isZeroBalance ? "إشعار نفاد رصيد المحفظة" : "إشعار رصيد مستحق من تاج";
   const notificationEvent = isZeroBalance ? "captain.wallet.zero_balance" : "captain.wallet.negative";
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const removalEvidence = removalContext?.allowUnconfirmedRemoval === true
@@ -1943,7 +1959,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     });
   }
   const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
-    ? "تم إيقاف الحساب وإزالتك من قروب الشيخ للتوصيل إلى حين تسديد الرصيد المستحق."
+    ? "تم إيقاف الحساب وإزالتك من قروب تاج إلى حين تسديد الرصيد المستحق."
     : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
       : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
@@ -1955,7 +1971,7 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونك مع الشيخ للتوصيل – Sheikh Delivery.",
+    "شكرًا لتعاونك مع تاج – Taj.",
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
@@ -2402,7 +2418,7 @@ function storageInventory() {
     filesystem,
     topLevel: [...topLevel.entries()].map(([name, bytes]) => ({ name, bytes })).sort((a, b) => b.bytes - a.bytes),
     largestFiles: files.sort((a, b) => b.bytes - a.bytes).slice(0, 100),
-    protectedPaths: ["aljarah.sqlite", "aljarah.sqlite-wal", "aljarah.sqlite-shm", ".wwebjs_auth", ".baileys_auth"],
+    protectedPaths: ["taj.sqlite", "taj.sqlite-wal", "taj.sqlite-shm", ".wwebjs_auth", ".baileys_auth"],
   };
 }
 function runtimeHealth() {
@@ -2438,7 +2454,7 @@ function runtimeHealth() {
       tempFileMaxAgeMs: RUNTIME_TEMP_FILE_MAX_AGE_MS,
       dataDirHealth: safePathHealth(DATA_DIR),
       authPathHealth: safePathHealth(AUTH_PATH),
-      databaseFileHealth: safePathHealth(path.join(DATA_DIR, "aljarah.sqlite")),
+      databaseFileHealth: safePathHealth(path.join(DATA_DIR, "taj.sqlite")),
     },
     whatsapp: {
       state: whatsappState,
@@ -2903,7 +2919,7 @@ const captainGroupWelcomeInFlight = new Set();
 function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
-    `أهلًا بك يا كابتن ${displayName} في قروب «الشيخ للتوصيل».`,
+    `أهلًا بك يا كابتن ${displayName} في قروب «تاج».`,
     "تم انضمامك إلى شبكة التشغيل.",
     "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
     "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
@@ -4177,7 +4193,7 @@ function escapeXml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
 }
 async function renderTopupCardMedia({ cardId, code, valueCents, captainName, appUrl }) {
-  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
+  const logoPath = path.join(__dirname, "public", "taj-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(captainName || `كابتن شبكة ${COMPANY_BRAND_NAME}`);
@@ -4207,11 +4223,11 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
     <text x="1000" y="602" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">CARD-${escapeXml(cardId)}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
-  return new MessageMedia("image/png", png.toString("base64"), `sheikh-delivery-topup-card-${cardId}.png`);
+  return new MessageMedia("image/png", png.toString("base64"), `taj-delivery-topup-card-${cardId}.png`);
 }
 async function renderOperationsMessageMedia(title, lines = []) {
-  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
-  const portalPath = path.join(__dirname, "public", "sheikh-delivery-portal-bg-card.png");
+  const logoPath = path.join(__dirname, "public", "taj-logo-mark-card.png");
+  const portalPath = path.join(__dirname, "public", "taj-portal-bg-desktop-v2.png");
   let logoData = "";
   let portalData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
@@ -4242,16 +4258,16 @@ async function renderOperationsMessageMedia(title, lines = []) {
     <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">${COMPANY_BRAND_ENGLISH} / OFFICIAL</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
-  return new MessageMedia("image/png", png.toString("base64"), "sheikh-delivery-operations-message.png");
+  return new MessageMedia("image/png", png.toString("base64"), "taj-delivery-operations-message.png");
 }
 async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
-  const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
+  const logoPath = path.join(__dirname, "public", "taj-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(name || "كابتن");
   const safeUrl = escapeXml(captainLoginUrl(baseUrl));
   const welcomeLines = [
-    `أهلًا بك يا كابتن ${safeName} في الشيخ للتوصيل`,
+    `أهلًا بك يا كابتن ${safeName} في تاج`,
     "تم انضمامك إلى شبكة التشغيل الرسمية.",
     "لتنزيل طلب: اكتب السعر ثم القيمة، مثل: السعر 10",
     "يرد كابتن التنفيذ على الطلب نفسه بكلمة «تم».",
@@ -4267,11 +4283,11 @@ async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_
     <rect width="1080" height="760" fill="#04121c"/><rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#welcome-bg)" stroke="url(#welcome-border)" stroke-width="6"/>
     <circle cx="540" cy="156" r="190" fill="url(#welcome-glow)" opacity=".72"/><circle cx="540" cy="156" r="122" fill="none" stroke="#a7f3d0" stroke-opacity=".48" stroke-width="3"/><circle cx="540" cy="156" r="104" fill="#06252b" stroke="#f6c84c" stroke-opacity=".72" stroke-width="3"/>
     ${logo}<circle cx="540" cy="38" r="9" fill="#34d399"/><circle cx="540" cy="38" r="22" fill="none" stroke="#34d399" stroke-opacity=".45" stroke-width="3"/>
-    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">SHEIKH DELIVERY • CAPTAIN WELCOME</text>
+    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">TAJ • CAPTAIN WELCOME</text>
     <rect x="62" y="300" width="956" height="330" rx="28" fill="#041822" fill-opacity=".72" stroke="#a7f3d0" stroke-opacity=".34" stroke-width="2"/>
     ${lineMarkup}
     <text x="92" y="610" fill="#f6c84c" font-size="19" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">ترحيب وتعليمات التشغيل فقط</text>
-    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">الشيخ للتوصيل | SHEIKH DELIVERY</text>
+    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">تاج | TAJ</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "waslni-captain-welcome-card.png");
@@ -8329,7 +8345,7 @@ function getWebAdminSession(req) {
   const header = String(req.headers.authorization || "");
   if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return { role: "company", username: ADMIN_USERNAME, source: "admin_token" };
   if (!JWT_SECRET) return null;
-  const token = parseCookies(req.headers.cookie || "").aljarah_session;
+  const token = parseCookies(req.headers.cookie || "").taj_session;
   if (!token) return null;
   try {
     const payload = jwt.verify(token, JWT_SECRET);
@@ -8401,18 +8417,18 @@ function requireOwnerAdmin(req, res, next) {
 }
 function setSessionCookie(res, token) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `aljarah_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
+  res.setHeader("Set-Cookie", `taj_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
 }
 function setCaptainSessionCookie(res, token) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `aljarah_captain_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
+  res.setHeader("Set-Cookie", `taj_captain_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
 }
 function clearCaptainSessionCookie(res) {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `aljarah_captain_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+  res.setHeader("Set-Cookie", `taj_captain_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
 }
 function getCaptainSession(req) {
-  const token = parseCookies(req.headers.cookie || "").aljarah_captain_session;
+  const token = parseCookies(req.headers.cookie || "").taj_captain_session;
   if (!token) return null;
   try {
     const payload = jwt.verify(token, CAPTAIN_SESSION_SECRET);
@@ -8454,7 +8470,7 @@ function captainInviteBaseUrl(req) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
   const protocol = forwardedProto === "https" ? "https" : "http";
   const configured = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
-  const base = configured && !/bot\.wasselni-biz\.com/i.test(configured) ? configured : `${protocol}://${req.get("host")}`;
+  const base = configured || `${protocol}://${req.get("host")}`;
   return base.replace(/\/$/, "");
 }
 function requireQrAccess(req, res, next) {
@@ -8509,7 +8525,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في الشيخ للتوصيل\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في تاج\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -8658,7 +8674,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (decision === "reject") {
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
-    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى الشيخ للتوصيل.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى تاج.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
@@ -8806,7 +8822,7 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في الشيخ للتوصيل: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في تاج: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
   if (!sent) {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
@@ -8889,7 +8905,7 @@ app.post("/api/auth/staff-login", (req, res) => {
 });
 app.post("/api/auth/logout", (req, res) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+  res.setHeader("Set-Cookie", `taj_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
   res.json({ success: true });
 });
 app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username, permissions: req.staffSession.role === "company" ? [...STAFF_PERMISSION_KEYS] : (req.staffSession.permissions || []), permissionLabels: STAFF_PERMISSION_LABELS }, portalUrl: staffPortalUrl(req) }));
@@ -9809,9 +9825,9 @@ app.get("/qr-main", requireQrAccess, async (req, res) => {
   const refreshTarget = req.query.access ? `/qr-main?access=${encodeURIComponent(String(req.query.access))}` : "/qr-main";
   if (qrCodeData) {
     const image = await qrcode.toDataURL(qrCodeData);
-    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط بوت الشيخ للتوصيل</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
+    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط بوت تاج</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت الشيخ للتوصيل متصل</h2></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت تاج متصل</h2></body></html>`);
   res.send(`<html dir="rtl"><meta charset="utf-8"><meta http-equiv="refresh" content="3;url=${refreshTarget}"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>جاري تجهيز QR البوت الرئيسي...</h2><p>لا تعرض هذه الصفحة QR مستقبل المجموعة.</p></body></html>`);
 });
 app.get("/qr", requireQrAccess, async (req, res) => {
@@ -9822,7 +9838,7 @@ app.get("/qr", requireQrAccess, async (req, res) => {
     const image = await qrcode.toDataURL(qrCodeData);
     return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>امسح QR لربط البوت الرئيسي</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت الشيخ للتوصيل متصل</h2></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>بوت تاج متصل</h2></body></html>`);
   if (baileysReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>مستقبل رسائل القروب متصل</h2><p>بانتظار QR البوت الرئيسي</p></body></html>`);
   if (!baileysQrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
   const image = await qrcode.toDataURL(baileysQrCodeData);
@@ -10058,7 +10074,7 @@ app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = "pre-group-reset-" + Date.now() + ".sqlite";
   const backupPath = path.join(backupDir, backupName);
-  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "تاج — شبكة التشغيل الرسمية").trim().slice(0, 100) || "تاج — شبكة التشغيل الرسمية";
   const operationId = "RESET-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_current_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId: null, participants: [], reset: true, oldGroupId, backupName };
@@ -10078,7 +10094,7 @@ app.post("/api/admin/group/finalize-created", requireAdmin, (req, res) => {
   const phones = [...new Set((groupCreateState.participants || []).map((participant) => phoneWithCountry(participant && participant.phone)).filter((phone) => isValidJordanPhone(phone) && !botPhones.has(phone) && !blockedPhones.has(phone)))];
   if (!phones.length) return res.status(409).json({ error: "No eligible members are available for recovery" });
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
-  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "تاج — شبكة التشغيل الرسمية").trim().slice(0, 100) || "تاج — شبكة التشغيل الرسمية";
   groupCreateInFlight = true;
   groupCreateState = { ...groupCreateState, status: "recovering", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: phones.map((phone) => ({ phone, status: "pending" })), recoverable: true };
   void finalizeCreatedGroupInBackground({ operationId, groupId, groupName, phones });
@@ -10124,7 +10140,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
-      "تم تسجيل رقمك ضمن أعضاء شبكة الشيخ للتوصيل التشغيلية.",
+      "تم تسجيل رقمك ضمن أعضاء شبكة تاج التشغيلية.",
       "هذا ليس تسجيل كابتن جديدًا.",
       "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
       `البوابة الرسمية: ${gateway}`,
@@ -10177,7 +10193,7 @@ app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (req.query.execute !== "1") return res.json({ success: true, ready: true, groupId, sourceGroupId, message: "Use execute=1 to send official invite cards." });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "تاج — شبكة التشغيل الرسمية").trim().slice(0, 100) || "تاج — شبكة التشغيل الرسمية";
   const operationId = "INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupInviteInFlight = true;
   groupInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, inviteUrl: null, participants: [] };
@@ -10192,7 +10208,7 @@ app.post("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.body?.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const groupName = String(req.body?.groupName || "تاج — شبكة التشغيل الرسمية").trim().slice(0, 100) || "تاج — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -10208,7 +10224,7 @@ app.get("/api/admin/group/finalize-existing", requireAdmin, (req, res) => {
   const groupId = String(req.query.groupId || "").trim();
   if (sourceGroupId !== WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Cross-group operations are disabled by the official service isolation policy" });
   if (!sourceGroupId.endsWith("@g.us") || !groupId.endsWith("@g.us") || sourceGroupId === groupId) return res.status(400).json({ error: "Source and destination group ids must be valid and different" });
-  const groupName = String(req.query.groupName || "الشيخ للتوصيل — شبكة التشغيل الرسمية").trim().slice(0, 100) || "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const groupName = String(req.query.groupName || "تاج — شبكة التشغيل الرسمية").trim().slice(0, 100) || "تاج — شبكة التشغيل الرسمية";
   const operationId = "RECOVER-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupCreateInFlight = true;
   groupCreateState = { status: "reading_source_group", operationId, startedAt: now(), finishedAt: null, error: null, groupId, sourceGroupId, participants: [], recovered: true };
@@ -10220,7 +10236,7 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   if (groupCreateInFlight) return res.status(409).json({ error: "A group creation request is already in progress", operationId: groupCreateState.operationId });
   if (getSetting("group_id", null)) return res.status(409).json({ error: "A production group is already configured" });
   if (groupCreateState.status === "failed" && groupCreateState.groupId) return res.status(409).json({ error: "A group was created but participant addition did not finish; verify the group before retrying", groupId: groupCreateState.groupId, operationId: groupCreateState.operationId });
-  const groupName = String(req.body.groupName || "الشيخ للتوصيل للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
+  const groupName = String(req.body.groupName || "تاج للنقل والخدمات اللوجستية — الطلبات الرسمية").trim();
   const rawPhones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const phones = [...new Set(rawPhones.map(phoneWithCountry).filter(Boolean))];
   if (!groupName || groupName.length > 100) return res.status(400).json({ error: "Invalid group name" });
@@ -10713,7 +10729,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
       const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
       const previous = [...messages].reverse().find((message) => {
         const body = String(message?.body || "");
-        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة الشيخ للتوصيل)/.test(body);
+        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة تاج)/.test(body);
       });
       if (previous && typeof previous.delete === "function") {
         const removed = await withTimeout(previous.delete(true), 20000, null);
@@ -10860,7 +10876,7 @@ app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
 
 app.post("/api/admin/group", requireAdmin, (req, res) => {
   const groupId = String(req.body.groupId || "").trim();
-  const groupName = String(req.body.groupName || "قروب الشيخ للتوصيل").trim();
+  const groupName = String(req.body.groupName || "قروب تاج").trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Only the official service's configured environment group may be active" });
   configureGroupId(groupId, groupName);
@@ -10871,7 +10887,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = WHATSAPP_GROUP_ID;
-  const groupName = "🔥 الشيخ للتوصيل 🔥 🔥Sheikh Delivery🔥";
+  const groupName = "🔥 تاج 🔥 🔥Taj🔥";
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup || !Array.isArray(chat.participants) || chat.participants.length < 1) return res.status(502).json({ error: "The original active WhatsApp group could not be verified" });
   const stamp = now();
@@ -10913,7 +10929,7 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
   const groupId = String(req.query.groupId || "").trim();
   const newGroupId = "";
   const originalGroupId = WHATSAPP_GROUP_ID;
-  const expectedName = "الشيخ للتوصيل — شبكة التشغيل الرسمية";
+  const expectedName = "تاج — شبكة التشغيل الرسمية";
   if (groupId !== newGroupId) return res.status(400).json({ error: "Only the explicitly approved unapproved group can be deleted" });
   if (groupId === originalGroupId || groupId === getSetting("group_id", null)) return res.status(409).json({ error: "The active original group is protected" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
@@ -10940,7 +10956,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupJoinInFlight) return res.status(409).json({ error: "A group join request is already in progress" });
   const inviteCode = extractInviteCode(req.body.inviteLink || req.body.inviteCode || "");
-  const groupName = String(req.body.groupName || "قروب الشيخ للتوصيل").trim();
+  const groupName = String(req.body.groupName || "قروب تاج").trim();
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   groupJoinInFlight = true;
   try {
@@ -10984,7 +11000,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   if (!Number.isFinite(observedAt) || Date.now() - observedAt > 15 * 60 * 1000) return res.status(409).json({ error: "The last group event is too old; send a new message and retry" });
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
   if (!chat || !chat.isGroup) return res.status(502).json({ error: "The observed chat could not be verified as a WhatsApp group" });
-  const groupName = String(chat.name || "قروب الشيخ للتوصيل").trim().slice(0, 160) || "قروب الشيخ للتوصيل";
+  const groupName = String(chat.name || "قروب تاج").trim().slice(0, 160) || "قروب تاج";
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
@@ -12510,7 +12526,7 @@ app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, re
         const title = "تحديث دخول الكابتن";
         const text = brandedMessage(title, [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في الشيخ للتوصيل.",
+          "تم تحديث بيانات الدخول الخاصة بك في تاج.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -12580,7 +12596,7 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
         run.updated += 1;
         const text = brandedMessage("تحديث دخول الكابتن", [
           `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في الشيخ للتوصيل.",
+          "تم تحديث بيانات الدخول الخاصة بك في تاج.",
           `رقم الهاتف: ${captain.phone}`,
           "الرقم السري: 00000",
           `رابط الدخول الفوري: ${appUrl}`,
@@ -12627,7 +12643,7 @@ app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, asyn
           "نحيطك علمًا بأنه تم إلغاء الخصم اليومي بقيمة 10 قروش من حسابك.",
           "لن يتم تنفيذ أي خصم يومي جديد ابتداءً من الآن.",
           "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
-          "الشيخ للتوصيل — الإدارة",
+          "تاج — الإدارة",
         ]);
         const sent = await sendOfficialDirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -12665,7 +12681,7 @@ app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, asyn
         const text = brandedMessage("تنبيه رصيد المحفظة", [
           `الكابتن: ${captain.name || "حساب الكابتن"}`,
           `رصيدك الحالي: ${money(captain.wallet_cents)} JOD`,
-          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب الشيخ للتوصيل.",
+          "الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب تاج.",
           "يرجى التواصل مع الإدارة لشحن الرصيد.",
         ]);
         const sent = await sendOfficialDirectAtMostOnce(recipient, text, undefined, 30000);
@@ -12788,7 +12804,7 @@ app.get("/api/admin/captains/announcement-chat-check/:phone", requireAdmin, asyn
     const { title, caption } = captainCompletionAnnouncementContent();
     const matches = (Array.isArray(messages) ? messages : []).filter((message) => {
       const body = String(message?.body || "");
-      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة الشيخ للتوصيل") || body === caption);
+      return message?.fromMe === true && (body.includes(title) || body.includes("تم بحمد الله اكتمال تجهيز وتشغيل شركة تاج") || body === caption);
     }).map((message) => ({
       id: message?.id?._serialized || null,
       timestamp: message?.timestamp || null,
@@ -13765,7 +13781,7 @@ app.post("/api/admin/group/apply-identity", requireAdmin, async (req, res) => {
   try {
     const chat = await withTimeout(client.getChatById(groupId), 25000, null) || await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
-    const media = await withTimeout(MessageMedia.fromFilePath(path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png")), 30000, null);
+    const media = await withTimeout(MessageMedia.fromFilePath(path.join(__dirname, "public", "taj-logo-mark-card.png")), 30000, null);
     if (!media) return res.status(502).json({ error: "Unable to load group identity image" });
     const updated = { picture: await chat.setPicture(media), subject: await chat.setSubject(GROUP_BRAND_NAME), description: await chat.setDescription(GROUP_BRAND_DESCRIPTION) };
     if (!isOfficialOutboundTargetAllowed(groupId)) return res.status(403).json({ error: "Group is outside the official service allowlist" });
@@ -13793,7 +13809,7 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
   }
   audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
   const sendPromise = Promise.resolve().then(async () => {
-    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Sheikh Delivery", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
+    const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط Taj", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
     if (!media) throw new Error("media test card render returned no media");
     if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
     return withTimeoutStrict(client.sendMessage(groupId, media, { caption }), ADMIN_SEND_TIMEOUT_MS, null);

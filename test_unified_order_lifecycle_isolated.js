@@ -32,7 +32,7 @@ const BOT = "962790000001";
 const users = {
   producer: { id: 2, phone: PRODUCER, name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
   executor: { id: 3, phone: EXECUTOR, name: "المنفذ", role: "captain", wallet_cents: 5000, active: 1, account_status: "active", is_bot: 0 },
-  company: { id: 1, phone: "system-company", name: "الشيخ للتوصيل", role: "company", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
+  company: { id: 1, phone: "system-company", name: "تاج", role: "company", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
 };
 
 const state = {

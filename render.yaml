@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: alshaikh-delivery
+    name: taj-delivery
     runtime: node
     plan: standard
     buildCommand: npm ci --omit=dev

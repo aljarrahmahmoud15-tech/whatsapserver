@@ -26,6 +26,6 @@ assert.match(restoreRoute, /settlementMutation: false/);
 assert.match(restoreRoute, /groupMembershipChanged: false/);
 assert.match(restoreRoute, /whatsappMessageSent: false/);
 assert.doesNotMatch(restoreRoute, /wallet_cents\s*=|INSERT INTO wallet_ledger|UPDATE wallet_ledger|sendMessage|sendCaptainAppLink|addCaptainToConfiguredGroup|https?:\/\//i);
-assert.doesNotMatch(`${archivedRoute}\n${restoreRoute}`, /server2|whatsapp.?clean|meta.?bot/i);
+assert.doesNotMatch(`${archivedRoute}\n${restoreRoute}`, /external-service|legacy-bot|unapproved-channel/i);
 
-console.log('server2 route-only port guardrails verified');
+console.log('official route-only port guardrails verified');

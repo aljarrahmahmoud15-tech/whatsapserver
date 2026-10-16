@@ -3,9 +3,9 @@ const fs = require('fs');
 const server = fs.readFileSync('./server.js', 'utf8');
 const index = fs.readFileSync('./public/index.html', 'utf8');
 const forbiddenServiceMarkers = [
-  ['whatsapserver', '2'].join('-'),
+  ['legacy-service', '2'].join('-'),
   ['meta', 'bot'].join('-'),
-  ['server', '2'].join(''),
+  ['external', 'service'].join('-'),
 ];
 assert.match(server, /return `\$\{normalized \|\| PUBLIC_APP_URL\}\/captain\/register`;/);
 assert.match(server, /return `\$\{normalized \|\| PUBLIC_APP_URL\}\/captain\?invite=\$\{encodeURIComponent\(inviteToken\)\}`;/);

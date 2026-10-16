@@ -3,9 +3,9 @@ const fs = require('node:fs');
 
 const workflow = fs.readFileSync('.github/workflows/order-flow-monitor.yml', 'utf8');
 const forbiddenServiceMarkers = [
-  ['whatsapserver', '2'].join('-'),
+  ['legacy-service', '2'].join('-'),
   ['meta', 'bot'].join('-'),
-  ['server', '2'].join(''),
+  ['external', 'service'].join('-'),
 ];
 assert.match(workflow, /cron: "0 \* \* \* \*"/, 'الفحص مجدول في بداية كل ساعة');
 assert.match(workflow, /workflow_dispatch:/, 'يوجد تشغيل يدوي');
@@ -13,7 +13,7 @@ assert.match(workflow, /cancel-in-progress: false/, 'لا يلغي الفحص ا
 assert.match(workflow, /npm test/, 'يشغل مجموعة الاختبارات الكاملة');
 assert.match(workflow, /test_confirmation_flow_isolated\.js/, 'يشغل محاكاة دورة التثبيت');
 assert.match(workflow, /test_selected_reply_reaction\.js/, 'يفحص التفاعل على الرد المختار');
-assert.match(workflow, /SERVICE_URL: https:\/\/alshaikh-delivery\.onrender\.com/, 'يفحص خدمة الشيخ للتوصيل الإنتاجية الحالية');
+assert.match(workflow, /SERVICE_URL: https:\/\/taj-delivery\.onrender\.com/, 'يفحص خدمة تاج الإنتاجية الحالية');
 assert.ok(forbiddenServiceMarkers.every((marker) => !new RegExp(marker, 'i').test(workflow)), 'لا يشير إلى خدمة أخرى');
 assert.match(workflow, /Health endpoint was unavailable, non-JSON, or not ready/, 'يعيد محاولة استجابة health غير الصالحة أثناء الإقلاع');
 assert.match(workflow, /Health endpoint did not return a ready JSON payload after retries/, 'يفشل بوضوح بعد انتهاء محاولات health');

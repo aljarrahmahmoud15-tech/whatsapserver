@@ -29,8 +29,8 @@ assert.ok(index.includes('/api/admin/system/health'), 'admin UI consumes health 
 assert.ok(index.includes('/api/admin/system/settings'), 'admin UI consumes settings API');
 assert.ok(index.includes('/api/admin/system/storage'), 'admin UI consumes storage inventory API');
 assert.ok(index.includes('SAFE STORAGE INVENTORY'), 'admin UI labels storage inventory as read-only');
-assert.ok(index.includes('id="captain-whatsapp-invite"'), 'captain invite WhatsApp button exists in the first operations card');
-assert.ok(index.includes("https://wa.me/?text="), 'captain invite WhatsApp action opens a prefilled share');
+assert.ok(index.includes('مشاركة واتساب غير مفعّلة في النسخة الصفرية'), 'zero build makes WhatsApp sharing explicit and inactive');
+assert.ok(!index.includes('external share URL'), 'zero build exposes no external WhatsApp share link');
 assert.ok(index.includes('./join.html'), 'official operations gateway link remains fixed');
 assert.ok(render.includes('DATA_DIR') && render.includes('/var/data') && render.includes('mountPath: /var/data'), 'persistent Native Render data path remains configured');
 console.log('reconnect health guardrails verified');

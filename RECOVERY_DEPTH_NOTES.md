@@ -4,7 +4,7 @@
 The owner reported: «خلال إصلاح الخدمة تم تنزيل حجوزات ولم يتم تثبيتها»
 (bookings were downloaded/imported during the repair, but none of them were confirmed).
 
-Live telemetry on `aljarah-delivery` agreed:
+Live telemetry on `taj-delivery` agreed:
 
 ```json
 "acceptanceRecovery": {
@@ -69,7 +69,7 @@ Three env-overridable bounds replace the hard-coded values, all still capped:
   contract and rejects a return to the old hard-coded window.
 
 ## Remaining owner step
-The WhatsApp session on `aljarah-delivery` dropped to `qr` state
+The WhatsApp session on `taj-delivery` dropped to `qr` state
 (`initialize_timeout` → `qr`), so the pairing must be re-scanned before the deeper
 scan can read group history. After the session is ready, the pending bookings appear
 in the dashboard panel «الحجوزات غير المؤكدة» where each one is confirmed with

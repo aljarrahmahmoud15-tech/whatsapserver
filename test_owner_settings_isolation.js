@@ -20,7 +20,7 @@ assert.match(v26, /ownerNotificationForm/);
 assert.match(v26, /\/api\/admin\/settings\/settlement/);
 assert.match(v26, /\/api\/admin\/settings\/notifications/);
 assert.doesNotMatch(v26, /test-group@g\.us/);
-assert.match(v26, /SHEIKH DELIVERY|الشيخ للتوصيل/);
+assert.match(v26, /TAJ|تاج/);
 assert.doesNotMatch(v26, /server.?2|whatsapp.?clean/i);
 
-console.log('owner settings and Sheikh Delivery isolation guard: PASS');
+console.log('owner settings and Taj isolation guard: PASS');

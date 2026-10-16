@@ -1,4 +1,4 @@
-# Memory hardening — Aljarah official service (aljarah-delivery)
+# Memory hardening — Aljarah official service (taj-delivery)
 
 ## Root cause found in Render event log
 `Ran out of memory (used over 2GB) while running your code.` occurred 11 times before

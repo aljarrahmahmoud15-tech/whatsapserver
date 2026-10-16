@@ -27,7 +27,7 @@ const candidate = {
 const acceptance = { id: 21, candidate_id: 10, captain_user_id: 3, acceptance_message_id: "captain-done-1", status: "pending", ...candidate };
 const order = { id: 19, order_no: 7, status: "accepted" };
 const users = {
-  1: { id: 1, phone: "system-company", name: "الشيخ للتوصيل", role: "company", wallet_cents: 0 },
+  1: { id: 1, phone: "system-company", name: "تاج", role: "company", wallet_cents: 0 },
   2: { id: 2, phone: "962771111111", name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active" },
   3: { id: 3, phone: "962772222222", name: "الكابتن", role: "captain", wallet_cents: 400, active: 1, account_status: "active" },
 };

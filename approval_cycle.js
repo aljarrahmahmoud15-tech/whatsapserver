@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Sheikh Delivery — automatic WhatsApp order approval cycle.
+ * Taj — automatic WhatsApp order approval cycle.
  *
  * Flow:
  *   1) Producer sends: السعر <variable numeric price>

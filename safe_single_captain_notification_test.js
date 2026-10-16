@@ -10,7 +10,7 @@
  * explicitly enabled by a later code/config change.
  */
 
-const DEFAULT_BASE_URL = 'https://alshaikh-delivery.onrender.com';
+const DEFAULT_BASE_URL = 'https://taj-delivery.onrender.com';
 const SEND_CONFIRMATION = 'SEND-ONE-CAPTAIN-NOTIFICATION';
 const NOTIFICATION_KEY_PREFIX = 'CAPTAIN-APPROVAL-TEST';
 
