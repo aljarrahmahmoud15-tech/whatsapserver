@@ -31,6 +31,7 @@ const db = {
 const context = {
   WHATSAPP_GROUP_ID: "test-group@g.us",
   resolveGroupChatId: () => "test-group@g.us",
+  serializedMessageId: (message) => message?.id?._serialized || message?.id?.id || null,
   isConfiguredGroup: () => true,
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
