@@ -5811,7 +5811,7 @@ const recentMessageEventKeys = new Map();
 const reactionVisibilityWarningAt = new Map();
 const MESSAGE_EVENT_DEDUP_TTL_MS = 10 * 60 * 1000;
 function shouldHandleMessageEvent(msg, eventName) {
-  const serializedId = String(msg?.id?._serialized || msg?.id?.id || "").trim();
+  const serializedId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || "").trim();
   if (!serializedId) return true;
   const key = `${String(eventName || "message")}:${serializedId}`;
   const currentTime = Date.now();
@@ -6263,14 +6263,35 @@ function messageIdValueString(value, depth = 0) {
   if (typeof value !== "object") return "";
   const direct = value._serialized || value.serialized || value.messageId;
   if (typeof direct === "string" || typeof direct === "number") return String(direct).trim();
+  if (value.user && value.server) return `${value.user}@${value.server}`;
   if (value.id && value.id !== value) return messageIdValueString(value.id, depth + 1);
   if (value._data && value._data !== value) return messageIdValueString(value._data, depth + 1);
   if (value.key && value.key !== value) return messageIdValueString(value.key, depth + 1);
   return "";
 }
+function composeCanonicalMessageId(message) {
+  if (!message || typeof message !== "object") return "";
+  const raw = message.id || message._data?.id || message._data?.key || null;
+  const rawId = messageIdValueString(raw?.id || raw?._data?.id || raw?._data?.key || raw) || "";
+  if (!rawId || rawId.includes("@g.us")) return "";
+  const groupId = resolveGroupChatId(message);
+  if (!groupId) return "";
+  const participant = [
+    raw?.participant,
+    raw?._data?.participant,
+    raw?._data?.key?.participant,
+    message.author,
+    message._data?.author,
+    message._data?.id?.participant,
+    message._data?.participant,
+  ].map((value) => messageIdValueString(value)).find(Boolean) || "";
+  const direction = (message.fromMe || raw?.fromMe || raw?._data?.fromMe) ? "true" : "false";
+  return participant ? `${direction}_${groupId}_${rawId}_${participant}` : `${direction}_${groupId}_${rawId}`;
+}
 function messageIdCandidates(message) {
   const raw = message && message.id;
   const values = [
+    composeCanonicalMessageId(message),
     message?.__serializedId,
     raw?._serialized,
     raw?._data?._serialized,
@@ -6554,7 +6575,7 @@ function recordGroupMessageTelemetry(event, msg) {
     fromMe: Boolean(msg.fromMe),
     configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
-    messageId: String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null,
+    messageId: serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null,
     quotedMessageId: String(msg?.quotedMsg?.id?._serialized || msg?._data?.quotedMsg?.id?._serialized || "").trim() || null,
   };
   // Keep the general last-event fields for backward compatibility, but retain
@@ -6794,7 +6815,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const persistIncomingMessage = () => {
     if (!body) return insertedMessage;
     const stamp = now();
-    const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
+    const messageId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -6828,7 +6849,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا نحفظ «تم» قبل حارس الرصيد؛ القبول المرفوض لا يدخل جدول messages أصلًا.
   if (body && !captainAcceptance) persistIncomingMessage();
   if (isQuotedOrderRecoveryCommand({ body, fromMe: Boolean(msg.fromMe), groupId, quoted: quotedForRecovery })) {
-    const sourceMessageId = quotedForRecovery.id._serialized;
+    const sourceMessageId = serializedMessageId(quotedForRecovery) || String(quotedForRecovery?.id?._serialized || "").trim();
     const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE source_message_id=? LIMIT 1").get(sourceMessageId);
     if (existing) {
       return;
@@ -6847,7 +6868,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
+  const messageId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
   if (!messageId) {
     if (captainAcceptance) {
       logOrderTrace("acceptance_missing_message_id", {

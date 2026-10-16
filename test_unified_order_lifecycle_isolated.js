@@ -96,6 +96,7 @@ const db = {
         if (query.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return state.acceptance && state.acceptance.id === Number(args[0]) && ["pending", "selected"].includes(state.acceptance.status) ? { ...state.acceptance } : null;
         if (query.startsWith("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=?")) return state.archivedOrder && state.archivedOrder.source_message_id === args[0] ? { ...state.archivedOrder } : null;
         if (query.startsWith("SELECT * FROM users WHERE id=?")) return userById(args[0]) ? { ...userById(args[0]) } : null;
+        if (query.startsWith("SELECT whatsapp_lid FROM whatsapp_identities")) return null;
         if (query.startsWith("SELECT COALESCE(MAX(order_no),0)+1")) return { next: state.order ? state.order.order_no + 1 : 1 };
         if (query.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return userById(args[0]) ? { wallet_cents: userById(args[0]).wallet_cents } : null;
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
@@ -150,14 +151,18 @@ const db = {
   },
 };
 
+function canonicalMessageId(id, sender) {
+  return String(id).includes("@g.us") ? String(id) : `false_${GROUP}_${id}_${sender}@c.us`;
+}
 function message(id, body, sender, quoted = null) {
+  const serializedId = canonicalMessageId(id, sender);
   return {
     from: GROUP,
     fromMe: false,
     body,
     type: "text",
     timestamp: 1,
-    id: { _serialized: id },
+    id: { _serialized: serializedId },
     author: `${sender}@c.us`,
     hasQuotedMsg: Boolean(quoted),
     getContact: async () => ({ number: sender, pushname: sender === PRODUCER ? "المنتج" : "المنفذ" }),
@@ -168,7 +173,7 @@ function message(id, body, sender, quoted = null) {
 const context = {
   WHATSAPP_GROUP_ID: GROUP,
   db,
-  client: { async getMessageById(id) { return state.targets?.[id] || message(id, id.startsWith("done") ? "تم" : "رسالة أخرى", EXECUTOR, message("price-1", "السعر 20", PRODUCER)); } },
+  client: { async getMessageById(id) { const key = canonicalMessageId(id, EXECUTOR); return state.targets?.[id] || state.targets?.[key] || message(key, String(id).includes("done") ? "تم" : "رسالة أخرى", EXECUTOR, message("price-1", "السعر 20", PRODUCER)); } },
   isReady: true,
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async () => state.reactionSender,
@@ -200,6 +205,8 @@ const context = {
   logSettlementCompleted: () => {},
   orderTraceKey: (value) => `trace:${String(value)}`,
   maskSettlementPhone: (value) => String(value || ""),
+  directJordanPhoneFromWhatsappValue: (value) => String(value || "").replace(/@c\.us$/i, ""),
+  findPersistedWhatsappPhone: () => null,
   money: (value) => (Number(value || 0) / 100).toFixed(2),
   calculateSettlement,
   settlementLedgerNotes,
@@ -248,12 +255,13 @@ async function ingestPrice(sourceId = "price-1") {
 async function ingestAcceptance(doneId = "done-1") {
   const quoted = message("price-1", "السعر 20", PRODUCER);
   await context.handleIncomingMessage(message(doneId, "تم جاهز الآن", EXECUTOR, quoted));
-  assert.equal(state.acceptance?.acceptance_message_id, doneId, "تم المقتبسة تسجل قبولًا واحدًا");
+  assert.equal(state.acceptance?.acceptance_message_id, canonicalMessageId(doneId, EXECUTOR), "تم المقتبسة تسجل معرف WhatsApp الكامل");
 }
 async function approve(doneId = "done-1") {
-  state.targets = { [doneId]: message(doneId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  const acceptanceId = canonicalMessageId(doneId, EXECUTOR);
+  state.targets = { [acceptanceId]: message(acceptanceId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = PRODUCER;
-  await context.handleMessageReaction({ reaction: "👍", msgId: doneId });
+  await context.handleMessageReaction({ reaction: "👍", msgId: acceptanceId });
 }
 
 (async () => {
@@ -286,13 +294,13 @@ async function approve(doneId = "done-1") {
   reset();
   await ingestPrice();
   await ingestAcceptance("done-lid");
-  state.targets = { "done-lid": message("done-lid", "تم", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.targets = { [canonicalMessageId("done-lid", EXECUTOR)]: message("done-lid", "تم", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = "";
-  await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: canonicalMessageId("done-lid", EXECUTOR) });
   assert.equal(state.candidate.status, "pending", "لا يتم التثبيت قبل حل هوية صاحب 👍");
   assert.equal(state.ledgers.length, 0);
   state.reactionSender = PRODUCER;
-  await context.handleMessageReaction({ reaction: "👍", msgId: "done-lid" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: canonicalMessageId("done-lid", EXECUTOR) });
   assert.equal(state.candidate.status, "finalized", "بعد حل هوية صاحب 👍 الأصلي يتم التثبيت");
   assert.equal(state.ledgers.length, 3);
   assert.equal(users.producer.wallet_cents, 250);
@@ -314,18 +322,18 @@ async function approve(doneId = "done-1") {
   await ingestPrice();
   const botAcceptance = message("done-bot", "تم", BOT, message("price-1", "السعر 20", PRODUCER));
   botAcceptance.fromMe = true;
-  state.targets = { "done-bot": botAcceptance };
+  state.targets = { [canonicalMessageId("done-bot", BOT)]: botAcceptance };
   state.reactionSender = PRODUCER;
-  await context.handleMessageReaction({ reaction: "👍", msgId: "done-bot" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: canonicalMessageId("done-bot", BOT) });
   assert.equal(state.candidate.status, "candidate", "رد تم الصادر عن البوت لا ينشئ قبولًا");
   assert.equal(state.ledgers.length, 0);
 
   reset();
   await ingestPrice();
   await ingestAcceptance("done-cancel");
-  state.targets = { "done-cancel": message("done-cancel", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.targets = { [canonicalMessageId("done-cancel", EXECUTOR)]: message("done-cancel", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = PRODUCER;
-  await context.handleMessageReaction({ reaction: "❌", msgId: "done-cancel" });
+  await context.handleMessageReaction({ reaction: "❌", msgId: canonicalMessageId("done-cancel", EXECUTOR) });
   assert.equal(state.candidate.status, "cancelled", "X من صاحب السعر يلغي الطلب المعلق");
   assert.equal(state.ledgers.length, 0, "الإلغاء قبل التسوية لا ينشئ حركات مالية");
   assert.equal(state.cancellations.length, 1, "الإلغاء يرسل بطاقة واحدة");
@@ -333,9 +341,9 @@ async function approve(doneId = "done-1") {
   reset();
   await ingestPrice();
   await ingestAcceptance("done-remove-thumb");
-  state.targets = { "done-remove-thumb": message("done-remove-thumb", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.targets = { [canonicalMessageId("done-remove-thumb", EXECUTOR)]: message("done-remove-thumb", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = PRODUCER;
-  await context.handleMessageReaction({ reaction: "", msgId: "done-remove-thumb" });
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-thumb", EXECUTOR) });
   assert.equal(state.candidate.status, "cancelled", "إزالة 👍 من صاحب السعر تلغي الطلب المعلق بالكامل");
   assert.equal(state.ledgers.length, 0, "إزالة 👍 قبل التسوية لا تنشئ حركات مالية");
   assert.equal(state.cancellations.length, 1, "إزالة 👍 ترسل بطاقة إلغاء واحدة");

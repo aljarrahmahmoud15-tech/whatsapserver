@@ -2,6 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
+assert.match(server, /function composeCanonicalMessageId\(message\)/);
+assert.match(server, /value\.user && value\.server/);
+assert.match(server, /composeCanonicalMessageId\(message\)/);
+assert.match(server, /const messageId = serializedMessageId\(msg\) \|\|/);
 assert.match(server, /async function notifyOfficialGroupOrderReopened\(/);
 assert.match(server, /isOfficialGroupTarget\(targetGroupId\)/);
 assert.match(server, /orderReopenNotificationInFlight/);
