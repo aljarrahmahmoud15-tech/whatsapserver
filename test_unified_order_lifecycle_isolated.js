@@ -219,10 +219,12 @@ const context = {
   getQuotedMessageWithFallback: async (msg) => msg?.hasQuotedMsg && typeof msg.getQuotedMessage === "function" ? msg.getQuotedMessage() : (msg?.__quoted || msg?.quotedMsg || null),
   updateOrderCandidateLifecycle: () => ({ changes: 1 }),
   notifyOrderLifecycleBlocker: () => {},
+  notificationEnabled: () => true,
   notifyOperations: () => Promise.resolve([]),
   notifyCaptainNegativeBalance: async () => {},
   notifyCaptainInsufficientAcceptanceBalance: async () => ({ status: "sent" }),
   notifyOfficialGroupInsufficientAcceptanceDeletionFailure: async () => ({ status: "sent" }),
+  reopenOrderAfterInsufficientBalance: async () => ({ status: "not_reopened" }),
   deleteAcceptanceOnlyAfterGroupAlert: async () => ({
     correction: { status: "sent", card: true, messageId: "alert-1" },
     deletionStatus: "deleted",

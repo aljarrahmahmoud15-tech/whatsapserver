@@ -197,6 +197,7 @@ const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
+const orderReopenNotificationInFlight = new Set();
 const balanceNotificationBroadcasts = new Map();
 const captainAnnouncementBroadcasts = new Map();
 const bulkTopupRuns = new Map();
@@ -1452,6 +1453,85 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     };
   }
 }
+async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null }) {
+  const targetGroupId = String(groupId || "").trim();
+  const candidateId = Number(candidate?.id || 0);
+  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+    return { status: "invalid", candidateId };
+  }
+  const event = `order.acceptance.reopened.${candidateId}`;
+  const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
+  const route = candidate.origin || candidate.destination
+    ? `📍 ${candidate.origin || "غير محدد"} ← ${candidate.destination || "غير محدد"}`
+    : "";
+  const message = [
+    "🔁 إعادة فتح الحجز",
+    `🏠 المنزل: ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")}`,
+    `💰 القيمة: ${money(candidate.price_cents)} JOD`,
+    route,
+    `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
+    rejectedCaptainName ? `⚠️ تم رفض «تم» من ${String(rejectedCaptainName)} بسبب عدم كفاية الرصيد.` : "⚠️ تم رفض رسالة «تم» السابقة بسبب عدم كفاية رصيد المنفّذ.",
+    "✅ الحجز متاح من جديد.",
+    "يرجى الرد على هذه الرسالة بكلمة «تم» لمن يستطيع التنفيذ.",
+    "بعدها يضع صاحب السعر 👍 على رسالة «تم» لتثبيت الحجز.",
+    "لم تُنفذ أي تسوية مالية لهذا الحجز حتى الآن.",
+  ].filter(Boolean).join("\n");
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
+    return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null, candidateId };
+  }
+  if (orderReopenNotificationInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true, candidateId };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)").run(targetGroupId, event, "إعادة فتح الحجز", message, candidate.source_message_id || null, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate", candidateId };
+  orderReopenNotificationInFlight.add(idempotencyKey);
+  try {
+    const sent = await sendServer2DirectAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = sent ? "sent" : "failed";
+    const messageId = serializedMessageId(sent) || sent?.id?._serialized || sent?.id?.id || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit(deliveryStatus === "sent" ? "order.acceptance.reopened" : "order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      messageId,
+      sourceMessageId: candidate.source_message_id || null,
+      requiredCents,
+      rejectedCaptainName: rejectedCaptainName || null,
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: deliveryStatus, notificationId, messageId, candidateId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      sourceMessageId: candidate.source_message_id || null,
+      error: String(error?.message || error).slice(0, 180),
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: "failed", notificationId, candidateId };
+  } finally {
+    orderReopenNotificationInFlight.delete(idempotencyKey);
+  }
+}
+
+async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus }) {
+  if (deletionStatus !== "deleted") {
+    return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
+  }
+  const reopened = await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
+  if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
+    updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
+      reason: "captain_acceptance_rejected_insufficient_balance",
+      reopenedMessageId: reopened.messageId || null,
+      financialMutation: false,
+    });
+  }
+  return reopened;
+}
+
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
@@ -4045,6 +4125,21 @@ function findOrderByQuotedMessage(groupId, quoted) {
   const byId = findOrderByQuotedId(groupId, serializedMessageId(quoted));
   return byId && byId.group_id === groupId ? byId : null;
 }
+function findReopenedCandidateByMessage(groupId, messageId) {
+  if (!groupId || !messageId) return null;
+  const lookupIds = [...new Set(messageIdLookupVariants(messageId))];
+  if (!lookupIds.length) return null;
+  const rows = db.prepare(`SELECT event,idempotency_key,message_id FROM notifications WHERE recipient_role='group' AND recipient_phone=? AND event LIKE 'order.acceptance.reopened.%' AND message_id IN (${lookupIds.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 20`).all(groupId, ...lookupIds);
+  for (const row of rows) {
+    if (!sourceMessageIdsEqual(row.message_id, messageId)) continue;
+    const match = String(row.idempotency_key || "").match(/^ORDER-REOPEN-INSUFFICIENT-BALANCE-(\d+)$/);
+    const candidateId = Number(match?.[1] || 0);
+    if (!candidateId) continue;
+    const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='candidate' AND pending_message_id IS NULL AND final_order_id IS NULL LIMIT 1").get(candidateId, groupId);
+    if (candidate) return candidate;
+  }
+  return null;
+}
 function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimestampMs = Date.now(), windowMs = UNQUOTED_ACCEPTANCE_WINDOW_MS) {
   const timestampMs = Math.max(0, Number(acceptanceTimestampMs || Date.now()));
   const requestedWindowMs = Number(windowMs);
@@ -4057,8 +4152,8 @@ function findUnquotedAcceptanceCandidate(groupId, senderPhone, acceptanceTimesta
     LEFT JOIN users p ON p.id=c.producer_user_id
     WHERE c.group_id=? AND c.status='candidate' AND c.pending_message_id IS NULL
       AND c.final_order_id IS NULL
-      AND datetime(c.created_at)>=datetime(?)
-      AND datetime(c.created_at)<=datetime(?)
+      AND datetime(CASE WHEN c.lifecycle_stage='candidate_reopened' THEN c.updated_at ELSE c.created_at END)>=datetime(?)
+      AND datetime(CASE WHEN c.lifecycle_stage='candidate_reopened' THEN c.updated_at ELSE c.created_at END)<=datetime(?)
     ORDER BY c.created_at DESC,c.id DESC
     LIMIT 20
   `).all(groupId, cutoff, upperBound);
@@ -5641,6 +5736,16 @@ async function recoverPendingAcceptanceMessages(groupId) {
         sourceMessageId: rowMessageId,
         deletionStatus,
       });
+      const reopened = await reopenOrderAfterInsufficientBalance({
+        groupId,
+        candidate: unquoted.candidate,
+        requiredCents: unquotedResult.requiredCents,
+        rejectedCaptainName: unquotedResult.captain?.name,
+        deletionStatus,
+      });
+      if (!["sent", "already_sent"].includes(reopened.status)) {
+        console.warn(`[Order] recovery insufficient-balance order reopen ${reopened.status} candidate=${unquoted.candidate.id}`);
+      }
       logOrderTrace("acceptance_rejected_insufficient_balance", {
         groupKey: orderTraceKey(groupId),
         acceptanceKey: orderTraceKey(rowMessageId),
@@ -5653,6 +5758,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
         acceptanceMode: "unquoted",
         correctionStatus: correction.status,
         notificationStatus: notification.status,
+        reopenStatus: reopened.status,
+        reopenMessageId: reopened.messageId || null,
         recoveryMode: "unquoted",
       });
       continue;
@@ -6794,7 +6901,20 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     msg._data?.quotedMsg?.id?.id,
   ].map((value) => String(value || "").trim()).find(Boolean) || null;
   let acceptanceMode = "quoted";
+  let acceptanceSource = "original_order";
   let candidate = quoted ? findOrderByQuotedMessage(groupId, quoted) : null;
+  if (!candidate && quoted) {
+    candidate = findReopenedCandidateByMessage(groupId, serializedMessageId(quoted));
+    if (candidate) {
+      acceptanceSource = "reopened_order_notice";
+      logOrderTrace("acceptance_reopened_notice_match", {
+        groupKey: orderTraceKey(groupId),
+        acceptanceKey: orderTraceKey(messageId),
+        reopenedKey: orderTraceKey(serializedMessageId(quoted)),
+        candidateId: candidate.id,
+      });
+    }
+  }
   // WhatsApp can expose the quote metadata while getQuotedMsgObj returns null
   // or a wrapper without the canonical source ID. Match the raw stanza ID
   // against the candidate core before abandoning the acceptance.
@@ -6864,6 +6984,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       projectedBalanceCents: acceptanceResult.projectedBalanceCents,
       messageDeletionRequested: Boolean(messageId),
       acceptanceMode,
+      acceptanceSource,
     });
     const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
       groupId,
@@ -6893,6 +7014,16 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
       console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
     }
+    const reopened = await reopenOrderAfterInsufficientBalance({
+      groupId,
+      candidate,
+      requiredCents: acceptanceResult.requiredCents,
+      rejectedCaptainName: acceptanceResult.captain?.name,
+      deletionStatus,
+    });
+    if (!["sent", "already_sent"].includes(reopened.status)) {
+      console.warn(`[Order] insufficient-balance order reopen ${reopened.status} candidate=${candidate.id}`);
+    }
     logOrderTrace("acceptance_rejected_insufficient_balance", {
       groupKey: orderTraceKey(groupId),
       acceptanceKey: orderTraceKey(messageId),
@@ -6904,6 +7035,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptanceMode,
       correctionStatus: correction.status,
       notificationStatus: notification.status,
+      reopenStatus: reopened.status,
+      reopenMessageId: reopened.messageId || null,
+      acceptanceSource,
     });
     return;
   }
