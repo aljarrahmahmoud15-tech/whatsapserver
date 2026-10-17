@@ -28,6 +28,30 @@
 #mergeCaptainModal .merge-actions{display:flex;gap:10px;justify-content:flex-start;margin-top:18px}
 #mergeCaptainModal .merge-actions button{margin:0}
 </style>
+
+<style>
+#directWalletModal[hidden]{display:none}
+#directWalletModal{position:fixed;inset:0;z-index:10002;display:grid;place-items:center;direction:rtl;padding:16px}
+#directWalletModal .direct-wallet-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
+#directWalletModal .direct-wallet-dialog{position:relative;z-index:1;width:min(94vw,560px);max-height:90vh;overflow:auto;padding:24px;border:1px solid #a07b35;border-radius:18px;background:var(--card,#101d2e);color:var(--text,#f5f7fa);box-shadow:0 20px 70px rgba(0,0,0,.45)}
+#directWalletModal .direct-wallet-close{position:absolute;top:10px;left:14px;border:0;background:transparent;color:var(--text,#f5f7fa);font-size:28px;line-height:1;cursor:pointer;margin:0;padding:4px 8px}
+#directWalletModal h2{color:var(--text,#f5f7fa);margin:5px 0 8px}
+#directWalletModal p{color:var(--muted,#9fb0c5);line-height:1.8;margin:0 0 14px}
+#directWalletModal label{color:var(--text,#f5f7fa);margin:12px 0 6px}
+#directWalletModal input,#directWalletModal textarea{width:100%;background:#0a1628;color:var(--text,#f5f7fa);caret-color:var(--accent,#55e6bd);border:1px solid var(--line,#243750);border-radius:10px;padding:12px;font-size:16px}
+#directWalletModal textarea{min-height:90px;resize:vertical;line-height:1.7}
+#directWalletModal input:focus,#directWalletModal textarea:focus{outline:2px solid var(--accent,#55e6bd);outline-offset:1px;border-color:var(--accent,#55e6bd)}
+#directWalletModal .direct-wallet-context{padding:12px 14px;border:1px solid var(--line,#243750);border-radius:12px;background:#0d1a2d;color:var(--text,#f5f7fa);line-height:1.9;margin-bottom:14px}
+#directWalletModal .direct-wallet-check{display:flex;align-items:flex-start;gap:9px;margin-top:14px;color:var(--text,#f5f7fa);line-height:1.7}
+#directWalletModal .direct-wallet-check input{width:auto;margin-top:5px;accent-color:var(--accent,#55e6bd)}
+#directWalletModal .direct-wallet-warning{padding:11px 12px;border-radius:10px;margin-top:12px;line-height:1.8;color:#ffe4a3;background:#3a2f1a;border:1px solid #765b2d}
+#directWalletModal .direct-wallet-result{padding:11px 12px;border-radius:10px;margin-top:12px;line-height:1.8;background:#17283f;color:var(--muted,#9fb0c5)}
+#directWalletModal .direct-wallet-result.ok{background:#123f35;color:#8ff0cf;border:1px solid #278b70}
+#directWalletModal .direct-wallet-result.error{background:#4b2028;color:#ffc1c9;border:1px solid #8d4554}
+#directWalletModal .direct-wallet-actions{display:flex;gap:10px;justify-content:flex-start;margin-top:18px}
+#directWalletModal .direct-wallet-actions button{margin:0}
+@media(max-width:600px){#directWalletModal .direct-wallet-dialog{padding:20px 16px}.direct-wallet-actions{flex-direction:column}.direct-wallet-actions button{width:100%}}
+</style>
 </head>
 <body>
 <main class="wrap">
@@ -252,7 +276,7 @@ async function syncCaptainNames(){try{$('subscriptionReportMsg').textContent='ج
 async function loadCaptainInvites(){try{const data=await api('/api/admin/captain-invites');pendingCaptainInvites=data.invites||[];const pending=pendingCaptainInvites.filter(i=>i.status==='pending');$('captainInvitesMsg').textContent=`تم تحميل ${pendingCaptainInvites.length} طلبًا · بانتظار القرار: ${pending.length}`;$('captainInvitesMsg').classList.remove('error');$('captainInvites').innerHTML=pendingCaptainInvites.map(i=>{const status=i.status==='pending'?'بانتظار الموافقة':i.status==='approved'?'تمت الموافقة':i.status==='rejected'?'مرفوض':i.status==='expired'?'منتهي':'مُصدر';const method=i.auth_method==='pin'?'PIN من 5 أرقام':'WhatsApp';const action=i.status==='pending'?`<button onclick="decideCaptainInvite(${Number(i.id)},'approve')">موافقة وإنشاء الحساب</button><button class="secondary" onclick="decideCaptainInvite(${Number(i.id)},'reject')">رفض</button>`:'لا إجراء';return `<tr><td>#${esc(i.id)}<br><span class="small" dir="ltr">${esc(i.token_last8||'—')}</span></td><td>${esc(i.name||'—')}</td><td dir="ltr">${esc(i.phone||'—')}</td><td>${method}</td><td>${esc(i.submitted_at||i.created_at||'—')}</td><td>${status}<br><span class="small">${esc(i.decision_note||'')}</span></td><td>${action}</td></tr>`}).join('')||'<tr><td colspan="7">لا توجد طلبات تسجيل</td></tr>'}catch(e){$('captainInvitesMsg').textContent='تعذر تحميل طلبات التسجيل: '+e.message;$('captainInvitesMsg').classList.add('error');$('captainInvites').innerHTML='<tr><td colspan="7">تعذر تحميل البيانات</td></tr>'}}
 async function decideCaptainInvite(id,decision){const invite=pendingCaptainInvites.find(i=>Number(i.id)===Number(id));if(!invite||invite.status!=='pending')return;let note='';if(decision==='reject'){note=prompt('سبب الرفض (اختياري):','')??'';if(!confirm(`تأكيد رفض طلب ${invite.name||'الكابتن'}؟`))return}else if(!confirm(`تأكيد الموافقة على ${invite.name||'الكابتن'}؟\nسيُنشأ الحساب ويُفعّل الدخول ويُرسل رابط الدخول.`))return;try{$('captainInvitesMsg').textContent=decision==='approve'?'جاري إنشاء الحساب بعد موافقة المالك…':'جاري تسجيل الرفض…';const result=await api('/api/admin/captain-invites/'+id+'/decision',{method:'POST',body:JSON.stringify({decision,note})});$('captainInvitesMsg').textContent=result.status==='approved'?'تمت الموافقة وإنشاء حساب الكابتن وإرسال بطاقة الدخول.':'تم رفض طلب التسجيل دون إنشاء حساب.';await Promise.all([loadCaptainInvites(),loadCaptains(),loadUsers()])}catch(e){$('captainInvitesMsg').textContent='لم يُنفذ القرار: '+e.message;$('captainInvitesMsg').classList.add('error')}}
 async function adjustUserWallet(id,name){const amount=prompt(`قيمة إضافة الرصيد للكابتن ${name||''} بالدينار:`,'1');if(amount===null)return;const value=Number(amount);if(!Number.isFinite(value)||value<=0){alert('أدخل مبلغًا موجبًا.');return}const reason=prompt('سبب إضافة الرصيد:','تحويل رصيد من الشركة');if(reason===null||!reason.trim())return;const idempotencyKey='UI-USER-CREDIT-'+id+'-'+Date.now();try{const result=await api('/api/admin/users/'+id+'/wallet-adjustment',{method:'POST',body:JSON.stringify({direction:'credit',amount:value,reason:reason.trim(),idempotencyKey})});await Promise.all([loadUsers(),loadCaptains()]);alert(result.message||'تم إصدار بطاقة الرصيد وإرسالها للكابتن؛ يُضاف الرصيد عند استرداد البطاقة.')}catch(e){alert(e.message)}}
-async function adjustUserWalletDirect(id,name){const amount=prompt("قيمة الإضافة المباشرة لمحفظة الكابتن "+(name||"")+" بالدينار (دون بطاقة أو WhatsApp):","5");if(amount===null)return;const value=Number(amount);if(!Number.isFinite(value)||value<=0){alert("أدخل مبلغًا موجبًا.");return}const reason=prompt("سبب الإضافة المباشرة:","إضافة رصيد من الشركة");if(reason===null||!reason.trim())return;if(!confirm("تأكيد إضافة "+value.toFixed(2)+" JOD مباشرة إلى محفظة "+(name||"الكابتن")+"؟\nلن تُنشأ بطاقة ولن تُرسل رسالة WhatsApp للكابتن."))return;const idempotencyKey="UI-USER-DIRECT-CREDIT-"+id+"-"+Date.now();try{const result=await api("/api/admin/users/"+id+"/direct-credit",{method:"POST",body:JSON.stringify({amount:value,reason:reason.trim(),idempotencyKey})});await Promise.all([loadUsers(),loadCaptains()]);alert(result.alreadyApplied?"هذه الإضافة مسجلة مسبقًا. الرصيد الحالي: "+result.balance+" JOD":"تمت الإضافة المباشرة: "+result.credited+" JOD. الرصيد الحالي: "+result.balance+" JOD");}catch(e){alert(e.message)}}
+async function adjustUserWalletDirect(id,name){openDirectWalletModal(id,name)}
 let captainCleanupPreview=null;
 function decodeCleanupPreview(encoded){const binary=atob(String(encoded||'').trim());const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));return JSON.parse(new TextDecoder().decode(bytes))}
 function renderCaptainCleanupPreview(data){captainCleanupPreview=data;$('captainCleanupSummary').innerHTML=[['أعضاء القروب',data.memberCount],['كباتن سيبقون',data.keepCount],['خارج القروب',data.removeCount],['سيُحذفون',data.deletableEmptyCount],['سيُوقفون مع حفظ السجل',data.preserveHistoryCount]].map(([label,value])=>`<div class="metric"><span class="muted">${esc(label)}</span><b>${esc(value)}</b></div>`).join('')}
@@ -350,6 +374,25 @@ async function bootstrap(){if(token){showApp();return}try{const response=await f
     <div class="finance-v26-modal-actions"><button type="button" class="secondary" onclick="closeFinanceV26Panel()">إغلاق</button></div>
   </section>
 </div>
+
+<div id="directWalletModal" hidden>
+  <div class="direct-wallet-backdrop" onclick="closeDirectWalletModal()"></div>
+  <section class="direct-wallet-dialog" role="dialog" aria-modal="true" aria-labelledby="directWalletTitle">
+    <button type="button" class="direct-wallet-close" onclick="closeDirectWalletModal()" aria-label="إغلاق">×</button>
+    <span class="section-tag">محفظة الكابتن · مالك فقط</span>
+    <h2 id="directWalletTitle">إضافة رصيد مباشرة إلى محفظة الكابتن</h2>
+    <p>تُضاف القيمة داخل دفتر المحفظة فقط، من دون إنشاء بطاقة ومن دون إرسال رسالة WhatsApp للكابتن.</p>
+    <div id="directWalletContext" class="direct-wallet-context"></div>
+    <label for="directWalletAmount">قيمة الإضافة بالدينار</label>
+    <input id="directWalletAmount" type="number" min="0.01" max="1000000" step="0.01" inputmode="decimal" autocomplete="off" placeholder="مثال: 5.00">
+    <label for="directWalletReason">سبب الإضافة</label>
+    <textarea id="directWalletReason" maxlength="240">إضافة رصيد من محفظة الشركة عبر المالك</textarea>
+    <label class="direct-wallet-check"><input id="directWalletConfirm" type="checkbox"><span>أؤكد أن هذه إضافة مالية حقيقية إلى محفظة الكابتن، وأني راجعت المبلغ والسبب.</span></label>
+    <div class="direct-wallet-warning">بعد التأكيد سيُسجّل القيد في دفتر المحفظة ويُحدّث الرصيد. لا يوجد خصم، ولا تسوية حجز، ولا بطاقة، ولا إرسال WhatsApp من هذه النافذة.</div>
+    <div id="directWalletResult" class="direct-wallet-result" aria-live="polite">لم تُنفّذ أي حركة بعد.</div>
+    <div class="direct-wallet-actions"><button type="button" class="secondary" onclick="closeDirectWalletModal()">إلغاء</button><button type="button" id="directWalletSubmit" onclick="submitDirectWalletCredit()">تأكيد إضافة الرصيد</button></div>
+  </section>
+</div>
 <div id="mergeCaptainModal" hidden>
   <div class="merge-backdrop" onclick="closeMergeCaptainModal()"></div>
   <section class="merge-dialog" role="dialog" aria-modal="true" aria-labelledby="mergeCaptainTitle">
@@ -400,6 +443,46 @@ async function bootstrap(){if(token){showApp();return}try{const response=await f
     <div class="recovery-confirm-actions"><button type="button" class="secondary" onclick="closeUnconfirmedDecision()">إلغاء</button><button type="button" id="unconfirmedDecisionSubmit" onclick="submitUnconfirmedDecision()">تنفيذ القرار</button></div>
   </section>
 </div>
+
+<script>
+let directWalletFlow=null;
+function openDirectWalletModal(id,name){
+  const captain=(allCaptains||[]).find(c=>Number(c.id)===Number(id))||{};
+  directWalletFlow={id:Number(id),name:String(name||captain.name||'الكابتن'),balance:String(captain.balance||'0.00'),key:`UI-USER-DIRECT-CREDIT-${Number(id)}-${Date.now()}-${Math.random().toString(16).slice(2)}`,inFlight:false};
+  $('directWalletContext').innerHTML='<b>الكابتن:</b> '+esc(directWalletFlow.name)+'<br><b>الرصيد الحالي:</b> <span dir="ltr">'+esc(directWalletFlow.balance)+' JOD</span><br><span class="small">ID: <span dir="ltr">'+esc(directWalletFlow.id)+'</span></span>';
+  $('directWalletAmount').value='';
+  $('directWalletReason').value='إضافة رصيد من محفظة الشركة عبر المالك';
+  $('directWalletConfirm').checked=false;
+  const result=$('directWalletResult');result.className='direct-wallet-result';result.textContent='لم تُنفّذ أي حركة بعد.';
+  const submit=$('directWalletSubmit');submit.disabled=false;submit.textContent='تأكيد إضافة الرصيد';
+  $('directWalletModal').hidden=false;
+  window.setTimeout(()=>$('directWalletAmount').focus(),0);
+}
+function closeDirectWalletModal(){
+  if(directWalletFlow?.inFlight)return;
+  const modal=$('directWalletModal');
+  if(modal)modal.hidden=true;
+  directWalletFlow=null;
+}
+async function submitDirectWalletCredit(){
+  const flow=directWalletFlow,amount=Number($('directWalletAmount')?.value),reason=$('directWalletReason')?.value.trim(),confirmed=Boolean($('directWalletConfirm')?.checked),submit=$('directWalletSubmit'),result=$('directWalletResult');
+  if(!flow||flow.inFlight||!submit||!result)return;
+  if(!Number.isFinite(amount)||amount<=0||amount>1000000){result.className='direct-wallet-result error';result.textContent='أدخل مبلغًا صحيحًا أكبر من صفر ولا يتجاوز 1,000,000 دينار.';return}
+  if(!reason||reason.length<3||reason.length>240){result.className='direct-wallet-result error';result.textContent='اكتب سببًا واضحًا من 3 إلى 240 حرفًا.';return}
+  if(!confirmed){result.className='direct-wallet-result error';result.textContent='فعّل مربع التأكيد قبل تنفيذ الإضافة المالية.';return}
+  if(!window.confirm(`تأكيد إضافة ${amount.toFixed(2)} JOD مباشرة إلى محفظة ${flow.name}؟\n\nالسبب: ${reason}\n\nلن تُنشأ بطاقة ولن تُرسل رسالة WhatsApp.`))return;
+  flow.inFlight=true;submit.disabled=true;submit.textContent='جارٍ تسجيل الإضافة…';result.className='direct-wallet-result';result.textContent='جارٍ التحقق وتسجيل القيد الذري في دفتر المحفظة…';
+  try{
+    const data=await api('/api/admin/users/'+encodeURIComponent(flow.id)+'/direct-credit',{method:'POST',headers:{'X-Idempotency-Key':flow.key},body:JSON.stringify({amount,reason,idempotencyKey:flow.key})});
+    result.className='direct-wallet-result ok';result.textContent=data.alreadyApplied?'هذه الحركة مسجلة مسبقًا ولم تُكرر. الرصيد الحالي: '+data.balance+' JOD · القيد #'+(data.ledgerId||'—'): 'تمت إضافة '+data.credited+' JOD وتسجيل القيد #'+(data.ledgerId||'—')+' دون بطاقة أو WhatsApp. الرصيد الحالي: '+data.balance+' JOD.';
+    $('directWalletContext').innerHTML='<b>الكابتن:</b> '+esc(flow.name)+'<br><b>الرصيد بعد الحركة:</b> <span dir="ltr">'+esc(data.balance||'—')+' JOD</span><br><span class="small">تم تحديث دفتر المحفظة بنجاح.</span>';
+    submit.textContent='تم التسجيل';submit.disabled=true;flow.inFlight=false;
+    await Promise.all([loadUsers(),loadCaptains()]).catch(()=>{});
+  }catch(error){
+    flow.inFlight=false;submit.disabled=false;submit.textContent='إعادة المحاولة';result.className='direct-wallet-result error';result.textContent='لم تُنفذ الإضافة: '+(error.message||'خطأ غير معروف');
+  }
+}
+</script>
 <script>
 let mergeCaptainFlow=null;
 function setMergeCaptainMessage(message,kind='error'){

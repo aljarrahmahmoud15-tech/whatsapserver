@@ -25,9 +25,14 @@ assert.match(handler, /idempotency_key/);
 assert.match(handler, /alreadyApplied/);
 
 assert.match(admin, /function adjustUserWalletDirect\(id,name\)/);
-assert.match(admin, /\/api\/admin\/users\/"\+id\+"\/direct-credit/);
+assert.match(admin, /\/api\/admin\/users\/\'\+encodeURIComponent\(flow\.id\)\+\'\/direct-credit/);
 assert.match(admin, /إضافة مباشرة للمحفظة/);
-assert.match(admin, /لن تُنشأ بطاقة ولن تُرسل رسالة WhatsApp للكابتن/);
+assert.match(admin, /id="directWalletModal"/);
+assert.match(admin, /function openDirectWalletModal\(id,name\)/);
+assert.match(admin, /function submitDirectWalletCredit\(\)/);
+assert.match(admin, /directWalletConfirm/);
+assert.match(admin, /لن تُنشأ بطاقة ولن تُرسل رسالة WhatsApp/);
+assert.match(admin, /X-Idempotency-Key/);
 assert.match(admin, /UI-USER-DIRECT-CREDIT-/);
 
 console.log('direct wallet credit button and wallet-only owner guardrails verified');
