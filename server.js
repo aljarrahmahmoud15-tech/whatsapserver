@@ -9736,7 +9736,12 @@ async function createGroupInBackground({ operationId, groupName, phones }) {
     // participants in the same request. Create the group from the bot account
     // first, then add each participant separately.
     console.log(`[GroupCreate] creating empty group operation=${operationId}`);
-    const created = await withTimeout(client.createGroup(groupName), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
+    let created = await withTimeout(client.createGroup(groupName), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
+    if (typeof created === "string") {
+      console.warn(`[GroupCreate] empty group creation rejected; retrying with requested participants operation=${operationId}`);
+      const participantIds = phones.map((phone) => `${phone}@c.us`);
+      created = await withTimeout(client.createGroup(groupName, participantIds), WHATSAPP_GROUP_CREATE_TIMEOUT_MS, null);
+    }
     if (!created) throw new Error("WhatsApp group creation timed out; no group was configured");
     if (typeof created === "string") throw new Error(`WhatsApp could not create the group: ${created}`);
     createdGroupId = extractCreatedGroupId(created);
