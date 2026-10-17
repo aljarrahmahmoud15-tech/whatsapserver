@@ -10804,6 +10804,10 @@ app.post("/api/admin/group/invite-info", requireAdmin, async (req, res) => {
   if (!inviteCode || inviteCode.length < 10) return res.status(400).json({ error: "Valid WhatsApp invite link is required" });
   const info = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
   if (!info) return res.status(504).json({ error: "Invite information lookup timed out" });
+  const infoGroupId = info.id && (info.id._serialized || String(info.id)) || "";
+  if (infoGroupId && infoGroupId === configuredRuntimeGroupId()) {
+    setSetting("group_invite_url", String(req.body.inviteLink || req.body.inviteCode || "").trim());
+  }
   res.json({ success: true, invite: { subject: info.subject || null, id: info.id && (info.id._serialized || String(info.id)) || null, size: info.size || null } });
 });
 

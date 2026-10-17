@@ -9,6 +9,7 @@ assert.match(server, /botPhone:/);
 assert.match(server, /groupId:/);
 assert.match(server, /inviteUrl:\s*getSetting\("group_invite_url"/);
 assert.match(server, /setSetting\("group_invite_url", String\(req\.body\.inviteLink/);
+assert.match(server, /infoGroupId === configuredRuntimeGroupId\(\)/);
 assert.match(admin, /id="serviceIdentityCard"/);
 assert.match(admin, /id="serviceIdentityGrid"/);
 assert.match(admin, /renderServiceIdentity\(bot\.identity\|\|\{\}\)/);
