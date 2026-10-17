@@ -32,6 +32,7 @@ const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || BOT_PHONE;
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+const WHATSAPP_GROUP_INVITE_URL = process.env.WHATSAPP_GROUP_INVITE_URL?.trim() || "";
 // Normal operation requires both the bot identity and the exact group allowlist.
 const WHATSAPP_CONFIGURED = Boolean(BOT_PHONE_INTL && WHATSAPP_GROUP_ID);
 // QR bootstrap intentionally opens only the primary account. It never processes
@@ -9204,6 +9205,14 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({
     success: true,
+    identity: {
+      serviceName: COMPANY_BRAND_NAME,
+      botPhone: BOT_PHONE || BOT_PHONE_INTL || null,
+      botPhoneIntl: BOT_PHONE_INTL || null,
+      groupId: getSetting("group_id", null) || WHATSAPP_GROUP_ID || null,
+      groupName: getSetting("group_name", null) || WHATSAPP_GROUP_NAME || null,
+      inviteUrl: getSetting("group_invite_url", null) || WHATSAPP_GROUP_INVITE_URL || null,
+    },
     status: health.whatsapp?.ready ? "connected" : "offline",
     bot: {
       ready: Boolean(health.whatsapp?.ready),
@@ -10815,6 +10824,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     const groupChat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
     if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
     configureGroupId(groupId, groupName);
+    setSetting("group_invite_url", String(req.body.inviteLink || req.body.inviteCode || "").trim());
     audit("group.joined_and_configured", "group", groupId, { groupName });
     void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
     res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length, participantSource: groupChat.participantSource || null });
