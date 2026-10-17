@@ -114,7 +114,7 @@ assert(server.includes('if (groupId === originalGroupId || groupId === getSettin
 assert(server.includes('originalGroupUntouched: true'), 'deletion response confirms original group remains untouched');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
-assert(/app\.get\("\/api\/admin\/captains", requireAdmin, (?:adminReadLimiter, )?\(req, res\) => \{\n  normalizeBotIdentity\(\);/.test(server), 'captain list normalizes the owner before returning data');
+assert(/app\.get\("\/api\/admin\/captains", requireAdmin, (?:adminReadLimiter, )?v27AdminReadCache\("captains", 3000\), \(req, res\) => \{\n  normalizeBotIdentity\(\);/.test(server), 'captain list normalizes the owner before returning data');
 assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
 assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
 const approvalFlow = server.slice(server.indexOf('app.post("/api/admin/captain-invites/:id/decision"'), server.indexOf('app.post("/api/admin/captains/:id/approval-notification-test"'));
