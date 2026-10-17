@@ -17,6 +17,12 @@ assert.match(page, /id="decisionCabinet"/);
 assert.match(page, /id="v27ReadinessPanel"/);
 assert.match(page, /function renderV27Readiness\(\)/);
 assert.match(page, /id="v27DiagnosticsRefresh"/);
+assert.match(page, /function openInlineQr\(\)/);
+assert.match(page, /function refreshInlineQr\(\)/);
+assert.match(page, /id="v27QrImage"/);
+assert.match(page, /id="v27QrStatus"/);
+assert.match(page, /qr-temporary-link/);
+assert.doesNotMatch(page, /window\.open\('about:blank'/);
 assert.match(page, /class="v27-signal-mark"/);
 
 for (const decision of ['invites', 'finance', 'cards', 'wallet', 'subscriptions', 'orders', 'captains', 'staff', 'advanced']) {
@@ -103,6 +109,9 @@ assert.match(page, /confirmation:'V26_CANCEL_ORDER'/);
 assert.match(page, /X-Idempotency-Key/);
 assert.doesNotMatch(page, /OWNER_VAULT_SECRET|owner-vault\.key/);
 
+assert.match(server, /app\.get\("\/v27", sendV27OwnerPage\);/);
+assert.match(server, /app\.get\("\/v27\.html", sendV27OwnerPage\);/);
+assert.match(server, /sendV27OwnerPage/);
 // The unified production entry points use V27; V26 remains a rollback page.
 assert.match(server, /app\.get\("\/admin", \(req, res\) =>/);
 assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>/);
@@ -110,7 +119,7 @@ assert.match(server, /app\.get\("\/admin-v26\.html", \(req, res\) =>/);
 const adminRoute = server.slice(server.indexOf('app.get("/admin.html"'), server.indexOf('app.get("/admin-v26.html"'));
 assert.match(adminRoute, /admin-v27\.html/);
 
-for (const marker of ['backdrop-filter', 'prefers-reduced-motion', '.decision-grid', '.decision-detail', '.decision-kpi-grid', '.v27-readiness-grid', '.v27-feed']) {
+for (const marker of ['backdrop-filter', 'prefers-reduced-motion', '.decision-grid', '.v27-qr-shell', '.v27-qr-frame', '.decision-detail', '.decision-kpi-grid', '.v27-readiness-grid', '.v27-feed']) {
   assert.match(css, new RegExp(escaped(marker)));
 }
 assert.ok(scripts.length > 0, 'V27 inline JavaScript exists');
