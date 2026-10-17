@@ -9198,7 +9198,7 @@ app.get("/api/staff/support-tickets", requireStaffPermission("support"), (req, r
   const rows = db.prepare("SELECT id,ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
 });
-app.get("/api/admin/staff", requireAdmin, v27AdminReadCache("staff", 5000), (req, res) => {
+app.get("/api/admin/staff", requireAdmin, adminReadLimiter, v27AdminReadCache("staff", 5000), (req, res) => {
   const accounts = db.prepare("SELECT id,username,name,phone,role,active,permissions_json,last_login_at,created_at,updated_at FROM staff_accounts ORDER BY role,name,id").all().map((account) => ({ ...account, permissions: staffAccountPermissions(account), permissionLabels: STAFF_PERMISSION_LABELS, financialLinked: false }));
   res.json({ accounts, portalUrl: staffPortalUrl(req), permissionOptions: STAFF_PERMISSION_OPTIONS });
 });
@@ -9414,7 +9414,7 @@ app.get("/status", (req, res) => {
   return res.json(payload);
 });
 startPublicStatusCacheRefresh();
-app.get("/api/admin/system/health", requireAdmin, v27AdminReadCache("system-health", 1000), (req, res) => {
+app.get("/api/admin/system/health", requireAdmin, adminReadLimiter, v27AdminReadCache("system-health", 1000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=2");
   res.json({ success: true, health: runtimeHealth() });
 });
@@ -9592,7 +9592,7 @@ app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, 
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, mutation: "none", command, audit: auditRow, result });
 });
-app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, v27AdminReadCache("whatsapp-send-diagnostics", 1000), async (req, res) => {
+app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, v27AdminReadCache("whatsapp-send-diagnostics", 1000), async (req, res) => {
   try {
     const diagnostics = await readWhatsAppSendDiagnostics();
     res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=2");
@@ -9601,7 +9601,7 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, v27AdminReadCache(
     res.status(503).json({ success: false, mutation: "none", error: boundedDiagnosticText(error?.message || error, 500) });
   }
 });
-app.get("/api/admin/settings", requireOwnerAdmin, v27AdminReadCache("owner-settings", 2000), (req, res) => {
+app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
   res.json({ success: true, policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
@@ -9783,7 +9783,7 @@ app.get("/api/admin/v27/bootstrap", requireAdmin, async (req, res) => {
   res.setHeader('X-V27-Bootstrap-Cache', 'MISS');
   return res.json(payload);
 });
-app.get("/api/admin/bot/status", requireAdmin, v27AdminReadCache("bot-status", 1000), (req, res) => {
+app.get("/api/admin/bot/status", requireAdmin, adminReadLimiter, v27AdminReadCache("bot-status", 1000), (req, res) => {
   const health = runtimeHealth();
   const inventory = storageInventory();
   const botPhone = connectedBotPhone();
@@ -9833,7 +9833,7 @@ app.get("/api/admin/system/storage", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, inventory: storageInventory() });
 });
-app.get("/api/admin/system/settings", requireAdmin, v27AdminReadCache("system-settings", 2000), (req, res) => {
+app.get("/api/admin/system/settings", requireAdmin, adminReadLimiter, v27AdminReadCache("system-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
   res.json({ success: true, settings: operationalSettings() });
 });
@@ -9911,7 +9911,7 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
     return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
 });
-app.get("/api/admin/group/permissions", requireAdmin, v27AdminReadCache("group-permissions", 2000), async (req, res) => {
+app.get("/api/admin/group/permissions", requireAdmin, adminReadLimiter, v27AdminReadCache("group-permissions", 2000), async (req, res) => {
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
   if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
@@ -9962,7 +9962,7 @@ app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
   });
 });
 app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
-app.get("/api/admin/group-messages", requireAdmin, v27AdminReadCache("group-messages", 2000), (req, res) => {
+app.get("/api/admin/group-messages", requireAdmin, adminReadLimiter, v27AdminReadCache("group-messages", 2000), (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const requestedLimit = Number(req.query.limit || 50);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
@@ -10630,7 +10630,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
   }
 }
 
-app.get("/api/admin/group/invite-status", requireAdmin, v27AdminReadCache("group-invite-status", 1500), (req, res) => {
+app.get("/api/admin/group/invite-status", requireAdmin, adminReadLimiter, v27AdminReadCache("group-invite-status", 1500), (req, res) => {
   res.json({ success: true, ...groupInviteState, inviteUrl: groupInviteState.inviteUrl || null });
 });
 
@@ -10700,11 +10700,11 @@ app.post("/api/admin/group/create", requireAdmin, async (req, res) => {
   res.status(202).json({ success: true, accepted: true, operationId, groupName, participants: phones.map(displayPhone), messageSent: false });
 });
 
-app.get("/api/admin/group/create-status", requireAdmin, v27AdminReadCache("group-create-status", 1500), (req, res) => {
+app.get("/api/admin/group/create-status", requireAdmin, adminReadLimiter, v27AdminReadCache("group-create-status", 1500), (req, res) => {
   res.json({ ...groupCreateState, inFlight: groupCreateInFlight, configuredGroupId: getSetting("group_id", null) });
 });
 
-app.get("/api/admin/users", requireAdmin, v27AdminReadCache("users", 3000), (req, res) => {
+app.get("/api/admin/users", requireAdmin, adminReadLimiter, v27AdminReadCache("users", 3000), (req, res) => {
   normalizeBotIdentity();
   const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.is_bot,u.account_status,u.captain_auth_method,u.created_at,u.updated_at,
     COALESCE((SELECT SUM(c.value_cents) FROM topup_cards c WHERE c.assigned_captain_id=u.id),0) AS cards_issued_cents,
@@ -11466,7 +11466,7 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   if (!Array.isArray(chats)) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
   res.json({ groups: chats.filter((chat) => chat.isGroup && String(chat.id?._serialized || "") === WHATSAPP_GROUP_ID).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
 });
-app.get("/api/admin/group/members", requireAdmin, v27AdminReadCache("group-members", 3000), async (req, res) => {
+app.get("/api/admin/group/members", requireAdmin, adminReadLimiter, v27AdminReadCache("group-members", 3000), async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(409).json({ error: "No configured group" });
@@ -13245,11 +13245,11 @@ app.post("/api/support/tickets", (req, res) => {
   audit("support.ticket.created", "support_ticket", result.lastInsertRowid, { ticketCode, category });
   res.status(201).json({ success: true, ticketCode, status: "new", message: "تم تسجيل طلبك داخل خدمة العملاء" });
 });
-app.get("/api/admin/support-tickets", requireAdmin, v27AdminReadCache("support-tickets", 1000), (req, res) => {
+app.get("/api/admin/support-tickets", requireAdmin, adminReadLimiter, v27AdminReadCache("support-tickets", 1000), (req, res) => {
   const rows = db.prepare("SELECT * FROM support_tickets ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ tickets: rows.map((row) => ({ ...row, requestedValue: row.requested_value_cents === null ? null : money(row.requested_value_cents) })) });
 });
-app.get("/api/admin/notifications", requireAdmin, v27AdminReadCache("notifications", 1000), (req, res) => {
+app.get("/api/admin/notifications", requireAdmin, adminReadLimiter, v27AdminReadCache("notifications", 1000), (req, res) => {
   const requestedLimit = Number(req.query.limit || 50);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
   const rows = db.prepare("SELECT id,recipient_phone,recipient_role,event,title,message,delivery_status,message_id,created_at FROM notifications ORDER BY id DESC LIMIT ?").all(limit);
@@ -13339,7 +13339,7 @@ app.patch("/api/admin/support-tickets/:id", requireAdmin, (req, res) => {
   audit("support.ticket.updated", "support_ticket", ticketId, { status });
   res.json({ success: true, status });
 });
-app.get("/api/admin/overview", requireAdmin, v27AdminReadCache("overview", 2000), (req, res) => {
+app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache("overview", 2000), (req, res) => {
   const orders = db.prepare("SELECT COUNT(*) AS count FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled'").get().count;
   const accepted = db.prepare("SELECT COUNT(*) AS count FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status='accepted' AND o.settlement_state='settled'").get().count;
   // الأسعار و«تم» محفوظة داخليًا في order_candidates ولا تظهر كطلبات منتظرة في لوحة الإدارة.
@@ -13355,7 +13355,7 @@ app.get("/api/admin/overview", requireAdmin, v27AdminReadCache("overview", 2000)
   const companyWallet = companyWalletSummary();
   res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت جميع أنواع الطلبات وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
-app.get("/api/admin/leads", requireAdmin, v27AdminReadCache("leads", 2000), (req, res) => {
+app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
   res.json({ leads: rows });
 });
@@ -13395,7 +13395,7 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
     res.status(500).json({ error: "تعذر إلغاء الحجز وعكس الحوالة؛ أُلغيت العملية كاملة", financialMutation: false });
   }
 });
-app.get("/api/admin/orders", requireAdmin, v27AdminReadCache("orders", 1500), (req, res) => {
+app.get("/api/admin/orders", requireAdmin, adminReadLimiter, v27AdminReadCache("orders", 1500), (req, res) => {
   const rows = db.prepare(`SELECT o.*, p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
     s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at
     FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed')
@@ -13403,18 +13403,18 @@ app.get("/api/admin/orders", requireAdmin, v27AdminReadCache("orders", 1500), (r
     WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT 200`).all();
   res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
-app.get("/api/admin/orders/unlinked", requireAdmin, v27AdminReadCache("orders-unlinked", 1000), (req, res) => {
+app.get("/api/admin/orders/unlinked", requireAdmin, adminReadLimiter, v27AdminReadCache("orders-unlinked", 1000), (req, res) => {
   const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status IN ('accepted','completed') AND (o.captain_user_id IS NULL OR o.settlement_state='unlinked') ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
 });
-app.get("/api/admin/orders/open", requireAdmin, v27AdminReadCache("orders-open", 1000), (req, res) => {
+app.get("/api/admin/orders/open", requireAdmin, adminReadLimiter, v27AdminReadCache("orders-open", 1000), (req, res) => {
   const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status='open' AND COALESCE(o.archive_state,'active')='active' AND o.captain_user_id IS NULL ORDER BY o.created_at DESC,o.id DESC LIMIT 500`).all();
   if (String(req.query.summary || "") === "1") {
     return res.json({ orders: rows.map((row) => ({ orderNo: row.order_no, price: money(row.price_cents), origin: row.origin || null, destination: row.destination || null, tripTime: row.trip_time || null, orderKind: row.order_kind, producerName: row.producer_name || row.producer_name_snapshot || "غير مسجل", status: row.status, settlementState: row.settlement_state, createdAt: row.created_at, importSource: row.import_source || null })) });
   }
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
 });
-app.get("/api/admin/order-lifecycle", requireAdmin, v27AdminReadCache("order-lifecycle", 1000), (req, res) => {
+app.get("/api/admin/order-lifecycle", requireAdmin, adminReadLimiter, v27AdminReadCache("order-lifecycle", 1000), (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
@@ -13428,7 +13428,7 @@ app.get("/api/admin/order-lifecycle", requireAdmin, v27AdminReadCache("order-lif
   res.setHeader("Cache-Control", "no-store");
   res.json({ lifecycle: rows.map((row) => ({ ...row, price: money(row.price_cents), producer_name: row.producer_name || "غير مسجل", producer_phone: row.producer_phone || null })) });
 });
-app.get("/api/admin/unconfirmed-bookings", requireAdmin, v27AdminReadCache("unconfirmed-bookings", 1000), (req, res) => {
+app.get("/api/admin/unconfirmed-bookings", requireAdmin, adminReadLimiter, v27AdminReadCache("unconfirmed-bookings", 1000), (req, res) => {
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
   if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", bookings: [] });
   const requestedLimit = Number(req.query.limit || 1000);
@@ -13852,7 +13852,7 @@ app.post("/api/admin/orders/remove-test", requireAdmin, async (req, res) => {
   audit("test_order.removed", "order", "TEST-3001", { deleted: result.changes, backupName });
   res.json({ success: true, deleted: result.changes, backupName });
 });
-app.get("/api/admin/orders/confirmed", requireAdmin, v27AdminReadCache("orders-confirmed", 1000), (req, res) => {
+app.get("/api/admin/orders/confirmed", requireAdmin, adminReadLimiter, v27AdminReadCache("orders-confirmed", 1000), (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const groupId = String(req.query.groupId || "").trim();
@@ -13881,7 +13881,7 @@ app.get("/api/admin/orders/confirmed", requireAdmin, v27AdminReadCache("orders-c
     })),
   });
 });
-app.get("/api/admin/company-wallet", requireAdmin, v27AdminReadCache("company-wallet", 1000), (req, res) => {
+app.get("/api/admin/company-wallet", requireAdmin, adminReadLimiter, v27AdminReadCache("company-wallet", 1000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=2");
   res.json({ success: true, wallet: companyWalletSummary() });
 });
@@ -13994,7 +13994,7 @@ app.get("/api/staff/company-wallet", requireStaffPermission("company_wallet"), (
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, wallet: companyWalletSummary() });
 });
-app.get("/api/admin/wallets", requireAdmin, v27AdminReadCache("wallets", 2000), (req, res) => {
+app.get("/api/admin/wallets", requireAdmin, adminReadLimiter, v27AdminReadCache("wallets", 2000), (req, res) => {
   const users = db.prepare(`SELECT u.id,u.phone,u.name,u.role,u.wallet_cents,u.active,u.updated_at,
     COALESCE((SELECT SUM(s.producer_cents) FROM order_settlements s JOIN orders p ON p.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND p.status IN ('accepted','completed')),0) AS posted_share_cents,
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS executed_debit_cents,
@@ -14003,7 +14003,7 @@ app.get("/api/admin/wallets", requireAdmin, v27AdminReadCache("wallets", 2000), 
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
 const weeklySubscriptionScheduler = createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute: applyManualWeeklyCaptainCharges, audit, clock: now });
-app.get("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, v27AdminReadCache("subscription-schedule", 2000), (req, res) => {
+app.get("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, adminReadLimiter, v27AdminReadCache("subscription-schedule", 2000), (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, mutation: "none", ...weeklySubscriptionScheduler.status() });
 });
@@ -14021,7 +14021,7 @@ app.post("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, (re
     res.status(400).json({ error: error.message });
   }
 });
-app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, v27AdminReadCache("subscription-preview", 1000), (req, res) => {
+app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, adminReadLimiter, v27AdminReadCache("subscription-preview", 1000), (req, res) => {
   const stamp = now();
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return res.json({ success: true, period: null, eligibleCount: 0, totalCents: 0, captains: [] });
@@ -14041,7 +14041,7 @@ app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req
   audit("captain.subscription.manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, manualOnly: true });
   res.json({ success: true, manualOnly: true, automaticDeductions: weeklySubscriptionScheduler.config().enabled, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
 });
-app.get("/api/admin/subscriptions", requireAdmin, v27AdminReadCache("subscriptions", 1000), (req, res) => {
+app.get("/api/admin/subscriptions", requireAdmin, adminReadLimiter, v27AdminReadCache("subscriptions", 1000), (req, res) => {
   const requestedPeriod = String(req.query.periodStart || "").trim();
   const currentPeriod = currentCaptainSubscriptionPeriod();
   const periodStart = requestedPeriod || currentPeriod?.start || null;
@@ -14145,7 +14145,7 @@ app.get("/api/admin/subscriptions", requireAdmin, v27AdminReadCache("subscriptio
     })),
   });
 });
-app.get("/api/admin/daily-charges", requireAdmin, v27AdminReadCache("daily-charges", 1000), (req, res) => {
+app.get("/api/admin/daily-charges", requireAdmin, adminReadLimiter, v27AdminReadCache("daily-charges", 1000), (req, res) => {
   const requestedDate = String(req.query.chargeDate || "").trim();
   const chargeDate = requestedDate || now().slice(0, 10);
   const rows = db.prepare(`SELECT c.id,c.user_id,c.charge_date,c.amount_cents,c.reference,c.created_at,c.details_json,
@@ -14186,7 +14186,7 @@ app.get("/api/admin/daily-charges", requireAdmin, v27AdminReadCache("daily-charg
     charges: rows.map(serialize),
   });
 });
-app.get("/api/admin/settlements", requireAdmin, v27AdminReadCache("settlements", 1000), (req, res) => {
+app.get("/api/admin/settlements", requireAdmin, adminReadLimiter, v27AdminReadCache("settlements", 1000), (req, res) => {
   const query = String(req.query.q || "").trim().toLowerCase();
   const rows = settlementRows(req.query.limit || 300).map((row) => serializeSettlement(row, true)).filter((row) => {
     if (!query) return true;

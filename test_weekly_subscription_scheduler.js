@@ -237,6 +237,7 @@ test('legacy manual fee remains visible and blocks a second fee in the Amman wee
   let handler;
   f.context.app = { get(_path, ...handlers) { handler = handlers.at(-1); } };
   f.context.requireAdmin = () => {};
+  f.context.adminReadLimiter = () => {};
   f.context.v27AdminReadCache = () => (req, res, next) => next();
   f.context.money = (cents) => (Number(cents) / 100).toFixed(2);
   f.context.captainDisplayName = (name) => name;
