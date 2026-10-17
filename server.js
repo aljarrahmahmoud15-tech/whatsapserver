@@ -8684,7 +8684,7 @@ app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
   insertInvite(candidates);
   res.status(201).json({ success: true, created, skipped, rejected, message: "تم تجهيز الدعوات؛ لا يُنشأ الحساب ولا يُفعّل إلا بعد موافقة المالك" });
 });
-app.get("/api/captain/invites/:token", (req, res) => {
+app.get("/api/captain/invites/:token", captainReadLimiter, (req, res) => {
   expireCaptainInvites();
   const publicToken = getSetting("captain_public_invite_token", null);
   let invite = db.prepare("SELECT id,status,name,phone,vehicle_type,vehicle_model,auth_method,token_last8,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites WHERE token_hash=? LIMIT 1").get(inviteTokenHash(req.params.token));
