@@ -193,6 +193,7 @@ const adminSendResults = new Map();
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
+const v27PageRate = new Map();
 const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
@@ -287,6 +288,7 @@ app.get("/captain/register", (req, res) => {
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
 const sendV27OwnerPage = (req, res) => {
+  if (!consumeRateLimit(v27PageRate, clientAddress(req), 60)) return res.status(429).type("text").send("Too many V27 page requests; try again later");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
@@ -5896,7 +5898,7 @@ function pruneCompletedRunMap(store, atMs = Date.now()) {
 let runtimeMemoryCleanupTimer = null;
 function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneAdminSendState(atMs);
-  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  [loginRate, redeemRate, adminActionRate, v27PageRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
