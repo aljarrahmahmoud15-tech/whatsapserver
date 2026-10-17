@@ -109,9 +109,8 @@ assert.match(page, /confirmation:'V26_CANCEL_ORDER'/);
 assert.match(page, /X-Idempotency-Key/);
 assert.doesNotMatch(page, /OWNER_VAULT_SECRET|owner-vault\.key/);
 
-assert.match(server, /app\.get\("\/v27", sendV27OwnerPage\);/);
-assert.match(server, /app\.get\("\/v27\.html", sendV27OwnerPage\);/);
-assert.match(server, /sendV27OwnerPage/);
+assert.match(server, /app\.get\("\/v27", \(req, res\) =>/);
+assert.match(server, /app\.get\("\/v27\.html", \(req, res\) =>/);
 assert.match(server, /v27PageRate/);
 assert.match(server, /consumeRateLimit\(v27PageRate, clientAddress\(req\), 60\)/);
 // The unified production entry points use V27; V26 remains a rollback page.

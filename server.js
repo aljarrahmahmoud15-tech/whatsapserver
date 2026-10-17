@@ -287,14 +287,18 @@ app.get("/captain/register", (req, res) => {
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
-const sendV27OwnerPage = (req, res) => {
+app.get("/v27", (req, res) => {
   if (!consumeRateLimit(v27PageRate, clientAddress(req), 60)) return res.status(429).type("text").send("Too many V27 page requests; try again later");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
-};
-app.get("/v27", sendV27OwnerPage);
-app.get("/v27.html", sendV27OwnerPage);
+});
+app.get("/v27.html", (req, res) => {
+  if (!consumeRateLimit(v27PageRate, clientAddress(req), 60)) return res.status(429).type("text").send("Too many V27 page requests; try again later");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
 app.get("/admin", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
