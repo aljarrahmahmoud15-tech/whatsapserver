@@ -286,13 +286,21 @@ app.get("/captain/register", (req, res) => {
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
+app.get("/admin", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
 app.get("/admin.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "admin.html"));
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/admin-v26.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+});
+app.get("/admin-v27.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
