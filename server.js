@@ -1,4 +1,5 @@
 const express = require("express");
+const { rateLimit } = require("express-rate-limit");
 const cors = require("cors");
 const qrcode = require("qrcode");
 const crypto = require("crypto");
@@ -121,6 +122,13 @@ const SPECIAL_ORDER_RATE_BPS = 1250;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const v27PageLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 60,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many V27 page requests; try again later",
+});
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 // How long an admin-issued QR access link stays valid. The page it opens refreshes
@@ -285,6 +293,16 @@ app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+});
+app.get("/v27", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/v27.html", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/admin", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
