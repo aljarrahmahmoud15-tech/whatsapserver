@@ -16,6 +16,8 @@ assert.match(page, /class="v27-quickbar"/);
 assert.match(page, /id="decisionCabinet"/);
 assert.match(page, /id="v27ReadinessPanel"/);
 assert.match(page, /function renderV27Readiness\(\)/);
+assert.match(page, /session=state\.bot\?\.session\|\|\{\}/);
+assert.match(page, /session\.authPathWritable/);
 assert.match(page, /id="v27DiagnosticsRefresh"/);
 assert.match(page, /function openInlineQr\(\)/);
 assert.match(page, /function refreshInlineQr\(\)/);
