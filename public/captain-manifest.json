@@ -1,0 +1,15 @@
+{
+  "name": "V27 Captain",
+  "short_name": "V27",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/captain?mode=login",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "description": "بوابة الكابتن التابعة لمركز V27 الموحد",
+  "icons": [
+    {"src":"/aljarah-logo-mark-clean.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}

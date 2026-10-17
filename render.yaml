@@ -50,3 +50,5 @@ services:
         value: "300000"
       - key: AUTO_APPROVAL_TOPUP_CENTS
         value: "500"
+      - key: REDIS_URL
+        sync: false

@@ -25,6 +25,7 @@
     "pino": "8.21.0",
     "puppeteer": "^25.11.0",
     "qrcode": "^1.5.4",
+    "redis": "^4.7.1",
     "sharp": "^0.35.4",
     "whatsapp-web.js": "^1.26.0"
   },

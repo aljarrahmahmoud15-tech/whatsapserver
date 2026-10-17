@@ -25,7 +25,7 @@ assert.match(page, /id="v27QrImage"/);
 assert.match(page, /id="v27QrStatus"/);
 assert.match(page, /qr-temporary-link/);
 assert.doesNotMatch(page, /window\.open\('about:blank'/);
-assert.match(page, /class="v27-signal-mark"/);
+assert.match(page, /class="v27-signal-mark"[^>]*>V27<\/span>/);
 
 for (const decision of ['invites', 'finance', 'cards', 'wallet', 'subscriptions', 'orders', 'captains', 'staff', 'advanced']) {
   assert.match(page, new RegExp(`data-decision-open="${decision}"`));
@@ -52,7 +52,6 @@ for (const endpoint of [
   '/api/admin/cards?limit=100',
   '/api/admin/leads',
   '/api/admin/support-tickets',
-  '/api/admin/owner-vault',
   '/api/admin/group/summary',
 ]) {
   assert.match(page, new RegExp(escaped(endpoint)));
@@ -109,7 +108,9 @@ assert.match(page, /رقم البوت المتصل/);
 assert.match(page, /رابط الدعوة/);
 assert.match(page, /confirmation:'V26_CANCEL_ORDER'/);
 assert.match(page, /X-Idempotency-Key/);
-assert.doesNotMatch(page, /OWNER_VAULT_SECRET|owner-vault\.key/);
+assert.doesNotMatch(page, /OWNER_VAULT_SECRET|owner-vault\.key|owner-vault|خزنة المالك/);
+assert.match(page, /المركبة/);
+assert.match(page, /v27-command\.css/);
 
 assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>/);
 assert.match(server, /app\.get\("\/v27\.html", v27PageLimiter, \(req, res\) =>/);
