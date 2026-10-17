@@ -243,6 +243,8 @@ const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
 const selectiveCaptainPinRuns = new Map();
 let publicStatusCache = { payload: null, expiresAt: 0 };
+let publicStatusRefreshPromise = null;
+let publicStatusRefreshTimer = null;
 let v27BootstrapCache = { payload: null, expiresAt: 0 };
 let adminGroupSummaryCache = { groupId: null, payload: null, expiresAt: 0 };
 const negativeBalanceWarningRuns = new Map();
@@ -382,8 +384,11 @@ app.use("/api", (req, res, next) => {
   next();
 });
 app.get("/health", (req, res) => {
+  const startedAt = process.hrtime.bigint();
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
+  res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
+  // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
+  return res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -9164,13 +9169,7 @@ app.get("/api/public/operations-feed", (req, res) => {
   });
 });
 
-app.get("/status", (req, res) => {
-  const currentTime = Date.now();
-  if (publicStatusCache.payload && publicStatusCache.expiresAt > currentTime) {
-    res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=5");
-    res.setHeader("X-Status-Cache", "HIT");
-    return res.json(publicStatusCache.payload);
-  }
+function buildPublicStatusPayload() {
   const configuredGroupId = configuredRuntimeGroupId() || null;
   const groupReceiverReady = Boolean(isReady || baileysReady);
   const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
@@ -9184,7 +9183,7 @@ app.get("/status", (req, res) => {
     SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
     SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS accepted_unlinked
     FROM orders`).get();
-  const payload = {
+  return {
     ready: Boolean(isReady),
     phone: connectedBotPhone(),
     whatsappIdentityScope: WHATSAPP_IDENTITY_SCOPE,
@@ -9234,11 +9233,59 @@ app.get("/status", (req, res) => {
     historicalRecovery: lastHistoricalRecovery,
     acceptanceRecovery: lastAcceptanceRecovery,
   };
-  publicStatusCache = { payload, expiresAt: Date.now() + PUBLIC_STATUS_CACHE_TTL_MS };
+}
+
+function publicStatusTimingMs(startedAt) {
+  return (Number(process.hrtime.bigint() - startedAt) / 1e6).toFixed(2);
+}
+
+function refreshPublicStatusCache() {
+  if (publicStatusRefreshPromise) return publicStatusRefreshPromise;
+  publicStatusRefreshPromise = new Promise((resolve) => {
+    setImmediate(() => {
+      try {
+        const payload = buildPublicStatusPayload();
+        publicStatusCache = { payload, expiresAt: Date.now() + PUBLIC_STATUS_CACHE_TTL_MS };
+        resolve(payload);
+      } catch (error) {
+        console.error("[PublicStatus] snapshot refresh failed:", error?.message || error);
+        resolve(null);
+      } finally {
+        publicStatusRefreshPromise = null;
+      }
+    });
+  });
+  return publicStatusRefreshPromise;
+}
+
+function startPublicStatusCacheRefresh() {
+  if (publicStatusRefreshTimer) return;
+  void refreshPublicStatusCache();
+  publicStatusRefreshTimer = setInterval(() => { void refreshPublicStatusCache(); }, PUBLIC_STATUS_CACHE_TTL_MS);
+  if (typeof publicStatusRefreshTimer.unref === "function") publicStatusRefreshTimer.unref();
+}
+
+app.get("/status", (req, res) => {
+  const startedAt = process.hrtime.bigint();
+  const currentTime = Date.now();
+  const hasFreshSnapshot = Boolean(publicStatusCache.payload && publicStatusCache.expiresAt > currentTime);
+  let payload = publicStatusCache.payload;
+  let cacheState = hasFreshSnapshot ? "HIT" : (payload ? "STALE" : "WARMUP");
+
+  // Never put SQLite or filesystem work on the normal request path after warmup.
+  if (!payload) {
+    payload = buildPublicStatusPayload();
+    publicStatusCache = { payload, expiresAt: Date.now() + PUBLIC_STATUS_CACHE_TTL_MS };
+    cacheState = "WARMUP";
+  }
+  if (!hasFreshSnapshot) void refreshPublicStatusCache();
+
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=5");
-  res.setHeader("X-Status-Cache", "MISS");
-  res.json(payload);
+  res.setHeader("X-Status-Cache", cacheState);
+  res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
+  return res.json(payload);
 });
+startPublicStatusCacheRefresh();
 app.get("/api/admin/system/health", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, health: runtimeHealth() });
