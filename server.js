@@ -61,7 +61,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const DEFAULT_PUBLIC_REPORT_ORIGIN = "https://waslni-stab-ndpp5c4k.manus.space";
 const PUBLIC_REPORT_ORIGIN = String(process.env.PUBLIC_REPORT_ORIGIN || DEFAULT_PUBLIC_REPORT_ORIGIN).replace(/\/$/, "");
 const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || 5000)));
-const V27_BOOTSTRAP_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.V27_BOOTSTRAP_CACHE_TTL_MS || 1000)));
+const V27_BOOTSTRAP_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.V27_BOOTSTRAP_CACHE_TTL_MS || 5000)));
 const ADMIN_GROUP_SUMMARY_CACHE_TTL_MS = Math.max(1000, Math.min(30000, Number(process.env.ADMIN_GROUP_SUMMARY_CACHE_TTL_MS || 5000)));
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
@@ -9488,13 +9488,13 @@ function buildV27BootstrapPayload() {
 app.get("/api/admin/v27/bootstrap", requireAdmin, (req, res) => {
   const currentTime = Date.now();
   if (v27BootstrapCache.payload && v27BootstrapCache.expiresAt > currentTime) {
-    res.setHeader('Cache-Control', 'private, max-age=1, stale-while-revalidate=3');
+    res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=10');
     res.setHeader('X-V27-Bootstrap-Cache', 'HIT');
     return res.json(v27BootstrapCache.payload);
   }
   const payload = buildV27BootstrapPayload();
   v27BootstrapCache = { payload, expiresAt: currentTime + V27_BOOTSTRAP_CACHE_TTL_MS };
-  res.setHeader('Cache-Control', 'private, max-age=1, stale-while-revalidate=3');
+  res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=10');
   res.setHeader('X-V27-Bootstrap-Cache', 'MISS');
   return res.json(payload);
 });
