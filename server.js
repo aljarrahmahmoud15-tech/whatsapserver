@@ -61,6 +61,8 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const DEFAULT_PUBLIC_REPORT_ORIGIN = "https://waslni-stab-ndpp5c4k.manus.space";
 const PUBLIC_REPORT_ORIGIN = String(process.env.PUBLIC_REPORT_ORIGIN || DEFAULT_PUBLIC_REPORT_ORIGIN).replace(/\/$/, "");
 const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || 5000)));
+const V27_BOOTSTRAP_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.env.V27_BOOTSTRAP_CACHE_TTL_MS || 1000)));
+const ADMIN_GROUP_SUMMARY_CACHE_TTL_MS = Math.max(1000, Math.min(30000, Number(process.env.ADMIN_GROUP_SUMMARY_CACHE_TTL_MS || 5000)));
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
@@ -212,6 +214,8 @@ const bulkTopupRuns = new Map();
 const bulkPinRuns = new Map();
 const selectiveCaptainPinRuns = new Map();
 let publicStatusCache = { payload: null, expiresAt: 0 };
+let v27BootstrapCache = { payload: null, expiresAt: 0 };
+let adminGroupSummaryCache = { groupId: null, payload: null, expiresAt: 0 };
 const negativeBalanceWarningRuns = new Map();
 const captainWalletPolicyRuns = new Map();
 let captainWalletPolicySweepInFlight = false;
@@ -9387,6 +9391,113 @@ app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
     res.status(500).json({ error: "Unable to persist ADMIN_TOKEN" });
   }
 });
+function buildV27BootstrapPayload() {
+  const generatedAt = now();
+  const groupId = configuredRuntimeGroupId() || null;
+  const groupReceiverReady = Boolean(isReady || baileysReady);
+  const persistence = whatsappSessionPersistenceHealth();
+  const dataDirHealth = safePathHealth(DATA_DIR);
+  const databaseFileHealth = safePathHealth(path.join(DATA_DIR, 'aljarah.sqlite'));
+  const captainCounts = db.prepare(`SELECT
+    SUM(CASE WHEN role='captain' AND is_bot=0 AND active=1 AND account_status='active' AND COALESCE(archived_at,'')='' THEN 1 ELSE 0 END) AS active_registered,
+    SUM(CASE WHEN role='captain' AND is_bot=0 AND wallet_cents < 0 AND COALESCE(archived_at,'')='' THEN 1 ELSE 0 END) AS negative_wallets
+    FROM users`).get();
+  const orderLinkStats = db.prepare(`SELECT
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND captain_user_id IS NULL THEN 1 ELSE 0 END) AS open_unassigned,
+    SUM(CASE WHEN status='open' AND COALESCE(archive_state,'active')='active' AND pending_captain_user_id IS NOT NULL THEN 1 ELSE 0 END) AS pending_confirmation,
+    SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS accepted_unlinked
+    FROM orders`).get();
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayOrders = db.prepare(`SELECT COUNT(*) AS count FROM orders
+    WHERE status IN ('accepted','completed') AND substr(COALESCE(accepted_at,created_at),1,10)=?`).get(todayKey);
+  const company = companyUser();
+  const cachedGroup = adminGroupSummaryCache.groupId === groupId && adminGroupSummaryCache.payload && adminGroupSummaryCache.expiresAt > Date.now()
+    ? adminGroupSummaryCache.payload
+    : null;
+  const activeRegistered = Number(captainCounts?.active_registered || 0);
+  const negativeWalletCount = Number(captainCounts?.negative_wallets || 0);
+  const orders = {
+    todayAccepted: Number(todayOrders?.count || 0),
+    openUnassigned: Number(orderLinkStats?.open_unassigned || 0),
+    pendingConfirmation: Number(orderLinkStats?.pending_confirmation || 0),
+    acceptedUnlinked: Number(orderLinkStats?.accepted_unlinked || 0),
+  };
+  const status = {
+    ready: Boolean(isReady),
+    phone: connectedBotPhone(),
+    groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)),
+    groupId,
+    groupReceiverReady,
+    groupReceiverMode: baileysReady ? 'webjs+baileys' : (isReady ? 'webjs' : 'offline'),
+    groupMemberCount: cachedGroup?.participantCount ?? null,
+    whatsappState,
+    whatsappLastError,
+    whatsappSessionPersistence: persistence,
+    whatsappStoragePressure: {
+      status: whatsappStoragePressure.status,
+      blocked: Boolean(whatsappStoragePressure.blocked),
+      usageRatio: Number(whatsappStoragePressure.usageRatio || 0),
+    },
+    captains: { activeRegistered, negativeWalletCount },
+    orders,
+  };
+  return {
+    success: true,
+    mutation: 'none',
+    source: 'v27-bootstrap',
+    generatedAt,
+    refreshAfterMs: V27_BOOTSTRAP_CACHE_TTL_MS,
+    status,
+    bot: {
+      bot: {
+        ready: Boolean(isReady),
+        state: whatsappState || 'unknown',
+        phoneDisplay: displayPhone(connectedBotPhone()),
+      },
+      session: {
+        qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+        authPathWritable: Boolean(persistence.authDirectoryWritable),
+      },
+      storage: {
+        dataDirExists: Boolean(dataDirHealth.exists),
+        dataDirWritable: Boolean(dataDirHealth.writable),
+        databaseExists: Boolean(databaseFileHealth.exists),
+        databaseWritable: Boolean(databaseFileHealth.writable),
+      },
+    },
+    summary: {
+      captains: { activeRegistered, negativeWalletCount },
+      orders,
+      group: {
+        participantCount: cachedGroup?.participantCount ?? null,
+        cachedAt: cachedGroup?.generatedAt || null,
+        source: cachedGroup ? 'group-summary-cache' : 'not-loaded',
+      },
+    },
+    group: {
+      participantCount: cachedGroup?.participantCount ?? null,
+      cachedAt: cachedGroup?.generatedAt || null,
+      source: cachedGroup ? 'group-summary-cache' : 'not-loaded',
+    },
+    companyWallet: company ? {
+      balance: money(company.wallet_cents),
+      balanceCents: Number(company.wallet_cents || 0),
+    } : null,
+  };
+}
+app.get("/api/admin/v27/bootstrap", requireAdmin, (req, res) => {
+  const currentTime = Date.now();
+  if (v27BootstrapCache.payload && v27BootstrapCache.expiresAt > currentTime) {
+    res.setHeader('Cache-Control', 'private, max-age=1, stale-while-revalidate=3');
+    res.setHeader('X-V27-Bootstrap-Cache', 'HIT');
+    return res.json(v27BootstrapCache.payload);
+  }
+  const payload = buildV27BootstrapPayload();
+  v27BootstrapCache = { payload, expiresAt: currentTime + V27_BOOTSTRAP_CACHE_TTL_MS };
+  res.setHeader('Cache-Control', 'private, max-age=1, stale-while-revalidate=3');
+  res.setHeader('X-V27-Bootstrap-Cache', 'MISS');
+  return res.json(payload);
+});
 app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
   const health = runtimeHealth();
   const inventory = storageInventory();
@@ -9478,13 +9589,18 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
   if (!client || !isReady) {
     return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
   }
+  const currentTime = Date.now();
+  if (adminGroupSummaryCache.groupId === groupId && adminGroupSummaryCache.payload && adminGroupSummaryCache.expiresAt > currentTime) {
+    res.setHeader("Cache-Control", "private, max-age=3, stale-while-revalidate=5");
+    res.setHeader("X-Group-Summary-Cache", "HIT");
+    return res.json(adminGroupSummaryCache.payload);
+  }
   try {
     const snapshot = await readGroupSnapshot(groupId);
     if (!snapshot || !Array.isArray(snapshot.participants)) {
       return res.status(502).json({ success: false, mutation: "none", groupId, ready: true, error: "Official group participant snapshot unavailable" });
     }
-    res.setHeader("Cache-Control", "no-store, max-age=0");
-    return res.json({
+    const payload = {
       success: true,
       mutation: "none",
       groupId,
@@ -9493,7 +9609,11 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
       participantRawCount: Number(snapshot.participantRawCount || snapshot.participants.length),
       participantSource: snapshot.participantSource || "unknown",
       generatedAt: now(),
-    });
+    };
+    adminGroupSummaryCache = { groupId, payload, expiresAt: Date.now() + ADMIN_GROUP_SUMMARY_CACHE_TTL_MS };
+    res.setHeader("Cache-Control", "private, max-age=3, stale-while-revalidate=5");
+    res.setHeader("X-Group-Summary-Cache", "MISS");
+    return res.json(payload);
   } catch (error) {
     return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
