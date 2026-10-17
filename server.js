@@ -1,4 +1,5 @@
 const express = require("express");
+const { rateLimit } = require("express-rate-limit");
 const cors = require("cors");
 const qrcode = require("qrcode");
 const crypto = require("crypto");
@@ -121,6 +122,13 @@ const SPECIAL_ORDER_RATE_BPS = 1250;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const v27PageLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 60,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many V27 page requests; try again later",
+});
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 // How long an admin-issued QR access link stays valid. The page it opens refreshes
@@ -193,7 +201,6 @@ const adminSendResults = new Map();
 const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
-const v27PageRate = new Map();
 const whatsappAuthRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
@@ -287,14 +294,12 @@ app.get("/captain/register", (req, res) => {
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
-app.get("/v27", (req, res) => {
-  if (!consumeRateLimit(v27PageRate, clientAddress(req), 60)) return res.status(429).type("text").send("Too many V27 page requests; try again later");
+app.get("/v27", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
-app.get("/v27.html", (req, res) => {
-  if (!consumeRateLimit(v27PageRate, clientAddress(req), 60)) return res.status(429).type("text").send("Too many V27 page requests; try again later");
+app.get("/v27.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
@@ -5902,7 +5907,7 @@ function pruneCompletedRunMap(store, atMs = Date.now()) {
 let runtimeMemoryCleanupTimer = null;
 function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneAdminSendState(atMs);
-  [loginRate, redeemRate, adminActionRate, v27PageRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
