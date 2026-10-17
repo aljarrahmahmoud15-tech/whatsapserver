@@ -132,6 +132,34 @@ const v27PageLimiter = rateLimit({
   legacyHeaders: false,
   message: "Too many V27 page requests; try again later",
 });
+const captainRegistrationLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many captain registration attempts; try again later",
+});
+const captainReadLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many captain read requests; try again later",
+});
+const adminReadLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 180,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many administrative read requests; try again later",
+});
+const adminMutationLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 45,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many administrative changes; try again later",
+});
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 // How long an admin-issued QR access link stays valid. The page it opens refreshes
@@ -8666,7 +8694,7 @@ app.get("/api/captain/invites/:token", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ invite: { ...invite, canSubmit: invite.status === "issued" || invite.status === "pending" } });
 });
-app.post("/api/captain/invites/:token/apply", async (req, res) => {
+app.post("/api/captain/invites/:token/apply", captainRegistrationLimiter, async (req, res) => {
   expireCaptainInvites();
   const publicToken = getSetting("captain_public_invite_token", null);
   let createdInviteToken = null;
@@ -8713,7 +8741,7 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
   void notifyOperations({ event: "captain.join.requested", title: "طلب تسجيل كابتن جديد بانتظار الموافقة", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "لم يُنشأ الحساب ولم يُفعّل الدخول. يجب اعتماد الطلب من زر الموافقة في لوحة المالك."], ownersOnly: true });
   res.status(202).json({ success: true, status: "pending", activated: false, accountCreated: false, token: createdInviteToken || req.params.token, message: "تم إرسال طلب التسجيل إلى الشركة. لا يمكن الدخول أو استخدام الحساب قبل موافقة المالك." });
 });
-app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
+app.get("/api/admin/captain-invites", requireAdmin, adminReadLimiter, (req, res) => {
   expireCaptainInvites();
   const invites = db.prepare("SELECT id,status,name,phone,vehicle_type,vehicle_model,auth_method,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
     let inviteUrl = null;
@@ -8761,7 +8789,7 @@ async function issueApprovalTopupCard({ captain, approvalId, req }) {
     return { status: "pending", cardId: card.id, reason: "delivery_failed" };
   } finally { cardDeliveryInFlight.delete(card.id); }
 }
-app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, res) => {
+app.post("/api/admin/captain-invites/:id/decision", requireAdmin, adminMutationLimiter, async (req, res) => {
   const id = Number(req.params.id);
   const decision = String(req.body?.decision || "").trim().toLowerCase();
   const note = String(req.body?.note || "").trim().slice(0, 240);
@@ -8952,7 +8980,7 @@ app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
   res.json({ success: true });
 });
-app.get("/api/captain/overview", requireCaptain, (req, res) => {
+app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) => {
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
@@ -10511,7 +10539,7 @@ app.get("/api/admin/users", requireAdmin, (req, res) => {
     FROM users u WHERE u.archived_at IS NULL AND u.account_status<>'merged' ORDER BY u.is_bot DESC,u.role,u.name,u.id`).all();
   res.json({ users: users.map((user) => ({ ...user, balance: money(user.wallet_cents), cardsIssued: money(user.cards_issued_cents), cardsSent: money(user.cards_sent_cents), cardsRedeemed: money(user.cards_redeemed_cents), cardsPending: money(user.cards_pending_cents), protected: Boolean(user.is_bot || user.role === "company") })) });
 });
-app.patch("/api/admin/users/:id", requireAdmin, (req, res) => {
+app.patch("/api/admin/users/:id", requireAdmin, adminMutationLimiter, (req, res) => {
   const id = Number(req.params.id);
   const user = db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(id);
   if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
@@ -10554,7 +10582,7 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   audit("admin.user.deleted", "user", id, { phone: user.phone, name: user.name, role: user.role, reason, archived: true, financialMutation: false, settlementMutation: false });
   res.json({ success: true, archived: id, archivedAt: stamp, removedFromInterface: true, financialMutation: false, settlementMutation: false });
 });
-app.get("/api/admin/captains", requireAdmin, (req, res) => {
+app.get("/api/admin/captains", requireAdmin, adminReadLimiter, (req, res) => {
   normalizeBotIdentity();
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.vehicle_type,u.vehicle_model,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_orders,
@@ -10583,7 +10611,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     netEarnings: money(Number(row.posted_share_cents || 0) - Number(row.executed_debit_cents || 0)),
   })) });
 });
-app.get("/api/admin/captains/archived", requireAdmin, (req, res) => {
+app.get("/api/admin/captains/archived", requireAdmin, adminReadLimiter, (req, res) => {
   normalizeBotIdentity();
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.vehicle_type,u.vehicle_model,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,u.archived_at,u.archive_reason,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_orders,
@@ -10653,7 +10681,7 @@ app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => 
   void notifyOperations({ event: "group.members.registered_as_captains", title: "تأكيد تسجيل أعضاء القروب", lines: [`إجمالي الأعضاء: ${result.totalMembers || 0}`, `الحسابات المسجلة: ${(result.results || []).filter((item) => item.status === "registered").length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`], ownersOnly: true });
   res.json({ success: true, ...result, sendLinks });
 });
-app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
+app.post("/api/admin/captains", requireAdminOrDashboardApi, adminMutationLimiter, (req, res) => {
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();
   const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod || "whatsapp");
@@ -10683,7 +10711,7 @@ app.post("/api/admin/captains", requireAdminOrDashboardApi, (req, res) => {
   void sendCaptainAppLink({ phone, name }, captainInviteBaseUrl(req));
   res.status(201).json({ success: true, id: result.lastInsertRowid, accountLinkSent: true });
 });
-app.get("/api/admin/captains/:id/profile", requireAdmin, (req, res) => {
+app.get("/api/admin/captains/:id/profile", requireAdmin, adminReadLimiter, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
   const captain = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_whatsapp_verified_at,captain_last_login_at,is_bot,created_at,updated_at FROM users WHERE id=? AND role='captain'").get(id);
