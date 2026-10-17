@@ -115,12 +115,17 @@ assert.match(page, /v27-command\.css/);
 assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>/);
 assert.match(server, /app\.get\("\/v27\.html", v27PageLimiter, \(req, res\) =>/);
 assert.match(server, /const v27PageLimiter = rateLimit/);
-// The unified production entry points use V27; V26 remains a rollback page.
+// V27 remains a retired compatibility artifact; production entry points use V26.
 assert.match(server, /app\.get\("\/admin", \(req, res\) =>/);
 assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>/);
 assert.match(server, /app\.get\("\/admin-v26\.html", \(req, res\) =>/);
+assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>[\s\S]{0,260}res\.redirect\(302, "\/admin-v26\.html"\)/);
+assert.match(server, /app\.get\("\/v27\.html", v27PageLimiter, \(req, res\) =>[\s\S]{0,260}res\.redirect\(302, "\/admin-v26\.html"\)/);
 const adminRoute = server.slice(server.indexOf('app.get("/admin.html"'), server.indexOf('app.get("/admin-v26.html"'));
-assert.match(adminRoute, /admin-v27\.html/);
+assert.match(adminRoute, /admin-v26\.html/);
+assert.doesNotMatch(adminRoute, /admin-v27\.html/);
+const retiredV27Route = server.slice(server.indexOf('app.get("/admin-v27.html"'), server.indexOf('app.get("/owner-direct"'));
+assert.match(retiredV27Route, /res\.redirect\(302, "\/admin-v26\.html"\)/);
 
 for (const marker of ['backdrop-filter', 'prefers-reduced-motion', '.decision-grid', '.v27-qr-shell', '.v27-qr-frame', '.decision-detail', '.decision-kpi-grid', '.v27-readiness-grid', '.v27-feed']) {
   assert.match(css, new RegExp(escaped(marker)));

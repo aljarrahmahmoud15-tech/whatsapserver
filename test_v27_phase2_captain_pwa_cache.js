@@ -22,7 +22,7 @@ assert.match(captain, /beforeinstallprompt/);
 assert.match(captain, /serviceWorker\.register\('\/captain-sw\.js'/);
 assert.match(sw, /url\.pathname\.startsWith\('\/api\/'\)/);
 
-assert.match(admin, /class="brand-mark v27-logo-mark"[^>]*>V27<\/div>/);
+assert.match(admin, /<title>وصلني الآن · Owner Control V27<\/title>/);
 assert.match(admin, /class="v27-signal-mark"[^>]*>V27<\/span>/);
 assert.doesNotMatch(admin, /owner-vault|خزنة المالك/);
 assert.match(admin, /المركبة/);
@@ -40,5 +40,7 @@ assert.match(server, /writeRedisJson/);
 assert.match(server, /X-V27-Bootstrap-Cache.*REDIS-HIT/);
 assert.match(server, /X-Group-Summary-Cache.*REDIS-HIT/);
 assert.match(server, /using memory cache/);
+assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>[\s\S]{0,260}res\.redirect\(302, "\/admin-v26\.html"\)/);
+assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>[\s\S]{0,180}res\.redirect\(302, "\/admin-v26\.html"\)/);
 
-console.log('V27 phase 2 captain vehicle, support, PWA, logo, and Redis cache guardrails: PASS');
+console.log('retired V27 artifact, captain vehicle, support, PWA, and Redis cache guardrails: PASS');
