@@ -49,7 +49,25 @@ const WHATSAPP_IDENTITY_SCOPE = String(
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
-const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://alshaikh-delivery.onrender.com").replace(/\/$/, "");
+const DEFAULT_PUBLIC_APP_URL = "https://alshaikh-delivery.onrender.com";
+const SHEIKH_PUBLIC_HOST = "alshaikh-delivery.onrender.com";
+function safePublicOrigin(value) {
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    const host = String(url.hostname || "").toLowerCase();
+    const local = host === "localhost" || host === "127.0.0.1";
+    if (url.protocol !== "https:" && !(local && url.protocol === "http:")) return "";
+    if (host !== SHEIKH_PUBLIC_HOST && !local) return "";
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return "";
+  }
+}
+const PUBLIC_APP_URL = safePublicOrigin(process.env.PUBLIC_BASE_URL)
+  || safePublicOrigin(process.env.RENDER_EXTERNAL_URL)
+  || DEFAULT_PUBLIC_APP_URL;
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/var/data");
 if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
@@ -2736,15 +2754,15 @@ function ensureCaptainUser(phone, name) {
     return findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
   }
 }
-function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
+function captainAppUrl(baseUrl = PUBLIC_APP_URL) {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   return `${normalized || PUBLIC_APP_URL}/captain/register`;
 }
-function captainLoginUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
+function captainLoginUrl(baseUrl = PUBLIC_APP_URL) {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   return `${normalized || PUBLIC_APP_URL}/captain?mode=login`;
 }
-function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
+function captainGatewayUrl(baseUrl = PUBLIC_APP_URL, inviteToken = "") {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   if (!inviteToken) return captainAppUrl(baseUrl);
   // Private invite tokens must remain on the captain page; the public
@@ -2775,7 +2793,7 @@ function ensureCaptainAccessCredentials(captain) {
   db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,updated_at=? WHERE id=? AND role='captain'").run(bcrypt.hashSync(temporaryPin, 10), now(), current.id);
   return { ...current, temporaryPin };
 }
-async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+async function sendCaptainAppLink(captain, baseUrl = PUBLIC_APP_URL) {
   const prepared = ensureCaptainAccessCredentials(captain);
   const phone = phoneWithCountry(prepared && prepared.phone);
   if (!isValidJordanPhone(phone)) return false;
@@ -2824,7 +2842,7 @@ async function resolveGroupParticipantPhone(participant) {
 }
 const CAPTAIN_GROUP_WELCOME_EVENT = "captain.group.welcome";
 const captainGroupWelcomeInFlight = new Set();
-function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+function captainGroupWelcomeMessage(name, baseUrl = PUBLIC_APP_URL) {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
     `أهلًا بك يا كابتن ${displayName} في قروب «الشيخ للتوصيل».`,
@@ -3241,7 +3259,7 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
 function createCaptainPin() {
   return String(crypto.randomInt(10000, 100000));
 }
-async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "", inviteCode = "", reactivate = false } = {}) {
+async function registerGroupMembersAsCaptains({ groupId = getSetting("group_id", null), sendLinks = false, baseUrl = PUBLIC_APP_URL, inviteCode = "", reactivate = false } = {}) {
   if (!groupId || !isConfiguredGroup(groupId)) return { status: "group_not_configured", groupId: groupId || null, results: [] };
   if (!client || !isReady) return { status: "bot_not_ready", groupId, results: [] };
   const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId, inviteCode);
@@ -3332,7 +3350,7 @@ function reconcileCaptainLinksWithoutSettlement() {
   }
   return { linked, skipped };
 }
-async function normalizeAllCaptains({ force = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+async function normalizeAllCaptains({ force = false, baseUrl = PUBLIC_APP_URL } = {}) {
   if (!force && getSetting("captain_normalization_version", "") === CAPTAIN_NORMALIZATION_VERSION) return { status: "already_completed" };
   if (captainNormalizationInFlight) return { status: "already_running" };
   captainNormalizationInFlight = true;
@@ -3369,7 +3387,7 @@ async function normalizeAllCaptains({ force = false, baseUrl = process.env.PUBLI
     captainNormalizationInFlight = false;
   }
 }
-async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl = process.env.PUBLIC_BASE_URL || "" } = {}) {
+async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl = PUBLIC_APP_URL } = {}) {
   const captains = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND active=1 ORDER BY id").all();
   const results = [];
   for (const captain of captains) {
@@ -4153,7 +4171,7 @@ async function renderOperationsMessageMedia(title, lines = []) {
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "sheikh-delivery-operations-message.png");
 }
-async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+async function renderCaptainWelcomeCardMedia(name, baseUrl = PUBLIC_APP_URL) {
   const logoPath = path.join(__dirname, "public", "sheikh-delivery-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
@@ -8311,9 +8329,9 @@ function expireCaptainInvites() {
 function captainInviteBaseUrl(req) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
   const protocol = forwardedProto === "https" ? "https" : "http";
-  const configured = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
-  const base = configured && !/bot\.wasselni-biz\.com/i.test(configured) ? configured : `${protocol}://${req.get("host")}`;
-  return base.replace(/\/$/, "");
+  const configured = safePublicOrigin(process.env.PUBLIC_BASE_URL) || safePublicOrigin(process.env.RENDER_EXTERNAL_URL);
+  const requestOrigin = safePublicOrigin(`${protocol}://${req.get("host")}`);
+  return configured || requestOrigin || PUBLIC_APP_URL;
 }
 function requireQrAccess(req, res, next) {
   if (!consumeRateLimit(qrRate, clientAddress(req), QR_RATE_LIMIT_MAX)) {
@@ -9658,14 +9676,14 @@ app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
 app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
-  const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
+  const origin = captainInviteBaseUrl(req);
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
 app.post("/api/admin/qr-main-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
-  const origin = process.env.PUBLIC_BASE_URL || `https://${req.get("host")}`;
+  const origin = captainInviteBaseUrl(req);
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr-main?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
@@ -9992,7 +10010,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending" }));
     groupInviteState = { status: "sending", operationId, startedAt: groupInviteState.startedAt, finishedAt: null, error: null, sourceGroupId, groupId, inviteUrl, oldMemberCount: rawPhones.length, eligibleMemberCount: phones.length, excludedOwnerCount: rawPhones.filter((phone) => botPhones.has(phone)).length, excludedBlockedCount: rawPhones.filter((phone) => blockedPhones.has(phone)).length, participants: participantResults };
     configureGroupId(groupId, groupName);
-    const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
+    const gateway = captainGatewayUrl(PUBLIC_APP_URL);
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
       "تم تسجيل رقمك ضمن أعضاء شبكة الشيخ للتوصيل التشغيلية.",
