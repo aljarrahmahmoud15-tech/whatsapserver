@@ -32,5 +32,10 @@ assert.match(ui, /main-clean-bot-phone/);
 assert.match(ui, /main-clean-group-id/);
 assert.match(ui, /main-clean-group-invite/);
 assert.match(ui, /refreshCleanIdentity/);
+assert.match(ui, /main-clean-qr/);
+assert.match(ui, /openCleanMainQr/);
+assert.match(ui, /\/api\/admin\/qr-main-link/);
+assert.match(ui, /ليس للقروب/);
+assert.doesNotMatch(ui, /data:image\/png;base64,/);
 
-console.log('Clean archived-session restore route, isolation guardrails, health telemetry, and UI action verified');
+console.log('Clean archived-session restore route, identity panel, protected main QR, isolation guardrails, and health telemetry verified');
