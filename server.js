@@ -11028,6 +11028,18 @@ app.post("/api/admin/whatsapp/group-screenshot", requireAdmin, async (req, res) 
       await withTimeout(client.interface.openChatWindow(groupId), 20000, null);
       await new Promise((resolve) => setTimeout(resolve, Number(req.body?.waitMs || 3000)));
     }
+    try {
+      await client.pupPage.evaluate(() => {
+        const labels = ["متابعة", "Continue", "OK", "حسناً"];
+        const nodes = Array.from(document.querySelectorAll('div[role="button"], button, span'));
+        for (const node of nodes) {
+          const text = (node.textContent || "").trim();
+          if (labels.includes(text)) { try { node.click(); } catch (_) {} }
+        }
+        document.querySelectorAll('[role="dialog"]').forEach((element) => { try { element.remove(); } catch (_) {} });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    } catch (_) {}
     const base64 = await client.pupPage.screenshot({ type: "png", encoding: "base64", fullPage: false });
     fs.writeFileSync(GROUP_SCREENSHOT_PATH, Buffer.from(String(base64), "base64"));
     res.setHeader("Cache-Control", "no-store");
