@@ -11017,6 +11017,35 @@ app.get("/api/admin/connection-alerts", requireAdmin, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, mutation: "none", ready: Boolean(isReady), whatsappState: String(whatsappState || ""), alertPhones: connectionAlertPhones().length, pending: getSetting("connection_alert_pending", "") === "1", lastDropAt: CONNECTION_ALERT_STATE.lastDropAt || getSetting("connection_last_drop_at", "") || null, lastDropReason: CONNECTION_ALERT_STATE.lastDropReason, lastRecoveryAt: CONNECTION_ALERT_STATE.lastRecoveryAt || getSetting("connection_last_recovery_at", "") || null, lastAlertError: CONNECTION_ALERT_STATE.lastAlertError });
 });
+const GROUP_SCREENSHOT_PATH = path.join(DATA_DIR, "group-screenshot.png");
+app.post("/api/admin/whatsapp/group-screenshot", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group", mutation: "none" });
+  if (!client.pupPage || typeof client.pupPage.screenshot !== "function") return res.status(501).json({ error: "Page screenshots are unavailable in this runtime", mutation: "none" });
+  try {
+    if (client.interface && typeof client.interface.openChatWindow === "function") {
+      await withTimeout(client.interface.openChatWindow(groupId), 20000, null);
+      await new Promise((resolve) => setTimeout(resolve, Number(req.body?.waitMs || 3000)));
+    }
+    const base64 = await client.pupPage.screenshot({ type: "png", encoding: "base64", fullPage: false });
+    fs.writeFileSync(GROUP_SCREENSHOT_PATH, Buffer.from(String(base64), "base64"));
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ success: true, mutation: "none", groupId, bytes: fs.statSync(GROUP_SCREENSHOT_PATH).size, capturedAt: new Date().toISOString(), imageUrl: "/api/admin/whatsapp/group-screenshot/latest.png" });
+  } catch (error) {
+    res.status(500).json({ error: `Screenshot failed: ${String(error?.message || error)}`, mutation: "none" });
+  }
+});
+app.get("/api/admin/whatsapp/group-screenshot/latest.png", requireAdmin, async (req, res) => {
+  try {
+    if (!fs.existsSync(GROUP_SCREENSHOT_PATH)) return res.status(404).json({ error: "No screenshot captured yet", mutation: "none" });
+    res.setHeader("Cache-Control", "no-store");
+    res.type("png");
+    res.send(fs.readFileSync(GROUP_SCREENSHOT_PATH));
+  } catch (error) {
+    res.status(500).json({ error: String(error?.message || error), mutation: "none" });
+  }
+});
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
