@@ -8888,8 +8888,8 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
     live: false,
   };
   const botReady = Boolean(client && isReady);
-  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 8000).catch(() => null) : null;
-  if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 6000).catch(() => null);
+  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 3500).catch(() => null) : null;
+  if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 3000).catch(() => null);
   res.setHeader("Cache-Control", "no-store, max-age=0");
   if (liveSnapshot && Array.isArray(liveSnapshot.participants) && liveSnapshot.participants.length) {
     return res.json({
