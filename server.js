@@ -1312,6 +1312,77 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
+async function notifyOfficialGroupNegativeBalanceAcceptance({ groupId, captain = null, balanceCents, requiredCents, projectedBalanceCents = null, sourceMessageId }) {
+  const targetGroupId = String(groupId || "").trim();
+  const sourceKey = String(sourceMessageId || "").trim();
+  if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
+  const idempotencyKey = `GROUP-ACCEPTANCE-NEGATIVE-BALANCE-${sourceKey}`;
+  const captainName = captain ? captainDisplayName(captain.registration_name || captain.name) : "غير معروف";
+  const title = "⚠️ تثبيت حجز برصيد غير كافٍ";
+  const message = brandedMessage(title, [
+    `الكابتن: ${captainName}`,
+    `الرصيد الحالي: ${money(balanceCents)} JOD | العمولة المطلوبة: ${money(requiredCents)} JOD`,
+    Number.isFinite(projectedBalanceCents) ? `الرصيد بعد خصم 15%: ${money(projectedBalanceCents)} JOD` : null,
+    "تم تثبيت الحجز حسب سياسة التشغيل، ولم يُرفض الرد.",
+    "يرجى شحن المحفظة لتجنّب إيقاف الحساب.",
+  ].filter(Boolean));
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group','order.acceptance.negative_balance_notice',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  try {
+    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = result.message?.id?._serialized || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("order.acceptance.negative_balance_group_notice", "message", sourceKey, { groupId: targetGroupId, captainId: captain?.id || null, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
+    return { status: deliveryStatus, notificationId, messageId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.negative_balance_group_notice_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
+    return { status: "failed", notificationId };
+  }
+}
+async function notifyOfficialGroupAcceptanceDiscarded({ groupId, captain = null, balanceCents = null, requiredCents = null, sourceMessageId, deletionStatus = "requested", deletionVerified = false, reasonLabel = null }) {
+  const targetGroupId = String(groupId || "").trim();
+  const sourceKey = String(sourceMessageId || "").trim();
+  if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
+  const idempotencyKey = `GROUP-ACCEPTANCE-DISCARDED-${sourceKey}`;
+  const captainName = captain ? captainDisplayName(captain.registration_name || captain.name) : "غير معروف";
+  const title = "🗑️ حذف رد «تم» غير معتمد";
+  const reasonLine = String(reasonLabel || "").trim() || `عدم كفاية الرصيد (الرصيد ${money(balanceCents)} JOD | العمولة المطلوبة ${money(requiredCents)} JOD)`;
+  const message = brandedMessage(title, [
+    `الكابتن: ${captainName}`,
+    `السبب: ${reasonLine}`,
+    deletionStatus === "deleted"
+      ? (deletionVerified ? "حالة الحذف: ✅ تم حذف رسالة «تم» من القروب وتم التحقق منها." : "حالة الحذف: ⚠️ تم إرسال طلب الحذف وتعذّر التحقق البصري الآن.")
+      : "حالة الحذف: ⚠️ تعذّر حذف رسالة «تم» تلقائيًا، والرسالة مرفوضة وغير معتمدة.",
+    "لن يُعتمد هذا الرد ولن تُنفَّذ أي تسوية مالية بناءً عليه.",
+    "✅ الحجز متاح من جديد لمن يستطيع التنفيذ.",
+  ]);
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group','order.acceptance.discarded_group_notice',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  try {
+    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = result.message?.id?._serialized || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("order.acceptance.discarded_group_notice", "message", sourceKey, { groupId: targetGroupId, captainId: captain?.id || null, deletionStatus, deletionVerified, deliveryStatus, idempotencyKey });
+    return { status: deliveryStatus, notificationId, messageId, deletionVerified };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.discarded_group_notice_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
+    return { status: "failed", notificationId, deletionVerified };
+  }
+}
 async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
@@ -2874,6 +2945,44 @@ function readStoredGroupSummary(groupId) {
   const registeredCaptains = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND active=1").get()?.count || 0);
   return { groupName: storedName || null, registeredCaptains };
 }
+// Clean membership for direct (1:1) delivery. The set is built from a fast live read plus
+// stored evidence of participation in the configured group, then cached briefly so notifications
+// stay quick. An empty set always denies delivery: nobody outside the group is ever messaged.
+const CLEAN_GROUP_MEMBER_CACHE_MS = Math.max(15000, Number(process.env.CLEAN_GROUP_MEMBER_CACHE_MS || 120000));
+let cleanGroupMemberCache = { phones: new Set(), loadedAt: 0, source: "none" };
+
+function storedConfiguredGroupParticipantPhones(groupId) {
+  const phones = new Set();
+  if (!groupId) return phones;
+  for (const row of db.prepare("SELECT DISTINCT sender_phone FROM messages WHERE group_id=? AND sender_phone IS NOT NULL AND sender_phone<>''").all(groupId)) {
+    const phone = phoneWithCountry(row.sender_phone);
+    if (phone) phones.add(phone);
+  }
+  return phones;
+}
+
+async function readCleanGroupMemberPhones({ force = false } = {}) {
+  const nowMs = Date.now();
+  if (!force && cleanGroupMemberCache.phones.size && nowMs - cleanGroupMemberCache.loadedAt < CLEAN_GROUP_MEMBER_CACHE_MS) return cleanGroupMemberCache;
+  const groupId = configuredRuntimeGroupId();
+  const phones = new Set();
+  let live = false;
+  if (groupId) {
+    const snapshot = await readGroupParticipantsQuick(groupId, 3500).catch(() => null);
+    if (snapshot && Array.isArray(snapshot.participants)) {
+      live = true;
+      for (const participant of snapshot.participants) {
+        const phone = phoneWithCountry(groupParticipantPhone(participant));
+        if (phone) phones.add(phone);
+      }
+    }
+    for (const phone of storedConfiguredGroupParticipantPhones(groupId)) phones.add(phone);
+  }
+  const source = live ? (phones.size ? "live+stored" : "live_empty") : phones.size ? "stored_messages" : "none";
+  cleanGroupMemberCache = { phones, loadedAt: nowMs, source };
+  return cleanGroupMemberCache;
+}
+
 async function isCleanConfiguredGroupMemberAllowed(target) {
   if (!CLEAN_INSTANCE) return false;
   const value = String(target || "").trim();
@@ -2881,17 +2990,9 @@ async function isCleanConfiguredGroupMemberAllowed(target) {
   const groupId = configuredRuntimeGroupId();
   const phone = phoneWithCountry(value.slice(0, -5));
   if (!groupId || !phone || isBlockedPhone(phone) || isProtectedOwnerIdentity(phone)) return false;
-  const snapshot = await readGroupSnapshot(groupId);
-  if (!snapshot || !Array.isArray(snapshot.participants)) return false;
-  for (const participant of snapshot.participants) {
-    const participantPhone = groupParticipantPhone(participant);
-    if (participantPhone === phone) return true;
-    if (!participantPhone) {
-      const resolvedPhone = await resolveGroupParticipantPhone(participant).catch(() => "");
-      if (resolvedPhone === phone) return true;
-    }
-  }
-  return false;
+  const cache = await readCleanGroupMemberPhones();
+  if (!cache.phones.size) return false;
+  return cache.phones.has(phone);
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
@@ -3768,8 +3869,11 @@ function registerAcceptance({ groupId, messageId, senderPhone, senderName, candi
   if (recorded.state !== "recorded") return recorded;
   const { acceptance } = recorded;
   audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, acceptanceMode: normalizedAcceptanceMode });
+  if (balanceGuard.state === "negative_balance_allowed") {
+    audit("order.acceptance_negative_balance_allowed", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, balanceCents: balanceGuard.balanceCents, requiredCents: balanceGuard.requiredCents, projectedBalanceCents: balanceGuard.projectedBalanceCents, policy: "orders_are_pinned_regardless_of_balance" });
+  }
   notifyPendingBookingApproval(candidate.id, { acceptanceMessageId: acceptance.acceptance_message_id, captain });
-  return { state: "recorded", acceptance, captain, producer };
+  return { state: "recorded", acceptance, captain, producer, balanceGuard };
 }
 function latestEligibleGroupOrderMessage(messages, groupId) {
   return (Array.isArray(messages) ? messages : [])
@@ -3801,9 +3905,12 @@ function acceptanceBalanceGuard(candidate, captain) {
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
   if (balanceCents < requiredCents) {
-    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
+    // Owner policy (Clean + northern V27): any order that is sent must be pinned even when the
+    // executing captain holds a negative balance. The 15% commission is still debited, and the
+    // group receives a branded notice naming the captain; no acceptance is refused for balance.
+    return { allowed: true, state: "negative_balance_allowed", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
   }
-  return { allowed: true, walletOwner, balanceCents, requiredCents };
+  return { allowed: true, state: "ok", walletOwner, balanceCents, requiredCents };
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -6550,6 +6657,16 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptance_author_lid: msg?._data?.author || msg?.id?.participant || msg?._data?.id?.participant,
     },
   });
+  if (acceptanceResult.state === "recorded" && acceptanceResult.balanceGuard?.state === "negative_balance_allowed") {
+    void notifyOfficialGroupNegativeBalanceAcceptance({
+      groupId,
+      captain: acceptanceResult.captain,
+      balanceCents: acceptanceResult.balanceGuard.balanceCents,
+      requiredCents: acceptanceResult.balanceGuard.requiredCents,
+      projectedBalanceCents: acceptanceResult.balanceGuard.projectedBalanceCents,
+      sourceMessageId: messageId,
+    });
+  }
   if (acceptanceResult.state === "insufficient_balance") {
     audit("order.acceptance_rejected_insufficient_balance", "order_candidate", candidate.id, {
       acceptanceMessageId: messageId,
@@ -6579,14 +6696,16 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
         console.warn(`[Order] insufficient-balance acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
       }
     }
-    const correction = deletionStatus === "deleted"
-      ? { status: "not_needed" }
-      : await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
-        groupId,
-        balanceCents: acceptanceResult.balanceCents,
-        requiredCents: acceptanceResult.requiredCents,
-        sourceMessageId: messageId,
-      });
+    const deletionVerified = deletionStatus === "deleted" ? await verifyWhatsAppMessageDeleted(messageId) : false;
+    const correction = await notifyOfficialGroupAcceptanceDiscarded({
+      groupId,
+      captain: acceptanceResult.captain,
+      balanceCents: acceptanceResult.balanceCents,
+      requiredCents: acceptanceResult.requiredCents,
+      sourceMessageId: messageId,
+      deletionStatus,
+      deletionVerified,
+    });
     if (!['sent', 'already_sent', 'uncertain', 'not_needed'].includes(correction.status)) {
       console.warn(`[Order] insufficient-balance group correction ${correction.status} message=${orderTraceKey(messageId)}`);
     }
@@ -6608,6 +6727,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
       deletionStatus,
+      deletionVerified,
       correctionStatus: correction.status,
       notificationStatus: notification.status,
     });
@@ -7590,7 +7710,17 @@ async function handleMessageReaction(reaction) {
         return;
       }
       const cancelled = cancelPendingOrderForProducerReaction(pendingAcceptance.candidate_id, messageId, approverPhone, ownerAuthorized);
-      if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+      if (cancelled.state === "cancelled") {
+        void sendFinalBookingCancellation(target.from).catch(() => null);
+        const cancelledCaptain = pendingAcceptance.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pendingAcceptance.captain_user_id) : null;
+        void discardAcceptanceMessageWithConfirmation({
+          groupId: target.from,
+          acceptanceMessageId: pendingAcceptance.acceptance_message_id || messageId,
+          captain: cancelledCaptain,
+          candidateId: pendingAcceptance.candidate_id,
+          reasonLabel: "إلغاء صاحب الطلب للحجز (❌) وإعادة فتحه",
+        }).catch(() => null);
+      }
       return;
     }
     const acceptedOrder = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
@@ -10879,6 +11009,49 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
+// Visual confirmation: after a revoke request the message must no longer be readable in the
+// group. Anything still readable (non-empty body) means the deletion did not take effect.
+async function verifyWhatsAppMessageDeleted(messageId, timeoutMs = 4000) {
+  if (!messageId) return false;
+  try {
+    const live = await getWhatsAppMessageByIdVariants(messageId, timeoutMs);
+    if (!live) return true;
+    return !String(live.body || "").trim();
+  } catch (_) {
+    return false;
+  }
+}
+// Deletes a discarded «تم» reply, verifies it is really gone, and posts the branded
+// confirmation in the group so the deletion is visible to everyone.
+async function discardAcceptanceMessageWithConfirmation({ groupId, acceptanceMessageId, captain = null, candidateId = null, reasonLabel = null }) {
+  const targetGroupId = String(groupId || "").trim();
+  const messageId = String(acceptanceMessageId || "").trim();
+  if (!isConfiguredGroup(targetGroupId) || !messageId) return { status: "invalid" };
+  let deletion = { ok: false, reason: "not_attempted" };
+  try {
+    const live = await getWhatsAppMessageByIdVariants(messageId, 5000);
+    deletion = await deleteWhatsAppMessageForEveryone(messageId, {
+      message: live || undefined,
+      reason: "discarded_acceptance",
+      groupId: targetGroupId,
+      candidateId,
+    });
+  } catch (error) {
+    deletion = { ok: false, reason: "exception", error: String(error?.message || error).slice(0, 200) };
+  }
+  const deletionStatus = deletion?.ok ? "deleted" : "failed";
+  const deletionVerified = deletionStatus === "deleted" ? await verifyWhatsAppMessageDeleted(messageId) : false;
+  const notice = await notifyOfficialGroupAcceptanceDiscarded({
+    groupId: targetGroupId,
+    captain,
+    sourceMessageId: messageId,
+    deletionStatus,
+    deletionVerified,
+    reasonLabel,
+  });
+  audit("order.acceptance.discarded_message", "message", messageId, { groupId: targetGroupId, candidateId, deletionStatus, deletionVerified, noticeStatus: notice.status });
+  return { status: notice.status, deletionStatus, deletionVerified };
+}
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionContext = {
     reason: String(context.reason || "unspecified").slice(0, 120),
@@ -11542,6 +11715,10 @@ async function sendCaptainPinNoticeAtMostOnce(captain, content, timeoutMs = 3000
   const stored = db.prepare("SELECT id,phone,role,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(captainId);
   if (!stored || stored.role !== "captain" || Number(stored.is_bot) === 1 || String(stored.account_status || "") === "merged" || phoneWithCountry(stored.phone) !== expectedPhone) return null;
   if (!client || !isReady || typeof client.sendMessage !== "function") return null;
+  if (CLEAN_INSTANCE && !(await isCleanConfiguredGroupMemberAllowed(`${expectedPhone}@c.us`))) {
+    audit("captain.pin_notice.blocked_not_group_member", "user", captainId, { phone: expectedPhone });
+    return null;
+  }
   const resolved = await resolveWhatsAppRecipientId(expectedPhone);
   const directContactSuffix = ["@", "c.us"].join("");
   const recipient = String(resolved || `${expectedPhone}${directContactSuffix}`).trim();

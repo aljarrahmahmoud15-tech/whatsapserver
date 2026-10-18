@@ -84,7 +84,10 @@ assert(server.includes('parsedOrder: parseOrder(body)'), 'live group message ins
 assert(server.includes('client.getInviteInfo(inviteCode)'), 'group relink verifies the invite before accepting it');
 assert(server.includes('membersLoaded: groupChat.participants.length'), 'group relink reports loaded member count');
 assert(server.includes('function resolveGroupChat(groupId, inviteCode = "")'), 'group registration retries group hydration');
-assert(server.includes('async function readGroupSnapshot(groupId)'), 'group membership can be read from the WhatsApp page model');
+assert(server.includes('async function readGroupSnapshot(groupId, timeoutMs = 30000)'), 'group membership can be read from the WhatsApp page model with a bounded timeout');
+assert(server.includes('async function readGroupParticipantsQuick(groupId, timeoutMs = 8000)'), 'group membership can also be read through the public WhatsApp Web API');
+assert(server.includes('async function readCleanGroupMemberPhones('), 'clean membership is resolved from live plus stored group evidence');
+assert(server.includes('if (!cache.phones.size) return false;'), 'clean membership denies delivery when no group member is known');
 assert(server.includes('queryAndUpdateGroupMetadataById({ id: requestedId })'), 'group snapshot refreshes WhatsApp group metadata');
 assert(server.includes('async function mediaFromRemoteVideoUrl(url, index = 0)'), 'guide videos download through a bounded temporary file');
 assert(server.includes('MessageMedia.fromFilePath(temporaryPath)'), 'guide videos are converted from the downloaded local file');
