@@ -40,7 +40,7 @@ assert.match(server, /writeRedisJson/);
 assert.match(server, /X-V27-Bootstrap-Cache.*REDIS-HIT/);
 assert.match(server, /X-Group-Summary-Cache.*REDIS-HIT/);
 assert.match(server, /using memory cache/);
-assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>[\s\S]{0,260}res\.redirect\(302, "\/admin-v26\.html"\)/);
-assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>[\s\S]{0,180}res\.redirect\(302, "\/admin-v26\.html"\)/);
+assert.match(server, /app\.get\("\/v27", v27PageLimiter, \(req, res\) =>[\s\S]{0,260}res\.sendFile\(path\.join\(__dirname, "public", "admin-v27\.html"\)\)/);
+assert.match(server, /app\.get\("\/admin-v27\.html", \(req, res\) =>[\s\S]{0,180}res\.sendFile\(path\.join\(__dirname, "public", "admin-v27\.html"\)\)/);
 
-console.log('retired V27 artifact, captain vehicle, support, PWA, and Redis cache guardrails: PASS');
+console.log('active V27 owner dashboard, captain vehicle, support, PWA, and Redis cache guardrails: PASS');

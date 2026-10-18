@@ -525,12 +525,12 @@ app.get("/captain/register", (req, res) => {
 app.get("/v27", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
-  res.redirect(302, "/admin-v26.html");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/v27.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
-  res.redirect(302, "/admin-v26.html");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/admin", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -546,7 +546,7 @@ app.get("/admin-v26.html", (req, res) => {
 });
 app.get("/admin-v27.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.redirect(302, "/admin-v26.html");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
