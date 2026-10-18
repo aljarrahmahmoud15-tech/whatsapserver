@@ -1733,6 +1733,7 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
     route,
     `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
     "⚠️ لم يتم تثبيت الحجز بسبب عدم كفاية الرصيد.",
+    `👤 اسم الكابتن المنفّذ: ${String(rejectedCaptainName || "غير مسجل")}`,
     "🗑️ تنبيه: تم حذف رد الكابتن «تم» من القروب بعد التحقق، ولن يُعتمد هذا الرد.",
     "✅ الحجز متاح من جديد.",
     "يرجى الرد على هذه الرسالة بكلمة «تم» لمن يستطيع التنفيذ.",

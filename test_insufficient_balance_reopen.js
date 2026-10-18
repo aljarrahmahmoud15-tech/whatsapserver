@@ -12,6 +12,7 @@ assert.match(server, /orderReopenNotificationInFlight/);
 assert.match(server, /ORDER-REOPEN-INSUFFICIENT-BALANCE-\$\{candidateId\}/);
 assert.match(server, /🔁 إعادة فتح الحجز/);
 assert.match(server, /لم يتم تثبيت الحجز بسبب عدم كفاية الرصيد/);
+assert.match(server, /اسم الكابتن المنفّذ: \$\{String\(rejectedCaptainName \|\| "غير مسجل"\)\}/);
 assert.match(server, /تم حذف رد الكابتن «تم» من القروب بعد التحقق/);
 assert.match(server, /لن يُعتمد هذا الرد/);
 assert.match(server, /الحجز متاح من جديد/);
