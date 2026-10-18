@@ -221,7 +221,6 @@ const context = {
   notifyCaptainInsufficientAcceptanceBalance: async () => ({ status: "sent" }),
   notifyOfficialGroupInsufficientAcceptanceDeletionFailure: async () => ({ status: "sent" }),
   notifyOfficialGroupAcceptanceDiscarded: async () => ({ status: "sent", deletionVerified: true }),
-  notifyOfficialGroupNegativeBalanceAcceptance: async () => ({ status: "sent" }),
   discardAcceptanceMessageWithConfirmation: async () => ({ status: "sent", deletionStatus: "deleted", deletionVerified: true }),
   verifyWhatsAppMessageDeleted: async () => true,
   reactToCaptainAcceptance: async () => true,
@@ -295,11 +294,11 @@ async function approve(doneId = "done-1") {
   reset({ executorBalance: 299 });
   await ingestPrice();
   await context.handleIncomingMessage(message("done-debt", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)));
-  // Owner policy: an order is always pinned, even when the 15% commission pushes the
-  // captain wallet negative. No acceptance is refused for balance reasons.
-  assert.ok(state.acceptance, "يُسجل تم حتى مع رصيد لا يغطي عمولة الطلب");
-  assert.equal(state.candidate.status, "pending", "يُثبّت الطلب على المنفذ صاحب الرصيد السالب");
-  assert.equal(state.ledgers.length, 0, "لا تُسجل تسوية قبل تأكيد صاحب الطلب بـ 👍");
+  // Owner policy: no debt. An acceptance the balance cannot cover is cancelled with a visible
+  // confirmation in the group instead of being pinned.
+  assert.equal(state.acceptance, null, "يُلغى تسجيل تم عندما لا يغطي الرصيد عمولة الطلب");
+  assert.equal(state.candidate.status, "candidate", "يبقى الطلب بانتظار منفذ يملك رصيدًا كافيًا");
+  assert.equal(state.ledgers.length, 0, "لا تُسجل تسوية عند نقص الرصيد");
 
   reset({ archived: true });
   await context.handleIncomingMessage(message("price-archived", "السعر 20", PRODUCER));

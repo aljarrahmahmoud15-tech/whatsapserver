@@ -1315,40 +1315,6 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-async function notifyOfficialGroupNegativeBalanceAcceptance({ groupId, captain = null, balanceCents, requiredCents, projectedBalanceCents = null, sourceMessageId }) {
-  const targetGroupId = String(groupId || "").trim();
-  const sourceKey = String(sourceMessageId || "").trim();
-  if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
-  const idempotencyKey = `GROUP-ACCEPTANCE-NEGATIVE-BALANCE-${sourceKey}`;
-  const captainName = captain ? captainDisplayName(captain.registration_name || captain.name) : "غير معروف";
-  const title = "⚠️ تثبيت حجز برصيد غير كافٍ";
-  const message = brandedMessage(title, [
-    `الكابتن: ${captainName}`,
-    `الرصيد الحالي: ${money(balanceCents)} JOD | العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    Number.isFinite(projectedBalanceCents) ? `الرصيد بعد خصم 15%: ${money(projectedBalanceCents)} JOD` : null,
-    "تم تثبيت الحجز حسب سياسة التشغيل، ولم يُرفض الرد.",
-    "يرجى شحن المحفظة لتجنّب إيقاف الحساب.",
-  ].filter(Boolean));
-  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
-  const row = existing
-    ? { lastInsertRowid: existing.id }
-    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group','order.acceptance.negative_balance_notice',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
-  const notificationId = row.lastInsertRowid || existing?.id;
-  if (!notificationId) return { status: "duplicate" };
-  try {
-    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
-    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
-    const messageId = result.message?.id?._serialized || null;
-    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-    audit("order.acceptance.negative_balance_group_notice", "message", sourceKey, { groupId: targetGroupId, captainId: captain?.id || null, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
-    return { status: deliveryStatus, notificationId, messageId };
-  } catch (error) {
-    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
-    audit("order.acceptance.negative_balance_group_notice_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
-    return { status: "failed", notificationId };
-  }
-}
 async function notifyOfficialGroupAcceptanceDiscarded({ groupId, captain = null, balanceCents = null, requiredCents = null, sourceMessageId, deletionStatus = "requested", deletionVerified = false, reasonLabel = null }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
@@ -3872,9 +3838,6 @@ function registerAcceptance({ groupId, messageId, senderPhone, senderName, candi
   if (recorded.state !== "recorded") return recorded;
   const { acceptance } = recorded;
   audit("order.candidate.acceptance_recorded", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, acceptanceMode: normalizedAcceptanceMode });
-  if (balanceGuard.state === "negative_balance_allowed") {
-    audit("order.acceptance_negative_balance_allowed", "order_candidate", candidate.id, { captainId: captain.id, acceptanceMessageId: messageId, balanceCents: balanceGuard.balanceCents, requiredCents: balanceGuard.requiredCents, projectedBalanceCents: balanceGuard.projectedBalanceCents, policy: "orders_are_pinned_regardless_of_balance" });
-  }
   notifyPendingBookingApproval(candidate.id, { acceptanceMessageId: acceptance.acceptance_message_id, captain });
   return { state: "recorded", acceptance, captain, producer, balanceGuard };
 }
@@ -6659,16 +6622,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptance_author_lid: msg?._data?.author || msg?.id?.participant || msg?._data?.id?.participant,
     },
   });
-  if (acceptanceResult.state === "recorded" && acceptanceResult.balanceGuard?.state === "negative_balance_allowed") {
-    void notifyOfficialGroupNegativeBalanceAcceptance({
-      groupId,
-      captain: acceptanceResult.captain,
-      balanceCents: acceptanceResult.balanceGuard.balanceCents,
-      requiredCents: acceptanceResult.balanceGuard.requiredCents,
-      projectedBalanceCents: acceptanceResult.balanceGuard.projectedBalanceCents,
-      sourceMessageId: messageId,
-    });
-  }
   if (acceptanceResult.state === "insufficient_balance") {
     audit("order.acceptance_rejected_insufficient_balance", "order_candidate", candidate.id, {
       acceptanceMessageId: messageId,
