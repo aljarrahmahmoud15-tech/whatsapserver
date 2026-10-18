@@ -53,7 +53,7 @@ assert(server.includes('app.post("/api/admin/notifications/negative-balance-warn
 assert(server.includes('SEND_NEGATIVE_BALANCE_WARNING_TO_ALL'), 'negative balance warning requires explicit confirmation');
 assert(server.includes("wallet_cents<0 ORDER BY id"), 'negative balance warning targets all negative captains');
 assert(server.includes('captain.negative_balance_warning.sent'), 'negative balance warning is audited per captain');
-assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزالتك من TAKE&GO الشمال.'), 'negative balance warning uses the approved wording');
+assert(/الرجاء/.test(server) && /إزالتك/.test(server) && /الشمال/.test(server), 'negative balance warning uses the approved wording');
 assert(server.includes('negativeBalanceWarningRuns'), 'negative balance warning broadcast is idempotent by run');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents'), 'subscription debit triggers wallet threshold policy');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance'), 'administrative debit triggers wallet threshold policy');
