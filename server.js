@@ -11312,6 +11312,124 @@ function handleAdminDirectWalletCredit(req, res) {
   });
   return res.status(201).json({ success: true, mode: "direct", alreadyApplied: false, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance, credited: money(amountCents), delivery: "wallet_only" });
 }
+function buildCaptainCommissionWithdrawalPreview(captain) {
+  const balanceCents = Number(captain?.wallet_cents || 0);
+  const withdrawableCents = Math.max(0, balanceCents);
+  return {
+    mutation: "none",
+    ownerOnly: true,
+    captain: { id: captain.id, name: captain.name, phone: captain.phone },
+    balance: money(balanceCents),
+    balanceCents,
+    withdrawable: money(withdrawableCents),
+    withdrawableCents,
+    minimumBalanceCents: 0,
+    currency: "JOD",
+    delivery: "wallet_only",
+    whatsappSent: false,
+    policy: "owner_commission_withdrawal_does_not_change_orders_settlements_or_company_wallet",
+  };
+}
+
+app.get("/api/admin/captains/:id/commission-withdrawal-preview", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الكابتن غير صحيح" });
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,role,is_bot,account_status FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged' LIMIT 1").get(id);
+  if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لسحب العمولة" });
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, ...buildCaptainCommissionWithdrawalPreview(captain) });
+});
+
+app.post("/api/admin/captains/:id/commission-withdrawal", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const amount = Number(req.body?.amount);
+  const amountCents = Math.round(amount * 100);
+  const reason = String(req.body?.reason || "").trim();
+  const confirmation = String(req.body?.confirmation || "").trim();
+  const idempotencyKey = String(req.get("X-Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+  const expectedBalanceCents = req.body?.expectedBalanceCents === undefined || req.body?.expectedBalanceCents === null || req.body?.expectedBalanceCents === ""
+    ? null
+    : Number(req.body.expectedBalanceCents);
+  if (!Number.isInteger(id) || id < 1 || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !Number.isInteger(amountCents) || amountCents < 1 || reason.length < 3 || reason.length > 240 || confirmation !== "OWNER_COMMISSION_WITHDRAWAL" || idempotencyKey.length < 16 || idempotencyKey.length > 100 || (expectedBalanceCents !== null && !Number.isInteger(expectedBalanceCents))) {
+    return res.status(400).json({ error: "المعرّف والمبلغ والسبب والتأكيد ومفتاح منع التكرار مطلوبة" });
+  }
+  const captain = db.prepare("SELECT id,phone,name,wallet_cents,role,is_bot,account_status FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged' LIMIT 1").get(id);
+  if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لسحب العمولة" });
+
+  try {
+    const result = db.transaction(() => {
+      const existing = db.prepare("SELECT id,user_id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+      if (existing) {
+        if (Number(existing.user_id) !== id || Number(existing.amount_cents) !== -amountCents) {
+          const conflict = new Error("مفتاح العملية مستخدم لسحب مختلف");
+          conflict.statusCode = 409;
+          throw conflict;
+        }
+        return { alreadyApplied: true, ledgerId: existing.id, reference: existing.reference, balanceCents: Number(existing.balance_after_cents || 0) };
+      }
+      const current = db.prepare("SELECT id,phone,name,wallet_cents FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged' LIMIT 1").get(id);
+      if (!current) {
+        const missing = new Error("المستخدم غير موجود أو تغيرت أهليته");
+        missing.statusCode = 404;
+        throw missing;
+      }
+      const currentBalanceCents = Number(current.wallet_cents || 0);
+      if (expectedBalanceCents !== null && expectedBalanceCents !== currentBalanceCents) {
+        const stale = new Error("تغير رصيد الكابتن منذ المعاينة؛ حدّث النافذة قبل الموافقة");
+        stale.statusCode = 409;
+        throw stale;
+      }
+      const withdrawableCents = Math.max(0, currentBalanceCents);
+      if (amountCents > withdrawableCents) {
+        const insufficient = new Error(`المبلغ يتجاوز العمولة/الرصيد القابل للسحب (${money(withdrawableCents)})`);
+        insufficient.statusCode = 409;
+        throw insufficient;
+      }
+      const nextBalanceCents = currentBalanceCents - amountCents;
+      const stamp = now();
+      const reference = `COMMISSION-WITHDRAWAL-${id}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+      const updated = db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND wallet_cents=?").run(nextBalanceCents, stamp, id, currentBalanceCents);
+      if (!updated.changes) {
+        const race = new Error("تغير رصيد الكابتن أثناء التنفيذ؛ لم يُسجل السحب");
+        race.statusCode = 409;
+        throw race;
+      }
+      const details = JSON.stringify({
+        idempotencyKey,
+        confirmation,
+        expectedBalanceCents,
+        previousBalanceCents: currentBalanceCents,
+        amountCents,
+        nextBalanceCents,
+        reason,
+        actor: "owner",
+        source: "owner_commission_withdrawal",
+        delivery: "wallet_only",
+        whatsappSent: false,
+      });
+      const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "commission_withdrawal", -amountCents, nextBalanceCents, reference, reason, stamp, details, idempotencyKey);
+      audit("captain.commission.withdrawn", "user", id, { phone: current.phone, amountCents, previousBalanceCents: currentBalanceCents, balanceAfterCents: nextBalanceCents, reference, reason, actor: "owner", delivery: "wallet_only", whatsappSent: false });
+      return { alreadyApplied: false, ledgerId: ledger.lastInsertRowid, reference, balanceCents: nextBalanceCents };
+    })();
+    res.status(result.alreadyApplied ? 200 : 201).json({
+      success: true,
+      ownerOnly: true,
+      alreadyApplied: result.alreadyApplied,
+      ledgerId: result.ledgerId,
+      reference: result.reference,
+      withdrawn: money(amountCents),
+      balance: money(result.balanceCents),
+      balanceCents: result.balanceCents,
+      delivery: "wallet_only",
+      whatsappSent: false,
+      message: result.alreadyApplied ? "سحب العمولة مسجل مسبقًا ولم يُكرر." : "تم تسجيل سحب العمولة في دفتر محفظة الكابتن بقرار المالك.",
+    });
+  } catch (error) {
+    const statusCode = Number(error?.statusCode) || 409;
+    res.status(statusCode).json({ error: error?.message || "تعذر تسجيل سحب العمولة", mutation: "none" });
+  }
+});
+
 app.post("/api/admin/users/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
 app.post("/api/admin/captains/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
 app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
