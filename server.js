@@ -10806,6 +10806,180 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, includeOutgoing, bodyIncludes: bodyIncludes || null, count: filteredRows.length, messages: filteredRows });
 });
+function settlementPolicyFromDetails(details) {
+  let parsed = details;
+  if (typeof details === "string") {
+    try { parsed = JSON.parse(details); } catch { parsed = {}; }
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  const result = {};
+  if (Number.isInteger(Number(parsed.producerRateBps))) result.producerRateBps = Number(parsed.producerRateBps);
+  if (Number.isInteger(Number(parsed.companyRateBps))) result.companyRateBps = Number(parsed.companyRateBps);
+  return result;
+}
+
+async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus }) {
+  if (deletionStatus !== "deleted") {
+    return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
+  }
+  const reopened = await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
+  if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
+    updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
+      reason: "captain_acceptance_rejected_insufficient_balance",
+      reopenedMessageId: reopened.messageId || null,
+      financialMutation: false,
+    });
+  }
+  return reopened;
+}
+
+async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null }) {
+  const targetGroupId = String(groupId || "").trim();
+  const candidateId = Number(candidate?.id || 0);
+  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+    return { status: "invalid", candidateId };
+  }
+  const event = `order.acceptance.reopened.${candidateId}`;
+  const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
+  const route = candidate.origin || candidate.destination
+    ? `📍 ${candidate.origin || "غير محدد"} ← ${candidate.destination || "غير محدد"}`
+    : "";
+  const message = [
+    "🔁 إعادة فتح الحجز",
+    `🏠 المنزل: ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")}`,
+    `💰 القيمة: ${money(candidate.price_cents)} JOD`,
+    route,
+    `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
+    "⚠️ لم يتم تثبيت الحجز بسبب عدم كفاية رصيد الكابتن.",
+    `👤 اسم الكابتن: ${String(rejectedCaptainName || "غير مسجل")}`,
+    "🗑️ تنبيه: تم حذف رد الكابتن «تم» السابق من القروب بعد التحقق، ولن يُعتمد هذا الرد.",
+    "✅ الحجز متاح من جديد.",
+    "يرجى الرد على هذه الرسالة بكلمة «تم» لمن يستطيع التنفيذ.",
+    "بعدها يضع صاحب السعر 👍 على رسالة «تم» لتثبيت الحجز.",
+    "لم تُنفذ أي تسوية مالية لهذا الحجز حتى الآن.",
+  ].filter(Boolean).join("\n");
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
+    return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null, candidateId };
+  }
+  if (orderReopenNotificationInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true, candidateId };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)").run(targetGroupId, event, "إعادة فتح الحجز", message, candidate.source_message_id || null, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate", candidateId };
+  orderReopenNotificationInFlight.add(idempotencyKey);
+  try {
+    const sent = await sendServer2DirectAtMostOnce(targetGroupId, message, undefined, 20000);
+    const deliveryStatus = sent ? "sent" : "failed";
+    const messageId = serializedMessageId(sent) || sent?.id?._serialized || sent?.id?.id || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit(deliveryStatus === "sent" ? "order.acceptance.reopened" : "order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      messageId,
+      sourceMessageId: candidate.source_message_id || null,
+      requiredCents,
+      rejectedCaptainName: rejectedCaptainName || null,
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: deliveryStatus, notificationId, messageId, candidateId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("order.acceptance.reopen_failed", "order_candidate", candidateId, {
+      groupId: targetGroupId,
+      sourceMessageId: candidate.source_message_id || null,
+      error: String(error?.message || error).slice(0, 180),
+      financialMutation: false,
+      idempotencyKey,
+    });
+    return { status: "failed", notificationId, candidateId };
+  } finally {
+    orderReopenNotificationInFlight.delete(idempotencyKey);
+  }
+}
+
+async function collectRejectedAcceptanceDeletionCandidates(groupId, limit = 50) {
+  const rows = db.prepare("SELECT id,entity_id,details,created_at FROM audit_logs WHERE action='order.acceptance_rejected_insufficient_balance' AND created_at >= datetime('now','-7 days') ORDER BY id DESC LIMIT 200").all();
+  const seen = new Set();
+  const candidates = [];
+  for (const row of rows) {
+    let details = null;
+    try { details = row.details ? JSON.parse(row.details) : null; } catch (_) { continue; }
+    const messageId = String(details?.acceptanceMessageId || "").trim();
+    const candidateId = Number(row.entity_id || details?.candidateId || 0);
+    if (!messageId || !Number.isInteger(candidateId) || seen.has(messageId)) continue;
+    const candidate = db.prepare("SELECT id,group_id,raw_text,price_cents,origin,destination,created_at FROM order_candidates WHERE id=? LIMIT 1").get(candidateId);
+    if (!candidate || candidate.group_id !== groupId) continue;
+    seen.add(messageId);
+    const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000);
+    const body = String(liveMessage?.body || liveMessage?.text || "").trim();
+    const liveGroupId = liveMessage ? resolveGroupChatId(liveMessage) : null;
+    const visible = Boolean(liveMessage && !liveMessage.fromMe && liveGroupId === groupId && isCaptainAcceptance(body));
+    if (!visible) continue;
+    const captain = details?.captainId ? db.prepare("SELECT id,name,phone FROM users WHERE id=? LIMIT 1").get(Number(details.captainId)) : null;
+    candidates.push({
+      auditId: row.id,
+      rejectionAt: row.created_at,
+      messageId: serializedMessageId(liveMessage) || messageId,
+      candidateId,
+      captainId: captain?.id || details?.captainId || null,
+      captainName: captain?.name || null,
+      captainPhone: captain?.phone || null,
+      body,
+      messageTimestamp: liveMessage.timestamp || liveMessage.__timestamp || null,
+      balanceCents: Number(details?.balanceCents || 0),
+      requiredCents: Number(details?.requiredCents || 0),
+      orderText: candidate.raw_text,
+      priceCents: candidate.price_cents,
+      message: liveMessage,
+    });
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+}
+
+app.get("/api/admin/group/rejected-acceptances", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 50));
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  const candidates = await collectRejectedAcceptanceDeletionCandidates(groupId, limit);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", groupId, count: candidates.length, messages: candidates.map(({ message, ...row }) => row) });
+});
+app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const requestedIds = Array.isArray(req.body?.messageIds) ? req.body.messageIds.map((value) => String(value || "").trim()).filter(Boolean) : [];
+  if (!groupId || !isConfiguredGroup(groupId) || !requestedIds.length || requestedIds.length > 50) return res.status(400).json({ error: "configured groupId and messageIds (1-50) are required", mutation: "none" });
+  const candidates = await collectRejectedAcceptanceDeletionCandidates(groupId, 50);
+  const requested = new Set(requestedIds);
+  const matched = candidates.filter((row) => requested.has(row.messageId));
+  const missing = requestedIds.filter((messageId) => !matched.some((row) => row.messageId === messageId));
+  if (missing.length) return res.status(409).json({ error: "Requested messages changed or failed live validation; no messages were deleted", mutation: "none", missing, matched: matched.map((row) => row.messageId) });
+  const deleted = [];
+  const failed = [];
+  for (const row of matched) {
+    try {
+      const result = await deleteWhatsAppMessageForEveryone(row.messageId, {
+        message: row.message,
+        messageIdCandidates: messageIdCandidates(row.message),
+        reason: "owner_confirmed_rejected_acceptance_cleanup",
+        groupId,
+        candidateId: row.candidateId,
+        balanceCents: row.balanceCents,
+        requiredCents: row.requiredCents,
+      });
+      if (result?.ok) deleted.push({ messageId: row.messageId, auditId: row.auditId, captainId: row.captainId, result });
+      else failed.push({ messageId: row.messageId, auditId: row.auditId, reason: result?.reason || "delete_not_confirmed", result });
+    } catch (error) {
+      failed.push({ messageId: row.messageId, auditId: row.auditId, reason: String(error?.message || error).slice(0, 180) });
+    }
+  }
+  audit("order.rejected_acceptance_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
+  res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
+});
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
