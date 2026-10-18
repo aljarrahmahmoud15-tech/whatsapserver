@@ -11522,8 +11522,46 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     await withTimeout(client.interface.openChatWindow(groupId), 15000, null);
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
-  if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
+  const storeCutoff = Date.now() - hours * 60 * 60 * 1000;
+  let { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  let readSource = "live";
+  if (!chat) {
+    const storedRows = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=? AND COALESCE(sent_at,created_at)>=? ORDER BY id ASC LIMIT ?").all(groupId, new Date(storeCutoff).toISOString(), limit);
+    const storedMessages = storedRows.map((row) => ({
+      id: { _serialized: row.message_id },
+      __serializedId: row.message_id,
+      from: groupId,
+      to: groupId,
+      fromMe: false,
+      body: row.body,
+      author: { _serialized: `${row.sender_phone || ""}@c.us` },
+      __authorPhone: row.sender_phone,
+      timestamp: Math.floor(new Date(row.sent_at).getTime() / 1000),
+      __storedRecovery: true,
+    }));
+    for (const acceptance of storedMessages) {
+      if (!isCaptainAcceptance(acceptance.body)) continue;
+      let sourceOrder = null;
+      let bestGap = Infinity;
+      for (const candidate of storedMessages) {
+        if (candidate === acceptance) continue;
+        const parsedCandidate = parseOrder(candidate.body);
+        if (!parsedCandidate?.isOrder) continue;
+        const gap = acceptance.timestamp - candidate.timestamp;
+        if (gap < 0 || gap > 3600) continue;
+        if (candidate.__authorPhone && acceptance.__authorPhone && candidate.__authorPhone === acceptance.__authorPhone) continue;
+        if (gap < bestGap) { bestGap = gap; sourceOrder = candidate; }
+      }
+      if (sourceOrder) { acceptance.__quoted = sourceOrder; acceptance.__quotedMessageId = sourceOrder.__serializedId; }
+      const evidence = storedReactionEvidence(acceptance.__serializedId, "👍");
+      if (evidence.length) {
+        acceptance.__hasReaction = true;
+        acceptance.__reactions = evidence.map((row) => ({ aggregateEmoji: "👍", reaction: "👍", senders: [{ __senderPhone: row.sender_phone || null, senderId: row.sender_id || row.sender_key || null }] }));
+      }
+    }
+    if (storedMessages.length) { chat = { id: groupId, isGroup: true }; messages = storedMessages; readSource = "local-store"; }
+  }
+  if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName, readSource });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
