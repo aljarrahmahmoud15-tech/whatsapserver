@@ -1732,13 +1732,9 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
     `💰 القيمة: ${money(candidate.price_cents)} JOD`,
     route,
     `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
-    "⚠️ لم يتم تثبيت الحجز بسبب عدم كفاية الرصيد.",
-    `👤 اسم الكابتن المنفّذ: ${String(rejectedCaptainName || "غير مسجل")}`,
-    "🗑️ تنبيه: تم حذف رد الكابتن «تم» من القروب بعد التحقق، ولن يُعتمد هذا الرد.",
-    "✅ الحجز متاح من جديد.",
-    "يرجى الرد على هذه الرسالة بكلمة «تم» لمن يستطيع التنفيذ.",
-    "بعدها يضع صاحب السعر 👍 على رسالة «تم» لتثبيت الحجز.",
-    "لم تُنفذ أي تسوية مالية لهذا الحجز حتى الآن.",
+    `⚠️ لم يتم تثبيت الحجز لعدم كفاية رصيد الكابتن المنفّذ: ${String(rejectedCaptainName || "غير مسجل")}.`,
+    "🗑️ تم حذف رد الكابتن «تم» من القروب بعد التحقق؛ الحجز متاح من جديد.",
+    "ردّ «تم» جديدًا ثم 👍 من صاحب السعر للتثبيت؛ لا توجد تسوية مالية.",
   ].filter(Boolean).join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
