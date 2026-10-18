@@ -163,11 +163,13 @@ const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
 const QR_ACCESS_MIN_DURATION_SECONDS = Math.max(30, Number(process.env.QR_ACCESS_MIN_DURATION_SECONDS || 60));
 const QR_ACCESS_MAX_DURATION_SECONDS = Math.max(
   QR_ACCESS_MIN_DURATION_SECONDS,
-  Number(process.env.QR_ACCESS_MAX_DURATION_SECONDS || 600),
+  // Clean is scanned from the owner's phone after an operator opens the link on a
+  // separate device, so its access link lives longer than the Server 2 default.
+  Number(process.env.QR_ACCESS_MAX_DURATION_SECONDS || (CLEAN_INSTANCE ? 3600 : 600)),
 );
 const QR_ACCESS_DEFAULT_DURATION_SECONDS = Math.min(
   QR_ACCESS_MAX_DURATION_SECONDS,
-  Math.max(QR_ACCESS_MIN_DURATION_SECONDS, Number(process.env.QR_ACCESS_DEFAULT_DURATION_SECONDS || 600)),
+  Math.max(QR_ACCESS_MIN_DURATION_SECONDS, Number(process.env.QR_ACCESS_DEFAULT_DURATION_SECONDS || (CLEAN_INSTANCE ? 1800 : 600))),
 );
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
