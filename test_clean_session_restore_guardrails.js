@@ -38,4 +38,27 @@ assert.match(ui, /\/api\/admin\/qr-main-link/);
 assert.match(ui, /ليس للقروب/);
 assert.doesNotMatch(ui, /data:image\/png;base64,/);
 
+// Pinned clean identity: the owner-approved number, its international form, and the
+// operational group must be the clean-only defaults so no clean path can drift to an
+// identity inherited from another service.
+assert.match(server, /const CLEAN_BOT_PHONE = "0797907580";/);
+assert.match(server, /const CLEAN_BOT_PHONE_INTL = "962797907580";/);
+assert.match(server, /const CLEAN_GROUP_ID = "120363430477331505@g\.us";/);
+assert.match(server, /process\.env\.BOT_PHONE\?\.trim\(\) \|\| \(CLEAN_INSTANCE \? CLEAN_BOT_PHONE : "0779110123"\)/);
+assert.match(server, /process\.env\.WHATSAPP_GROUP_ID\?\.trim\(\) \|\| \(CLEAN_INSTANCE \? CLEAN_GROUP_ID : ""\)/);
+// Clean must never adopt a session namespace inherited from another Render service.
+assert.match(server, /ignoring inherited WHATSAPP_CLIENT_ID/);
+assert.match(server, /const cleanWhatsAppClientId = `aljarah-clean-\$\{WHATSAPP_IDENTITY_SCOPE\}`;/);
+assert.match(server, /const WHATSAPP_CLIENT_ID = CLEAN_INSTANCE\n  \? cleanWhatsAppClientId/);
+// Relinking archives the active profile and keeps previously archived sessions intact.
+assert.match(server, /async function clearWhatsAppSessionForRelink\(\)/);
+assert.match(server, /if \(entry\.name === "\.archived-sessions"\) continue;/);
+assert.match(server, /fs\.renameSync\(activeProfile, path\.join\(archiveRoot, archivedSession\)\)/);
+assert.match(server, /app\.get\("\/api\/admin\/whatsapp\/clear-session", requireAdmin/);
+assert.match(server, /String\(req\.query\.format \|\| ""\) === "json"/);
+assert.match(ui, /ops-clear-session/);
+assert.match(ui, /\/api\/admin\/whatsapp\/clear-session\?execute=1&format=json/);
+assert.match(ui, /حذف الجلسة غير المطابقة/);
+assert.match(ui, /wrong_account/);
+
 console.log('Clean archived-session restore route, identity panel, protected main QR, isolation guardrails, and health telemetry verified');

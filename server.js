@@ -45,9 +45,16 @@ function rejectCleanOutboundOperation(res, operation) {
 }
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? "" : "0779110123");
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? "" : "962779110123");
-const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
+// Clean-only pinned identity approved by the owner on 2026-10-18. Keeping these as
+// clean-only defaults makes every clean path (session guard, QR page, dashboards and
+// group linking) resolve to the same number and group even when a Render variable is
+// missing or was inherited from another service. Server 2 never reads them.
+const CLEAN_BOT_PHONE = "0797907580";
+const CLEAN_BOT_PHONE_INTL = "962797907580";
+const CLEAN_GROUP_ID = "120363430477331505@g.us";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || (CLEAN_INSTANCE ? CLEAN_BOT_PHONE : "0779110123");
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || (CLEAN_INSTANCE ? CLEAN_BOT_PHONE_INTL : "962779110123");
+const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || (CLEAN_INSTANCE ? CLEAN_GROUP_ID : "");
 // Clean-only pinned invite fallback supplied by the owner; Server 2 never reads it.
 const CLEAN_GROUP_INVITE_URL = CLEAN_INSTANCE ? (process.env.CLEAN_GROUP_INVITE_URL?.trim() || "https://chat.whatsapp.com/GmWVdGXXrL89mTvBLOM1Xd?s=sh&p=a&mlu=4&ilr=4") : "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "TAKE&GO الشمال";
@@ -126,7 +133,18 @@ const COMPANY_BRAND_NAME = "TAKE&GO الشمال";
 const COMPANY_BRAND_ENGLISH = "TAKE&GO";
 // The operational bot 0779110123 is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
-const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
+// A cloned Render service can inherit WHATSAPP_CLIENT_ID from another service. That is how
+// clean ended up loading a session linked to a different bot number and then refusing it as
+// "wrong account" forever. Clean always uses its own namespace derived from its pinned
+// number and group; an inherited value is reported and ignored instead of being used.
+const configuredWhatsAppClientId = process.env.WHATSAPP_CLIENT_ID?.trim() || "";
+const cleanWhatsAppClientId = `aljarah-clean-${WHATSAPP_IDENTITY_SCOPE}`;
+if (CLEAN_INSTANCE && configuredWhatsAppClientId && configuredWhatsAppClientId !== cleanWhatsAppClientId) {
+  console.warn(`[WhatsApp] ignoring inherited WHATSAPP_CLIENT_ID=${configuredWhatsAppClientId}; clean uses ${cleanWhatsAppClientId}`);
+}
+const WHATSAPP_CLIENT_ID = CLEAN_INSTANCE
+  ? cleanWhatsAppClientId
+  : (configuredWhatsAppClientId || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`);
 // Approved immutable settlement policy: the value after "السعر" is external.
 // Normal orders use 13% downloader + 2% company, charged to the confirming captain.
 // Price orders use 20% downloader + 0% company, charged to the confirming captain.
@@ -4975,6 +4993,45 @@ async function restoreLatestArchivedWhatsAppSession() {
   fs.renameSync(latest.fullPath, activeProfile);
   clearChromiumProfileLocks();
   return { restoredFrom: latest.name, activeProfile: `session-${WHATSAPP_CLIENT_ID}` };
+}
+// Relinking must never destroy previously archived sessions: the owner relies on
+// «استعادة آخر جلسة محفوظة» after a bad pairing. Archive the active profile first and
+// keep AUTH_PATH/.archived-sessions intact while clearing everything else, so a fresh
+// QR can be scanned for the pinned clean number without losing the archive.
+async function clearWhatsAppSessionForRelink() {
+  await withTimeout(destroyClient(), 15000, null);
+  qrCodeData = null;
+  const archiveRoot = path.join(AUTH_PATH, ".archived-sessions");
+  const activeProfile = path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`);
+  let archivedSession = null;
+  try {
+    if (fs.existsSync(activeProfile)) {
+      fs.mkdirSync(archiveRoot, { recursive: true });
+      archivedSession = `session-${WHATSAPP_CLIENT_ID}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+      fs.renameSync(activeProfile, path.join(archiveRoot, archivedSession));
+    }
+  } catch (error) {
+    archivedSession = null;
+    console.warn("[WhatsApp] session archive before relink failed:", error.message);
+  }
+  try {
+    if (fs.existsSync(AUTH_PATH)) {
+      for (const entry of fs.readdirSync(AUTH_PATH, { withFileTypes: true })) {
+        if (entry.name === ".archived-sessions") continue;
+        fs.rmSync(path.join(AUTH_PATH, entry.name), { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    console.warn("[WhatsApp] session clear warning:", error.message);
+  }
+  clearChromiumProfileLocks();
+  return {
+    archivedSession,
+    activeProfile: `session-${WHATSAPP_CLIENT_ID}`,
+    botPhone: BOT_PHONE || null,
+    botPhoneInternational: BOT_PHONE_INTL || null,
+    archivedSessionCount: archivedWhatsAppSessionDirectories().length,
+  };
 }
 async function restartWhatsApp(reason = "manual restart") {
   if (whatsappRestartInFlight) return whatsappRestartInFlight;
@@ -12722,20 +12779,19 @@ app.get("/api/staff/settlements", requireStaffPermission("settlements"), (req, r
 
 app.post("/api/admin/logout", requireAdmin, async (req, res) => {
   try {
-    await destroyClient();
-    qrCodeData = null;
-    if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    const result = await clearWhatsAppSessionForRelink();
     scheduleReconnect();
-    res.json({ success: true, message: "Session cleared; a new QR will be generated" });
+    res.json({ success: true, message: "Session cleared; a new QR will be generated", ...result });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
   if (String(req.query.execute || "") !== "1") return res.status(405).json({ error: "Explicit execute=1 is required" });
   try {
-    await withTimeout(destroyClient(), 15000, null);
-    qrCodeData = null;
-    if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    const result = await clearWhatsAppSessionForRelink();
     scheduleReconnect();
+    if (String(req.query.format || "") === "json") {
+      return res.json({ success: true, message: "Session archived; a new QR will be generated", ...result });
+    }
     res.redirect(303, "/qr?session=cleared");
   } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
 });
