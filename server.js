@@ -8888,8 +8888,8 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
     live: false,
   };
   const botReady = Boolean(client && isReady);
-  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 3500).catch(() => null) : null;
-  if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 3000).catch(() => null);
+  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 2500).catch(() => null) : null;
+  if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 2000).catch(() => null);
   res.setHeader("Cache-Control", "no-store, max-age=0");
   if (liveSnapshot && Array.isArray(liveSnapshot.participants) && liveSnapshot.participants.length) {
     return res.json({
@@ -8934,9 +8934,11 @@ app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
   const savedInviteUrl = CLEAN_INSTANCE ? String(getSetting("official_group_invite_url", CLEAN_GROUP_INVITE_URL) || "").trim() : "";
   if (ready) {
     try {
-      const chat = await withTimeout(resolveGroupChat(groupId), 20000, null);
+      // Short, single attempt: stored configuration stays authoritative when WhatsApp does not
+      // answer quickly, so the dashboard never blocks on a slow live read.
+      const chat = await withTimeout(client.getChatById(groupId), 4000, null);
       if (chat?.name && String(chat.name).trim()) { groupName = String(chat.name).trim(); liveNameRead = true; }
-      if (chat && typeof chat.getInviteCode === "function") inviteCode = await withTimeout(chat.getInviteCode(), 20000, null);
+      if (chat && typeof chat.getInviteCode === "function") inviteCode = await withTimeout(chat.getInviteCode(), 3000, null);
     } catch (_) { /* read-only best effort; configuration is never touched here */ }
   }
   res.setHeader("Cache-Control", "no-store, max-age=0");

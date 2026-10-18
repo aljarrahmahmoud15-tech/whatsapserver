@@ -21,8 +21,8 @@ assert.match(server, /async function readGroupSnapshot\(groupId, timeoutMs = 300
 assert.match(server, /Math\.max\(2000, Number\(timeoutMs\) \|\| 30000\)/);
 assert.match(server, /function readStoredGroupSummary\(groupId\)/);
 assert.match(server, /registeredCaptains/);
-assert.match(server, /await readGroupParticipantsQuick\(groupId, 3500\)/);
-assert.match(server, /await readGroupSnapshot\(groupId, 3000\)/);
+assert.match(server, /await readGroupParticipantsQuick\(groupId, 2500\)/);
+assert.match(server, /await readGroupSnapshot\(groupId, 2000\)/);
 
 // The stored fallback must be explicitly labelled and must never be presented as live.
 assert.match(server, /participantSource: "stored"/);
