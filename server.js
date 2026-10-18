@@ -10820,6 +10820,30 @@ app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
     result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing });
     if (!result?.chat && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 2500));
   }
+  if (!result?.chat) {
+    const cutoffIso = new Date(cutoff).toISOString();
+    const stored = db.prepare("SELECT id,message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at FROM messages WHERE group_id=? AND COALESCE(sent_at, created_at) >= ? ORDER BY id DESC LIMIT ?").all(groupId, cutoffIso, Math.min(batch, 50));
+    if (stored.length) {
+      result = {
+        chat: { id: groupId, isGroup: true },
+        localStore: true,
+        messages: stored.map((row) => ({
+          id: row.message_id,
+          timestamp: row.sent_at ? Math.floor(new Date(row.sent_at).getTime() / 1000) : null,
+          from: row.group_id,
+          to: null,
+          fromMe: false,
+          author: row.sender_phone || null,
+          hasQuotedMsg: false,
+          quotedMessageId: null,
+          body: String(row.body || "").trim(),
+          type: row.message_type || null,
+        })),
+        nextCursor: null,
+        exhausted: true,
+      };
+    }
+  }
   if (!result.chat) return res.status(result.timedOut ? 504 : 502).json({ error: result.timedOut ? "Group scan timed out; retry with the returned batch size" : "Configured group is not readable", mutation: "none", retryable: true });
   const messages = (Array.isArray(result.messages) ? result.messages : []).map((message) => ({
     ...message,
@@ -10844,7 +10868,7 @@ app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
     mutation: "none",
   }));
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, groupId, hours, cutoff, batch, cursor: before || null, nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), exhausted: Boolean(result.exhausted), scanned: messages.length, orders, acceptances, messages, mutation: "none", readOnly: true });
+  res.json({ success: true, groupId, hours, cutoff, batch, cursor: before || null, nextCursor: result.nextCursor, hasMore: Boolean(result.nextCursor), exhausted: Boolean(result.exhausted), scanned: messages.length, orders, acceptances, messages, source: result.localStore ? "local-store" : (result.source || "live"), mutation: "none", readOnly: true });
 });
 app.get("/api/admin/group/resolve-identity", requireAdmin, async (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
