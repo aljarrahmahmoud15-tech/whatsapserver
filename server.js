@@ -5226,7 +5226,39 @@ async function initializeBaileys() {
   }
 }
 
+const CONNECTION_ALERT_STATE = { lastDropAt: null, lastDropReason: null, lastRecoveryAt: null, lastAlertError: null, phones: [] };
+function connectionAlertPhones() {
+  const raw = String(process.env.CLEAN_ALERT_PHONES || process.env.GROUP_SETUP_OWNER_PHONES || "").split(",");
+  return raw.map((value) => phoneWithCountry(String(value || "").trim())).filter((phone, index, all) => phone && all.indexOf(phone) === index);
+}
+function recordConnectionDrop(reason) {
+  try {
+    CONNECTION_ALERT_STATE.lastDropAt = new Date().toISOString();
+    CONNECTION_ALERT_STATE.lastDropReason = String(reason || "unknown");
+    console.warn(`[ConnectionAlert] WhatsApp is not ready: ${CONNECTION_ALERT_STATE.lastDropReason}`);
+    setSetting("connection_last_drop_at", CONNECTION_ALERT_STATE.lastDropAt);
+    setSetting("connection_alert_pending", "1");
+  } catch (error) { console.warn(`[ConnectionAlert] drop record failed: ${String(error?.message || error)}`); }
+}
+async function flushConnectionAlerts() {
+  try {
+    if (getSetting("connection_alert_pending", "") !== "1") return;
+    if (!client || !isReady) return;
+    const phones = connectionAlertPhones();
+    CONNECTION_ALERT_STATE.phones = phones;
+    if (!phones.length) return;
+    const text = `⚠️ تنبيه اتصال البوت\nانقطع الاتصال عن واتساب ثم عاد.\nوقت الانقطاع: ${CONNECTION_ALERT_STATE.lastDropAt || getSetting("connection_last_drop_at", "") || "-"}\nالسبب: ${CONNECTION_ALERT_STATE.lastDropReason || "غير معروف"}\nالحالة الآن: متصل ✅`;
+    for (const phone of phones) {
+      try { if (typeof sendWhatsAppMessage === "function") await sendWhatsAppMessage(phone, text); } catch (error) { CONNECTION_ALERT_STATE.lastAlertError = String(error?.message || error); }
+    }
+    CONNECTION_ALERT_STATE.lastRecoveryAt = new Date().toISOString();
+    setSetting("connection_alert_pending", "0");
+    setSetting("connection_last_recovery_at", CONNECTION_ALERT_STATE.lastRecoveryAt);
+  } catch (error) { console.warn(`[ConnectionAlert] flush failed: ${String(error?.message || error)}`); }
+}
+setInterval(() => { void flushConnectionAlerts(); }, 60000).unref?.();
 function scheduleReconnect() {
+  recordConnectionDrop("reconnect_scheduled");
   if (reconnectTimer) return;
   const settings = operationalSettings();
   const attempt = Math.min(reconnectAttempts, settings.reconnectMaxAttempts);
@@ -10979,6 +11011,11 @@ app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (re
   }
   audit("order.rejected_acceptance_cleanup", "group", groupId, { requested: requestedIds, deleted: deleted.map((row) => row.messageId), failed, financialMutation: false });
   res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
+});
+app.get("/api/admin/connection-alerts", requireAdmin, async (req, res) => {
+  void flushConnectionAlerts();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", ready: Boolean(isReady), whatsappState: String(whatsappState || ""), alertPhones: connectionAlertPhones().length, pending: getSetting("connection_alert_pending", "") === "1", lastDropAt: CONNECTION_ALERT_STATE.lastDropAt || getSetting("connection_last_drop_at", "") || null, lastDropReason: CONNECTION_ALERT_STATE.lastDropReason, lastRecoveryAt: CONNECTION_ALERT_STATE.lastRecoveryAt || getSetting("connection_last_recovery_at", "") || null, lastAlertError: CONNECTION_ALERT_STATE.lastAlertError });
 });
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
