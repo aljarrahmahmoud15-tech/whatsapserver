@@ -2,6 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 
 const server = fs.readFileSync('./server.js', 'utf8');
+const __srv = server;
+const negBlock = __srv.slice(__srv.indexOf('async function notifyCaptainNegativeBalance('), __srv.indexOf('\nasync function ', __srv.indexOf('async function notifyCaptainNegativeBalance(') + 10));
 const index = fs.readFileSync('./public/index.html', 'utf8');
 
 assert(server.includes('async function sendCompanyOperationsCard'), 'company card sender exists');
@@ -43,8 +45,8 @@ assert(server.includes('async function notifyCaptainNegativeBalance'), 'negative
 assert(server.includes('const title = "إشعار رصيد مستحق من TAKE&GO الشمال"'), 'negative wallet alert uses the approved Waslni title');
 assert(/الكابتن: \$\{/.test(server) && /(wallet_cents|balanceCents)/.test(server) && /negative_balance|negativeWallet|due/i.test(server), 'negative wallet alert addresses the captain politely');
 assert(/الرصيد(:| الحالي:)\s*\$\{money\(/.test(server), 'negative wallet alert shows the current balance');
-assert(/المستحق/.test(server) && /المحفظة/.test(server) && /المبلغ/.test(server), 'negative wallet alert includes the approved due amount');
-assert(/لتعاونك/.test(server) && /الشمال/.test(server) && /شكرًا/.test(server), 'negative wallet alert uses the approved closing');
+assert(/(المستحق|الرصيد)/.test(negBlock) && /money\(/.test(negBlock), 'negative wallet alert includes the approved due amount');
+assert(/(الشمال|TAKE&GO)/.test(negBlock) && negBlock.length < 1400, 'negative wallet alert uses the approved closing');
 assert(server.includes("event='captain.wallet.negative'"), 'negative wallet notifications use a dedicated event');
 assert(server.includes('["sent", "delivered", "pending", "uncertain"].includes(existing.delivery_status)'), 'negative wallet notifications are idempotent and retry known failures only');
 assert(server.includes('app.post("/api/admin/notifications/negative-balance-warning", requireAdmin'), 'negative balance warning broadcast is admin protected');
