@@ -11040,6 +11040,19 @@ app.post("/api/admin/whatsapp/group-screenshot", requireAdmin, async (req, res) 
       });
       await new Promise((resolve) => setTimeout(resolve, 1500));
     } catch (_) {}
+    const scrolls = Math.max(0, Math.min(Number(req.body?.scrolls || 0), 20));
+    if (scrolls > 0) {
+      try {
+        await client.pupPage.evaluate(async (count) => {
+          const scroller = document.querySelector('#main .copyable-area div[tabindex]') || document.querySelector('#main [data-tab="8"]') || document.querySelector('#main');
+          for (let index = 0; index < count; index += 1) {
+            if (scroller && typeof scroller.scrollTop === "number") scroller.scrollTop = 0; else window.scrollBy(0, -1200);
+            await new Promise((resolve) => setTimeout(resolve, 900));
+          }
+        }, scrolls);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      } catch (_) {}
+    }
     const base64 = await client.pupPage.screenshot({ type: "png", encoding: "base64", fullPage: false });
     fs.writeFileSync(GROUP_SCREENSHOT_PATH, Buffer.from(String(base64), "base64"));
     res.setHeader("Cache-Control", "no-store");
