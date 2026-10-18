@@ -97,7 +97,10 @@ const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERN
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
-const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
+// Owner policy (Clean): no negative debt allowance. Any operation that would push a wallet
+// below zero is refused, and an acceptance («تم») that the balance cannot cover is cancelled.
+// A negative env value is ignored on purpose so a stale Render variable cannot restore debt.
+const CAPTAIN_MIN_BALANCE_CENTS = Math.max(0, Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || 0));
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
 const CAPTAIN_BALANCE_POLICY_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CAPTAIN_BALANCE_POLICY_INTERVAL_MS || 5 * 60 * 1000));
 const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
@@ -3905,10 +3908,9 @@ function acceptanceBalanceGuard(candidate, captain) {
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
   if (balanceCents < requiredCents) {
-    // Owner policy (Clean + northern V27): any order that is sent must be pinned even when the
-    // executing captain holds a negative balance. The 15% commission is still debited, and the
-    // group receives a branded notice naming the captain; no acceptance is refused for balance.
-    return { allowed: true, state: "negative_balance_allowed", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
+    // Owner policy (Clean): no debt. The «تم» reply is cancelled, deleted from the group, and the
+    // deletion is confirmed visibly there with the captain name and the reason.
+    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
   }
   return { allowed: true, state: "ok", walletOwner, balanceCents, requiredCents };
 }
