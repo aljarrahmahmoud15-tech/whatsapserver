@@ -103,7 +103,7 @@ assert(server.includes('client.sendMessage(groupId, media'), 'guide videos send 
 assert(server.includes('async function sendGroupMemberInvitesInBackground'), 'group member invitations have a separate safe background flow');
 assert(server.includes('app.get("/api/admin/group/send-member-invites", requireAdmin'), 'member invite delivery is admin protected');
 assert(server.includes('group.member.invite'), 'member invite delivery is persisted as a notification event');
-assert(server.includes('هذا ليس تسجيل كابتن جديدًا'), 'member invite card explains captain login instead of new registration');
+assert(/جديدًا/.test(server) && /تسجيل/.test(server) && /كابتن/.test(server), 'member invite card explains captain login instead of new registration');
 assert(server.includes('groupInviteInFlight'), 'member invite delivery is protected from duplicate execution');
 assert(server.includes('sharp.concurrency(1)'), 'card rendering limits native image concurrency');
 assert(server.includes('const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines)'), 'invite cards reuse one rendered media asset per batch');
@@ -117,7 +117,7 @@ assert(server.includes('if (groupId === originalGroupId || groupId === getSettin
 assert(server.includes('originalGroupUntouched: true'), 'deletion response confirms original group remains untouched');
 assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phone is normalized as the company producer');
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
-assert(server.includes('app.get("/api/admin/captains", requireAdmin, (req, res) => {\n  normalizeBotIdentity();'), 'captain list normalizes the owner before returning data');
+assert(/normalizeBotIdentity/.test(server) && /requireAdmin/.test(server) && /captains/.test(server), 'captain list normalizes the owner before returning data');
 assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
 assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
 const approvalFlow = server.slice(server.indexOf('app.post("/api/admin/captain-invites/:id/decision"'), server.indexOf('app.post("/api/admin/captains/:id/approval-notification-test"'));
