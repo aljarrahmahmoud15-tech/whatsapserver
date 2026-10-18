@@ -833,6 +833,17 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_lifecycle ON order_candidates(lifecycle_stage,updated_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
+// Performance indexes for the heavy admin read endpoints (safe, additive).
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_captain_status ON order_settlements(captain_user_id,status)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_producer_status ON order_settlements(producer_user_id,status)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_order_desc ON order_settlements(order_id,id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_group_status_updated ON orders(group_id,status,updated_at DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_group_source_message ON orders(group_id,source_message_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_settlement_state_id ON orders(settlement_state,id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_group_status_updated ON order_candidates(group_id,status,updated_at DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_messages_group_id_desc ON messages(group_id,id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_subscription_charges_user_period ON captain_subscription_charges(user_id,period_start,id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_users_role_active_id ON users(role,active,id DESC)");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
 if (!existingCardColumns.includes("assigned_captain_id")) db.exec("ALTER TABLE topup_cards ADD COLUMN assigned_captain_id INTEGER");
 if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN sent_at TEXT");
@@ -2796,7 +2807,7 @@ async function resolveGroupChat(groupId, inviteCode = "") {
   }
   return null;
 }
-async function readGroupSnapshot(groupId) {
+async function readGroupSnapshot(groupId, timeoutMs = 30000) {
   if (!groupId || !client || !isReady || !client.pupPage) return null;
   return withTimeout(client.pupPage.evaluate(async (requestedId) => {
     try {
@@ -2829,7 +2840,39 @@ async function readGroupSnapshot(groupId) {
     } catch (_) {
       return null;
     }
-  }, groupId), 30000, null);
+  }, groupId), Math.max(2000, Number(timeoutMs) || 30000), null);
+}
+// Fast, public-API group participant read (whatsapp-web.js getChatById) used before the
+// legacy in-page snapshot so a stale WhatsApp Web bundle can never stall the dashboard.
+async function readGroupParticipantsQuick(groupId, timeoutMs = 8000) {
+  if (!groupId || !client || !isReady || typeof client.getChatById !== "function") return null;
+  try {
+    const chat = await withTimeout(client.getChatById(groupId), Math.max(2000, Number(timeoutMs) || 8000), null);
+    if (!chat || !chat.isGroup || !Array.isArray(chat.participants)) return null;
+    const participants = chat.participants
+      .map((participant) => {
+        const serialized = participant?.id?._serialized || participant?.id?.user || null;
+        return serialized ? { id: String(serialized), user: String(participant?.id?.user || String(serialized).split("@")[0].split(":")[0]), isAdmin: Boolean(participant?.isAdmin || participant?.isSuperAdmin) } : null;
+      })
+      .filter(Boolean);
+    return {
+      id: groupId,
+      name: String(chat.name || chat.formattedTitle || "").trim() || null,
+      isGroup: true,
+      participants,
+      participantSource: "whatsapp-web-js",
+      participantRawCount: chat.participants.length,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+// Database-only fallback so the group panel always answers instantly, even when the live
+// WhatsApp read is unavailable. Clearly labelled as stored data; never presented as live.
+function readStoredGroupSummary(groupId) {
+  const storedName = String(db.prepare("SELECT group_name FROM groups_config WHERE group_id=? LIMIT 1").get(groupId)?.group_name || "").trim();
+  const registeredCaptains = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND active=1").get()?.count || 0);
+  return { groupName: storedName || null, registeredCaptains };
 }
 async function isCleanConfiguredGroupMemberAllowed(target) {
   if (!CLEAN_INSTANCE) return false;
@@ -8083,7 +8126,11 @@ app.post("/api/captain/invites/:token/apply", async (req, res) => {
 });
 app.get("/api/admin/captain-invites", requireAdmin, (req, res) => {
   expireCaptainInvites();
-  const invites = db.prepare("SELECT id,status,name,phone,auth_method,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT 100").all().map((invite) => {
+  const requestedInviteLimit = Number(req.query.limit || 100);
+  const inviteLimit = Number.isInteger(requestedInviteLimit) ? Math.max(1, Math.min(requestedInviteLimit, 500)) : 100;
+  const requestedInviteOffset = Number(req.query.offset || 0);
+  const inviteOffset = Number.isInteger(requestedInviteOffset) && requestedInviteOffset > 0 ? requestedInviteOffset : 0;
+  const invites = db.prepare("SELECT id,status,name,phone,auth_method,token_last8,token_ciphertext,created_at,updated_at,expires_at,submitted_at,decided_at,decision_note FROM captain_invites ORDER BY id DESC LIMIT ? OFFSET ?").all(inviteLimit, inviteOffset).map((invite) => {
     let inviteUrl = null;
     if (invite.token_ciphertext) { try { inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), decryptCardCode(invite.token_ciphertext)); } catch {} }
     const { token_ciphertext: _tokenCiphertext, ...safeInvite } = invite;
@@ -8831,28 +8878,45 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
   if (!groupId || !isConfiguredGroup(groupId)) {
     return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
   }
-  if (!client || !isReady) {
-    return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
-  }
-  try {
-    const snapshot = await readGroupSnapshot(groupId);
-    if (!snapshot || !Array.isArray(snapshot.participants)) {
-      return res.status(502).json({ success: false, mutation: "none", groupId, ready: true, error: "Official group participant snapshot unavailable" });
-    }
-    res.setHeader("Cache-Control", "no-store, max-age=0");
+  const stored = readStoredGroupSummary(groupId);
+  const storedPayload = {
+    groupName: stored.groupName,
+    participantCount: stored.registeredCaptains,
+    participantRawCount: stored.registeredCaptains,
+    participantSource: "stored",
+    registeredCaptains: stored.registeredCaptains,
+    live: false,
+  };
+  const botReady = Boolean(client && isReady);
+  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 8000).catch(() => null) : null;
+  if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 6000).catch(() => null);
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  if (liveSnapshot && Array.isArray(liveSnapshot.participants) && liveSnapshot.participants.length) {
     return res.json({
       success: true,
       mutation: "none",
       groupId,
-      groupName: snapshot.name || null,
-      participantCount: snapshot.participants.length,
-      participantRawCount: Number(snapshot.participantRawCount || snapshot.participants.length),
-      participantSource: snapshot.participantSource || "unknown",
+      ready: botReady,
+      live: true,
+      groupName: liveSnapshot.name || stored.groupName,
+      participantCount: liveSnapshot.participants.length,
+      participantRawCount: Number(liveSnapshot.participantRawCount || liveSnapshot.participants.length),
+      participantSource: liveSnapshot.participantSource || "unknown",
+      registeredCaptains: stored.registeredCaptains,
       generatedAt: now(),
     });
-  } catch (error) {
-    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
+  // Live read unavailable: answer instantly with stored values instead of failing the panel.
+  return res.json({
+    success: true,
+    mutation: "none",
+    groupId,
+    ready: botReady,
+    ...storedPayload,
+    liveReadError: botReady ? "تعذر قراءة لقطة القروب الحية من WhatsApp" : "WhatsApp غير جاهز",
+    note: "بيانات مخزّنة من قاعدة البيانات (العدد = الكباتن النشطون المسجلون)",
+    generatedAt: now(),
+  });
 });
 // V26 group linking: the operator needs exactly three identity fields — the group name,
 // the official group id, and the group's own invite code — with no extra tokens or codes.
@@ -9769,6 +9833,10 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
 });
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
   normalizeBotIdentity();
+  const requestedCaptainLimit = Number(req.query.limit || 0);
+  const captainLimit = Number.isInteger(requestedCaptainLimit) && requestedCaptainLimit > 0 ? Math.min(requestedCaptainLimit, 1000) : null;
+  const requestedCaptainOffset = Number(req.query.offset || 0);
+  const captainOffset = Number.isInteger(requestedCaptainOffset) && requestedCaptainOffset > 0 ? requestedCaptainOffset : 0;
   const rows = db.prepare(`SELECT u.id,u.phone,u.name,COALESCE(NULLIF(u.registration_name,''),u.name) AS registration_name,u.role,u.wallet_cents,u.active,u.account_status,u.captain_auth_method,u.captain_whatsapp_verified_at,u.captain_last_login_at,u.is_bot,u.created_at,u.updated_at,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.producer_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS posted_orders,
     COALESCE((SELECT COUNT(*) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_orders,
@@ -9779,7 +9847,7 @@ app.get("/api/admin/captains", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(s.captain_fee_cents) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND o.status IN ('accepted','completed')),0) AS executed_debit_cents,
     (SELECT MAX(o.accepted_at) FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE (s.producer_user_id=u.id OR s.captain_user_id=u.id) AND s.status='applied' AND o.status IN ('accepted','completed')) AS last_confirmed_at
     FROM users u WHERE u.role='captain' AND u.account_status<>'merged'
-    ORDER BY u.active DESC,u.id DESC`).all();
+    ORDER BY u.active DESC,u.id DESC${captainLimit ? " LIMIT ? OFFSET ?" : ""}`).all(...(captainLimit ? [captainLimit, captainOffset] : []));
   res.json({ captains: rows.map((row) => ({
     ...row,
     registrationName: row.registration_name || row.name,
@@ -12015,11 +12083,15 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
   }
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
+  const requestedOrderLimit = Number(req.query.limit || 200);
+  const orderLimit = Number.isInteger(requestedOrderLimit) ? Math.max(1, Math.min(requestedOrderLimit, 1000)) : 200;
+  const requestedOrderOffset = Number(req.query.offset || 0);
+  const orderOffset = Number.isInteger(requestedOrderOffset) && requestedOrderOffset > 0 ? requestedOrderOffset : 0;
   const rows = db.prepare(`SELECT o.*, p.id AS producer_id,p.name AS producer_name,p.phone AS producer_phone,c.id AS captain_id,c.name AS captain_name,c.phone AS captain_phone,
     s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at
     FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status IN ('applied','reversed')
     LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-    WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT 200`).all();
+    WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT ? OFFSET ?`).all(orderLimit, orderOffset);
   res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
 app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
@@ -12052,6 +12124,8 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
   if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", bookings: [] });
   const requestedLimit = Number(req.query.limit || 1000);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 1000)) : 1000;
+  const requestedOffset = Number(req.query.offset || 0);
+  const candidateOffset = Number.isInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
   const candidates = db.prepare(`SELECT c.id AS candidate_id,c.source_message_id,c.group_id,c.raw_text,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.status,
       c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,c.created_at,c.updated_at,
       p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone,
@@ -12067,20 +12141,41 @@ app.get("/api/admin/unconfirmed-bookings", requireAdmin, (req, res) => {
     )
     LEFT JOIN users e ON e.id=a.captain_user_id
     WHERE c.group_id=? AND c.status IN ('candidate','pending')
-    ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(configuredGroupId, limit)
-    .filter((row) => {
-      const equivalentOrder = findEquivalentOrder(row.group_id, row.source_message_id);
-      if (equivalentOrder?.archive_state !== "archived") return true;
-      const settlement = db.prepare("SELECT status FROM order_settlements WHERE order_id=? ORDER BY id DESC LIMIT 1").get(equivalentOrder.id);
-      return settlement?.status !== "applied";
-    });
+    ORDER BY c.updated_at DESC,c.id DESC LIMIT ? OFFSET ?`).all(configuredGroupId, limit, candidateOffset);
+  // Bulk equivalent-order resolution: one query per request instead of a LIKE lookup per row.
+  const equivalentOrdersByCore = new Map();
+  for (const orderRow of db.prepare("SELECT id,source_message_id,archive_state FROM orders WHERE group_id=?").all(configuredGroupId)) {
+    const core = messageIdCore(orderRow.source_message_id);
+    if (!core) continue;
+    const previous = equivalentOrdersByCore.get(core);
+    if (!previous || Number(orderRow.id) > Number(previous.id)) equivalentOrdersByCore.set(core, orderRow);
+  }
+  const archivedEquivalentOrderIds = new Set();
+  for (const row of candidates) {
+    const equivalentOrder = equivalentOrdersByCore.get(messageIdCore(row.source_message_id));
+    if (equivalentOrder && equivalentOrder.archive_state === "archived") archivedEquivalentOrderIds.add(Number(equivalentOrder.id));
+  }
+  const latestSettlementStatusByOrder = new Map();
+  if (archivedEquivalentOrderIds.size) {
+    const archivedIds = [...archivedEquivalentOrderIds];
+    const placeholders = archivedIds.map(() => "?").join(",");
+    for (const settlementRow of db.prepare(`SELECT order_id,status FROM order_settlements WHERE order_id IN (${placeholders}) ORDER BY id DESC`).all(...archivedIds)) {
+      const orderId = Number(settlementRow.order_id);
+      if (!latestSettlementStatusByOrder.has(orderId)) latestSettlementStatusByOrder.set(orderId, settlementRow.status);
+    }
+  }
+  const visibleCandidates = candidates.filter((row) => {
+    const equivalentOrder = equivalentOrdersByCore.get(messageIdCore(row.source_message_id));
+    if (equivalentOrder?.archive_state !== "archived") return true;
+    return latestSettlementStatusByOrder.get(Number(equivalentOrder.id)) !== "applied";
+  });
   const openOrders = db.prepare(`SELECT o.id AS order_id,o.order_no,o.source_message_id,o.group_id,o.raw_text,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.status,o.settlement_state,o.created_at,o.updated_at,
       p.name AS producer_name,p.registration_name AS producer_registration_name,p.phone AS producer_phone
     FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id
     WHERE o.group_id=? AND o.status='open' AND COALESCE(o.archive_state,'active')='active' AND o.captain_user_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM order_candidates c WHERE c.source_message_id=o.source_message_id AND c.status IN ('candidate','pending'))
     ORDER BY o.updated_at DESC,o.id DESC LIMIT ?`).all(configuredGroupId, limit);
-  const candidateBookings = candidates.map((row) => {
+  const candidateBookings = visibleCandidates.map((row) => {
     const executorPhone = row.executor_phone ? phoneWithCountry(row.executor_phone) : null;
     const producerPhone = row.producer_phone ? phoneWithCountry(row.producer_phone) : null;
     const executorActive = Number(row.executor_active) === 1 && row.executor_account_status === "active";
