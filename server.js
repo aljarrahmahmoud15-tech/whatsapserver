@@ -27,6 +27,33 @@ const { guardOutboundMethod } = require("./whatsapp-outbound-guard");
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
+const parsedCleanReadCacheMs = Number(process.env.CLEAN_READ_CACHE_MS);
+const CLEAN_READ_CACHE_MS = Number.isFinite(parsedCleanReadCacheMs) ? Math.max(0, parsedCleanReadCacheMs) : 7000;
+const cleanReadCache = new Map();
+function openCleanReadCache(req, res, key) {
+  const bypass = String(req.query?.fresh || "") === "1" || String(req.query?.noCache || "") === "1";
+  const cacheKey = `${key}?${new URLSearchParams(req.query || {}).toString()}`;
+  const cached = cleanReadCache.get(cacheKey);
+  if (!bypass && CLEAN_READ_CACHE_MS > 0 && cached && cached.expiresAt > Date.now()) {
+    res.setHeader("X-Clean-Read-Cache", "HIT");
+    res.status(cached.status).json(cached.body);
+    return true;
+  }
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    const status = Number(res.statusCode || 200);
+    if (!bypass && CLEAN_READ_CACHE_MS > 0 && status >= 200 && status < 300) {
+      cleanReadCache.set(cacheKey, { status, body, expiresAt: Date.now() + CLEAN_READ_CACHE_MS });
+      if (cleanReadCache.size > 100) {
+        const oldestKey = cleanReadCache.keys().next().value;
+        if (oldestKey) cleanReadCache.delete(oldestKey);
+      }
+    }
+    if (!res.headersSent) res.setHeader("X-Clean-Read-Cache", bypass ? "BYPASS" : "MISS");
+    return originalJson(body);
+  };
+  return false;
+}
 const CLEAN_INSTANCE = process.env.CLEAN_INSTANCE === "true";
 // Clean messaging requires an explicit per-service opt-in; Server 2 behavior is unchanged.
 const CLEAN_OUTBOUND_SENDS_ENABLED = !CLEAN_INSTANCE || process.env.CLEAN_OUTBOUND_SENDS_ENABLED === "true";
@@ -1288,11 +1315,8 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
   const idempotencyKey = `CAPTAIN-ACCEPTANCE-BALANCE-${sourceKey}`;
   const title = "لم يتم اعتماد كلمة تم";
   const message = [
-    `الكابتن ${captain.name || displayPhone(phone)}،`,
-    "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب.",
-    `الرصيد الحالي: ${money(balanceCents)} JOD`,
-    `العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    "يرجى شحن المحفظة ثم المشاركة في طلب آخر.",
+    `الكابتن: ${captain.name || displayPhone(phone)} — تعذر إتمام الحجز لعدم كفاية الرصيد`,
+    `الرصيد: ${money(balanceCents)} JOD — المطلوب: ${money(requiredCents)} JOD — الحالة: ${deletionStatus === "deleted" || deletionStatus === "verified" ? "تم حذف رسالة «تم»" : "تم رفض رسالة «تم»"}`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -1322,15 +1346,10 @@ async function notifyOfficialGroupAcceptanceDiscarded({ groupId, captain = null,
   const idempotencyKey = `GROUP-ACCEPTANCE-DISCARDED-${sourceKey}`;
   const captainName = captain ? captainDisplayName(captain.registration_name || captain.name) : "غير معروف";
   const title = "🗑️ حذف رد «تم» غير معتمد";
-  const reasonLine = String(reasonLabel || "").trim() || `عدم كفاية الرصيد (الرصيد ${money(balanceCents)} JOD | العمولة المطلوبة ${money(requiredCents)} JOD)`;
+  const reasonLine = String(reasonLabel || "").trim() || `الرصيد: ${money(balanceCents)} JOD — المطلوب: ${money(requiredCents)} JOD`;
   const message = brandedMessage(title, [
-    `الكابتن: ${captainName}`,
-    `السبب: ${reasonLine}`,
-    deletionStatus === "deleted"
-      ? (deletionVerified ? "حالة الحذف: ✅ تم حذف رسالة «تم» من القروب وتم التحقق منها." : "حالة الحذف: ⚠️ تم إرسال طلب الحذف وتعذّر التحقق البصري الآن.")
-      : "حالة الحذف: ⚠️ تعذّر حذف رسالة «تم» تلقائيًا، والرسالة مرفوضة وغير معتمدة.",
-    "لن يُعتمد هذا الرد ولن تُنفَّذ أي تسوية مالية بناءً عليه.",
-    "✅ الحجز متاح من جديد لمن يستطيع التنفيذ.",
+    `الكابتن: ${captainName} — ${reasonLine}`,
+    `الحالة: ${deletionStatus === "deleted" ? (deletionVerified ? "تم الحذف والتحقق" : "تم طلب الحذف") : "تعذر الحذف؛ الرد مرفوض"}`,
   ]);
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -1359,10 +1378,8 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const idempotencyKey = `GROUP-ACCEPTANCE-DELETE-FAILED-${sourceKey}`;
   const title = "تنبيه: قبول غير معتمد";
   const message = [
-    "⚠️ تنبيه للمجموعة:",
-    "تعذّر حذف رسالة «تم» تلقائيًا، لكنها مرفوضة وغير معتمدة بسبب عدم كفاية رصيد الكابتن.",
-    `الرصيد الحالي: ${money(balanceCents)} JOD | العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    "لن يتم اعتماد الطلب أو إجراء أي تسوية بناءً على هذه الرسالة.",
+    `الكابتن: غير محدد — تعذر اعتماد «تم» لعدم كفاية الرصيد`,
+    `الرصيد: ${money(balanceCents)} JOD — المطلوب: ${money(requiredCents)} JOD — الحالة: تعذر الحذف التلقائي`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -1558,9 +1575,8 @@ async function notifyOperations({ event, title, lines, captainPhone = null, owne
 }
 function balanceSnapshotMessage({ name, balance }) {
   return brandedMessage("كشف رصيد المحفظة", [
-    `الكابتن: ${name || "حسابك"}`,
-    `الرصيد الحالي في حسابك: ${money(balance)} JOD`,
-    "هذه رسالة اطلاع فقط، ولا تغيّر الرصيد أو تنشئ بطاقة.",
+    `الكابتن: ${name || "حسابك"} — الرصيد: ${money(balance)} JOD`,
+    "للاطلاع فقط — لا تغيير على الرصيد.",
   ]);
 }
 async function runBalanceNotificationBroadcast({ runKey, members }) {
@@ -1600,12 +1616,8 @@ const CAPTAIN_COMPLETION_ANNOUNCEMENT_CONFIRMATION = "SEND_COMPANY_COMPLETION_AN
 function captainCompletionAnnouncementContent() {
   const title = "إعلان اكتمال TAKE&GO الشمال";
   const lines = [
-    "تم بحمد الله اكتمال تجهيز وتشغيل TAKE&GO الشمال.",
-    "تم تفعيل مسار الطلبات والتأكيد والتسوية المالية.",
-    "طريقة العمل المعتمدة: يُنشر السعر في القروب الرسمي، ثم يرد الكابتن المنفّذ بكلمة «تم»، ويُستكمل اعتماد الحجز والتسوية حسب المسار المعتمد.",
-    "ستصلكم الإشعارات الرسمية عند تسجيل العمليات المهمة.",
+    "التشغيل جاهز — الطلبات والتأكيد والتسوية مفعّلة.",
     `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونكم مع TAKE&GO الشمال – TAKE&GO.",
   ];
   return { title, lines, caption: brandedMessage(title, lines) };
 }
@@ -1754,14 +1766,8 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
       ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
       : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
   const lines = [
-    `عزيزي الكابتن ${captain.name}،`,
-    `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
-    `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
-    removalLine,
-    `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
-    `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
-    "شكرًا لتعاونك مع TAKE&GO الشمال – TAKE&GO.",
+    `الكابتن: ${captain.name || "حساب الكابتن"} — الرصيد: ${money(balanceCents)} JOD`,
+    `الحالة: ${removal.status === "removed" ? "تمت الإزالة من القروب" : "تم إيقاف الحساب"} — الشحن مطلوب`,
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
@@ -1795,12 +1801,8 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
   const safeReference = String(reference || "WALLET").trim().slice(0, 100) || "WALLET";
   const topupCents = Math.max(0, CAPTAIN_LOW_BALANCE_WARNING_CENTS - Number(balanceCents));
   const lines = [
-    `عزيزي الكابتن ${captain.name}،`,
-    `رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
-    `الحد الأدنى للتشغيل هو ${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD.`,
-    `يرجى شحن ${money(topupCents)} JOD على الأقل لتجنب توقف الحساب عند دخول الرصيد في السالب.`,
-    `سبب التنبيه: ${String(reason || "انخفاض الرصيد").trim().slice(0, 160)}`,
-    `بوابة الكابتن: ${captainAppUrl(PUBLIC_APP_URL)}`,
+    `الكابتن: ${captain.name} — الرصيد: ${money(balanceCents)} JOD`,
+    `الشحن المطلوب: ${money(topupCents)} JOD — الدخول: ${captainAppUrl(PUBLIC_APP_URL)}`,
   ];
   const message = brandedMessage(title, lines);
   const phone = phoneWithCountry(captain.phone);
@@ -1937,7 +1939,7 @@ function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
     text: "تم إرسال بطاقة الرصيد إلى واتسابك.",
     idempotencyKey: key,
   });
-  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "تم إرسال بطاقة الرصيد."], ownersOnly: true });
+  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name} — القيمة: ${money(valueCents)} JOD`, "الحالة: أُرسلت بطاقة الرصيد"], ownersOnly: true });
 }
 async function notifyCaptainCreditRedeemed({ captain, valueCents, balanceCents, cardId }) {
   if (!captain?.phone || !cardId) return { status: "skipped" };
@@ -2701,13 +2703,8 @@ const captainGroupWelcomeInFlight = new Set();
 function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
-    `أهلًا بك يا كابتن ${displayName} في قروب «TAKE&GO الشمال».`,
-    "تم انضمامك إلى شبكة التشغيل.",
-    "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
-    "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
-    "بعد وضع 👍 من كابتن تنزيل الطلب يتم التثبيت والتسوية مرة واحدة.",
-    "للدخول إلى بوابة الكابتن: " + captainLoginUrl(baseUrl),
-    "نتمنى لك التوفيق والرزق الطيب."
+    `الكابتن: ${displayName} — تم الانضمام إلى قروب التشغيل.`,
+    `التنفيذ: «تم» ثم 👍 — الدخول: ${captainLoginUrl(baseUrl)}`,
   ].join("\n");
 }
 async function sendCaptainGroupWelcome(participant, groupId) {
@@ -4399,31 +4396,20 @@ async function sendFinalBookingCancellation(groupId, order = null) {
 }
 function formatAcceptance(order, captain, producer) {
   return brandedMessage("تم توثيق الرحلة", [
-    `🆔 رقم الطلب: #${order.order_no}`,
-    `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
-    `🚕 الكابتن المنفّذ: ${captain.name}`,
-    `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر السعر · خصم 20%" : "طلب عادي · خصم 15%"}`,
-    `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
-    `📊 صافي حصة المنتج: ${money(order.producer_cents - order.company_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
-    "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
+    `الطلب: #${order.order_no} — المنتج: ${producer ? producer.name : "غير محدد"} — الكابتن: ${captain.name}`,
+    `القيمة: ${money(order.price_cents)} JOD — الحالة: تمت التسوية`,
   ]);
 }
 function formatPendingConfirmation(order, captain) {
   return brandedMessage("بانتظار اعتماد المنتج", [
-    `🆔 رقم الطلب: #${order.order_no}`,
-    `🚕 وصل رد «تم» من الكابتن: ${captain.name}`,
-    "ضع 👍 على رسالة «تم» نفسها لتوثيق الرحلة.",
-    "⏳ لا توجد تسوية مالية قبل اعتماد المنتج.",
+    `الطلب: #${order.order_no} — الكابتن: ${captain.name}`,
+    "المطلوب: 👍 على رسالة «تم» — بلا تسوية قبل الاعتماد.",
   ]);
 }
 function formatOrderCreated(order) {
   return brandedMessage("تم تسجيل الطلب", [
-    `🆔 رقم الطلب: #${order.order_no}`,
-    `🛣️ المسار: ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
-    `💰 القيمة: ${money(order.price_cents)} JOD`,
-    order.trip_time ? `🕒 الموعد: ${order.trip_time}` : "",
-    "⏳ بانتظار استلام الكابتن وتأكيد الرحلة.",
+    `الطلب: #${order.order_no} — المسار: ${order.origin || "غير محدد"} ← ${order.destination || "غير محدد"}`,
+    `القيمة: ${money(order.price_cents)} JOD${order.trip_time ? ` — الموعد: ${order.trip_time}` : ""}`,
   ].filter(Boolean));
 }
 
@@ -8119,7 +8105,7 @@ app.post("/api/admin/captain-invites/send", requireAdmin, async (req, res) => {
   const result = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,created_at,updated_at,expires_at) VALUES(?,?,?, ?,?,?,?)").run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "issued", stamp, stamp, expiresAt);
   const inviteUrl = captainGatewayUrl(captainInviteBaseUrl(req), token);
   audit("captain.invite.issued_for_phone", "captain_invite", result.lastInsertRowid, { phone, expiresAt });
-  const notified = await sendBotText(`${phone}@c.us`, `دعوة التسجيل الأولى في TAKE&GO الشمال\n\nافتح بوابة التشغيل الرسمية، اضغط زر التشغيل الأصفر، ثم اختر «تسجيل كابتن جديد» لإدخال اسمك واختيار رقم سري من 5 أرقام.\nالرابط صالح لدعوة واحدة حتى ${expiresAt.slice(0, 10)}: ${inviteUrl}`);
+  const notified = await sendBotText(`${phone}@c.us`, `دعوة كابتن: التسجيل عبر ${inviteUrl} — صالحة حتى ${expiresAt.slice(0, 10)}`);
   res.status(201).json({ success: true, id: result.lastInsertRowid, phone, inviteUrl, expiresAt, notified });
 });
 app.post("/api/admin/captain-invites/import", requireAdmin, (req, res) => {
@@ -8254,7 +8240,7 @@ async function issueApprovalTopupCard({ captain, approvalId, req }) {
     const updated = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, card.id);
     if (!updated.changes) return { status: "sent", cardId: card.id, reused: true };
     audit("topup_card.sent_text_fallback", "topup_card", card.id, { captainId: captain.id, source: "captain_approval_auto", deliveryIdempotencyKey, deliveryMode: "text" });
-    void notifyOperations({ event: "captain.approval_topup.sent", title: "تأكيد بطاقة رصيد بعد الموافقة", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, "أُرسلت البطاقة نصيًا بعد الموافقة.", "لا يُضاف الرصيد إلا عند الاسترداد."], ownersOnly: true });
+    void notifyOperations({ event: "captain.approval_topup.sent", title: "تأكيد بطاقة رصيد بعد الموافقة", lines: [`الكابتن: ${captain.name} — القيمة: ${money(amountCents)} JOD`, `البطاقة: #${card.id} — الحالة: أُرسلت نصيًا؛ الرصيد عند الاسترداد`], ownersOnly: true });
     return { status: "sent", cardId: card.id };
   } catch (_) {
     audit("topup_card.delivery_failed", "topup_card", card.id, { captainId: captain.id, source: "captain_approval_auto", deliveryMode: "text" });
@@ -8274,7 +8260,7 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, async (req, re
   if (decision === "reject") {
     db.prepare("UPDATE captain_invites SET status='rejected',decision_note=?,decided_at=?,updated_at=?,pin_hash=NULL,pin_ciphertext=NULL WHERE id=? AND status='pending'").run(note || "تم رفض الطلب من الشركة", stamp, stamp, id);
     audit("captain.join.rejected", "captain_invite", id, { phone: invite.phone, note });
-    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `تم رفض طلب الانضمام إلى TAKE&GO الشمال.\\n${note ? `السبب: ${note}` : "يمكنك التواصل مع الشركة للاستفسار."}`) : false;
+    const notified = invite.phone ? await sendBotText(`${phoneWithCountry(invite.phone)}@c.us`, `الكابتن: ${invite.name || "حسابك"} — تم رفض طلب الانضمام${note ? ` — السبب: ${note}` : ""}`) : false;
     void notifyOperations({ event: "captain.join.rejected", title: "تأكيد رفض طلب انضمام", lines: [`الاسم: ${invite.name || "غير محدد"}`, `الهاتف: ${invite.phone || "غير محدد"}`, note ? `السبب: ${note}` : "تم رفض الطلب من الشركة."], ownersOnly: true });
     return res.json({ success: true, status: "rejected", notified });
   }
@@ -8374,7 +8360,7 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في TAKE&GO الشمال: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز الدخول: ${code} — صالح 10 دقائق`);
   if (!sent) {
     db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
@@ -8959,6 +8945,7 @@ app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => r
   ignored: { groupId: lastIgnoredGroupEventGroupId, telemetry: lastIgnoredGroupMessageTelemetry },
 }));
 app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
+  if (openCleanReadCache(req, res, "/api/admin/group/summary")) return;
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) {
     return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
@@ -9007,6 +8994,7 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
 // the official group id, and the group's own invite code — with no extra tokens or codes.
 // This route is strictly read-only and never changes configuration or membership.
 app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
+  if (openCleanReadCache(req, res, "/api/admin/group/link-state")) return;
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) {
     return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
@@ -9167,7 +9155,7 @@ app.post("/api/dashboard/cards/:id/send", requireCompanyOwner, async (req, res) 
     const code = decryptCardCode(card.code_ciphertext);
     const chatId = await resolveWhatsAppRecipientId(card.captain_phone);
     if (!chatId) return res.status(409).json({ error: "Captain WhatsApp account could not be resolved; card remains unsent" });
-    const message = brandedMessage("بطاقة شحن مخصصة", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, `رمز البطاقة: ${code}`, "هذه البطاقة مخصصة لهذا الرقم فقط وتُستخدم مرة واحدة.", "للاسترداد أرسل الرمز عبر قناة البوت المعتمدة."]);
+    const message = brandedMessage("بطاقة شحن مخصصة", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD — الرمز: ${code} — الدخول: ${captainAppUrl(captainInviteBaseUrl(req))}`]);
     const sent = await sendServer2DirectAtMostOnce(chatId, message, undefined, 20000);
     if (!sent) return res.status(504).json({ error: "WhatsApp delivery timed out; card remains unsent" });
     const stamp = now();
@@ -9243,7 +9231,7 @@ app.post("/api/dashboard/captains/redeem", requireDashboardApi, (req, res) => {
     })();
     if (!result.alreadyRedeemed) {
       const captain = db.prepare("SELECT name,phone FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
-      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"} — أضيف: ${money(result.valueCents)} JOD`, `الرصيد: ${money(result.balanceCents)} JOD`] });
     }
     res.json({ success: true, alreadyRedeemed: result.alreadyRedeemed, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
   } catch (error) {
@@ -9275,7 +9263,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
       audit("captain.wallet.credited_direct", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner", source: "company_direct" });
       return result.lastInsertRowid;
     })();
-    void notifyOperations({ event: "captain.wallet.credited_direct", title: "تأكيد إضافة رصيد مباشرة", captainPhone: captain.phone, lines: ["الكابتن: " + captain.name, "تمت إضافة: " + money(amountCents) + " JOD", "الرصيد الحالي: " + money(nextBalance) + " JOD", "السبب: " + reason, "تم تسجيل الحركة المباشرة في دفتر الشركة."], ownersOnly: true });
+    void notifyOperations({ event: "captain.wallet.credited_direct", title: "تأكيد إضافة رصيد مباشرة", captainPhone: captain.phone, lines: ["الكابتن: " + captain.name + " — أضيف: " + money(amountCents) + " JOD", "الرصيد: " + money(nextBalance) + " — السبب: " + reason], ownersOnly: true });
     return res.status(201).json({ success: true, mode: "direct", ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance, credited: money(amountCents) });
   }
   if (direction === "credit") {
@@ -9298,7 +9286,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
     if (client && isReady) {
       try {
         const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-        const caption = brandedMessage("بطاقة شحن رسمية", ["الكابتن: " + captain.name, "القيمة: " + money(amountCents) + " JOD", "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", "الدخول: " + appUrl, "أدخل رمز البطاقة في تطبيق Captain لإضافة الرصيد مباشرة."]);
+        const caption = brandedMessage("بطاقة شحن رسمية", ["الكابتن: " + captain.name, "القيمة: " + money(amountCents) + " JOD — الدخول: " + appUrl]);
         const recipient = await resolveWhatsAppRecipientId(captain.phone);
         if (recipient) {
           let sent = false;
@@ -9340,7 +9328,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
     return result.lastInsertRowid;
   })();
   void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
-  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
+  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name} — ${direction === "credit" ? "أضيف" : "خُصم"}: ${money(amountCents)} JOD`, `الرصيد: ${money(nextBalance)} — السبب: ${reason}`] });
   res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
 });
 
@@ -9745,12 +9733,8 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     const gateway = captainGatewayUrl(process.env.PUBLIC_BASE_URL || "");
     const title = "تم تسجيلك في شبكة التشغيل";
     const lines = [
-      "تم تسجيل رقمك ضمن أعضاء شبكة TAKE&GO الشمال التشغيلية.",
-      "هذا ليس تسجيل كابتن جديدًا.",
-      "افتح البوابة الرسمية واضغط: «دخول الكابتن».",
-      `البوابة الرسمية: ${gateway}`,
-      "بعد الدخول استخدم الرقم السري المرسل لك، ثم افتح رابط القروب للانضمام:",
-      `رابط القروب: ${inviteUrl}`,
+      "الحساب: تم تسجيلك ضمن شبكة التشغيل.",
+      `الدخول: ${gateway} — القروب: ${inviteUrl}`,
     ];
     const inviteCardMedia = await withTimeout(renderOperationsMessageMedia(title, lines), 30000, null);
     if (!inviteCardMedia) throw new Error("official invite card render returned no media");
@@ -9919,6 +9903,7 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   res.json({ success: true, deleted: id });
 });
 app.get("/api/admin/captains", requireAdmin, (req, res) => {
+  if (openCleanReadCache(req, res, "/api/admin/captains")) return;
   normalizeBotIdentity();
   const requestedCaptainLimit = Number(req.query.limit || 0);
   const captainLimit = Number.isInteger(requestedCaptainLimit) && requestedCaptainLimit > 0 ? Math.min(requestedCaptainLimit, 1000) : null;
@@ -10365,13 +10350,8 @@ function handleAdminDirectWalletCredit(req, res) {
     title: isLargeDirectCredit ? "تنبيه عاجل: إضافة رصيد كبيرة" : "تأكيد إضافة رصيد مباشرة",
     captainPhone: captain.phone,
     lines: [
-      isLargeDirectCredit ? "يرجى مراجعة هذه الحركة الكبيرة فورًا." : null,
-      "الكابتن: " + captain.name,
-      "تمت إضافة: " + money(amountCents) + " JOD",
-      isLargeDirectCredit ? "عتبة التنبيه: " + money(DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS) + " JOD" : null,
-      "الرصيد الحالي: " + money(nextBalance) + " JOD",
-      "السبب: " + reason,
-      "إضافة داخلية مباشرة دون إنشاء بطاقة أو إرسال WhatsApp للكابتن."
+      "الكابتن: " + captain.name + " — أضيف: " + money(amountCents) + " JOD",
+      (isLargeDirectCredit ? "تنبيه كبير — العتبة: " + money(DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS) + " JOD — " : "") + "الرصيد: " + money(nextBalance) + " — السبب: " + reason,
     ],
     ownersOnly: true
   });
@@ -10395,7 +10375,7 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   if (!groupId || !groupId.endsWith("@g.us")) return res.status(400).json({ error: "groupId must end with @g.us" });
   if (!WHATSAPP_GROUP_ID || groupId !== WHATSAPP_GROUP_ID) return res.status(403).json({ error: "Only this service's exact configured environment group may be active" });
   if (!configureGroupId(groupId, groupName)) return res.status(409).json({ error: "The configured environment group could not be verified" });
-  void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
+  void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`القروب: ${groupName} — المعرّف: ${groupId}`, "الحالة: تم الحفظ والتشغيل."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
 });
 
@@ -10491,7 +10471,7 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     if (!groupChat) return res.status(502).json({ error: "Group invite was accepted, but WhatsApp has not loaded the group members yet" });
     if (!configureGroupId(groupId, groupName)) return res.status(409).json({ error: "The configured environment group could not be verified" });
     audit("group.joined_and_configured", "group", groupId, { groupName });
-    void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم الانضمام إلى القروب وحفظه كقروب التشغيل النشط."], ownersOnly: true });
+    void notifyOperations({ event: "group.joined_and_configured", title: "تأكيد ربط قروب التشغيل", lines: [`القروب: ${groupName} — المعرّف: ${groupId}`, "الحالة: تم الربط والتشغيل."], ownersOnly: true });
     res.json({ success: true, groupId, groupName, membersLoaded: groupChat.participants.length, participantSource: groupChat.participantSource || null });
   } catch (error) {
     res.status(502).json({ error: "Unable to join group", details: error.message });
@@ -10530,7 +10510,7 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   const previousGroupId = getSetting("group_id", null);
   configureGroupId(groupId, groupName);
   audit("group.adopted_from_live_event", "group", groupId, { previousGroupId, eventAt: lastGroupMessageTelemetry.at });
-  void notifyOperations({ event: "group.adopted_from_live_event", title: "تم إصلاح استقبال رسائل القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم اعتماد القروب الذي وصلت منه الرسائل الفعلية.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
+  void notifyOperations({ event: "group.adopted_from_live_event", title: "تم إصلاح استقبال رسائل القروب", lines: [`القروب: ${groupName} — المعرّف: ${groupId}`, "الحالة: تم الاعتماد واستقبال الرسائل."], ownersOnly: true });
   res.json({ success: true, groupId, groupName, previousGroupId, membersLoaded: Array.isArray(chat.participants) ? chat.participants.length : null });
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
@@ -10760,7 +10740,7 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
     }
   })();
   audit("captains.cleanup.applied", "group", groupId, { backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, expected });
-  if (!CLEAN_INSTANCE) void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تم حذف حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
+  if (!CLEAN_INSTANCE) void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId} — الفارغة المحذوفة: ${deleted.length}`, `الموقوفة: ${suspended.length} — النسخة: ${backupName}`], ownersOnly: true });
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
@@ -11497,13 +11477,7 @@ app.post("/api/admin/cards", requireAdmin, (req, res) => {
 function topupCardTextMessage({ cardId, code, valueCents, captainName, appUrl }) {
   return brandedMessage("بطاقة شحن رسمية", [
     `الكابتن: ${captainName || "حسابك"}`,
-    `القيمة: ${money(valueCents)} JOD`,
-    "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.",
-    `رمز البطاقة: ${code}`,
-    `الدخول: ${appUrl}`,
-    "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة.",
-    `رقم البطاقة الداخلي: #${cardId}`,
-    "لا تشارك رمز البطاقة مع أي شخص.",
+    `القيمة: ${money(valueCents)} JOD — الرمز: ${code} — الدخول: ${appUrl}`,
   ]);
 }
 async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
@@ -11522,7 +11496,7 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
   try {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-    const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة."]);
+    const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD — الرمز: ${code} — الدخول: ${appUrl}`]);
     const recipient = await resolveWhatsAppRecipientId(card.captain_phone);
     if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل" });
     let sent = null;
@@ -11538,7 +11512,7 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
     if (!update.changes) return res.json({ success: true, alreadySent: true, status: "sent" });
     const event = deliveryMode === "text" ? "topup_card.sent_text_fallback" : "topup_card.sent";
     audit(event, "topup_card", cardId, { captainId: card.assigned_captain_id, messageId: sent.id?._serialized || null, deliveryIdempotencyKey, deliveryMode });
-    void notifyOperations({ event, title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${card.captain_name}`, `القيمة: ${money(card.value_cents)} JOD`, `رقم البطاقة الداخلي: #${cardId}`, deliveryMode === "text" ? "تم إرسال البطاقة نصيًا إلى الكابتن عبر المسار الاحتياطي." : "تم إرسال البطاقة المصوّرة إلى الكابتن.", "يُضاف الرصيد عند إدخال الرمز من بوابة التشغيل."], ownersOnly: true });
+    void notifyOperations({ event, title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${card.captain_name} — القيمة: ${money(card.value_cents)} JOD`, `البطاقة: #${cardId} — الحالة: ${deliveryMode === "text" ? "أُرسلت نصيًا" : "أُرسلت مصوّرة"}`], ownersOnly: true });
     res.json({ success: true, status: "sent", deliveryMode });
   } catch (_) { audit("topup_card.delivery_failed", "topup_card", cardId, { deliveryIdempotencyKey, deliveryMode }); res.status(502).json({ error: "تعذر إرسال بطاقة الرصيد عبر WhatsApp" }); }
   finally { cardDeliveryInFlight.delete(cardId); }
@@ -11589,7 +11563,7 @@ app.post("/api/admin/bulk-topup/zero-balance-5", requireAdmin, async (req, res) 
           if (!sent) throw new Error("delivery_failed");
           db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `BULK-${runKey}-${captain.id}`, card.id);
           run.sent += 1;
-          void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد إرسال بطاقة شحن جماعية", lines: [`الكابتن: ${captain.name}`, "القيمة: 5.00 JOD", `رقم البطاقة الداخلي: #${card.id}`, "تم إرسال بطاقة الرصيد نصيًا.", "يُضاف الرصيد عند استرداد البطاقة."], ownersOnly: true });
+          void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد إرسال بطاقة شحن جماعية", lines: [`الكابتن: ${captain.name} — القيمة: 5.00 JOD`, `البطاقة: #${card.id} — الحالة: أُرسلت نصيًا`], ownersOnly: true });
         } finally { cardDeliveryInFlight.delete(card.id); }
       } catch (_) { run.failed += 1; }
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -11646,7 +11620,7 @@ app.post("/api/admin/bulk-topup/negative-one-3", requireAdmin, async (req, res) 
           if (!sent) throw new Error("delivery_failed");
           db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `BULK-${runKey}-${captain.id}`, card.id);
           run.sent += 1;
-          void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${captain.name}`, "القيمة: 3.00 JOD", `رقم البطاقة الداخلي: #${card.id}`, "تم إرسال بطاقة الرصيد نصيًا.", "يُضاف الرصيد عند استرداد البطاقة."], ownersOnly: true });
+          void notifyOperations({ event: "topup_card.sent_text_fallback", title: "تأكيد إرسال بطاقة شحن", lines: [`الكابتن: ${captain.name} — القيمة: 3.00 JOD`, `البطاقة: #${card.id} — الحالة: أُرسلت نصيًا`], ownersOnly: true });
         } finally { cardDeliveryInFlight.delete(card.id); }
       } catch (_) { run.failed += 1; }
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -11767,12 +11741,8 @@ app.post("/api/admin/captains/reset-pin-selective", requireAdmin, async (req, re
         const appUrl = captainLoginUrl(captainInviteBaseUrl(req));
         const title = "تحديث دخول الكابتن";
         const text = brandedMessage(title, [
-          `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في TAKE&GO الشمال.",
-          `رقم الهاتف: ${captain.phone}`,
-          "الرقم السري: 00000",
-          `رابط الدخول الفوري: ${appUrl}`,
-          "يرجى تغيير الرقم السري بعد أول دخول وعدم مشاركته مع أي شخص.",
+          `الكابتن: ${captain.name || "حسابك"} — الهاتف: ${captain.phone}`,
+          `الرقم السري: 00000 — الدخول: ${appUrl}`,
         ]);
         let notificationId = existing?.id || null;
         if (existing) {
@@ -11837,12 +11807,8 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
         db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync("00000", 10), now(), captain.id);
         run.updated += 1;
         const text = brandedMessage("تحديث دخول الكابتن", [
-          `الكابتن: ${captain.name || "حسابك"}`,
-          "تم تحديث بيانات الدخول الخاصة بك في TAKE&GO الشمال.",
-          `رقم الهاتف: ${captain.phone}`,
-          "الرقم السري: 00000",
-          `رابط الدخول الفوري: ${appUrl}`,
-          "يرجى تغيير الرقم السري بعد أول دخول وعدم مشاركته مع أي شخص.",
+          `الكابتن: ${captain.name || "حسابك"} — الهاتف: ${captain.phone}`,
+          `الرقم السري: 00000 — الدخول: ${appUrl}`,
         ]);
         const sent = await sendServer2DirectAtMostOnce(captain.recipientId, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -11882,10 +11848,7 @@ app.post("/api/admin/notifications/daily-debit-cancellation", requireAdmin, asyn
         if (!recipient) throw new Error("recipient_unresolved");
         const text = brandedMessage("إشعار رسمي — إلغاء الخصم اليومي", [
           `الكابتن: ${captain.name || "حساب الكابتن"}`,
-          "نحيطك علمًا بأنه تم إلغاء الخصم اليومي بقيمة 10 قروش من حسابك.",
-          "لن يتم تنفيذ أي خصم يومي جديد ابتداءً من الآن.",
-          "هذا الإشعار لا يغيّر الاشتراك الأسبوعي أو أي حركة مالية سابقة.",
-          "TAKE&GO الشمال — الإدارة",
+          "تم إلغاء الخصم اليومي (10 قروش) — لا خصومات جديدة.",
         ]);
         const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -11921,10 +11884,8 @@ app.post("/api/admin/notifications/negative-balance-warning", requireAdmin, asyn
         const recipient = await resolveWhatsAppRecipientId(captain.phone);
         if (!recipient) throw new Error("recipient_unresolved");
         const text = brandedMessage("تنبيه رصيد المحفظة", [
-          `الكابتن: ${captain.name || "حساب الكابتن"}`,
-          `رصيدك الحالي: ${money(captain.wallet_cents)} JOD`,
-          "الرجاء شحن رصيدك قبل أن يتم إزالتك من TAKE&GO الشمال.",
-          "يرجى التواصل مع الإدارة لشحن الرصيد.",
+          `الكابتن: ${captain.name || "حساب الكابتن"} — الرصيد: ${money(captain.wallet_cents)} JOD`,
+          "الرجاء الشحن لتفادي الإزالة.",
         ]);
         const sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
         if (!sent) throw new Error("delivery_failed");
@@ -11985,7 +11946,7 @@ app.post("/api/redeem", (req, res) => {
   try {
     const captain = db.prepare("SELECT id,name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(result.userId);
     void notifyCaptainCreditRedeemed({ captain, valueCents: result.valueCents, balanceCents: result.balanceCents, cardId: result.cardId });
-    void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+    void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"} — أضيف: ${money(result.valueCents)} JOD`, `الرصيد: ${money(result.balanceCents)} JOD`] });
     res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
@@ -12020,7 +11981,7 @@ app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
     if (!result.alreadyRedeemed) {
       const captain = db.prepare("SELECT id,name,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
       void notifyCaptainCreditRedeemed({ captain, valueCents: result.valueCents, balanceCents: result.balanceCents, cardId: result.cardId });
-      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
+      void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"} — أضيف: ${money(result.valueCents)} JOD`, `الرصيد: ${money(result.balanceCents)} JOD`] });
     }
     res.json({ success: true, credited: money(result.valueCents), balance: money(result.balanceCents), currency: "JOD", alreadyRedeemed: result.alreadyRedeemed });
   } catch (error) { res.status(400).json({ error: error.message || "تعذر استرداد البطاقة" }); }
@@ -12037,7 +11998,7 @@ app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
   const stamp = now();
   db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'new',?,?)").run(ticketCode, captain.name, phoneWithCountry(captain.phone), "topup_card", message, cents(requestedValue), stamp, stamp);
   audit("captain.topup_request.created", "support_ticket", ticketCode, { captainId: captain.id, requestedValueCents: cents(requestedValue) }, captain.id);
-  void notifyOperations({ event: "topup_request.created", title: "طلب شحن رصيد جديد", lines: [`الكابتن: ${captain.name}`, `القيمة المطلوبة: ${money(cents(requestedValue))} JOD`, `رقم الطلب: ${ticketCode}`, "بانتظار موافقة المالك لإصدار البطاقة وإرسالها."], ownersOnly: true });
+  void notifyOperations({ event: "topup_request.created", title: "طلب شحن رصيد جديد", lines: [`الكابتن: ${captain.name} — المطلوب: ${money(cents(requestedValue))} JOD`, `الطلب: ${ticketCode} — الحالة: بانتظار الموافقة`], ownersOnly: true });
   res.status(201).json({ success: true, ticketCode, status: "new", message: "تم إرسال طلب شحن الرصيد إلى الشركة" });
 });
 app.post("/api/support/tickets", (req, res) => {
@@ -12122,7 +12083,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
   try {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-    const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
+    const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD — الرمز: ${code} — الدخول: ${appUrl}`]);
     const recipient = await resolveWhatsAppRecipientId(phone);
     if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
     let deliveryMode = "media";
@@ -12142,7 +12103,7 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);
     audit("support.topup_request.fulfilled", "support_ticket", ticketId, { cardId: card.id, captainId: captain.id, deliveryMode });
     notifyCaptainCreditSent({ captain, valueCents, cardId: card.id });
-    void notifyOperations({ event: deliveryMode === "media" ? "topup_card.sent" : "topup_card.sent_text_fallback", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `رقم البطاقة الداخلي: #${card.id}`, deliveryMode === "media" ? "تم توليد البطاقة المصوّرة وإرسالها عبر WhatsApp." : "تعذر إرسال الصورة، فتم إرسال البطاقة نصيًا عبر WhatsApp.", "يُضاف الرصيد عند إدخال رمز البطاقة."], ownersOnly: true });
+    void notifyOperations({ event: deliveryMode === "media" ? "topup_card.sent" : "topup_card.sent_text_fallback", title: "تأكيد إصدار بطاقة شحن", lines: [`الكابتن: ${captain.name} — القيمة: ${money(valueCents)} JOD`, `البطاقة: #${card.id} — الحالة: ${deliveryMode === "media" ? "أُرسلت مصوّرة" : "أُرسلت نصيًا"}`], ownersOnly: true });
     res.json({ success: true, status: "resolved", cardId: card.id, deliveryMode });
   } catch (error) {
     db.prepare("UPDATE support_tickets SET status='in_progress',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار البطاقة #${card.id} لكن فشل الإرسال؛ يمكن إعادة المحاولة بعد اتصال WhatsApp.`, now(), ticketId);
@@ -12217,6 +12178,7 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
   }
 });
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
+  if (openCleanReadCache(req, res, "/api/admin/orders")) return;
   const requestedOrderLimit = Number(req.query.limit || 200);
   const orderLimit = Number.isInteger(requestedOrderLimit) ? Math.max(1, Math.min(requestedOrderLimit, 1000)) : 200;
   const requestedOrderOffset = Number(req.query.offset || 0);
@@ -12851,6 +12813,7 @@ app.get("/api/admin/wallets", requireAdmin, (req, res) => {
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
 app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
+  if (openCleanReadCache(req, res, "/api/admin/subscriptions")) return;
   const requestedPeriod = String(req.query.periodStart || "").trim();
   const currentPeriod = currentCaptainSubscriptionPeriod();
   const periodStart = requestedPeriod || currentPeriod?.start || null;

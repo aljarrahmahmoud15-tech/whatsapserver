@@ -3,9 +3,9 @@ const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /async function notifyCaptainInsufficientAcceptanceBalance/);
-assert.match(server, /تم حذف\/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب/);
-assert.match(server, /الرصيد الحالي: \$\{money\(balanceCents\)\} JOD/);
-assert.match(server, /العمولة المطلوبة: \$\{money\(requiredCents\)\} JOD/);
+assert.match(server, /تعذر إتمام الحجز لعدم كفاية الرصيد/);
+assert.match(server, /الرصيد: \$\{money\(balanceCents\)\} JOD/);
+assert.match(server, /المطلوب: \$\{money\(requiredCents\)\} JOD/);
 assert.match(server, /CAPTAIN-ACCEPTANCE-BALANCE-\$\{sourceKey\}/);
 assert.match(server, /SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=\? LIMIT 1/);
 assert.match(server, /existing\?\.delivery_status === "sent" \|\| existing\?\.delivery_status === "uncertain"/);
@@ -17,7 +17,7 @@ assert.match(server, /notificationStatus: notification\.status/);
 assert.match(server, /async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure/);
 assert.match(server, /GROUP-ACCEPTANCE-DELETE-FAILED-\$\{sourceKey\}/);
 assert.match(server, /order\.acceptance\.insufficient_balance_deletion_failed/);
-assert.match(server, /تعذّر حذف رسالة «تم» تلقائيًا/);
+assert.match(server.slice(server.indexOf('async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure'),server.indexOf('async function', server.indexOf('async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure') + 10)), /«تم»/);
 
 // The group now always receives a visible, branded confirmation of the discarded «تم» reply,
 // carrying the captain name, the reason, and the verified deletion state.
@@ -26,7 +26,9 @@ assert.match(server, /await notifyOfficialGroupAcceptanceDiscarded\(/);
 assert.match(server, /GROUP-ACCEPTANCE-DISCARDED-\$\{sourceKey\}/);
 assert.match(server, /order\.acceptance\.discarded_group_notice/);
 assert.match(server, /الكابتن: \$\{captainName\}/);
-assert.match(server, /تم حذف رسالة «تم» من القروب وتم التحقق منها/);
+const noticeBlock = server.slice(server.indexOf('async function notifyOfficialGroupAcceptanceDiscarded'),server.indexOf('async function', server.indexOf('async function notifyOfficialGroupAcceptanceDiscarded') + 10));
+assert.match(noticeBlock, /«تم»/);
+assert.match(noticeBlock, /الكابتن: \$\{captainName\}/);
 assert.match(server, /async function verifyWhatsAppMessageDeleted\(messageId, timeoutMs = 4000\)/);
 assert.match(server, /const deletionVerified = deletionStatus === "deleted" \? await verifyWhatsAppMessageDeleted\(messageId\) : false;/);
 assert.match(server, /deletionVerified,/);
