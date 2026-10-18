@@ -28,6 +28,10 @@ services:
         value: /var/data
       - key: WHATSAPP_GROUP_ID
         value: 120363426604560611@g.us
+      - key: BOT_PHONE
+        value: "0779039586"
+      - key: BOT_PHONE_INTL
+        value: "962779039586"
       - key: AUTH_PATH
         value: /var/data/.wwebjs_auth
       - key: BAILEYS_AUTH_PATH

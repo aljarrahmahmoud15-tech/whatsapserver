@@ -31,8 +31,8 @@ app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
 const LEGACY_BOT_PHONE = "0779110123";
 const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "962779752230";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779752230";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779039586";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779039586";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
@@ -1510,7 +1510,7 @@ function createTicketCode() {
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
 const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
-const GROUP_SETUP_OWNER_PHONES = new Set(["+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
+const GROUP_SETUP_OWNER_PHONES = new Set(["+962779039586", "+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
