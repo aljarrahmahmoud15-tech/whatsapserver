@@ -2,9 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const server = fs.readFileSync('server.js', 'utf8');
-const admin = fs.readFileSync('public/admin-v26.html', 'utf8');
+const admin = fs.readFileSync('admin.html', 'utf8');
 
-assert.match(server, /app\.get\("\/admin\.html",[\s\S]{0,220}admin-v26\.html/);
+assert.match(server, /app\.get\("\/admin\.html",[\s\S]{0,220}path\.join\(__dirname, "admin\.html"\)/);
 assert.match(server, /function handleAdminDirectWalletCredit\(req, res\)/);
 assert.match(server, /app\.post\(\"\/api\/admin\/users\/:id\/direct-credit\", requireBotWalletOwner, handleAdminDirectWalletCredit\)/);
 assert.match(server, /app\.post\(\"\/api\/admin\/captains\/:id\/direct-credit\", requireBotWalletOwner, handleAdminDirectWalletCredit\)/);
@@ -25,10 +25,10 @@ assert.match(handler, /wallet_ledger/);
 assert.match(handler, /idempotency_key/);
 assert.match(handler, /alreadyApplied/);
 
-assert.match(admin, /data-safe-action="credit"/);
-assert.match(admin, /function applyCaptainCredit\(id\)/);
+assert.match(admin, /function adjustUserWalletDirect\(id,name\)/);
+assert.match(admin, /إضافة مباشرة للمحفظة/);
 assert.match(admin, /X-Idempotency-Key/);
 assert.match(admin, /direct-credit/);
-assert.match(admin, /دون بطاقة أو رسالة WhatsApp/);
+assert.match(admin, /لن تُنشأ بطاقة ولن تُرسل رسالة WhatsApp/);
 
-console.log('V26 direct wallet credit button and wallet-only owner guardrails verified');
+console.log('admin.html direct wallet credit button and wallet-only owner guardrails verified');

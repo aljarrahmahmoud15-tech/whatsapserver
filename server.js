@@ -534,11 +534,11 @@ app.get("/v27.html", v27PageLimiter, (req, res) => {
 });
 app.get("/admin", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+  res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/admin.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+  res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/admin-v26.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
