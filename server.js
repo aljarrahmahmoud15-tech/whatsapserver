@@ -226,6 +226,7 @@ const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(
 const WHATSAPP_RECOVERY_SCAN_HOURS = Math.max(1, Math.min(168, Number(process.env.WHATSAPP_RECOVERY_SCAN_HOURS || 72)));
 const WHATSAPP_RECOVERY_MAX_PAGES = Math.max(1, Math.min(40, Number(process.env.WHATSAPP_RECOVERY_MAX_PAGES || 12)));
 const WHATSAPP_RECOVERY_EARLIER_LOADS = Math.max(1, Math.min(12, Number(process.env.WHATSAPP_RECOVERY_EARLIER_LOADS || 6)));
+const WHATSAPP_SCAN_PAGE_TIMEOUT_MS = Math.max(12000, Math.min(60000, Number(process.env.WHATSAPP_SCAN_PAGE_TIMEOUT_MS || 28000)));
 const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 25)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 180000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
@@ -2986,7 +2987,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
       const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
       if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [] };
       const filter = (message) => !message.isNotification && (includeOutgoingMessages || !message.id?.fromMe);
-      let models = chat.msgs.getModelsArray().filter(filter);
+      let models = (storeMessages || chat.msgs.getModelsArray()).filter(filter);
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
       while (models.length < requestedLimit && loader?.loadEarlierMsgs) {
@@ -3067,8 +3068,19 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     try {
       const wid = window.require("WAWebWidFactory").createWid(requestedId);
       const collections = window.require("WAWebCollections");
-      const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
-      if (!chat?.msgs?.getModelsArray) return { chat: null, messages: [], nextCursor: null, exhausted: true };
+      let chat = null;
+      try { chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat; } catch (_) { chat = null; }
+      let storeMessages = null;
+      if (!chat?.msgs?.getModelsArray) {
+        try {
+          const scoped = collections.Msg.getModelsArray().filter((message) => {
+            const rid = message.id?.remote?._serialized || message.from?._serialized || message.to?._serialized || "";
+            return rid === requestedId;
+          });
+          if (scoped.length) storeMessages = scoped;
+        } catch (_) { storeMessages = null; }
+      }
+      if (!chat?.msgs?.getModelsArray && !storeMessages) return { chat: null, messages: [], nextCursor: null, exhausted: true };
       const includeOutgoingMessages = Boolean(options.includeOutgoing);
       const beforeTs = Number(options.before || 0);
       const cutoffTs = Number(options.cutoff || 0);
@@ -3083,7 +3095,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
         const timestamp = Number(message.t || 0);
         return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
       });
-      while (loader?.loadEarlierMsgs && loads < earlierLoadLimit && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
+      while (loader?.loadEarlierMsgs && chat?.msgs?.getModelsArray && loads < earlierLoadLimit && (eligible().length < batchSize || !models.some((message) => Number(message.t || 0) * 1000 < cutoffTs))) {
         const earlier = await loader.loadEarlierMsgs({ chat });
         loads += 1;
         if (!earlier?.length) break;
@@ -3112,7 +3124,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     } catch (error) {
       return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
     }
-  }, groupId, { before, cutoff, batch, includeOutgoing }), Math.max(9000, WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS), { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  }, groupId, { before, cutoff, batch, includeOutgoing }), WHATSAPP_SCAN_PAGE_TIMEOUT_MS, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
@@ -10803,7 +10815,11 @@ app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing });
+  let result = null;
+  for (let attempt = 0; attempt < 3 && !result?.chat; attempt += 1) {
+    result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing });
+    if (!result?.chat && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 2500));
+  }
   if (!result.chat) return res.status(result.timedOut ? 504 : 502).json({ error: result.timedOut ? "Group scan timed out; retry with the returned batch size" : "Configured group is not readable", mutation: "none", retryable: true });
   const messages = (Array.isArray(result.messages) ? result.messages : []).map((message) => ({
     ...message,
