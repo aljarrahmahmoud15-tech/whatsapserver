@@ -24,6 +24,8 @@ const { createOwnerVault } = require("./owner-vault");
 const { cancelSettledOrderAndReverse } = require("./order-cancellation");
 const { guardOutboundMethod } = require("./whatsapp-outbound-guard");
 
+const { createWeeklySubscriptionScheduler } = require("./weekly-subscription-scheduler");
+
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
@@ -127,7 +129,7 @@ const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(3
 // Owner policy (Clean): no negative debt allowance. Any operation that would push a wallet
 // below zero is refused, and an acceptance («تم») that the balance cannot cover is cancelled.
 // A negative env value is ignored on purpose so a stale Render variable cannot restore debt.
-const CAPTAIN_MIN_BALANCE_CENTS = Math.max(0, Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || 0));
+const CAPTAIN_MIN_BALANCE_CENTS = 0; // clean policy: no debt, no negative allowance (env override removed)
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
 const CAPTAIN_BALANCE_POLICY_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CAPTAIN_BALANCE_POLICY_INTERVAL_MS || 5 * 60 * 1000));
 const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
@@ -142,7 +144,7 @@ const configuredUnquotedAcceptanceRecoveryWindowMs = Number(process.env.UNQUOTED
 const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number.isFinite(configuredUnquotedAcceptanceRecoveryWindowMs)
   ? Math.max(UNQUOTED_ACCEPTANCE_WINDOW_MS, Math.min(configuredUnquotedAcceptanceRecoveryWindowMs, 72 * 60 * 60 * 1000))
   : 6 * 60 * 60 * 1000;
-const CAPTAIN_SUBSCRIPTION_CENTS = 100;
+const CAPTAIN_SUBSCRIPTION_CENTS = 50; // 0.50 JOD — owner policy for clean
 // Owner policy: recurring captain charges are paused until further notice.
 // Only an applied order settlement may debit a captain wallet.
 const CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false;
@@ -3561,6 +3563,20 @@ function applyCaptainSubscriptionCharges(stamp = now()) {
   if (applied.length || skipped.length) console.log(`[Subscription] period=${period.start} applied=${applied.length} skipped=${skipped.length}`);
   return { status: "completed", period, applied, skipped, eligibleCount: captains.length };
 }
+
+// ===== Clean weekly subscription: every Thursday 22:00 (Asia/Amman), 0.50 JOD =====
+try {
+  setSetting("captain_weekly_schedule_v1", JSON.stringify({ enabled: true, weekday: 4, hour: 22, minute: 0, timeZone: "Asia/Amman", amountCents: CAPTAIN_SUBSCRIPTION_CENTS }));
+  const weeklySubscriptionScheduler = createWeeklySubscriptionScheduler({
+    db, getSetting, setSetting, audit,
+    execute: (stamp) => applyCaptainSubscriptionCharges(stamp),
+  });
+  if (weeklySubscriptionScheduler && typeof weeklySubscriptionScheduler.start === "function") weeklySubscriptionScheduler.start();
+  console.log("[Clean] weekly subscription scheduler armed: Thursday 22:00 Asia/Amman,", CAPTAIN_SUBSCRIPTION_CENTS, "cents");
+} catch (error) {
+  console.warn("[Clean] weekly subscription scheduler skipped:", String(error && error.message || error));
+}
+
 function applyCaptainDailyCharges(stamp = now()) {
   const chargeDate = String(stamp).slice(0, 10);
   const captains = db.prepare(`SELECT id,phone,name,wallet_cents,active,account_status FROM users
@@ -8615,7 +8631,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "13%", companyWalletRate: "2%", confirmingCaptainWalletRate: "-15% (13% downloader + 2% company)", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
+    policy: { producerWalletRate: "13%", companyWalletRate: "2%", confirmingCaptainWalletRate: "-15% (13% downloader + 2% company)", captainCashRate: "100%", debtLimit: "none — clean allows no debt", orderSettlementDebtPolicy: "order is pinned regardless of balance, then any negative balance removes the captain", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
   });
 });
 
