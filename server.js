@@ -11721,16 +11721,11 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
       acceptanceEntry.bodies.forEach((bodyItem, bodyPosition) => {
         const bodyText = String((bodyItem && bodyItem.body) || "").trim();
         if (!bodyText) return;
+        const clone = Object.create(Object.getPrototypeOf(acceptanceItem));
+        Object.assign(clone, acceptanceItem);
         const cloneId = acceptanceItemId + ":ov" + bodyPosition;
-        const clone = {};
-        for (const key of Object.keys(acceptanceItem)) {
-          if (key === "_data" || key === "client" || key === "pupPage" || key === "id" || key === "__serializedId") continue;
-          clone[key] = acceptanceItem[key];
-        }
-        clone.id = { _serialized: cloneId };
         clone.__serializedId = cloneId;
-        clone.hasQuotedMessage = false;
-        clone.quotedMessageId = null;
+        if (clone.id && typeof clone.id === "object") clone.id = Object.assign({}, clone.id, { _serialized: cloneId });
         clone.__ownerOverrideBody = bodyText;
         clone.__ownerOverrideSourceId = String((bodyItem && bodyItem.sourceMessageId) || ("owner-override-" + acceptanceItemId + "-" + bodyPosition));
         expandedAcceptances.push(clone);
