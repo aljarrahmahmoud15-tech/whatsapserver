@@ -6017,6 +6017,13 @@ function stopRuntimeMemoryWatchdog() {
 function createClient() {
   restoreSessionSnapshotIfNeeded();
   const generation = ++connectionGeneration;
+  try {
+    const sessionRoot = (typeof AUTH_PATH !== "undefined" && AUTH_PATH) ? AUTH_PATH : path.join(DATA_DIR, ".wwebjs_auth");
+    clearStaleChromiumLocks(sessionRoot);
+    pruneSessionArtifacts();
+  } catch (error) {
+    console.warn("[session-hygiene] startup cleanup skipped:", String((error && error.message) || error));
+  }
   const instance = new Client({
     authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
     puppeteer: puppeteerConfig,
@@ -6040,7 +6047,7 @@ function createClient() {
     recordOwnerControlCheckpoint("whatsapp.authenticated", { force: true });
   });
   instance.on("ready", () => {
-    setTimeout(() => { try { snapshotWhatsAppSession("ready"); } catch (_) {} }, 15000);
+    setTimeout(() => { if (process.env.CLEAN_SESSION_SNAPSHOTS === "true") { try { snapshotWhatsAppSession("ready"); } catch (_) {} } }, 15000);
     if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "ready";
     whatsappLastEvent = "ready";
