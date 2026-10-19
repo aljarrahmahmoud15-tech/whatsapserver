@@ -112,33 +112,52 @@ function renderOwnerVaultSummary(){const v=state.vault||{};const el=$('vaultSumm
 <script>
 (function(){
   var LOCK="cleanOwnerLoginV1";
-  function tokenOk(){try{return !!localStorage.getItem("adminToken")}catch(e){return false}}
+  function tok(){try{return localStorage.getItem("adminToken")||""}catch(e){return ""}}
+  async function probe(t){
+    if(!t) return false;
+    try{
+      var r=await fetch("/api/admin/bot/status",{cache:"no-store",credentials:"include",headers:{"Authorization":"Bearer "+t,"x-admin-token":t}});
+      return r.ok;
+    }catch(e){ return false; }
+  }
+  function hide(){ var old=document.getElementById("clean-login-box"); if(old) old.style.display="none"; }
   function form(show){
     var id="clean-login-box";
     var old=document.getElementById(id);
-    if(old){ old.style.display= show? "block":"none"; return; }
+    if(old){ old.style.display= show? "block":"none"; if(show && old.style.display!=="none"){} return; }
     if(!show) return;
     var d=document.createElement("div"); d.id=id;
     d.style.cssText="position:fixed;inset:0;z-index:99999;background:#0b1220ee;display:flex;align-items:center;justify-content:center;font-family:system-ui";
-    d.innerHTML='<div style="background:#132038;padding:22px;border-radius:14px;color:#e8f0ff;width:320px;text-align:right">'+
+    d.innerHTML='<div style="background:#132038;padding:22px;border-radius:14px;color:#e8f0ff;width:340px;text-align:right">'+
       '<div style="font-weight:700;margin-bottom:10px">دخول لوحة الادارة</div>'+
+      '<input id="clt" placeholder="ADMIN_TOKEN (الرمز الاحتياطي)" autocomplete="off" style="width:100%;padding:9px;margin-bottom:8px;border-radius:8px;border:1px solid #2b3d5c;background:#0b1220;color:#e8f0ff">'+
+      '<button id="cltb" style="width:100%;padding:10px;border:0;border-radius:8px;background:#1fb6c9;color:#04212a;font-weight:700;cursor:pointer">دخول بالرمز</button>'+
+      '<div style="height:12px"></div>'+
+      '<div style="opacity:.7;font-size:12px;margin-bottom:6px">أو باسم المستخدم وكلمة المرور</div>'+
       '<input id="clu" placeholder="اسم المستخدم" style="width:100%;padding:9px;margin-bottom:8px;border-radius:8px;border:1px solid #2b3d5c;background:#0b1220;color:#e8f0ff">'+
       '<input id="clp" type="password" placeholder="كلمة المرور" style="width:100%;padding:9px;margin-bottom:10px;border-radius:8px;border:1px solid #2b3d5c;background:#0b1220;color:#e8f0ff">'+
-      '<button id="clb" style="width:100%;padding:10px;border:0;border-radius:8px;background:#1fb6c9;color:#04212a;font-weight:700;cursor:pointer">دخول</button>'+
+      '<button id="clb" style="width:100%;padding:10px;border:0;border-radius:8px;background:#25406b;color:#e8f0ff;font-weight:700;cursor:pointer">دخول</button>'+
       '<div id="cle" style="color:#ff8a8a;font-size:12px;margin-top:8px"></div></div>';
     document.body.appendChild(d);
+    document.getElementById("cltb").onclick=async function(){
+      var t=(document.getElementById("clt")||{}).value||""; t=t.trim();
+      if(!t){ document.getElementById("cle").textContent="أدخل الرمز"; return; }
+      document.getElementById("cle").textContent="جارٍ التحقق...";
+      if(await probe(t)){ try{localStorage.setItem("adminToken",t)}catch(e){} location.reload(); }
+      else { document.getElementById("cle").textContent="الرمز غير صحيح"; }
+    };
     document.getElementById("clb").onclick=async function(){
-      var u=document.getElementById("clu").value.trim(), p=document.getElementById("clp").value;
+      var u=document.getElementById("clu").value.trim(), pv=document.getElementById("clp").value;
       try{
-        var r=await fetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"include",body:JSON.stringify({username:u,password:p})});
+        var r=await fetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"include",body:JSON.stringify({username:u,password:pv})});
         if(r.ok){ location.reload(); } else { document.getElementById("cle").textContent="بيانات الدخول غير صحيحة"; }
       }catch(e){ document.getElementById("cle").textContent="تعذر الاتصال"; }
     };
   }
-  async function probe(){ try{ var r=await fetch("/api/admin/bot/status",{cache:"no-store",credentials:"include"}); return r.ok; }catch(e){ return false; } }
   async function ensure(){
-    if(await probe()) return;
-    if(tokenOk()){ if(await probe()) return; }
+    var t=tok();
+    if(await probe(t)){ hide(); return; }
+    if(t){ try{localStorage.removeItem("adminToken")}catch(e){} }
     form(true);
   }
   window.addEventListener("load",function(){ setTimeout(ensure,600); });
