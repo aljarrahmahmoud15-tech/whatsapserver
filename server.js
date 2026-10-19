@@ -13960,7 +13960,7 @@ app.post("/api/admin/group/send-test-text", requireAdmin, async (req, res) => {
   }
   audit("message.text_test_requested", "chat", groupId, { operationId });
   try {
-    const sent = await withStableClient((instance) => instance.sendMessage(groupId, text), { label: "test_text" });
+    const sent = await withStableClient((instance) => instance.sendMessage(groupId, text), { label: "test_text", timeoutMs: 60000, attempts: 3, delayMs: 3000 });
     const sentId = serializedMessageId(sent) || (messageIdCandidates(sent) || [])[0] || String(sent?.id?._serialized || sent?.id?.id || "");
     if (sentId) {
       const completed = completeAdminSend({ operationId, chatId: groupId, message: text, sent, confirmationSource: "sendMessage" });
