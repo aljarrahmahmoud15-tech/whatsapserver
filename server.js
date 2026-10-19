@@ -207,6 +207,11 @@ const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
+const WHATSAPP_DESTROY_TIMEOUT_MS = Math.max(10000, Math.min(45000, Number(process.env.WHATSAPP_DESTROY_TIMEOUT_MS || 30000)));
+const WHATSAPP_CHROMIUM_EXIT_WAIT_MS = Math.max(2000, Math.min(30000, Number(process.env.WHATSAPP_CHROMIUM_EXIT_WAIT_MS || 25000)));
+const SESSION_SNAPSHOT_DIR = path.join(DATA_DIR, "session-snapshots");
+const SESSION_SNAPSHOT_KEEP = Math.max(1, Math.min(6, Number(process.env.SESSION_SNAPSHOT_KEEP || 3)));
+const SESSION_SNAPSHOT_RESTORE_ENABLED = String(process.env.SESSION_SNAPSHOT_RESTORE || "true") !== "false";
 const ADMIN_SEND_OBSERVATION_TIMEOUT_MS = Math.max(10000, Math.min(120000, Number(process.env.ADMIN_SEND_OBSERVATION_TIMEOUT_MS || 30000)));
 const ADMIN_SEND_RESULT_TTL_MS = Math.max(60000, Math.min(6 * 60 * 60 * 1000, Number(process.env.ADMIN_SEND_RESULT_TTL_MS || 2 * 60 * 60 * 1000)));
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
@@ -4071,7 +4076,14 @@ async function renderOperationsMessageMedia(title, lines = []) {
     <text x="1000" y="708" text-anchor="end" fill="#8fe9df" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نقل أسرع • تنظيم أدق • سجل موثّق</text>
     <text x="80" y="708" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">${COMPANY_BRAND_ENGLISH} / OFFICIAL</text>
   </svg>`;
-  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  let png = null;
+  try {
+    png = await sharp(Buffer.from(svg)).png().toBuffer();
+  } catch (error) {
+    console.warn("[Media] sharp svg render failed, falling back to Chromium:", error.message);
+    png = await renderSvgWithChromium(svg);
+  }
+  if (!png) return null;
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
 async function sendGroupBrandedMessage(groupId, title, lines) {
@@ -5065,7 +5077,12 @@ async function terminateChromiumPids(pids, label = "client") {
     }
   }
   if (signalled) console.warn(`[WhatsApp] ${label} Chromium cleanup sent SIGTERM to ${uniquePids.length} owned process(es)`);
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const waitDeadline = Date.now() + WHATSAPP_CHROMIUM_EXIT_WAIT_MS;
+  while (Date.now() < waitDeadline) {
+    const alive = uniquePids.filter((pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== "ESRCH"; } });
+    if (!alive.length) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
   for (const pid of uniquePids) {
     try {
       process.kill(pid, 0);
@@ -5103,7 +5120,7 @@ async function disposeClientInstance(instance, label = "client") {
   const destroyTimeoutMarker = Symbol("whatsapp_destroy_timeout");
   let destroyFailed = false;
   try {
-    const destroyed = await withTimeoutStrict(instance.destroy(), 12000, destroyTimeoutMarker);
+    const destroyed = await withTimeoutStrict(instance.destroy(), WHATSAPP_DESTROY_TIMEOUT_MS, destroyTimeoutMarker);
     if (destroyed === destroyTimeoutMarker) {
       destroyFailed = true;
       console.warn(`[WhatsApp] ${label} cleanup timed out; continuing with controlled reconnect`);
@@ -5847,6 +5864,7 @@ function stopRuntimeMemoryWatchdog() {
 }
 
 function createClient() {
+  restoreSessionSnapshotIfNeeded();
   const generation = ++connectionGeneration;
   const instance = new Client({
     authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
@@ -5871,6 +5889,7 @@ function createClient() {
     recordOwnerControlCheckpoint("whatsapp.authenticated", { force: true });
   });
   instance.on("ready", () => {
+    setTimeout(() => { try { snapshotWhatsAppSession("ready"); } catch (_) {} }, 15000);
     if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "ready";
     whatsappLastEvent = "ready";
@@ -13876,6 +13895,79 @@ app.post("/api/admin/group/send-test-text", requireAdmin, async (req, res) => {
   }
 });
 
+
+async function renderSvgWithChromium(svg) {
+  let browser = null;
+  try {
+    const puppeteer = require("puppeteer");
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars"],
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1080, height: 760, deviceScaleFactor: 1 });
+    await page.setContent(`<html><body style="margin:0;padding:0">${svg}</body></html>`, { waitUntil: "load", timeout: 20000 });
+    const buffer = await page.screenshot({ type: "png" });
+    await page.close().catch(() => {});
+    return buffer;
+  } catch (error) {
+    console.warn("[Media] Chromium svg render failed:", error.message);
+    return null;
+  } finally {
+    if (browser) { try { await browser.close(); } catch (_) {} }
+  }
+}
+app.get("/api/admin/media/render-check", requireAdmin, async (req, res) => {
+  const report = { sharp: null, svgInputSupported: null, sharpError: null, chromiumFallback: null };
+  try {
+    const sharpModule = require("sharp");
+    report.sharp = sharpModule.versions ? sharpModule.versions.sharp : "unknown";
+    report.svgInputSupported = Boolean(sharpModule.format && sharpModule.format.svg && sharpModule.format.svg.input && sharpModule.format.svg.input.buffer);
+  } catch (error) {
+    report.sharpError = error.message;
+  }
+  const tinySvg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#0c1722"/><circle cx="32" cy="32" r="18" fill="#48d9d1"/></svg>';
+  if (!report.sharpError) {
+    try {
+      const out = await sharp(Buffer.from(tinySvg)).png().toBuffer();
+      report.sharpPngBytes = out.length;
+    } catch (error) {
+      report.sharpError = error.message;
+    }
+  }
+  try {
+    const out = await renderSvgWithChromium(tinySvg);
+    report.chromiumFallback = out ? `ok:${out.length}` : "null";
+  } catch (error) {
+    report.chromiumFallback = `error:${error.message}`;
+  }
+  res.json({ success: true, ...report });
+});
+
+
+app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
+  let marker = null;
+  try { marker = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "last-graceful-shutdown.json"), "utf8")); } catch (_) {}
+  let snapshots = [];
+  try {
+    snapshots = fs.readdirSync(SESSION_SNAPSHOT_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  } catch (_) {}
+  res.json({
+    success: true,
+    authPath: AUTH_PATH,
+    authPathExists: fs.existsSync(AUTH_PATH),
+    profileLooksEmpty: sessionProfileLooksEmpty(),
+    lastGracefulShutdown: marker,
+    snapshotCount: snapshots.length,
+    latestSnapshot: snapshots.length ? snapshots[snapshots.length - 1] : null,
+    snapshotKeep: SESSION_SNAPSHOT_KEEP,
+    restoreEnabled: SESSION_SNAPSHOT_RESTORE_ENABLED,
+    destroyTimeoutMs: WHATSAPP_DESTROY_TIMEOUT_MS,
+    chromiumExitWaitMs: WHATSAPP_CHROMIUM_EXIT_WAIT_MS,
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
@@ -13921,5 +14013,63 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+
+function writeGracefulShutdownMarker(trigger) {
+  try {
+    fs.writeFileSync(path.join(DATA_DIR, "last-graceful-shutdown.json"), JSON.stringify({ at: new Date().toISOString(), pid: process.pid, trigger }));
+  } catch (_) {}
+}
+function snapshotWhatsAppSession(reason = "ready") {
+  try {
+    if (!fs.existsSync(AUTH_PATH)) return null;
+    fs.mkdirSync(SESSION_SNAPSHOT_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const target = path.join(SESSION_SNAPSHOT_DIR, stamp);
+    fs.cpSync(AUTH_PATH, target, { recursive: true, force: true });
+    const entries = fs.readdirSync(SESSION_SNAPSHOT_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    for (const stale of entries.slice(0, Math.max(0, entries.length - SESSION_SNAPSHOT_KEEP))) {
+      try { fs.rmSync(path.join(SESSION_SNAPSHOT_DIR, stale), { recursive: true, force: true }); } catch (_) {}
+    }
+    console.log(`[WhatsApp] session snapshot saved (${reason}) -> ${stamp}`);
+    return target;
+  } catch (error) {
+    console.warn("[WhatsApp] session snapshot failed:", error.message);
+    return null;
+  }
+}
+function latestSessionSnapshot() {
+  try {
+    const entries = fs.readdirSync(SESSION_SNAPSHOT_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    return entries.length ? path.join(SESSION_SNAPSHOT_DIR, entries[entries.length - 1]) : null;
+  } catch (_) { return null; }
+}
+function sessionProfileLooksEmpty() {
+  try {
+    const profile = path.join(AUTH_PATH, `session-${WHATSAPP_CLIENT_ID}`);
+    if (!fs.existsSync(profile)) return true;
+    const nested = fs.readdirSync(profile);
+    if (!nested.length) return true;
+    const cookies = path.join(profile, "Default", "Cookies");
+    const leveldb = path.join(profile, "Default", "Local Storage", "leveldb");
+    return !fs.existsSync(cookies) && !fs.existsSync(leveldb);
+  } catch (_) { return true; }
+}
+function restoreSessionSnapshotIfNeeded() {
+  if (!SESSION_SNAPSHOT_RESTORE_ENABLED) return false;
+  const snapshot = latestSessionSnapshot();
+  if (!snapshot) return false;
+  if (!sessionProfileLooksEmpty()) return false;
+  try {
+    fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    fs.mkdirSync(AUTH_PATH, { recursive: true });
+    fs.cpSync(snapshot, AUTH_PATH, { recursive: true, force: true });
+    console.warn(`[WhatsApp] restored session snapshot -> ${path.basename(snapshot)}`);
+    return true;
+  } catch (error) {
+    console.warn("[WhatsApp] session snapshot restore failed:", error.message);
+    return false;
+  }
+}
+
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); writeGracefulShutdownMarker("SIGTERM"); try { snapshotWhatsAppSession("SIGTERM"); } catch (_) {} await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); writeGracefulShutdownMarker("SIGINT"); try { snapshotWhatsAppSession("SIGINT"); } catch (_) {} await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
