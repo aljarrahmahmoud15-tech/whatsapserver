@@ -13845,6 +13845,37 @@ app.get("/admin", requireAdmin, (req, res) => {
   return res.redirect(302, "/admin-v27.html");
 });
 
+
+app.post("/api/admin/group/send-test-text", requireAdmin, async (req, res) => {
+  if (rejectCleanOutboundOperation(res, "test_text")) return;
+  const officialGroupId = configuredRuntimeGroupId();
+  const groupId = String(req.body?.groupId || "").trim();
+  const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || crypto.randomUUID()).slice(0, 120);
+  if (groupId !== officialGroupId) return res.status(403).json({ error: "Only the verified official group is allowed" });
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED" });
+  const text = brandedMessage("اختبار نظام — القروب الرسمي", [
+    "تجربة إرسال نصية فقط — لا يوجد حجز ولا تغيير رصيد.",
+  ]);
+  const registration = registerAdminSend({ operationId, chatId: groupId, message: text });
+  if (!registration.created) {
+    const existing = registration.state;
+    return res.status(existing.sendState === "pending" ? 202 : 200).json(adminSendResponse(existing));
+  }
+  audit("message.text_test_requested", "chat", groupId, { operationId });
+  try {
+    const sent = await withTimeoutStrict(Promise.resolve().then(() => client.sendMessage(groupId, text)), ADMIN_SEND_TIMEOUT_MS, null);
+    if (serializedMessageId(sent)) {
+      const completed = completeAdminSend({ operationId, chatId: groupId, message: text, sent, confirmationSource: "sendMessage" });
+      return res.json(adminSendResponse(completed));
+    }
+    return res.status(502).json({ success: false, sendState: "failed", operationId, error: "text test send returned no message id" });
+  } catch (error) {
+    return res.status(502).json({ success: false, sendState: "failed", operationId, error: String(error && error.message || error).slice(0, 200) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
