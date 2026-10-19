@@ -5579,11 +5579,16 @@ async function scanPendingAcceptanceReactions() {
   whatsappReactionScanRunning = true;
   try {
     const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
-    for (const row of rows) {
-      try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
+    for (let offset = 0; offset < rows.length; offset += 4) {
+      const batch = rows.slice(offset, offset + 4);
+      await Promise.all(batch.map(async (row) => {
+        try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
+      }));
     }
-    await retryFailedBookingConfirmations(groupId);
-    startBackgroundOrderRecovery(groupId);
+    setTimeout(() => {
+      void retryFailedBookingConfirmations(groupId).catch((error) => console.error("[WhatsApp] booking confirmation retry:", error.message));
+      startBackgroundOrderRecovery(groupId);
+    }, 0);
     if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} pending acceptance message(s)`);
   } finally {
     whatsappReactionScanRunning = false;
@@ -5963,10 +5968,10 @@ function createClient() {
   });
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
-    try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
+    try { reaction.__fastPath = true; await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
     const reactionValue = String(reaction?.reaction || "").trim();
     if (reactionValue === "👍" || reactionValue === "❌") {
-      for (const delay of [1500, 5000]) {
+      for (const delay of [1500]) {
         setTimeout(() => {
           if (generation !== connectionGeneration || !isReady) return;
           void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
@@ -6938,7 +6943,7 @@ function isConnectedBotReactionIdentity(value) {
   return Boolean(serialized && connectedWid && serialized === connectedWid);
 }
 
-async function resolveReactionSenderPhone(reaction) {
+async function resolveReactionSenderPhone(reaction, { fast = false } = {}) {
   const reactionIsByCurrentAccount = reaction?.hasReactionByMe === true
     || reaction?._data?.hasReactionByMe === true
     || reaction?.isFromMe === true
@@ -6962,12 +6967,13 @@ async function resolveReactionSenderPhone(reaction) {
   const serializedIds = [...new Set(rawValues.map((value) => reactionId(value) || serializedWhatsappUserId(value)).filter((value) => /@lid$/i.test(String(value))) )];
   if (!client || !isReady || !serializedIds.length) return "";
   for (const serialized of serializedIds) {
-    const mapped = await resolveWhatsappUserPhone(serialized);
+    const mapped = await withTimeout(resolveWhatsappUserPhone(serialized), fast ? 400 : 5000, null);
     if (mapped) {
       console.log(`[WhatsApp] reaction sender resolved from LID mapping: ${orderTraceKey(serialized)} -> ${maskSettlementPhone(mapped)}`);
       return mapped;
     }
   }
+  if (fast) return "";
   for (const serialized of serializedIds) {
     try {
       const contact = await withTimeout(client.getContactById(serialized), 8000, null);
@@ -7670,8 +7676,8 @@ async function handleMessageReaction(reaction) {
   if (!isConfiguredGroup(target.from)) return;
   if (!isCaptainAcceptance(target.body)) return;
   if (target.fromMe) return;
-  let approverPhone = await resolveReactionSenderPhone(reaction);
-  if (!approverPhone) {
+  let approverPhone = await resolveReactionSenderPhone(reaction, { fast: reaction?.__fastPath === true });
+  if (!approverPhone && reaction?.__fastPath !== true) {
     const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
       ? await resolveVisibleReactionSenderPhones(messageId, { emoji: cancellationReaction ? "❌" : "👍" })
       : [];
@@ -7679,7 +7685,7 @@ async function handleMessageReaction(reaction) {
   }
   // WhatsApp may emit a LID-only sender on the live event while the full
   // reaction collection contains the sender identity that can be mapped to PN.
-  if (!approverPhone && typeof target.getReactions === "function") {
+  if (!approverPhone && reaction?.__fastPath !== true && typeof target.getReactions === "function") {
     const storedReactions = await withTimeout(target.getReactions(), 12000, []);
     const storedReaction = (Array.isArray(storedReactions) ? storedReactions : [])
       .find((item) => item && (item.aggregateEmoji === (cancellationReaction ? "❌" : "👍") || item.reaction === (cancellationReaction ? "❌" : "👍")));
