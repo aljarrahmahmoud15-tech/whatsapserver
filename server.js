@@ -8668,7 +8668,17 @@ app.get("/status", (req, res) => {
       groupIsolation: { exactMatchRequired: true, crossGroupOperations: false, unverifiedLidOutbound: false },
       groupReceiverReady: Boolean(isReady || baileysReady),
       groupReceiverMode: baileysReady ? "webhook" : (isReady ? "whatsapp" : "offline"),
-      whatsappState: whatsappState === "ready" ? "ready" : (whatsappState === "qr" ? "qr" : "offline"),
+      whatsappState,
+      whatsappLastEvent,
+      whatsappLastError: boundedDiagnosticText(whatsappLastError, 500) || null,
+      qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
+      reconnectAttempts,
+      reconnectMaxAttempts: operationalSettings().reconnectMaxAttempts,
+      lastReconnectAt,
+      lastReconnectReason,
+      lastReadyAt,
+      lastDisconnectAt,
+      sessionPersistence: whatsappSessionPersistenceHealth(),
     });
   }
   const currentTime = Date.now();
