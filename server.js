@@ -13735,6 +13735,12 @@ function reconcileConfiguredGroupFromEnvironment() {
 
 reconcileConfiguredGroupFromEnvironment();
 
+
+// ===== Phase 3 owner page routes (serve panels that already exist in this service) =====
+app.get("/v27", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin-v27.html")));
+app.get("/v27.html", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin-v27.html")));
+app.get("/admin", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
