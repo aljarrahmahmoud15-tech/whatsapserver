@@ -11145,6 +11145,11 @@ function ratePercentFromBps(value) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+app.get("/api/admin/owner-token", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ token: activeAdminToken || "" });
+});
+
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();

@@ -212,5 +212,33 @@ const closeDrawer=()=>{drawer.classList.remove('open');overlay.classList.remove(
   window.addEventListener("load",function(){ setTimeout(ensure,600); });
 })();
 </script>
+
+<script>
+(function(){
+  var orig=document.getElementById("loginButton");
+  document.addEventListener("click", async function(ev){
+    var b=ev.target && ev.target.closest ? ev.target.closest("#loginButton") : null;
+    if(!b) return;
+    ev.preventDefault(); ev.stopPropagation();
+    var u=(document.getElementById("username")||{}).value||"";
+    var pw=(document.getElementById("password")||{}).value||"";
+    var tk=(document.getElementById("adminToken")||{}).value||"";
+    var msg=document.getElementById("loginMessage");
+    u=u.trim();
+    try{
+      if(u && pw){
+        var r=await fetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},credentials:"include",body:JSON.stringify({username:u,password:pw})});
+        if(r.ok){
+          try{ var tr=await fetch("/api/admin/owner-token",{credentials:"include",cache:"no-store"});
+               if(tr.ok){ var d=await tr.json(); if(d && d.token) localStorage.setItem("adminToken", d.token); } }catch(e){}
+          location.reload(); return;
+        }
+      }
+      if(tk){ localStorage.setItem("adminToken", tk.trim()); location.reload(); return; }
+      if(msg) msg.textContent="بيانات الدخول غير صحيحة";
+    }catch(e){ if(msg) msg.textContent="تعذر الاتصال"; }
+  }, true);
+})();
+</script>
 </body>
 </html>
