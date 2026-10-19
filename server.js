@@ -349,7 +349,7 @@ app.use("/api", (req, res, next) => {
 });
 app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
+  res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: readinessReported() });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -2348,7 +2348,7 @@ function runtimeHealth() {
     },
     whatsapp: {
       state: whatsappState,
-      ready: Boolean(isReady),
+      ready: readinessReported(),
       initializing: Boolean(initializing),
       qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
       lastEvent: whatsappLastEvent,
@@ -4669,6 +4669,13 @@ function formatOrderCreated(order) {
 
 let client = null;
 let isReady = false;
+let readyGraceUntil = 0;
+const READY_GRACE_MS = Number(process.env.WHATSAPP_READY_GRACE_MS || 120000);
+function readinessReported() {
+  if (isReady) { readyGraceUntil = Date.now() + READY_GRACE_MS; return true; }
+  if (whatsappState === "ready" && Date.now() < readyGraceUntil) return true;
+  return false;
+}
 let whatsappState = "starting";
 let whatsappLastEvent = null;
 let whatsappLastError = null;
@@ -4765,7 +4772,7 @@ function ownerControlSnapshot() {
     source: "bot-runtime",
     mutation: "none",
     whatsapp: {
-      ready: Boolean(isReady),
+      ready: readinessReported(),
       state: whatsappState,
       lastEvent: whatsappLastEvent,
       lastError: boundedDiagnosticText(whatsappLastError, 500) || null,
@@ -4777,7 +4784,7 @@ function ownerControlSnapshot() {
     officialGroup: {
       configured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
       groupId: configuredGroupId,
-      receiverReady: Boolean(isReady || baileysReady),
+      receiverReady: readinessReported(),
       receiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
       lastEventAt: lastOfficialGroupMessageTelemetry?.at || null,
       lastEventType: lastOfficialGroupMessageTelemetry?.event || null,
@@ -4955,7 +4962,7 @@ async function readWhatsAppSendDiagnostics() {
     : null;
   return {
     capturedAt: now(),
-    ready: Boolean(isReady),
+    ready: readinessReported(),
     whatsappState,
     installed: Boolean(whatsappSendDiagnostics.installed),
     storagePressure: { ...whatsappStoragePressure },
@@ -8790,7 +8797,7 @@ app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: re
 app.get("/api/staff/overview", requireStaff, (req, res) => {
   const totals = db.prepare("SELECT COUNT(*) AS total, 0 AS open, SUM(CASE WHEN o.status='accepted' THEN 1 ELSE 0 END) AS accepted, SUM(CASE WHEN o.status='completed' THEN 1 ELSE 0 END) AS completed FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled'").get();
   const permissions = req.staffSession.role === "company" ? [...STAFF_PERMISSION_KEYS] : (req.staffSession.permissions || []);
-  res.json({ whatsapp: { ready: Boolean(isReady), state: whatsappState }, orders: permissions.includes("orders") ? totals : { total: 0, open: 0, accepted: 0, completed: 0 }, companyWallet: permissions.includes("company_wallet") ? companyWalletSummary() : null, role: req.staffSession.role, permissions, permissionLabels: STAFF_PERMISSION_LABELS });
+  res.json({ whatsapp: { ready: readinessReported(), state: whatsappState }, orders: permissions.includes("orders") ? totals : { total: 0, open: 0, accepted: 0, completed: 0 }, companyWallet: permissions.includes("company_wallet") ? companyWalletSummary() : null, role: req.staffSession.role, permissions, permissionLabels: STAFF_PERMISSION_LABELS });
 });
 app.get("/api/staff/orders", requireStaffPermission("orders"), (req, res) => {
   const rows = db.prepare(`SELECT o.id,o.order_no,o.status,o.order_kind,o.origin,o.destination,o.trip_time,o.price_cents,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,
@@ -8892,13 +8899,13 @@ app.get("/api/public/operations-feed", (req, res) => {
       updatedAt: row.updated_at,
     };
   });
-  const groupReceiverReady = Boolean(isReady || baileysReady);
+  const groupReceiverReady = readinessReported();
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.json({
     success: true,
     generatedAt: now(),
     refreshAfterMs: 30000,
-    status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
+    status: { ready: readinessReported(), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
     policy: { producerWalletRate: "13%", companyWalletRate: "2%", confirmingCaptainWalletRate: "-15% (13% downloader + 2% company)", captainCashRate: "100%", debtLimit: "none — clean allows no debt", orderSettlementDebtPolicy: "order is pinned regardless of balance, then any negative balance removes the captain", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
@@ -8909,7 +8916,7 @@ app.get("/status", (req, res) => {
   if (CLEAN_INSTANCE) {
     res.setHeader("Cache-Control", "no-store");
     return res.json({
-      ready: Boolean(isReady),
+      ready: readinessReported(),
       groupConfigured: Boolean(configuredRuntimeGroupId()),
       outboundMessaging: { enabled: CLEAN_OUTBOUND_SENDS_ENABLED, blocked: CLEAN_OUTBOUND_SENDS_DISABLED, scope: ["messages", "media", "invitations", "reactions"] },
       groupIsolation: { exactMatchRequired: true, crossGroupOperations: false, unverifiedLidOutbound: false },
@@ -8935,7 +8942,7 @@ app.get("/status", (req, res) => {
     return res.json(publicStatusCache.payload);
   }
   const configuredGroupId = configuredRuntimeGroupId() || null;
-  const groupReceiverReady = Boolean(isReady || baileysReady);
+  const groupReceiverReady = readinessReported();
   const userRoles = db.prepare("SELECT phone,role,active,account_status,is_bot FROM users").all();
   const negativeWalletCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND wallet_cents < 0").get();
   let walletPolicyLastRun = null;
@@ -8948,7 +8955,7 @@ app.get("/status", (req, res) => {
     SUM(CASE WHEN status IN ('accepted','completed') AND (captain_user_id IS NULL OR settlement_state='unlinked') THEN 1 ELSE 0 END) AS accepted_unlinked
     FROM orders`).get();
   const payload = {
-    ready: Boolean(isReady),
+    ready: readinessReported(),
     phone: connectedBotPhone(),
     whatsappIdentityScope: WHATSAPP_IDENTITY_SCOPE,
     whatsappClientId: WHATSAPP_CLIENT_ID,
@@ -11339,7 +11346,7 @@ app.post("/api/admin/group/rejected-acceptances/delete", requireAdmin, async (re
 app.get("/api/admin/connection-alerts", requireAdmin, async (req, res) => {
   void flushConnectionAlerts();
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, mutation: "none", ready: Boolean(isReady), whatsappState: String(whatsappState || ""), alertPhones: connectionAlertPhones().length, pending: getSetting("connection_alert_pending", "") === "1", lastDropAt: CONNECTION_ALERT_STATE.lastDropAt || getSetting("connection_last_drop_at", "") || null, lastDropReason: CONNECTION_ALERT_STATE.lastDropReason, lastRecoveryAt: CONNECTION_ALERT_STATE.lastRecoveryAt || getSetting("connection_last_recovery_at", "") || null, lastAlertError: CONNECTION_ALERT_STATE.lastAlertError });
+  res.json({ success: true, mutation: "none", ready: readinessReported(), whatsappState: String(whatsappState || ""), alertPhones: connectionAlertPhones().length, pending: getSetting("connection_alert_pending", "") === "1", lastDropAt: CONNECTION_ALERT_STATE.lastDropAt || getSetting("connection_last_drop_at", "") || null, lastDropReason: CONNECTION_ALERT_STATE.lastDropReason, lastRecoveryAt: CONNECTION_ALERT_STATE.lastRecoveryAt || getSetting("connection_last_recovery_at", "") || null, lastAlertError: CONNECTION_ALERT_STATE.lastAlertError });
 });
 app.get("/api/admin/group/rejected-acceptance-notices", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
