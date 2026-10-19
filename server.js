@@ -13087,6 +13087,23 @@ app.get("/api/admin/orders", requireAdmin, (req, res) => {
     WHERE o.status IN ('accepted','completed','cancelled') AND o.settlement_state IN ('settled','reversed') ORDER BY o.id DESC LIMIT ? OFFSET ?`).all(orderLimit, orderOffset);
   res.json({ orders: rows.map((row) => ({ ...row, ...settlementFinancials(row), producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, captain_name: row.captain_name || row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone || row.captain_phone_snapshot || null, orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي" })) });
 });
+app.post("/api/admin/orders/clear-unregistered-captains", requireAdmin, (req, res) => {
+  const dryRun = req.body?.dryRun === true;
+  const rows = db.prepare("SELECT id,order_no,status,settlement_state,captain_user_id,captain_phone_snapshot,captain_name_snapshot FROM orders WHERE status IN ('accepted','completed') AND captain_user_id IS NULL AND captain_phone_snapshot IS NOT NULL ORDER BY id").all();
+  if (!dryRun && rows.length) {
+    const stamp = now();
+    const clearStatement = db.prepare("UPDATE orders SET captain_user_id=NULL,captain_phone_snapshot=NULL,captain_name_snapshot=NULL,settlement_state='unlinked',updated_at=? WHERE id=?");
+    for (const row of rows) clearStatement.run(stamp, row.id);
+    audit("orders.unregistered_captains.cleared", "order", null, { cleared: rows.length, orders: rows.map((row) => row.order_no).slice(0, 200) });
+  }
+  res.json({
+    success: true,
+    dryRun,
+    count: rows.length,
+    orders: rows.map((row) => ({ orderNo: row.order_no, captainPhone: row.captain_phone_snapshot, status: row.status, settlement: row.settlement_state })),
+  });
+});
+
 app.get("/api/admin/orders/unlinked", requireAdmin, (req, res) => {
   const rows = db.prepare(`SELECT o.*,p.name AS producer_name,p.phone AS producer_phone FROM orders o LEFT JOIN users p ON p.id=o.producer_user_id WHERE o.status IN ('accepted','completed') AND (o.captain_user_id IS NULL OR o.settlement_state='unlinked') ORDER BY COALESCE(o.accepted_at,o.created_at) DESC,o.id DESC LIMIT 500`).all();
   res.json({ orders: rows.map((row) => ({ ...row, captain_name: row.captain_name_snapshot || "غير مسجل", captain_phone: row.captain_phone_snapshot || null, producer_name: row.producer_name || row.producer_name_snapshot || "غير مسجل", producer_phone: row.producer_phone || row.producer_phone_snapshot || null, price: money(row.price_cents) })) });
