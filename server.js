@@ -892,6 +892,18 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_producer_status ON ord
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_order_desc ON order_settlements(order_id,id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_group_status_updated ON orders(group_id,status,updated_at DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_group_source_message ON orders(group_id,source_message_id)");
+try {
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_accepted_message_unique ON orders(accepted_message_id) WHERE accepted_message_id IS NOT NULL AND accepted_message_id <> ''");
+  console.log("[dedupe] unique index on orders.accepted_message_id ready");
+} catch (dedupeError) {
+  console.error("[dedupe] orders.accepted_message_id unique index unavailable:", String(dedupeError && dedupeError.message || dedupeError));
+}
+try {
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_order_candidates_source_unique ON order_candidates(source_message_id) WHERE source_message_id IS NOT NULL AND source_message_id <> ''");
+  console.log("[dedupe] unique index on order_candidates.source_message_id ready");
+} catch (dedupeError) {
+  console.error("[dedupe] order_candidates.source_message_id unique index unavailable:", String(dedupeError && dedupeError.message || dedupeError));
+}
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_settlement_state_id ON orders(settlement_state,id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_group_status_updated ON order_candidates(group_id,status,updated_at DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_messages_group_id_desc ON messages(group_id,id DESC)");
@@ -13949,11 +13961,16 @@ app.post("/api/admin/group/send-test-text", requireAdmin, async (req, res) => {
   audit("message.text_test_requested", "chat", groupId, { operationId });
   try {
     const sent = await withStableClient((instance) => instance.sendMessage(groupId, text), { label: "test_text" });
-    if (serializedMessageId(sent)) {
+    const sentId = serializedMessageId(sent) || (messageIdCandidates(sent) || [])[0] || String(sent?.id?._serialized || sent?.id?.id || "");
+    if (sentId) {
       const completed = completeAdminSend({ operationId, chatId: groupId, message: text, sent, confirmationSource: "sendMessage" });
-      return res.json(adminSendResponse(completed));
+      return res.json({ ...adminSendResponse(completed), messageId: sentId });
     }
-    return res.status(502).json({ success: false, sendState: "failed", operationId, error: "text test send returned no message id" });
+    if (sent) {
+      const observed = completeAdminSend({ operationId, chatId: groupId, message: text, sent, confirmationSource: "message_create" });
+      return res.status(202).json({ ...adminSendResponse(observed), sendState: "observed", error: "WhatsApp accepted the text; awaiting message_create confirmation." });
+    }
+    return res.status(502).json({ success: false, sendState: "failed", operationId, error: "text test send returned no message" });
   } catch (error) {
     return res.status(502).json({ success: false, sendState: "failed", operationId, error: String(error && error.message || error).slice(0, 200) });
   }
