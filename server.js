@@ -1427,6 +1427,22 @@ function clearStaleChromiumLocks(root) {
         try { if (fs.existsSync(target)) { fs.rmSync(target, { force: true, recursive: true }); removed += 1; } } catch (_) {}
       }
     }
+    const sweep = (dir, depth) => {
+      if (depth > 5) return;
+      let list = [];
+      try { list = fs.readdirSync(dir); } catch (_) { return; }
+      for (const name of list) {
+        const target = path.join(dir, name);
+        let info = null;
+        try { info = fs.lstatSync(target); } catch (_) { continue; }
+        if (["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"].indexOf(name) !== -1) {
+          try { fs.rmSync(target, { force: true, recursive: true }); removed += 1; } catch (_) {}
+          continue;
+        }
+        if (info.isDirectory()) sweep(target, depth + 1);
+      }
+    };
+    sweep(root, 0);
     if (removed) console.log("[session-hygiene] removed " + removed + " stale Chromium lock(s)");
     return removed;
   } catch (error) {
