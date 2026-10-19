@@ -11108,6 +11108,88 @@ app.post("/api/admin/group/rejected-acceptance-notices/delete", requireAdmin, as
   res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
 });
 
+function v27AdminReadCache(kind, ttlMs = 1000) {
+  return async (req, res, next) => {
+    const requestSuffix = v27AdminReadCacheRequestSuffix(req);
+    const generation = await currentV27AdminReadCacheGeneration();
+    const memoryKey = v27AdminReadCacheMemoryKey(generation, kind, requestSuffix);
+    const nowMs = Date.now();
+    const memoryEntry = v27AdminReadCacheMemory.get(memoryKey);
+    if (memoryEntry && memoryEntry.expiresAt > nowMs) {
+      res.setHeader('Cache-Control', `private, max-age=${Math.max(0, Math.floor(Number(ttlMs) / 1000))}, stale-while-revalidate=2`);
+      res.setHeader('X-V27-Read-Cache', 'MEMORY-HIT');
+      return res.json(memoryEntry.payload);
+    }
+    if (memoryEntry) v27AdminReadCacheMemory.delete(memoryKey);
+
+    const redisKey = redisCacheKey('admin-read', `${generation}:${kind}:${requestSuffix}`);
+    const redisEnvelope = await readRedisJson(redisKey);
+    if (redisEnvelope?.version === 1 && redisEnvelope.generation === generation && redisEnvelope.payload !== undefined) {
+      rememberV27AdminReadCache(memoryKey, redisEnvelope.payload, ttlMs);
+      res.setHeader('Cache-Control', `private, max-age=${Math.max(0, Math.floor(Number(ttlMs) / 1000))}, stale-while-revalidate=2`);
+      res.setHeader('X-V27-Read-Cache', 'REDIS-HIT');
+      return res.json(redisEnvelope.payload);
+    }
+
+    res.setHeader('X-V27-Read-Cache', 'MISS');
+    const originalJson = res.json.bind(res);
+    res.json = (payload) => {
+      const statusCode = Number(res.statusCode || 200);
+      const cacheControl = String(res.getHeader('Cache-Control') || '');
+      const cacheable = statusCode >= 200 && statusCode < 300 && !/no-store/i.test(cacheControl) && payload?.success !== false;
+      if (cacheable) {
+        const envelope = { version: 1, generation, payload, cachedAt: new Date().toISOString() };
+        rememberV27AdminReadCache(memoryKey, payload, ttlMs);
+        void writeRedisJson(redisKey, envelope, ttlMs);
+        res.setHeader('Cache-Control', `private, max-age=${Math.max(0, Math.floor(Number(ttlMs) / 1000))}, stale-while-revalidate=2`);
+      } else if (/no-store/i.test(cacheControl)) {
+        res.setHeader('X-V27-Read-Cache', 'BYPASS');
+      }
+      return originalJson(payload);
+    };
+    return next();
+  };
+}
+
+function notificationSettingsResponse() {
+  return { ...currentNotificationSettings(), protected: { authentication: true, settlementEvidence: true, whatsappInboundProcessing: true } };
+}
+
+function settlementPolicyResponse() {
+  const policy = currentSettlementPolicy();
+  return {
+    producerRateBps: policy.producerRateBps,
+    companyRateBps: policy.companyRateBps,
+    totalRateBps: policy.totalRateBps,
+    producerRatePercent: Number(ratePercentFromBps(policy.producerRateBps)),
+    companyRatePercent: Number(ratePercentFromBps(policy.companyRateBps)),
+    totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
+    appliesTo: "all_order_types",
+    currency: "JOD",
+  };
+}
+
+app.get("/api/admin/group/permissions", requireAdmin, adminReadLimiter, v27AdminReadCache("group-permissions", 2000), async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  try {
+    const snapshot = await readGroupSnapshot(groupId);
+    const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
+    const botUsers = new Set([String(botWid || "").split("@")[0].split(":")[0], String(client.info?.wid?.user || "")].filter(Boolean));
+    const botParticipants = (snapshot?.participants || []).filter((participant) => botUsers.has(String(participant.user || String(participant.id || "").split("@")[0].split(":")[0])));
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({ success: true, mutation: "none", groupId, ready: true, botWid, botInGroup: botParticipants.length > 0, botParticipants, canDeleteOthers: botParticipants.some((participant) => participant.isAdmin === true), participantSource: snapshot?.participantSource || null, checkedAt: now() });
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
+  }
+});
+
+app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
+  res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
+  res.json({ success: true, policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
