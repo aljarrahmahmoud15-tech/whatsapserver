@@ -10983,6 +10983,24 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
     chat = history.chat;
     messages = history.messages;
   }
+  if (!chat) {
+    const fallbackRows = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=? ORDER BY id DESC LIMIT ?").all(groupId, limit);
+    if (fallbackRows.length) {
+      chat = { id: groupId, isGroup: true, name: getSetting("group_name", "") || null };
+      messages = fallbackRows.reverse().map((row) => ({
+        id: { _serialized: row.message_id },
+        __serializedId: row.message_id,
+        from: groupId,
+        to: groupId,
+        fromMe: false,
+        body: row.body,
+        author: { _serialized: `${row.sender_phone || ""}@c.us` },
+        __authorPhone: row.sender_phone,
+        timestamp: Math.floor(new Date(row.sent_at).getTime() / 1000),
+        __storedRecovery: true,
+      }));
+    }
+  }
   if (!chat) return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
   const rows = (Array.isArray(messages) ? messages : []).map((message) => {
     const body = String(message?.body || "").trim();
@@ -11533,10 +11551,15 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   }
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const pinnedAcceptanceIds = new Set(db.prepare("SELECT accepted_message_id FROM orders WHERE accepted_message_id IS NOT NULL").all().map((row) => String(row.accepted_message_id)));
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
     return message && !message.fromMe && resolveGroupChatId(message) === groupId && isCaptainAcceptance(message.body) && timestamp >= cutoff;
-  });
+  })
+  for (let index = acceptanceMessages.length - 1; index >= 0; index -= 1) {
+    const acceptanceId = String(serializedMessageId(acceptanceMessages[index]) || acceptanceMessages[index]?.__serializedId || "");
+    if (acceptanceId && pinnedAcceptanceIds.has(acceptanceId)) acceptanceMessages.splice(index, 1);
+  };
   const matches = [];
   for (let offset = 0; offset < acceptanceMessages.length; offset += 4) {
     const batch = acceptanceMessages.slice(offset, offset + 4);
@@ -14012,6 +14035,47 @@ app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
 
 app.get("/api/admin/send-diagnostics", requireAdmin, (req, res) => {
   res.json({ success: true, ready: isReady, clientPresent: Boolean(client), diagnostics: sendDiagnostics, adminSendTimeoutMs: ADMIN_SEND_TIMEOUT_MS });
+});
+
+
+app.post("/api/admin/group/collect-reaction-evidence", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const groupId = configuredRuntimeGroupId();
+  const hours = Math.max(1, Math.min(72, Number(req.body?.hours || 24)));
+  const limit = Math.max(1, Math.min(200, Number(req.body?.limit || 60)));
+  const cutoffIso = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const rows = db.prepare("SELECT message_id, body FROM messages WHERE group_id=? AND COALESCE(sent_at, created_at)>=? ORDER BY id DESC LIMIT ?").all(groupId, cutoffIso, limit);
+  const targets = rows.filter((row) => isCaptainAcceptance(row.body));
+  const results = [];
+  for (const row of targets) {
+    let found = 0, recorded = 0, error = null;
+    try {
+      const live = await getWhatsAppMessageByIdVariants(row.message_id, 6000);
+      const reactions = Array.isArray(live?.__reactions) ? live.__reactions : [];
+      found = reactions.length;
+      for (const reaction of reactions) {
+        const emoji = String(reaction?.aggregateEmoji || reaction?.reaction || "");
+        if (emoji !== "👍") continue;
+        const senders = Array.isArray(reaction?.senders) ? reaction.senders : [];
+        if (!senders.length) {
+          recordReactionEvidence({ messageId: row.message_id, groupId, emoji: "👍", reaction, source: "admin-collect" });
+          recorded += 1;
+          continue;
+        }
+        for (const sender of senders) {
+          let phone = sender?.__senderPhone || "";
+          if (!phone) { try { phone = await resolveReactionSenderPhone(reaction, { fast: true }) || ""; } catch (_) { phone = ""; } }
+          recordReactionEvidence({ messageId: row.message_id, groupId, emoji: "👍", reaction, senderPhone: phone, source: "admin-collect" });
+          recorded += 1;
+        }
+      }
+    } catch (collectError) {
+      error = String((collectError && collectError.message) || collectError).slice(0, 140);
+    }
+    results.push({ messageId: row.message_id, found, recorded, error });
+  }
+  const totalRecorded = results.reduce((sum, item) => sum + item.recorded, 0);
+  res.json({ success: true, groupId, hours, targets: targets.length, totalRecorded, results: results.slice(0, 40) });
 });
 
 app.listen(PORT, () => {
