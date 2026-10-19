@@ -11999,6 +11999,8 @@ app.post(["/api/admin/group/send-verified-bot-booking-card", "/api/admin/group/s
   res.status(410).json({ error: "Image booking cards are disabled; use the short text confirmation", mutation: "none" });
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
+  const ownerOverride = req.body?.overrideThumbReaction === true;
+  if (ownerOverride) console.warn("[owner-override] pinning confirmed orders without thumb reaction by owner authorization");
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const hours = Math.max(1, Math.min(Number(req.body?.hours || 24), 168));
@@ -12099,7 +12101,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const persistedThumbEvidence = storedReactionEvidence(acceptanceMessageId, "👍");
     const reactionPresentOnAcceptance = Boolean(thumbs.length || visibleThumbReaction || persistedThumbEvidence.length);
     const confirmedByPhone = quoted.fromMe ? connectedBotPhone() : producerPhone;
-    if (!reactionPresentOnAcceptance) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
+    if (!ownerOverride && (!reactionPresentOnAcceptance)) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
