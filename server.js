@@ -1315,7 +1315,49 @@ function withTimeoutStrict(promise, timeoutMs, fallback = null) {
   ]);
 }
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
+
+const sendDiagnostics = { attempts: 0, success: 0, failed: 0, retries: 0, lastError: null, lastAt: null };
+function stableClientSnapshot() {
+  return client && isReady ? client : null;
+}
+async function withStableClient(fn, options = {}) {
+  const label = options.label || "send";
+  const attempts = Math.max(1, Math.min(6, Number(options.attempts || 4)));
+  const delayMs = Math.max(500, Math.min(10000, Number(options.delayMs || 2500)));
+  const timeoutMs = Math.max(5000, Math.min(60000, Number(options.timeoutMs || ADMIN_SEND_TIMEOUT_MS)));
+  sendDiagnostics.attempts += 1;
+  let lastError = "unknown";
+  for (let index = 0; index < attempts; index += 1) {
+    const instance = stableClientSnapshot();
+    if (instance) {
+      try {
+        const result = await withTimeoutStrict(Promise.resolve().then(() => fn(instance)), timeoutMs, null);
+        if (result) {
+          sendDiagnostics.success += 1;
+          sendDiagnostics.lastAt = now();
+          return result;
+        }
+        lastError = "empty_result";
+      } catch (error) {
+        lastError = String((error && error.message) || error).slice(0, 200);
+      }
+    } else {
+      lastError = "client_unavailable";
+    }
+    if (index < attempts - 1) {
+      sendDiagnostics.retries += 1;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  sendDiagnostics.failed += 1;
+  sendDiagnostics.lastError = `${label}: ${lastError}`;
+  sendDiagnostics.lastAt = now();
+  return null;
+}
+
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
+  const sendInstance = client;
+  if (!sendInstance) return null;
   let targetAllowed = isServer2OutboundTargetAllowed(to);
   if (!targetAllowed && CLEAN_INSTANCE && String(to || "").trim().endsWith("@c.us")) {
     targetAllowed = await isCleanConfiguredGroupMemberAllowed(to);
@@ -1323,7 +1365,7 @@ async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutM
   if (!targetAllowed) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
   if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready" };
   try {
-    const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
+    const promise = options === undefined ? sendInstance.sendMessage(to, content) : sendInstance.sendMessage(to, content, options);
     const message = await withTimeoutStrict(promise, timeoutMs, WHATSAPP_SEND_TIMEOUT);
     if (message === WHATSAPP_SEND_TIMEOUT) return { status: "uncertain", message: null, error: "send_timeout_no_retry" };
     return { status: "sent", message: message || null, error: null };
@@ -13709,14 +13751,13 @@ app.post("/api/admin/group/send-test-media", requireAdmin, async (req, res) => {
     return res.status(existing.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(existing), mediaType: "image/png", filename: "waslni-now-media-test.png" });
   }
   audit("message.media_test_requested", "chat", groupId, { operationId, mediaType: "image/png", filename: "waslni-now-media-test.png" });
-  const sendPromise = Promise.resolve().then(async () => {
+  const sent = await withStableClient(async (instance) => {
     const media = await withTimeout(renderOperationsMessageMedia("اختبار وسائط TAKE&GO", ["لا يوجد حجز أو تسوية مالية", "اختبار صورة واحد فقط"]), 30000, null);
     if (!media) throw new Error("media test card render returned no media");
-    if (typeof client.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
-    return withTimeoutStrict(client.sendMessage(groupId, media, { caption }), ADMIN_SEND_TIMEOUT_MS, null);
-  });
+    if (typeof instance.sendMessage !== "function") throw new Error("WhatsApp client media send path is unavailable");
+    return instance.sendMessage(groupId, media, { caption });
+  }, { label: "test_media", timeoutMs: 45000, attempts: 3 });
   try {
-    const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
     if (serializedMessageId(sent)) {
       const completed = completeAdminSend({ operationId, chatId: groupId, message: caption, sent, confirmationSource: "sendMessage" });
       return res.json({ ...adminSendResponse(completed), mediaType: "image/png", filename: "waslni-now-media-test.png" });
@@ -13884,7 +13925,7 @@ app.post("/api/admin/group/send-test-text", requireAdmin, async (req, res) => {
   }
   audit("message.text_test_requested", "chat", groupId, { operationId });
   try {
-    const sent = await withTimeoutStrict(Promise.resolve().then(() => client.sendMessage(groupId, text)), ADMIN_SEND_TIMEOUT_MS, null);
+    const sent = await withStableClient((instance) => instance.sendMessage(groupId, text), { label: "test_text" });
     if (serializedMessageId(sent)) {
       const completed = completeAdminSend({ operationId, chatId: groupId, message: text, sent, confirmationSource: "sendMessage" });
       return res.json(adminSendResponse(completed));
@@ -13966,6 +14007,11 @@ app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
     destroyTimeoutMs: WHATSAPP_DESTROY_TIMEOUT_MS,
     chromiumExitWaitMs: WHATSAPP_CHROMIUM_EXIT_WAIT_MS,
   });
+});
+
+
+app.get("/api/admin/send-diagnostics", requireAdmin, (req, res) => {
+  res.json({ success: true, ready: isReady, clientPresent: Boolean(client), diagnostics: sendDiagnostics, adminSendTimeoutMs: ADMIN_SEND_TIMEOUT_MS });
 });
 
 app.listen(PORT, () => {
