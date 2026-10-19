@@ -13739,7 +13739,11 @@ reconcileConfiguredGroupFromEnvironment();
 // ===== Phase 3 owner page routes (serve panels that already exist in this service) =====
 app.get("/v27", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin-v27.html")));
 app.get("/v27.html", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin-v27.html")));
-app.get("/admin", requireAdmin, (req, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+app.get("/admin", requireAdmin, (req, res) => {
+  const legacyOwnerPanel = path.join(__dirname, "public", "admin.html");
+  if (fs.existsSync(legacyOwnerPanel)) return res.sendFile(legacyOwnerPanel);
+  return res.redirect(302, "/admin-v27.html");
+});
 
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
