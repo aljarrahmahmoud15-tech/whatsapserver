@@ -12072,6 +12072,10 @@ app.post(["/api/admin/group/send-verified-bot-booking-card", "/api/admin/group/s
 });
 app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, res) => {
   const ownerOverride = req.body?.overrideThumbReaction === true;
+  const ownerAcceptanceIds = Array.isArray(req.body?.onlyMessageIds)
+    ? req.body.onlyMessageIds.map((value) => String(value || "").trim()).filter(Boolean)
+    : null;
+  const ownerAcceptanceOverrides = (req.body && typeof req.body.acceptanceOverrides === "object" && req.body.acceptanceOverrides) || null;
   if (ownerOverride) console.warn("[owner-override] pinning confirmed orders without thumb reaction by owner authorization");
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
@@ -12142,16 +12146,25 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   for (const acceptance of acceptanceMessages) {
     const acceptanceMessageId = serializedMessageId(acceptance);
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
+    if (ownerAcceptanceIds && ownerAcceptanceIds.indexOf(acceptanceMessageId) === -1) continue;
     if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
     const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
     const liveAcceptance = (client && typeof client.getMessageById === "function") ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
-    const quoted = typeof liveAcceptance.getQuotedMessage === "function"
+    let quoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
       : acceptance.__quoted || null;
-    const parsed = quoted ? parseOrder(quoted.body) : null;
+    if (!quoted && ownerAcceptanceOverrides && ownerAcceptanceOverrides[acceptanceMessageId]) {
+      const overrideEntry = ownerAcceptanceOverrides[acceptanceMessageId] || {};
+      const ownerBody = String(overrideEntry.body || "").trim();
+      const ownerSourceId = String(overrideEntry.sourceMessageId || ("owner-override-" + acceptanceMessageId));
+      if (ownerBody) {
+        quoted = { body: ownerBody, fromMe: false, id: { _serialized: ownerSourceId }, _data: { id: { _serialized: ownerSourceId } } };
+        console.log("[pin-by-id] owner-supplied order body applied for", String(acceptanceMessageId).slice(0, 18));
+      }
+    }
     if (!quoted) {
       try {
         const resolvedUnquoted = acceptance.__candidateSource || findUnquotedOrderMessage(messages, groupId, acceptance);
@@ -12163,6 +12176,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
         console.warn("[pin-by-number] unquoted resolution failed:", String((error && error.message) || error));
       }
     }
+    const parsed = quoted ? parseOrder(quoted.body) : null;
     if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
     const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, acceptance.__reactions || []) : (acceptance.__reactions || []);
     const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
