@@ -11712,6 +11712,28 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   }
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
+
+  const expandedAcceptances = [];
+  for (const acceptanceItem of acceptanceMessages) {
+    const acceptanceItemId = serializedMessageId(acceptanceItem);
+    const acceptanceEntry = ownerAcceptanceOverrides && ownerAcceptanceOverrides[acceptanceItemId];
+    if (acceptanceEntry && Array.isArray(acceptanceEntry.bodies) && acceptanceEntry.bodies.length) {
+      acceptanceEntry.bodies.forEach((bodyItem, bodyPosition) => {
+        const bodyText = String((bodyItem && bodyItem.body) || "").trim();
+        if (!bodyText) return;
+        const clone = Object.create(Object.getPrototypeOf(acceptanceItem));
+        Object.assign(clone, acceptanceItem);
+        const cloneId = acceptanceItemId + ":ov" + bodyPosition;
+        clone.__serializedId = cloneId;
+        if (clone.id && typeof clone.id === "object") clone.id = Object.assign({}, clone.id, { _serialized: cloneId });
+        clone.__ownerOverrideBody = bodyText;
+        clone.__ownerOverrideSourceId = String((bodyItem && bodyItem.sourceMessageId) || ("owner-override-" + acceptanceItemId + "-" + bodyPosition));
+        expandedAcceptances.push(clone);
+      });
+    } else {
+      expandedAcceptances.push(acceptanceItem);
+    }
+  }
 });
 // Visual confirmation: after a revoke request the message must no longer be readable in the
 // group. Anything still readable (non-empty body) means the deletion did not take effect.
@@ -12143,19 +12165,26 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   const imported = [];
   const unlinked = [];
   const skipped = [];
-  for (const acceptance of acceptanceMessages) {
+  for (const acceptance of expandedAcceptances) {
     const acceptanceMessageId = serializedMessageId(acceptance);
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
     if (ownerAcceptanceIds && ownerAcceptanceIds.indexOf(acceptanceMessageId) === -1) continue;
-    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
+    if (!acceptance.__ownerOverrideBody && client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
-    const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
-    const liveAcceptance = (client && typeof client.getMessageById === "function") ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
-    let quoted = typeof liveAcceptance.getQuotedMessage === "function"
-      ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
-      : acceptance.__quoted || null;
+    const visibleThumbReaction = acceptance.__ownerOverrideBody ? false : await hasVisibleThumbReaction(acceptanceMessageId);
+    const liveAcceptance = (client && typeof client.getMessageById === "function" && !acceptance.__ownerOverrideBody) ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
+    let quoted = null;
+    if (acceptance.__ownerOverrideBody) {
+      const deterministicSourceId = String(acceptance.__ownerOverrideSourceId || ("owner-override-" + acceptanceMessageId));
+      quoted = { body: acceptance.__ownerOverrideBody, fromMe: false, id: { _serialized: deterministicSourceId }, _data: { id: { _serialized: deterministicSourceId } } };
+      console.log("[pin-by-id] deterministic order body applied for", String(acceptanceMessageId).slice(0, 26));
+    } else {
+      quoted = typeof liveAcceptance.getQuotedMessage === "function"
+        ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
+        : acceptance.__quoted || null;
+    }
     if (!quoted && ownerAcceptanceOverrides && ownerAcceptanceOverrides[acceptanceMessageId]) {
       const overrideEntry = ownerAcceptanceOverrides[acceptanceMessageId] || {};
       const ownerBody = String(overrideEntry.body || "").trim();
