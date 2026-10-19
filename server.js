@@ -12101,7 +12101,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const persistedThumbEvidence = storedReactionEvidence(acceptanceMessageId, "👍");
     const reactionPresentOnAcceptance = Boolean(thumbs.length || visibleThumbReaction || persistedThumbEvidence.length);
     const confirmedByPhone = quoted.fromMe ? connectedBotPhone() : producerPhone;
-    if (!ownerOverride && (!reactionPresentOnAcceptance)) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
+    if (!(typeof ownerOverride !== "undefined" && ownerOverride) && (!reactionPresentOnAcceptance)) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
     const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
