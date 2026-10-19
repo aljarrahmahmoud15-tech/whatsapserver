@@ -7745,7 +7745,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
       : null;
   }
-  const quoted = liveQuoted || liveAcceptance.__quoted || archivedQuoted || acceptance.__quoted || null;
+  let quoted = liveQuoted || liveAcceptance.__quoted || archivedQuoted || acceptance.__quoted || null;
   const acceptanceMode = acceptance.__acceptanceMode === "unquoted" ? "unquoted" : (quoted ? "quoted" : "unquoted");
   const unquotedSource = acceptanceMode === "unquoted"
     ? (acceptance.__candidateSource || findUnquotedOrderMessage(messages, groupId, acceptance))
@@ -12145,6 +12145,17 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
       : acceptance.__quoted || null;
     const parsed = quoted ? parseOrder(quoted.body) : null;
+    if (!quoted) {
+      try {
+        const resolvedUnquoted = acceptance.__candidateSource || findUnquotedOrderMessage(messages, groupId, acceptance);
+        if (resolvedUnquoted) {
+          quoted = resolvedUnquoted;
+          console.log("[pin-by-number] resolved unquoted order for acceptance", String(acceptanceMessageId).slice(0, 18));
+        }
+      } catch (error) {
+        console.warn("[pin-by-number] unquoted resolution failed:", String((error && error.message) || error));
+      }
+    }
     if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
     const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, acceptance.__reactions || []) : (acceptance.__reactions || []);
     const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
