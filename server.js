@@ -1414,6 +1414,45 @@ function startOutboundStatusMonitor() {
   return outboundMonitorState;
 }
 
+
+function clearStaleChromiumLocks(root) {
+  try {
+    if (!root || !fs.existsSync(root)) return 0;
+    let removed = 0;
+    for (const entry of fs.readdirSync(root)) {
+      const dir = path.join(root, entry);
+      try { if (!fs.statSync(dir).isDirectory()) continue; } catch (_) { continue; }
+      for (const lock of ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]) {
+        const target = path.join(dir, lock);
+        try { if (fs.existsSync(target)) { fs.rmSync(target, { force: true, recursive: true }); removed += 1; } } catch (_) {}
+      }
+    }
+    if (removed) console.log("[session-hygiene] removed " + removed + " stale Chromium lock(s)");
+    return removed;
+  } catch (error) {
+    console.warn("[session-hygiene] lock cleanup failed:", String((error && error.message) || error));
+    return 0;
+  }
+}
+function pruneSessionArtifacts() {
+  const keep = 3;
+  try {
+    const backupDir = path.join(DATA_DIR, "backups");
+    if (fs.existsSync(backupDir)) {
+      const files = fs.readdirSync(backupDir).filter((f) => f.endsWith(".sqlite")).sort();
+      for (const stale of files.slice(0, Math.max(0, files.length - 2))) {
+        try { fs.rmSync(path.join(backupDir, stale), { force: true }); } catch (_) {}
+      }
+    }
+    const snapshotNames = fs.readdirSync(DATA_DIR).filter((f) => /snapshot/i.test(f)).sort();
+    for (const name of snapshotNames.slice(0, Math.max(0, snapshotNames.length - keep))) {
+      try { fs.rmSync(path.join(DATA_DIR, name), { recursive: true, force: true }); } catch (_) {}
+    }
+  } catch (error) {
+    console.warn("[session-hygiene] prune failed:", String((error && error.message) || error));
+  }
+}
+
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
   const sendInstance = client;
   if (!sendInstance) return null;
@@ -10469,7 +10508,7 @@ app.post("/api/admin/captains/:id/merge", requireAdmin, async (req, res) => {
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
   const backupName = `pre-captain-merge-${sourceId}-into-${targetId}-${Date.now()}.sqlite`;
-  await db.backup(path.join(backupDir, backupName));
+  if (req.body?.skipBackup !== true && req.body?.storeOnly !== true) { await db.backup(path.join(backupDir, backupName)); }
   const stamp = now();
   const details = db.transaction(() => {
     const counts = {
