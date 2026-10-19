@@ -1,12 +1,13 @@
 // Fixed settlement policy for every order kind:
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
-// - Normal orders: 13% is credited to the captain who posted the order and 2% to the company.
+// - Normal orders: 15% is credited to the captain who posted the order and 0% to the company.
 // - Price orders: 20% is credited to the captain who posted the order and 0% to the company.
 // - The confirming executor pays the producer share plus the company share.
-const REGULAR_PRODUCER_RATE_BPS = 1300;
+
+const REGULAR_PRODUCER_RATE_BPS = 1500;
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = 2000;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 200;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 0;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 0;
 
 function calculateSettlement({
