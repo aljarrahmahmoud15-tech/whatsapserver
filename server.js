@@ -12016,7 +12016,10 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
   const storeCutoff = Date.now() - hours * 60 * 60 * 1000;
-  let { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  const storeOnly = req.body?.storeOnly === true;
+  let { chat, messages } = storeOnly
+    ? { chat: null, messages: [] }
+    : await withTimeout(fetchGroupHistory(groupId, limit, { includeOutgoing: true }), 45000, { chat: null, messages: [] });
   let readSource = "live";
   if (!chat) {
     const storedRows = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=? AND COALESCE(sent_at,created_at)>=? ORDER BY id ASC LIMIT ?").all(groupId, new Date(storeCutoff).toISOString(), limit);
