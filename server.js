@@ -7966,6 +7966,16 @@ function staffPortalUrl(req) {
   return `${captainInviteBaseUrl(req)}/staff.html`;
 }
 function isAdmin(req) {
+  const v26EnvToken = process.env.V26_ACCESS_TOKEN || "";
+  if (v26EnvToken) {
+    const h = req.headers["authorization"] || "";
+    const t = req.headers["x-admin-token"] || "";
+    const bearer = h.startsWith("Bearer ") ? h.slice(7) : "";
+    if (constantTimeEquals(bearer, v26EnvToken) || constantTimeEquals(String(t), v26EnvToken)) {
+      return { role: "company", username: ADMIN_USERNAME, source: "v26_env_token" };
+    }
+  }
+
   const session = getWebAdminSession(req);
   return session?.role === "company";
 }
