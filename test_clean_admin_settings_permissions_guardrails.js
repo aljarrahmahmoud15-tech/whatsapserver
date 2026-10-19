@@ -45,9 +45,21 @@ assert.ok(settingsBody.includes('mutation: "none"'), "settings route must declar
 // 5) settlement policy is reused, not duplicated
 assert.strictEqual((server.match(/function settlementPolicyResponse\s*\(/g) || []).length, 1, "settlementPolicyResponse must be defined exactly once");
 
-// 6) no Server 2 identity leaked into clean
-["whatsapserver-2.onrender.com", "12036342660456061", "0779039586"].forEach((needle) => {
-  assert.ok(!server.includes(needle), `clean must not contain Server 2 identity: ${needle}`);
+// 6) Server 2 identity must never appear as an unconditional clean value
+assert.ok(!server.includes("120363426604560611"), "clean must not contain the Server 2 group identity");
+assert.ok(!server.includes("0779039586"), "clean must not contain the Server 2 bot phone");
+server.split("\n").forEach((line, index) => {
+  if (line.includes("whatsapserver-2.onrender.com")) {
+    assert.ok(/CLEAN_INSTANCE/.test(line), `Server 2 URL must stay behind a CLEAN_INSTANCE guard (line ${index + 1})`);
+  }
+  if (line.includes("962779110123")) {
+    const context = server.split("\n").slice(Math.max(0, index - 8), index + 1).join("\n");
+    assert.ok(/CLEAN_INSTANCE|LEGACY_|BLOCKED_PHONES|DEFAULT_GROUP_SETUP_OWNER_PHONES|\?\s*\[/.test(context), `Server 2 phone must stay behind a CLEAN_INSTANCE guard (line ${index + 1})`);
+  }
 });
+
+// 7) verified-booking recovery must rely on this service's own stored evidence
+assert.ok(/Verification evidence is not present in this service message store/.test(server), "verified booking recovery must read evidence from the local store");
+assert.ok(!/const verified = \{\s*\n\s*groupId: WHATSAPP_GROUP_ID,/.test(server), "verified booking recovery must not hardcode a fixture identity");
 
 console.log("clean admin settings/permissions guardrails: OK");

@@ -11671,19 +11671,10 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
 });
 app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
-  const verified = {
-    groupId: WHATSAPP_GROUP_ID,
-    sourceMessageId: "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid",
-    acceptanceMessageId: "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid",
-    downloaderPhone: "962779110123",
-    executorPhone: "962786856851",
-    price: 10,
-    origin: "اربد",
-    destination: "المنارة",
-    rawText: "السعر 10 دنانير\n\nبنت من اربد إلى المنارة",
-  };
+  const configuredGroupId = String(configuredRuntimeGroupId() || "").trim();
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "No configured production group", mutation: "none" });
   const supplied = {
-    groupId: String(req.body?.groupId || "").trim(),
+    groupId: String(req.body?.groupId || "").trim() || configuredGroupId,
     sourceMessageId: String(req.body?.sourceMessageId || "").trim(),
     acceptanceMessageId: String(req.body?.acceptanceMessageId || "").trim(),
     downloaderPhone: phoneWithCountry(String(req.body?.downloaderPhone || "")),
@@ -11692,9 +11683,26 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     origin: normalizeRecoveryText(String(req.body?.origin || "")).trim(),
     destination: normalizeRecoveryText(String(req.body?.destination || "")).trim(),
   };
-  const exact = supplied.groupId === verified.groupId && supplied.sourceMessageId === verified.sourceMessageId && supplied.acceptanceMessageId === verified.acceptanceMessageId && recoveryPhoneMatches(supplied.downloaderPhone, verified.downloaderPhone) && recoveryPhoneMatches(supplied.executorPhone, verified.executorPhone) && supplied.price === verified.price && supplied.origin === verified.origin && supplied.destination === verified.destination;
-  if (!exact) return res.status(409).json({ error: "Verified booking fields do not match the recorded evidence", mutation: "none" });
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
+  if (supplied.groupId !== configuredGroupId) return res.status(409).json({ error: "Verification is limited to the configured production group", mutation: "none" });
+  if (!supplied.sourceMessageId || !supplied.acceptanceMessageId || !supplied.downloaderPhone || !supplied.executorPhone) {
+    return res.status(422).json({ error: "Complete verification fields are required", mutation: "none" });
+  }
+  const stored = db.prepare("SELECT message_id,group_id,sender_phone,body FROM messages WHERE group_id=? AND message_id IN (?,?)").all(configuredGroupId, supplied.sourceMessageId, supplied.acceptanceMessageId);
+  const sourceStored = stored.find((row) => row.message_id === supplied.sourceMessageId) || null;
+  const acceptanceStored = stored.find((row) => row.message_id === supplied.acceptanceMessageId) || null;
+  if (!sourceStored || !acceptanceStored) return res.status(409).json({ error: "Verification evidence is not present in this service message store", mutation: "none" });
+  if (cleanPhone(sourceStored.sender_phone || "") !== supplied.downloaderPhone) return res.status(409).json({ error: "Downloader phone does not match the stored source message", mutation: "none" });
+  const verified = {
+    groupId: configuredGroupId,
+    sourceMessageId: supplied.sourceMessageId,
+    acceptanceMessageId: supplied.acceptanceMessageId,
+    downloaderPhone: supplied.downloaderPhone,
+    executorPhone: supplied.executorPhone,
+    price: supplied.price,
+    origin: supplied.origin,
+    destination: supplied.destination,
+    rawText: String(sourceStored.body || ""),
+  };
   if (app.locals.verifiedBotBookingRecoveryInProgress) return res.status(202).json({ success: true, state: "processing", mutation: "queued" });
   app.locals.verifiedBotBookingRecoveryInProgress = true;
   res.status(202).json({ success: true, state: "processing", mutation: "queued" });
