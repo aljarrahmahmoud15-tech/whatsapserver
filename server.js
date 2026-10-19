@@ -2837,14 +2837,28 @@ function scheduleConfiguredGroupCaptainSync(trigger = "group_activity") {
     }
   }, 1500);
 }
+let configuredGroupChatCache = null;
+let configuredGroupChatCacheId = "";
+function clearConfiguredGroupChatCache(reason = "") {
+  configuredGroupChatCache = null;
+  configuredGroupChatCacheId = "";
+  if (reason) console.log(`[WhatsApp] configured group chat cache cleared: ${reason}`);
+}
 async function resolveGroupChat(groupId, inviteCode = "") {
-  if (!groupId || !client || !isReady) return null;
+  const requestedGroupId = String(groupId || "").trim();
+  if (!requestedGroupId || !client || !isReady) return null;
+  if (!inviteCode && configuredGroupChatCache && configuredGroupChatCacheId === requestedGroupId) return configuredGroupChatCache;
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const chat = await withTimeout(client.getChatById(groupId), 15000, null);
-    if (chat && chat.isGroup && Array.isArray(chat.participants)) return chat;
+    const chat = await withTimeout(client.getChatById(requestedGroupId), 15000, null);
+    if (chat && chat.isGroup && Array.isArray(chat.participants)) {
+      configuredGroupChatCache = chat;
+      configuredGroupChatCacheId = requestedGroupId;
+      return chat;
+    }
     if (inviteCode && attempt === 0) await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 2000));
   }
+  clearConfiguredGroupChatCache("group lookup failed");
   return null;
 }
 async function readGroupSnapshot(groupId, timeoutMs = 30000) {
@@ -5829,6 +5843,7 @@ function createClient() {
       scheduleReconnect();
       return;
     }
+    clearConfiguredGroupChatCache("whatsapp ready");
     isReady = true;
     // whatsapp-web.js can emit `ready` while initialize() remains pending
     // (especially after an IndexedDB/page crash). Do not leave the service in
@@ -5878,6 +5893,7 @@ function createClient() {
     whatsappLastError = String(message || "authentication failure");
     if (generation !== connectionGeneration) return;
     stopWhatsAppStorageMonitor();
+    clearConfiguredGroupChatCache("auth failure");
     isReady = false;
     if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
@@ -5891,6 +5907,7 @@ function createClient() {
     whatsappLastError = String(reason || "disconnected");
     if (generation !== connectionGeneration) return;
     stopWhatsAppStorageMonitor();
+    clearConfiguredGroupChatCache("disconnected");
     isReady = false;
     lastDisconnectAt = new Date().toISOString();
     qrCodeData = null;
