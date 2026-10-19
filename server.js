@@ -12170,7 +12170,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
           from: groupId,
           to: groupId,
           fromMe: false,
-          body: String((storedRow && storedRow.body) || "").trim(),
+          body: String((storedRow && storedRow.body) || "").trim() || "تم",
           author: { _serialized: String(((storedRow && storedRow.sender_phone) || "") + "@c.us") },
           __authorPhone: (storedRow && storedRow.sender_phone) || null,
           timestamp: storedRow && storedRow.sent_at ? Math.floor(new Date(storedRow.sent_at).getTime() / 1000) : Math.floor(Date.now() / 1000),
