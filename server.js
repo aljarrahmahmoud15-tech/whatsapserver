@@ -12143,19 +12143,71 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
   const imported = [];
   const unlinked = [];
   const skipped = [];
-  for (const acceptance of acceptanceMessages) {
+  const syntheticOwnerAcceptances = [];
+  if (ownerAcceptanceIds && ownerAcceptanceOverrides) {
+    const presentIds = new Set(acceptanceMessages.map((message) => serializedMessageId(message)).filter(Boolean));
+    for (const requestedId of ownerAcceptanceIds) {
+      const entry = ownerAcceptanceOverrides[requestedId];
+      if (!entry) continue;
+      const suppliedBodies = Array.isArray(entry.bodies) && entry.bodies.length
+        ? entry.bodies
+        : (entry.body ? [{ body: entry.body, sourceMessageId: entry.sourceMessageId }] : []);
+      if (!suppliedBodies.length) continue;
+      if (presentIds.has(requestedId) && suppliedBodies.length === 1) continue;
+      let storedRow = null;
+      try {
+        storedRow = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE message_id=?").get(requestedId);
+      } catch (error) {
+        console.warn("[pin-by-id] stored lookup failed:", String((error && error.message) || error));
+      }
+      suppliedBodies.forEach((item, position) => {
+        const bodyText = String((item && item.body) || "").trim();
+        if (!bodyText) return;
+        const syntheticId = suppliedBodies.length === 1 ? requestedId : (requestedId + ":ov" + position);
+        syntheticOwnerAcceptances.push({
+          id: { _serialized: syntheticId },
+          __serializedId: syntheticId,
+          from: groupId,
+          to: groupId,
+          fromMe: false,
+          body: String((storedRow && storedRow.body) || "").trim(),
+          author: { _serialized: String(((storedRow && storedRow.sender_phone) || "") + "@c.us") },
+          __authorPhone: (storedRow && storedRow.sender_phone) || null,
+          timestamp: storedRow && storedRow.sent_at ? Math.floor(new Date(storedRow.sent_at).getTime() / 1000) : Math.floor(Date.now() / 1000),
+          type: "chat",
+          hasMedia: false,
+          hasQuotedMessage: false,
+          quotedMessageId: null,
+          __hasReaction: true,
+          __reactions: [],
+          __storedRecovery: true,
+          __ownerOverrideBody: bodyText,
+          __ownerOverrideSourceId: String((item && item.sourceMessageId) || ("owner-override-" + requestedId + "-" + position)),
+        });
+      });
+    }
+  }
+  const acceptanceWorklist = syntheticOwnerAcceptances.length ? acceptanceMessages.concat(syntheticOwnerAcceptances) : acceptanceMessages;
+  for (const acceptance of acceptanceWorklist) {
     const acceptanceMessageId = serializedMessageId(acceptance);
     if (!acceptanceMessageId) { skipped.push({ reason: "acceptance_without_message_id" }); continue; }
-    if (ownerAcceptanceIds && ownerAcceptanceIds.indexOf(acceptanceMessageId) === -1) continue;
-    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
+    if (ownerAcceptanceIds && ownerAcceptanceIds.indexOf(acceptanceMessageId) === -1 && !acceptance.__ownerOverrideBody) continue;
+    if (!acceptance.__ownerOverrideBody && client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(acceptanceMessageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
-    const visibleThumbReaction = await hasVisibleThumbReaction(acceptanceMessageId);
-    const liveAcceptance = (client && typeof client.getMessageById === "function") ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
-    let quoted = typeof liveAcceptance.getQuotedMessage === "function"
-      ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
-      : acceptance.__quoted || null;
+    const visibleThumbReaction = acceptance.__ownerOverrideBody ? false : await hasVisibleThumbReaction(acceptanceMessageId);
+    const liveAcceptance = (client && typeof client.getMessageById === "function" && !acceptance.__ownerOverrideBody) ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
+    let quoted = null;
+    if (acceptance.__ownerOverrideBody) {
+      const deterministicSourceId = String(acceptance.__ownerOverrideSourceId || ("owner-override-" + acceptanceMessageId));
+      quoted = { body: acceptance.__ownerOverrideBody, fromMe: false, id: { _serialized: deterministicSourceId }, _data: { id: { _serialized: deterministicSourceId } } };
+      console.log("[pin-by-id] deterministic order body applied for", String(acceptanceMessageId).slice(0, 28));
+    } else {
+      quoted = typeof liveAcceptance.getQuotedMessage === "function"
+        ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null) || acceptance.__quoted || null
+        : acceptance.__quoted || null;
+    }
     if (!quoted && ownerAcceptanceOverrides && ownerAcceptanceOverrides[acceptanceMessageId]) {
       const overrideEntry = ownerAcceptanceOverrides[acceptanceMessageId] || {};
       const ownerBody = String(overrideEntry.body || "").trim();
