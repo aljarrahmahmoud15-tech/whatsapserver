@@ -1367,9 +1367,67 @@ async function withStableClient(fn, options = {}) {
   return null;
 }
 
+
+db.exec("CREATE TABLE IF NOT EXISTS group_outbound_dedupe (fingerprint TEXT PRIMARY KEY, chat_id TEXT NOT NULL, body_hash TEXT NOT NULL, first_sent_at TEXT NOT NULL, last_sent_at TEXT NOT NULL, send_count INTEGER NOT NULL DEFAULT 1, message_id TEXT)");
+const GROUP_DEDUPE_WINDOW_MS = Math.max(30000, Math.min(3600000, Number(process.env.GROUP_DEDUPE_WINDOW_MS || 300000)));
+function groupMessageFingerprint(chatId, content) {
+  const body = typeof content === "string" ? content : JSON.stringify(content || {});
+  return crypto.createHash("sha256").update(`${chatId}|${String(body).replace(/\s+/g, " ").trim()}`).digest("hex");
+}
+function claimGroupMessageSlot(chatId, content, windowMs = GROUP_DEDUPE_WINDOW_MS) {
+  const target = String(chatId || "").trim();
+  if (!target) return { duplicate: false, fingerprint: null };
+  const fingerprint = groupMessageFingerprint(target, content);
+  const bodyHash = crypto.createHash("sha256").update(String(typeof content === "string" ? content : JSON.stringify(content || {})).replace(/\s+/g, " ").trim()).digest("hex");
+  const stamp = now();
+  const existing = db.prepare("SELECT last_sent_at,send_count FROM group_outbound_dedupe WHERE fingerprint=? LIMIT 1").get(fingerprint);
+  if (existing) {
+    const lastMs = Date.parse(existing.last_sent_at || "");
+    if (Number.isFinite(lastMs) && Date.now() - lastMs < windowMs) {
+      return { duplicate: true, fingerprint, lastSentAt: existing.last_sent_at, sendCount: existing.send_count };
+    }
+    db.prepare("UPDATE group_outbound_dedupe SET last_sent_at=?, send_count=send_count+1 WHERE fingerprint=?").run(stamp, fingerprint);
+    return { duplicate: false, fingerprint, repeatWithinWindow: false };
+  }
+  db.prepare("INSERT OR IGNORE INTO group_outbound_dedupe(fingerprint,chat_id,body_hash,first_sent_at,last_sent_at,send_count) VALUES(?,?,?,?,?,1)").run(fingerprint, target, bodyHash, stamp, stamp);
+  return { duplicate: false, fingerprint };
+}
+const outboundMonitorState = { enabled: false, intervalMs: 60000, timer: null, lastRunAt: null, runs: 0, markedUncertain: 0, duplicatesBlocked: 0, lastDuplicateAt: null };
+function startOutboundStatusMonitor() {
+  if (outboundMonitorState.timer) return outboundMonitorState;
+  outboundMonitorState.enabled = true;
+  outboundMonitorState.timer = setInterval(() => {
+    try {
+      outboundMonitorState.runs += 1;
+      outboundMonitorState.lastRunAt = now();
+      const stale = db.prepare("SELECT COUNT(*) AS total FROM notifications WHERE delivery_status='pending' AND created_at < ?").get(new Date(Date.now() - 120000).toISOString());
+      if (stale && stale.total > 0) {
+        const updated = db.prepare("UPDATE notifications SET delivery_status='uncertain' WHERE delivery_status='pending' AND created_at < ?").run(new Date(Date.now() - 120000).toISOString());
+        outboundMonitorState.markedUncertain += Number(updated.changes || 0);
+      }
+    } catch (error) {
+      console.error("[outbound-monitor] run failed:", String(error && error.message || error));
+    }
+  }, outboundMonitorState.intervalMs);
+  if (typeof outboundMonitorState.timer.unref === "function") outboundMonitorState.timer.unref();
+  console.log("[outbound-monitor] permanent WhatsApp message status monitoring enabled");
+  return outboundMonitorState;
+}
+
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
   const sendInstance = client;
   if (!sendInstance) return null;
+  const configuredGroup = configuredRuntimeGroupId();
+  const isGroupTarget = Boolean(configuredGroup) && String(to || "").trim() === configuredGroup;
+  if (isGroupTarget && !(options && options.allowRepeat === true)) {
+    const slot = claimGroupMessageSlot(String(to).trim(), content);
+    if (slot.duplicate) {
+      outboundMonitorState.duplicatesBlocked += 1;
+      outboundMonitorState.lastDuplicateAt = now();
+      console.warn(`[group-dedupe] blocked duplicate group message (${String(slot.fingerprint).slice(0, 12)})`);
+      return null;
+    }
+  }
   let targetAllowed = isServer2OutboundTargetAllowed(to);
   if (!targetAllowed && CLEAN_INSTANCE && String(to || "").trim().endsWith("@c.us")) {
     targetAllowed = await isCleanConfiguredGroupMemberAllowed(to);
