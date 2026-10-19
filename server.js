@@ -11101,9 +11101,112 @@ function ratePercentFromBps(value) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+// ===== Admin read helpers (clean-only, in-memory, no external services) =====
+const ADMIN_READ_LIMIT_WINDOW_MS = 10000;
+const ADMIN_READ_LIMIT_MAX = 240;
+const adminReadBuckets = new Map();
+
+function adminReadLimiter(req, res, next) {
+  try {
+    const identity = String((req.admin && req.admin.username) || "owner");
+    const id = identity + ":" + String(req.ip || "");
+    const at = Date.now();
+    const bucket = adminReadBuckets.get(id) || { resetAt: at + ADMIN_READ_LIMIT_WINDOW_MS, count: 0 };
+    if (at > bucket.resetAt) { bucket.resetAt = at + ADMIN_READ_LIMIT_WINDOW_MS; bucket.count = 0; }
+    bucket.count += 1;
+    adminReadBuckets.set(id, bucket);
+    if (bucket.count > ADMIN_READ_LIMIT_MAX) {
+      res.setHeader("Retry-After", "1");
+      return res.status(429).json({ success: false, mutation: "none", error: "Too many admin reads, retry shortly" });
+    }
+  } catch (error) { /* fail-open: limiter must never block admin reads */ }
+  return next();
+}
+
+const adminReadCacheStore = new Map();
+
+function v27AdminReadCache(scope, ttlMs) {
+  const ttl = Math.max(0, Number(ttlMs) || 0);
+  return function adminReadCacheMiddleware(req, res, next) {
+    if (String(req.method || "").toUpperCase() !== "GET" || ttl <= 0) return next();
+    const key = String(scope) + "|" + String(req.originalUrl || req.url || "");
+    const hit = adminReadCacheStore.get(key);
+    if (hit && hit.expiresAt > Date.now()) {
+      res.setHeader("X-V27-Read-Cache", "MEMORY-HIT");
+      res.setHeader("Cache-Control", `private, max-age=${Math.max(0, Math.floor(ttl / 1000))}, stale-while-revalidate=2`);
+      return res.json(hit.payload);
+    }
+    res.setHeader("X-V27-Read-Cache", "MISS");
+    const originalJson = res.json.bind(res);
+    res.json = (payload) => {
+      try {
+        const statusCode = Number(res.statusCode || 200);
+        const cacheControl = String(res.getHeader("Cache-Control") || "");
+        if (statusCode >= 200 && statusCode < 300 && !/no-store/i.test(cacheControl) && payload && payload.success !== false) {
+          adminReadCacheStore.set(key, { payload, expiresAt: Date.now() + ttl });
+        } else if (/no-store/i.test(cacheControl)) {
+          res.setHeader("X-V27-Read-Cache", "BYPASS");
+        }
+      } catch (error) { /* ignore cache bookkeeping errors */ }
+      return originalJson(payload);
+    };
+    return next();
+  };
+}
+
+function requireOwnerAdmin(req, res, next) {
+  const admin = isAdmin(req);
+  if (!admin) return res.status(401).json({ success: false, mutation: "none", error: "Unauthorized" });
+  if (String(admin.role || "company") !== "company") return res.status(403).json({ success: false, mutation: "none", error: "مالك فقط" });
+  req.admin = admin;
+  return next();
+}
+
+function notificationSettingsResponse() {
+  const raw = String(process.env.CLEAN_OUTBOUND_SENDS_ENABLED || "").trim().toLowerCase();
+  const disabled = raw === "false" || raw === "0" || raw === "no" || raw === "off";
+  let alertPhones = 0;
+  try { alertPhones = connectionAlertPhones().length; } catch (error) { alertPhones = 0; }
+  return {
+    outboundSendsEnabled: !disabled,
+    groupScopedOnly: true,
+    connectionAlerts: { enabled: true, phones: alertPhones },
+    events: {
+      orderAccepted: true,
+      orderRejectedInsufficientBalance: true,
+      dailyDebitCancellation: true,
+      negativeBalanceWarning: true,
+      groupLinkState: true,
+    },
+    protected: { authentication: true, settlementEvidence: true, whatsappInboundProcessing: true },
+  };
+}
+
 app.get("/api/admin/owner-token", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.json({ token: activeAdminToken || "" });
+});
+
+app.get("/api/admin/group/permissions", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("group-permissions", 2000), async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  try {
+    const snapshot = await readGroupSnapshot(groupId, 3500);
+    const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
+    const botUsers = new Set([String(botWid || "").split("@")[0].split(":")[0], String(client.info?.wid?.user || "")].filter(Boolean));
+    const participants = snapshot?.participants || [];
+    const botParticipants = participants.filter((participant) => botUsers.has(String(participant.user || String(participant.id || "").split("@")[0].split(":")[0])));
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({ success: true, mutation: "none", groupId, ready: true, botWid, botInGroup: botParticipants.length > 0, botParticipants, canDeleteOthers: botParticipants.some((participant) => participant.isAdmin === true), participantSource: snapshot?.participantSource || null, checkedAt: now() });
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
+  }
+});
+
+app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
+  res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
+  res.json({ success: true, mutation: "none", policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
 
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
