@@ -385,6 +385,21 @@ function applyStaticCacheHeaders(res, filePath) {
     res.setHeader("Cache-Control", "no-cache");
   }
 }
+// The owner-approved primary entry point is the original V26 operations panel.
+// Keep the previous public operations page available at /portal without changing
+// any WhatsApp, booking, settlement, or authentication logic.
+app.get("/", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(PUBLIC_STATIC_DIR, "admin-v26.html"));
+});
+app.get("/portal", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(PUBLIC_STATIC_DIR, "index.html"));
+});
+app.get("/portal.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(PUBLIC_STATIC_DIR, "index.html"));
+});
 app.use(
   express.static(PUBLIC_STATIC_DIR, {
     extensions: ["html"],
