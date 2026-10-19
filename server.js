@@ -1435,14 +1435,17 @@ function clearStaleChromiumLocks(root) {
   }
 }
 function pruneSessionArtifacts() {
-  const keep = 3;
+  const keep = 1;
   try {
     const backupDir = path.join(DATA_DIR, "backups");
     if (fs.existsSync(backupDir)) {
       const files = fs.readdirSync(backupDir).filter((f) => f.endsWith(".sqlite")).sort();
-      for (const stale of files.slice(0, Math.max(0, files.length - 2))) {
+      for (const stale of files.slice(0, Math.max(0, files.length - 1))) {
         try { fs.rmSync(path.join(backupDir, stale), { force: true }); } catch (_) {}
       }
+    }
+    for (const cacheName of [".wwebjs_cache", "Crashpad", "ShaderCache", "GPUCache", "Code Cache", "blob_storage"]) {
+      try { fs.rmSync(path.join(DATA_DIR, cacheName), { recursive: true, force: true }); } catch (_) {}
     }
     const snapshotNames = fs.readdirSync(DATA_DIR).filter((f) => /snapshot/i.test(f)).sort();
     for (const name of snapshotNames.slice(0, Math.max(0, snapshotNames.length - keep))) {
