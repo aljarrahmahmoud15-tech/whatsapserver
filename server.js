@@ -14153,6 +14153,25 @@ app.post("/api/admin/group/collect-reaction-evidence", requireAdmin, async (req,
   res.json({ success: true, groupId, hours, targets: targets.length, totalRecorded, results: results.slice(0, 40) });
 });
 
+
+app.get("/api/admin/outbound-monitor", requireAdmin, (req, res) => {
+  let pending = 0, sent = 0, uncertain = 0, dedupeRows = 0;
+  try {
+    pending = Number(db.prepare("SELECT COUNT(*) AS total FROM notifications WHERE delivery_status='pending'").get()?.total || 0);
+    sent = Number(db.prepare("SELECT COUNT(*) AS total FROM notifications WHERE delivery_status='sent'").get()?.total || 0);
+    uncertain = Number(db.prepare("SELECT COUNT(*) AS total FROM notifications WHERE delivery_status='uncertain'").get()?.total || 0);
+    dedupeRows = Number(db.prepare("SELECT COUNT(*) AS total FROM group_outbound_dedupe").get()?.total || 0);
+  } catch (_) { /* diagnostics only */ }
+  res.json({
+    success: true,
+    monitor: { enabled: outboundMonitorState.enabled, intervalMs: outboundMonitorState.intervalMs, runs: outboundMonitorState.runs, lastRunAt: outboundMonitorState.lastRunAt, markedUncertain: outboundMonitorState.markedUncertain },
+    groupDuplicateGuard: { windowMs: GROUP_DEDUPE_WINDOW_MS, blocked: outboundMonitorState.duplicatesBlocked, lastBlockedAt: outboundMonitorState.lastDuplicateAt, trackedMessages: dedupeRows },
+    notifications: { pending, sent, uncertain },
+  });
+});
+
+startOutboundStatusMonitor();
+
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
