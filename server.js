@@ -11108,6 +11108,43 @@ app.post("/api/admin/group/rejected-acceptance-notices/delete", requireAdmin, as
   res.json({ success: failed.length === 0, mutation: "messages_deleted", financialMutation: false, groupId, requested: requestedIds.length, deleted, failed });
 });
 
+function settlementPolicyResponse() {
+  const policy = currentSettlementPolicy();
+  return {
+    producerRateBps: policy.producerRateBps,
+    companyRateBps: policy.companyRateBps,
+    totalRateBps: policy.totalRateBps,
+    producerRatePercent: Number(ratePercentFromBps(policy.producerRateBps)),
+    companyRatePercent: Number(ratePercentFromBps(policy.companyRateBps)),
+    totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
+    appliesTo: "all_order_types",
+    currency: "JOD",
+  };
+}
+
+function currentSettlementPolicy() {
+  const readRate = (key, fallback) => {
+    const value = Number(getSetting(key, fallback));
+    return Number.isFinite(value) && Number.isInteger(value) ? Math.max(0, Math.min(10000, value)) : fallback;
+  };
+  const producerRateBps = readRate("producer_rate_bps", PRODUCER_RATE_BPS);
+  const companyRateBps = readRate("company_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  return {
+    producerRateBps,
+    companyRateBps,
+    totalRateBps: producerRateBps + companyRateBps,
+    regularProducerRateBps: producerRateBps,
+    specialOrderProducerRateBps: producerRateBps,
+    companyFromProducerRateBps: companyRateBps,
+    specialOrderCompanyFromProducerRateBps: companyRateBps,
+  };
+}
+
+function ratePercentFromBps(value) {
+  const percent = Number(value || 0) / 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
