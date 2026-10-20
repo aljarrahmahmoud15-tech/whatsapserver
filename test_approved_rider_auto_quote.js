@@ -8,7 +8,12 @@ const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 
 test('approved rider page calculates a fare from confirmed coordinates without replacing its UI', () => {
   assert.match(html, /id="map-current-button"/);
+  assert.match(html, /data-quick-type="passenger"/);
+  assert.match(html, /data-quick-type="order"/);
+  assert.match(html, /data-quick-type="full-car"/);
   assert.match(html, /parseCoordinatePair/);
+  assert.match(html, /locationDisplayLabel/);
+  assert.match(html, /موقعي الحالي/);
   assert.match(html, /direct-rides\/quote/);
   assert.match(html, /fare-quote/);
   assert.match(html, /تم الحساب تلقائيًا/);

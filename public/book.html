@@ -230,6 +230,15 @@
     .type-option small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; font-weight: 400; }
     .type-option input:checked + span { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
     .type-option span:hover { border-color: #4b749b; transform: translateY(-1px); }
+    .quick-type-picker { margin: 14px 0 13px; padding: 12px; border: 1px solid rgba(72, 223, 176, .24); border-radius: var(--radius-md); background: rgba(5, 17, 29, .5); }
+    .quick-type-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .quick-type-head strong { color: var(--text); font-size: 11px; }
+    .quick-type-head small { color: var(--muted); font-size: 9px; }
+    .quick-type-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+    .quick-type-button { min-height: 55px; padding: 8px 7px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .78); color: var(--text); font-size: 11px; font-weight: 900; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
+    .quick-type-button small { display: block; margin-top: 4px; color: var(--muted); font-size: 8px; font-weight: 400; }
+    .quick-type-button:hover { border-color: #4b749b; transform: translateY(-1px); }
+    .quick-type-button.is-selected { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
     .price-wrap { display: flex; align-items: center; gap: 8px; }
     .price-wrap input { flex: 1; }
     .currency { color: var(--gold); font-size: 11px; font-weight: 900; }
@@ -364,6 +373,8 @@
       .type-options { gap: 6px; }
       .type-option span { min-height: 74px; padding: 10px 7px; font-size: 11px; }
       .type-option small { font-size: 8px; }
+      .quick-type-options { gap: 5px; }
+      .quick-type-button { min-height: 63px; padding: 8px 5px; font-size: 10px; }
       .special-fare-fields { grid-template-columns: 1fr; }
       .form-actions { align-items: stretch; flex-direction: column; }
       .primary-action, .secondary-action { width: 100%; }
@@ -409,7 +420,15 @@
       <div class="map-copy">
         <span class="eyebrow">تحديد الموقع على الخارطة</span>
         <h2 id="map-title">اختر الإقلاع والوجهة بدقة.</h2>
-        <p>حدد أي خانة تريد تثبيتها، ثم ابحث عن المكان أو استخدم موقعك الحالي. سيُحفظ الوصف داخل طلب الرحلة قبل الإرسال.</p>
+        <p>اعتمد الموقع المسجل من جهازك أو اختره من الخريطة. ستنتقل المواقع المعتمدة تلقائيًا إلى الطلب دون إعادة كتابتها.</p>
+        <div class="quick-type-picker" aria-label="اختيار نوع الطلب من البداية">
+          <div class="quick-type-head"><strong>حدد نوع الطلب</strong><small>يمكن تغييره قبل الإرسال</small></div>
+          <div class="quick-type-options" role="group" aria-label="نوع الطلب">
+            <button class="quick-type-button is-selected" type="button" data-quick-type="passenger">راكب<small>رحلة شخصية</small></button>
+            <button class="quick-type-button" type="button" data-quick-type="order">أوردر<small>استلام أو توصيل</small></button>
+            <button class="quick-type-button" type="button" data-quick-type="full-car">حجز خاص<small>موعد أو سعر مخصص</small></button>
+          </div>
+        </div>
         <div class="map-progress" aria-label="مراحل تحديد المسار"><span class="progress-step is-current" id="progress-origin">01 · الإقلاع</span><span class="progress-connector" aria-hidden="true"></span><span class="progress-step" id="progress-destination">02 · الوجهة</span></div>
         <div class="map-targets" role="group" aria-label="اختيار موقع الرحلة">
           <button class="map-target is-active" type="button" data-map-target="origin" aria-pressed="true">
@@ -419,7 +438,7 @@
             <span class="target-index">02</span><span><strong>موقع الوجهة</strong><small id="destination-map-status">لم يحدد بعد</small></span>
           </button>
         </div>
-        <div class="map-helper">ابحث عن الموقع أو استخدم موقع جهازك، اضغط «تثبيت الموقع المختار»، ثم أكد الخطوة من الزر الذهبي.</div>
+        <div class="map-helper">اعتمد الموقع المسجل بزر «استخدم موقعي الحالي»، أو اختر الوجهة من الخريطة، ثم اضغط «تثبيت الموقع» و«تأكيد».</div>
       </div>
       <div class="map-shell">
         <iframe class="map-frame" id="google-map" title="خارطة Google لتحديد موقع الرحلة" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=31.9539%2C35.9106&z=12&output=embed"></iframe>
@@ -540,6 +559,7 @@
       const mapStatus = document.getElementById('map-status');
       const mapOpenGoogle = document.getElementById('map-open-google');
       const mapConfirmButton = document.getElementById('map-confirm-button');
+      const quickTypeButtons = [...document.querySelectorAll('[data-quick-type]')];
       const routeSummaryState = document.getElementById('route-summary-state');
       const progressOrigin = document.getElementById('progress-origin');
       const progressDestination = document.getElementById('progress-destination');
@@ -574,9 +594,32 @@
         if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
         return { lat, lng };
       }
+      function readStoredCoordinates(field) {
+        if (!field?.dataset.coordinates) return null;
+        try { return JSON.parse(field.dataset.coordinates); } catch { return null; }
+      }
       function syncCoordinatesFromField(target) {
-        locationCoordinates[target] = parseCoordinatePair(valueOf(fields[target]));
+        locationCoordinates[target] = readStoredCoordinates(fields[target]) || parseCoordinatePair(valueOf(fields[target]));
         automaticRouteQuote = null;
+      }
+      function setRequestType(type) {
+        const input = form.querySelector(`input[name="requestType"][value="${type}"]`);
+        if (!input) return;
+        input.checked = true;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      function syncQuickTypeButtons() {
+        const type = selectedType();
+        quickTypeButtons.forEach(button => {
+          const selected = button.dataset.quickType === type;
+          button.classList.toggle('is-selected', selected);
+          button.setAttribute('aria-pressed', String(selected));
+        });
+      }
+      function locationDisplayLabel(target, value) {
+        if (String(value || '').startsWith('موقعي الحالي')) return 'موقعي الحالي';
+        if (parseCoordinatePair(value) || readStoredCoordinates(fields[target])) return 'الموقع المسجل على الخريطة';
+        return value;
       }
       function selectedType() { return form.querySelector('input[name="requestType"]:checked')?.value || 'passenger'; }
       function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value || '—'; }
@@ -692,7 +735,7 @@
         previewDetails.hidden = false;
         setText('preview-name', valueOf(fields.name));
         setText('preview-phone', valueOf(fields.phone));
-        setText('preview-route', `${valueOf(fields.origin) || 'موقع الإقلاع'} ← ${valueOf(fields.destination) || 'موقع الوجهة'}`);
+        setText('preview-route', `${locationDisplayLabel('origin', valueOf(fields.origin)) || 'موقع الإقلاع'} ← ${locationDisplayLabel('destination', valueOf(fields.destination)) || 'موقع الوجهة'}`);
         setText('preview-time', formatTime(valueOf(fields.time)));
         setText('preview-type', typeLabels[selectedType()]);
         setText('preview-price', fareDisplay.textContent || 'يحدد عند التجهيز');
@@ -707,6 +750,8 @@
         customerRequest = null;
         locationCoordinates = { origin: null, destination: null };
         automaticRouteQuote = null;
+        fields.origin.dataset.coordinates = '';
+        fields.destination.dataset.coordinates = '';
         submitButton.disabled = false;
         submitButton.textContent = 'إرسال الطلب';
         confirmedMapTargets.origin = false;
@@ -746,8 +791,8 @@
           }
           if (statusNode) statusNode.textContent = confirmed ? `تم تأكيد ${label}` : (locked ? 'مقفل حتى تأكيد الإقلاع' : (valueOf(field) ? 'جاهز للتأكيد' : 'لم يحدد بعد'));
         });
-        const originValue = valueOf(fields.origin) || 'لم يحدد بعد';
-        const destinationValue = valueOf(fields.destination) || 'لم يحدد بعد';
+        const originValue = locationDisplayLabel('origin', valueOf(fields.origin)) || 'لم يحدد بعد';
+        const destinationValue = locationDisplayLabel('destination', valueOf(fields.destination)) || 'لم يحدد بعد';
         setText('route-origin-value', originValue);
         setText('route-destination-value', destinationValue);
         const routeComplete = confirmedMapTargets.origin && confirmedMapTargets.destination;
@@ -781,7 +826,7 @@
           button.setAttribute('aria-pressed', String(active));
         });
         const field = mapTargetField();
-        mapSearch.value = valueOf(field).startsWith('موقعي الحالي') ? '' : valueOf(field);
+        mapSearch.value = (field.dataset.coordinates || valueOf(field).startsWith('موقعي الحالي')) ? '' : valueOf(field);
         updateMapTargetStatuses();
         setMapConfirmLabel();
         setMapStatus(activeMapTarget === 'origin' ? 'أنت تحدد الآن موقع الإقلاع.' : 'أنت تحدد الآن موقع الوجهة.');
@@ -803,7 +848,9 @@
           return;
         }
         const field = mapTargetField();
-        field.value = query;
+        const coordinates = parseCoordinatePair(query);
+        field.dataset.coordinates = coordinates ? JSON.stringify(coordinates) : '';
+        field.value = coordinates ? (activeMapTarget === 'origin' ? 'موقعي الحالي' : 'الموقع المسجل على الخريطة') : query;
         field.dispatchEvent(new Event('input', { bubbles: true }));
         syncCoordinatesFromField(activeMapTarget);
         updateMapTargetStatuses();
@@ -847,7 +894,8 @@
           const query = `${position.coords.latitude.toFixed(5)},${position.coords.longitude.toFixed(5)}`;
           mapSearch.value = query;
           const field = mapTargetField();
-          field.value = `موقعي الحالي (${query})`;
+          field.dataset.coordinates = JSON.stringify({ lat: position.coords.latitude, lng: position.coords.longitude });
+          field.value = 'موقعي الحالي';
           field.dispatchEvent(new Event('input', { bubbles: true }));
           locationCoordinates[activeMapTarget] = { lat: position.coords.latitude, lng: position.coords.longitude };
           updateMapTargetStatuses();
@@ -884,6 +932,8 @@
               phone: valueOf(fields.phone),
               origin: valueOf(fields.origin),
               destination: valueOf(fields.destination),
+              originCoordinates: locationCoordinates.origin,
+              destinationCoordinates: locationCoordinates.destination,
               departureTime: valueOf(fields.time),
               requestType: selectedType(),
               originConfirmed: confirmedMapTargets.origin,
@@ -932,6 +982,8 @@
               phone: valueOf(fields.phone),
               origin: valueOf(fields.origin),
               destination: valueOf(fields.destination),
+              originCoordinates: locationCoordinates.origin,
+              destinationCoordinates: locationCoordinates.destination,
               departureTime: valueOf(fields.time),
               requestType: selectedType(),
               distanceKm: valueOf(specialDistance),
@@ -957,8 +1009,9 @@
       }
 
       Object.entries(fields).forEach(([key, field]) => field.addEventListener('input', () => { if (key === 'origin' || key === 'destination') updateFare(); updatePreview(); }));
-      [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
-      form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { updateFare(); updatePreview(); }));
+      [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { syncCoordinatesFromField(target); confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
+      form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { syncQuickTypeButtons(); updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination) void refreshAutomaticFare(); }));
+      quickTypeButtons.forEach(button => button.addEventListener('click', () => setRequestType(button.dataset.quickType)));
       [specialDistance, specialDuration].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
       resetButton.addEventListener('click', resetState);
       continueDetailsButton.addEventListener('click', () => {
@@ -1015,6 +1068,7 @@
         void submitCustomerBooking();
       });
       updateFare();
+      syncQuickTypeButtons();
       updateMapTargetStatuses();
       updatePreview();
     })();
