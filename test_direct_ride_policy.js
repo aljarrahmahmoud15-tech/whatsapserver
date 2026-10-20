@@ -22,8 +22,9 @@ test("calculates a route estimate and applies the official meter tariff", () => 
   assert.equal(quote.status, "quoted");
   assert.equal(quote.fareCents, 450);
   assert.equal(calculateDirectRideFare({ distanceKm: 12, durationMin: 1000 }).fareCents, 450);
-  const minimum = calculateDirectRideFare({ distanceKm: 0, durationMin: 0 });
+  const minimum = calculateDirectRideFare({ distanceKm: 0.5, durationMin: 0 });
   assert.equal(minimum.fareCents, 100);
+  assert.equal(calculateDirectRideFare({ distanceKm: 0, durationMin: 0 }).status, "invalid");
 });
 
 test("can estimate a route from two coordinates when duration is missing", () => {

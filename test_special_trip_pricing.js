@@ -27,9 +27,11 @@ assert.strictEqual(thirtyKm.fare, 10.55);
 assert.strictEqual(thirtyKm.fareCents, 1055);
 assert.strictEqual(calculateSpecialTripFare({ distanceKm: 30, tripTime: "23:00" }).fare, 10.6);
 
-const minimum = calculateSpecialTripFare({ distanceKm: 0, tripTime: "12:00" });
+const minimum = calculateSpecialTripFare({ distanceKm: 0.5, tripTime: "12:00" });
 assert.strictEqual(minimum.fare, 1);
 assert.strictEqual(minimum.fareCents, 100);
+assert.strictEqual(calculateSpecialTripFare({ distanceKm: 0, tripTime: "12:00" }).status, "invalid");
+assert.strictEqual(calculateSpecialTripFare({ distanceKm: "", tripTime: "12:00" }).status, "invalid");
 
 assert.strictEqual(isNightTime("22:00"), true);
 assert.strictEqual(isNightTime("05:59"), true);

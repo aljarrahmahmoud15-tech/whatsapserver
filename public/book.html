@@ -659,10 +659,16 @@
         return hour >= specialTariff.nightStartHour || hour < specialTariff.nightEndHour;
       }
       function roundFare(value) { return Number((Math.round((Number(value) + Number.EPSILON) / specialTariff.roundingIncrement) * specialTariff.roundingIncrement).toFixed(2)); }
+      function isPositiveDistance(value) {
+        const raw = String(value ?? '').trim().replace(',', '.');
+        const distance = Number(raw);
+        return Boolean(raw) && Number.isFinite(distance) && distance > 0 && distance <= 10000;
+      }
       function calculateSpecialFare(distanceKm, waitingMin = specialWaiting.value, tripTime = valueOf(fields.time)) {
-        const distance = Number(distanceKm);
+        const rawDistance = String(distanceKm ?? '').trim().replace(',', '.');
+        const distance = Number(rawDistance);
         const waiting = waitingMin === '' || waitingMin === null || waitingMin === undefined ? 0 : Number(waitingMin);
-        if (!Number.isFinite(distance) || distance < 0 || !Number.isFinite(waiting) || waiting < 0) return null;
+        if (!isPositiveDistance(rawDistance) || !Number.isFinite(waiting) || waiting < 0) return null;
         const night = isNightTime(tripTime);
         const opening = night ? specialTariff.nightOpeningFare : specialTariff.dayOpeningFare;
         const waitingCharge = waiting * specialTariff.waitingPerMinute;
@@ -714,6 +720,12 @@
       function applyAutomaticFare() {
         if (!automaticRouteQuote || selectedType() !== 'full-car') return;
         const { distanceKm, fare } = automaticRouteQuote;
+        if (!isPositiveDistance(distanceKm) || !Number.isFinite(Number(fare))) {
+          automaticRouteQuote = null;
+          specialDistance.value = '';
+          updateSpecialFare();
+          return;
+        }
         if (Number.isFinite(Number(distanceKm))) specialDistance.value = Number(distanceKm).toFixed(1);
         updateSpecialFare();
         fareDisplay.textContent = `${Number(fare).toFixed(2)} د.أ`;
@@ -731,6 +743,7 @@
           });
           const routeData = await routeResponse.json().catch(() => ({}));
           if (!routeResponse.ok) throw new Error(routeData.error || 'تعذر احتساب المسار');
+          if (!isPositiveDistance(routeData.route?.distanceKm)) throw new Error('تعذر احتساب مسافة فعلية؛ ثبّت موقعين مختلفين على الخريطة.');
           automaticRouteQuote = { distanceKm: routeData.route.distanceKm, durationMin: routeData.route.durationMin, routeSource: routeData.route.routeSource, fare: routeData.quote?.fare };
           if (!Number.isFinite(Number(automaticRouteQuote.fare))) throw new Error('تعذر احتساب سعر طلب الرحلة الذكية');
           applyAutomaticFare();
@@ -860,22 +873,46 @@
         if (coordinates) locationCoordinates[activeMapTarget] = coordinates;
         setMapStatus(`الخريطة جاهزة للموقع: ${cleanQuery}`, 'ok');
       }
-      function pinMapLocation() {
+      async function pinMapLocation() {
+        const field = mapTargetField();
         const query = valueOf(mapSearch) || valueOf(mapTargetField());
-        if (!query) {
+        const storedCoordinates = readStoredCoordinates(field);
+        if (!query && !storedCoordinates) {
           setMapStatus('اكتب اسم المكان أو استخدم موقعك الحالي أولًا.', 'error');
           mapSearch.focus();
           return;
         }
-        const field = mapTargetField();
-        const coordinates = parseCoordinatePair(query);
-        field.dataset.coordinates = coordinates ? JSON.stringify(coordinates) : '';
-        field.value = coordinates ? (activeMapTarget === 'origin' ? 'موقعي الحالي' : 'الموقع المسجل على الخريطة') : query;
-        field.dispatchEvent(new Event('input', { bubbles: true }));
-        syncCoordinatesFromField(activeMapTarget);
-        updateMapTargetStatuses();
-        setMapQuery(query);
-        setMapStatus(activeMapTarget === 'origin' ? 'تم تحديد الإقلاع. اضغط «تأكيد موقع الإقلاع».': 'تم تحديد الوجهة. اضغط «تأكيد الوجهة».', 'ok');
+        mapPinButton.disabled = true;
+        try {
+          const directCoordinates = parseCoordinatePair(query) || storedCoordinates;
+          let coordinates = directCoordinates;
+          let label = query;
+          if (!coordinates) {
+            setMapStatus('جارٍ تثبيت العنوان من الخريطة…');
+            const response = await fetch('/api/public/direct-rides/geocode', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ query }),
+            });
+            const data = await response.json().catch(() => ({}));
+            const first = Array.isArray(data.results) ? data.results[0] : null;
+            if (!response.ok || !first || !Number.isFinite(Number(first.lat)) || !Number.isFinite(Number(first.lng))) throw new Error(data.error || 'لم يتم العثور على موقع مطابق');
+            coordinates = { lat: Number(first.lat), lng: Number(first.lng) };
+            label = first.label || query;
+          }
+          field.dataset.coordinates = JSON.stringify(coordinates);
+          field.value = directCoordinates && valueOf(field).startsWith('موقعي الحالي') ? 'موقعي الحالي' : (directCoordinates ? 'الموقع المسجل على الخريطة' : label);
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+          syncCoordinatesFromField(activeMapTarget);
+          updateMapTargetStatuses();
+          setMapQuery(label || query);
+          setMapStatus(activeMapTarget === 'origin' ? 'تم تثبيت الإقلاع بإحداثيات فعلية. اضغط «تأكيد موقع الإقلاع».': 'تم تثبيت الوجهة بإحداثيات فعلية. اضغط «تأكيد الوجهة».', 'ok');
+        } catch (error) {
+          setMapStatus(error.message || 'تعذر تثبيت العنوان؛ استخدم موقع الجهاز أو الإحداثيات.', 'error');
+        } finally {
+          mapPinButton.disabled = false;
+        }
       }
       function confirmMapLocation() {
         if (activeMapTarget === 'destination' && !confirmedMapTargets.origin) {
@@ -887,6 +924,10 @@
         if (!query) {
           setMapStatus(activeMapTarget === 'destination' ? 'ابحث عن الوجهة أو استخدم موقعك الحالي أولًا.' : 'ابحث عن موقع الإقلاع أو استخدم موقعك الحالي أولًا.', 'error');
           mapSearch.focus();
+          return;
+        }
+        if (selectedType() === 'full-car' && !locationCoordinates[activeMapTarget]) {
+          setMapStatus('ثبّت الموقع المختار أولًا للحصول على إحداثيات فعلية وحساب المسافة.', 'error');
           return;
         }
         const field = mapTargetField();
@@ -980,6 +1021,12 @@
           status.className = 'form-status error';
           status.textContent = 'أكد موقع الإقلاع والوجهة من الزرين قبل إرسال طلب الرحلة الذكية.';
           setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
+          return;
+        }
+        if (!locationCoordinates.origin || !locationCoordinates.destination) {
+          status.className = 'form-status error';
+          status.textContent = 'ثبّت الإقلاع والوجهة بإحداثيات فعلية قبل إرسال طلب الرحلة الذكية.';
+          setMapStatus('استخدم «تثبيت الموقع المختار» بعد البحث عن كل موقع.', 'error');
           return;
         }
         if (!calculateSpecialFare(specialDistance.value, specialWaiting.value, valueOf(fields.time))) {

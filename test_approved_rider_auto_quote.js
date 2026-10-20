@@ -20,9 +20,14 @@ test('approved rider page keeps independent rider flow and uses the official sma
   assert.match(html, /locationDisplayLabel/);
   assert.match(html, /موقعي الحالي/);
   assert.match(html, /direct-rides\/quote/);
+  assert.match(html, /direct-rides\/geocode/);
+  assert.match(html, /function isPositiveDistance/);
+  assert.match(html, /distance > 0/);
+  assert.match(html, /إحداثيات فعلية/);
   assert.match(html, /فتح العداد \+ الكيلومتر \+ الانتظار/);
   assert.match(html, /طلب راكب مستقل؛ لا يُحتسب بالكيلومتر تلقائيًا/);
   assert.doesNotMatch(html, /special-duration/);
   assert.match(server, /app\.get\("\/ride\.html", v27PageLimiter[\s\S]*?res\.redirect\(302, "\/book\.html"\)/);
   assert.doesNotMatch(server, /app\.get\("\/v27\/pilot\/ride"/);
+  assert.match(server, /distanceKm === null \|\| !Number\.isFinite\(distanceKm\) \|\| distanceKm <= 0/);
 });

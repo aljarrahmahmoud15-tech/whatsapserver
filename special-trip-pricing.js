@@ -36,7 +36,7 @@ function roundFare(value, increment = SPECIAL_TRIP_TARIFF.roundingIncrement) {
 function calculateSpecialTripFare({ distanceKm, waitingMin = 0, durationMin, tripTime, departureTime, isNight } = {}) {
   const distance = finiteNumber(distanceKm);
   const waiting = waitingMin === undefined || waitingMin === null || waitingMin === "" ? 0 : finiteNumber(waitingMin);
-  if (distance === null || distance < 0 || distance > 10000) return { status: "invalid", reason: "distance" };
+  if (distance === null || distance <= 0 || distance > 10000) return { status: "invalid", reason: "distance" };
   if (waiting === null || waiting < 0 || waiting > 100000) return { status: "invalid", reason: "waiting" };
 
   const suppliedDuration = durationMin === undefined || durationMin === null || durationMin === "" ? null : finiteNumber(durationMin);

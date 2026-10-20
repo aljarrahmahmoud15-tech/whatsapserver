@@ -3075,7 +3075,8 @@ function publicSpecialBookingInput(body = {}) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
   if (requestType !== "full-car") return { error: "هذا المسار مخصص للحجز الخاص فقط" };
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
-  if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return { error: "المسافة غير صالحة" };
+  if (!originCoordinates || !destinationCoordinates) return { error: "ثبّت الإقلاع والوجهة بإحداثيات فعلية لحساب المسافة" };
+  if (distanceKm === null || !Number.isFinite(distanceKm) || distanceKm <= 0 || distanceKm > 10000) return { error: "ثبّت الموقعين واحسب مسافة فعلية قبل إرسال الطلب" };
   if (durationMin !== null && (!Number.isFinite(durationMin) || durationMin < 0 || durationMin > 100000)) return { error: "المدة الزمنية غير صالحة" };
   if (!Number.isFinite(waitingMin) || waitingMin < 0 || waitingMin > 100000) return { error: "دقائق الانتظار غير صالحة" };
   const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm, waitingMin, tripTime });
