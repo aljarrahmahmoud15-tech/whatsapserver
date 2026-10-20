@@ -296,6 +296,7 @@
     .map-target.is-active { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .86), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .08); }
     .map-target.is-confirmed { border-color: rgba(247, 201, 111, .72); background: linear-gradient(145deg, rgba(78, 60, 28, .62), rgba(9, 34, 42, .92)); }
     .map-target.is-active.is-confirmed { box-shadow: 0 0 0 3px rgba(247, 201, 111, .1); }
+    .map-target:disabled { opacity: .52; filter: saturate(.45); cursor: not-allowed; transform: none!important; }
     .map-target.is-confirmed .target-index { background: var(--gold); color: #241a08; }
     .target-index { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 10px; background: rgba(72, 223, 176, .12); color: var(--mint); font-size: 10px; font-weight: 900; }
     .map-target strong, .map-target small { display: block; }
@@ -414,7 +415,7 @@
           <button class="map-target is-active" type="button" data-map-target="origin" aria-pressed="true">
             <span class="target-index">01</span><span><strong>موقع الإقلاع</strong><small id="origin-map-status">لم يحدد بعد</small></span>
           </button>
-          <button class="map-target" type="button" data-map-target="destination" aria-pressed="false">
+          <button class="map-target" type="button" data-map-target="destination" aria-pressed="false" disabled>
             <span class="target-index">02</span><span><strong>موقع الوجهة</strong><small id="destination-map-status">لم يحدد بعد</small></span>
           </button>
         </div>
@@ -673,16 +674,23 @@
         mapStatus.textContent = message;
       }
       function updateMapTargetStatuses() {
+        if (!confirmedMapTargets.origin && confirmedMapTargets.destination) {
+          confirmedMapTargets.destination = false;
+          fields.destination.value = '';
+        }
         [['origin', fields.origin, 'موقع الإقلاع', '01'], ['destination', fields.destination, 'موقع الوجهة', '02']].forEach(([target, field, label, number]) => {
           const button = document.querySelector(`[data-map-target="${target}"]`);
           const statusNode = document.getElementById(`${target}-map-status`);
           const confirmed = confirmedMapTargets[target];
+          const locked = target === 'destination' && !confirmedMapTargets.origin;
           if (button) {
+            button.disabled = locked;
+            button.setAttribute('aria-disabled', String(locked));
             button.classList.toggle('is-confirmed', confirmed);
             const index = button.querySelector('.target-index');
             if (index) index.textContent = confirmed ? '✓' : number;
           }
-          if (statusNode) statusNode.textContent = confirmed ? `تم تأكيد ${label}` : (valueOf(field) ? 'جاهز للتأكيد' : 'لم يحدد بعد');
+          if (statusNode) statusNode.textContent = confirmed ? `تم تأكيد ${label}` : (locked ? 'مقفل حتى تأكيد الإقلاع' : (valueOf(field) ? 'جاهز للتأكيد' : 'لم يحدد بعد'));
         });
         const originValue = valueOf(fields.origin) || 'لم يحدد بعد';
         const destinationValue = valueOf(fields.destination) || 'لم يحدد بعد';
@@ -705,6 +713,13 @@
         mapConfirmButton.setAttribute('aria-label', `تأكيد ${label} المختار`);
       }
       function activateMapTarget(target) {
+        if (target === 'destination' && !confirmedMapTargets.origin) {
+          activeMapTarget = 'origin';
+          updateMapTargetStatuses();
+          setMapConfirmLabel();
+          setMapStatus('حدد موقع الإقلاع وثبّته أولًا، ثم ستُفتح الوجهة.', 'error');
+          return;
+        }
         activeMapTarget = target === 'destination' ? 'destination' : 'origin';
         document.querySelectorAll('[data-map-target]').forEach(button => {
           const active = button.dataset.mapTarget === activeMapTarget;
@@ -739,6 +754,11 @@
         setMapStatus(activeMapTarget === 'origin' ? 'تم تحديد الإقلاع. اضغط «تأكيد موقع الإقلاع».': 'تم تحديد الوجهة. اضغط «تأكيد الوجهة».', 'ok');
       }
       function confirmMapLocation() {
+        if (activeMapTarget === 'destination' && !confirmedMapTargets.origin) {
+          activateMapTarget('origin');
+          setMapStatus('لا يمكن تأكيد الوجهة قبل تثبيت موقع الإقلاع.', 'error');
+          return;
+        }
         const query = valueOf(mapTargetField()) || valueOf(mapSearch);
         if (!query) {
           setMapStatus(activeMapTarget === 'destination' ? 'ابحث عن الوجهة أو استخدم موقعك الحالي أولًا.' : 'ابحث عن موقع الإقلاع أو استخدم موقعك الحالي أولًا.', 'error');
