@@ -73,6 +73,21 @@
       actions.insertBefore(link,actions.firstChild);
     });
   </script>
+  <style id="customer-cycle-link-style">
+    .customer-cycle-link{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 14px;border-radius:12px;border:1px solid rgba(120,183,239,.62);background:linear-gradient(135deg,#163553,#10283f);color:#d6ecff;text-decoration:none;font-weight:800;font-size:12px;transition:transform .16s,filter .16s}.customer-cycle-link:hover{filter:brightness(1.12);transform:translateY(-1px)}
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded',function(){
+      const actions=document.querySelector('.top-actions');
+      if(!actions||actions.querySelector('.customer-cycle-link'))return;
+      const link=document.createElement('a');
+      link.className='customer-cycle-link';
+      link.href='/v27/customer-bookings';
+      link.textContent='دورة الراكب والأوردر';
+      link.setAttribute('aria-label','فتح دورة الراكب والأوردر');
+      actions.insertBefore(link,actions.firstChild);
+    });
+  </script>
   <style id="passenger-hub-style">
     .passenger-hub{border-color:#2e6c5b;background:linear-gradient(145deg,#102d39,#0a1c2d)}
     .passenger-hub-head{align-items:center}.passenger-hub-head .panel-title h2{color:#d9fff3}.passenger-hub-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}.passenger-hub-meta .notice{padding:7px 10px;font-size:10px}
@@ -117,10 +132,11 @@
           <a class="passenger-tile featured" href="/book.html" target="_blank" rel="noopener"><span class="passenger-index">01</span><span><strong>واجهة العميل</strong><small>النموذج العام، الخريطة، وتأكيد المسار</small></span><b>فتح ↗</b></a>
           <a class="passenger-tile" href="/book.html?install=1#install-app" target="_blank" rel="noopener"><span class="passenger-index">02</span><span><strong>تثبيت تطبيق الراكب</strong><small>فتح نسخة التثبيت وإضافة التطبيق للهاتف</small></span><b>فتح ↗</b></a>
           <a class="passenger-tile" href="/v27/special-booking"><span class="passenger-index">03</span><span><strong>الحجز الخاص</strong><small>تسعير، موافقة، تأكيد العميل، ثم النشر</small></span><b>إدارة ↗</b></a>
-          <button id="passengerPricingButton" class="passenger-tile" type="button"><span class="passenger-index">04</span><span><strong>إعدادات الأسعار</strong><small>عرض القواعد المعتمدة قبل تعديلها</small></span><b>عرض</b></button>
+          <a class="passenger-tile" href="/v27/customer-bookings"><span class="passenger-index">04</span><span><strong>دورة الراكب والأوردر</strong><small>استقبال، تسعير، اعتماد، ثم نشر للكباتن</small></span><b>إدارة ↗</b></a>
+          <button id="passengerPricingButton" class="passenger-tile" type="button"><span class="passenger-index">05</span><span><strong>إعدادات الأسعار</strong><small>عرض القواعد المعتمدة قبل تعديلها</small></span><b>عرض</b></button>
         </div>
         <div class="passenger-pricing-strip" aria-label="ملخص الأسعار المعتمدة"><div class="passenger-price"><span>أوردر</span><b>5 د.أ</b><small>سعر ثابت</small></div><div class="passenger-price"><span>راكب حتى 90 كم</span><b>5 د.أ</b><small>الأساس</small></div><div class="passenger-price"><span>بعد 90 كم</span><b>+1 د.أ</b><small>كل 15 كم</small></div><div class="passenger-price"><span>المطار</span><b>25 د.أ</b><small>سعر ثابت</small></div></div>
-        <div class="passenger-hub-actions"><button id="passengerCopyLink" type="button">نسخ الرابط الترويجي</button><a href="/book.html" target="_blank" rel="noopener">فتح الواجهة في نافذة جديدة ↗</a><a href="/v27/special-booking">فتح لوحة الحجز الخاص ↗</a></div>
+        <div class="passenger-hub-actions"><button id="passengerCopyLink" type="button">نسخ الرابط الترويجي</button><a href="/book.html" target="_blank" rel="noopener">فتح الواجهة في نافذة جديدة ↗</a><a href="/v27/customer-bookings">فتح دورة الراكب والأوردر ↗</a><a href="/v27/special-booking">فتح لوحة الحجز الخاص ↗</a></div>
         <div id="passengerHubMessage" class="notice passenger-hub-note" aria-live="polite">تحديث الواجهة العامة يتم من نفس المشروع؛ افتح الرابط العام بعد أي نشر جديد لرؤية النسخة الحالية.</div>
       </section>
       <section class="admin-overview-metrics" aria-label="مؤشرات الإدارة"><article class="metric blue overview-orders"><span>الطلبات المثبتة اليوم</span><b id="metricOrders">—</b><small id="ordersTodayLabel">تُحسب من السجل الحي · تتجدد كل 24 ساعة</small></article><article class="metric captain-overview"><span>الكباتن النشطون</span><div class="captain-overview-values"><div><b id="metricCaptains">—</b><small>نشطون</small></div><div><b id="groupMemberCount">—</b><small>في القروب</small></div></div><small class="sync-muted"><i></i><span>القروب الرسمي · قراءة مباشرة</span></small></article></section>

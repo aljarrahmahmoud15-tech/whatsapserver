@@ -426,10 +426,10 @@
             </div>
           </div>
           <div class="form-actions">
-            <button class="primary-action" type="submit">متابعة لمعاينة الطلب</button>
+              <button class="primary-action" type="submit">إرسال الطلب</button>
             <button class="secondary-action" id="reset-form" type="button">مسح</button>
           </div>
-          <p class="form-status" id="form-status" role="status" aria-live="polite">الحجز الخاص يُرسل للمراجعة بعد تأكيد الإقلاع والوجهة؛ راكب وأوردر ما زالا في وضع المعاينة.</p>
+          <p class="form-status" id="form-status" role="status" aria-live="polite">أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.</p>
         </form>
       </section>
     </section>
@@ -521,6 +521,7 @@
       let activeMapTarget = 'origin';
       let deferredInstallPrompt = null;
       let specialRequest = null;
+      let customerRequest = null;
       const confirmedMapTargets = { origin: false, destination: false };
 
       function valueOf(field) { return field.value.trim(); }
@@ -571,16 +572,17 @@
         setText('preview-time', formatTime(valueOf(fields.time)));
         setText('preview-type', typeLabels[selectedType()]);
         setText('preview-price', fareDisplay.textContent || 'يحدد عند التجهيز');
-        setText('preview-request', specialRequest?.requestCode || '—');
+        setText('preview-request', specialRequest?.requestCode || customerRequest?.requestCode || '—');
         previewState.textContent = 'معاينة محدثة';
       }
       function resetState() {
         form.reset();
         status.className = 'form-status';
-        status.textContent = 'الحجز الخاص يُرسل للمراجعة بعد تأكيد الإقلاع والوجهة؛ راكب وأوردر ما زالا في وضع المعاينة.';
+        status.textContent = 'أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.';
         specialRequest = null;
+        customerRequest = null;
         submitButton.disabled = false;
-        submitButton.textContent = 'متابعة لمعاينة الطلب';
+        submitButton.textContent = 'إرسال الطلب';
         confirmedMapTargets.origin = false;
         confirmedMapTargets.destination = false;
         mapSearch.value = '';
@@ -700,6 +702,48 @@
         installNote.hidden = false;
         installNote.textContent = message;
       }
+      async function submitCustomerBooking() {
+        if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
+          status.className = 'form-status error';
+          status.textContent = 'أكد موقع الإقلاع والوجهة من الخريطة قبل إرسال الطلب.';
+          setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
+          return;
+        }
+        submitButton.disabled = true;
+        submitButton.textContent = 'جارٍ استلام الطلب…';
+        status.className = 'form-status';
+        status.textContent = 'يتم حفظ الطلب في دورة المراجعة؛ لم يُنشر في قروب التشغيل بعد.';
+        try {
+          const response = await fetch('/api/public/customer-bookings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              customerName: valueOf(fields.name),
+              phone: valueOf(fields.phone),
+              origin: valueOf(fields.origin),
+              destination: valueOf(fields.destination),
+              departureTime: valueOf(fields.time),
+              requestType: selectedType(),
+              originConfirmed: confirmedMapTargets.origin,
+              destinationConfirmed: confirmedMapTargets.destination,
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'تعذر استلام طلب الراكب أو الأوردر');
+          customerRequest = data.request || null;
+          status.className = 'form-status ok';
+          status.textContent = `${data.message || 'تم استلام الطلب.'} رقم الطلب: ${customerRequest?.requestCode || 'غير محدد'}.`;
+          previewState.textContent = 'تم الاستلام';
+          submitButton.textContent = 'تم استلام الطلب';
+          updatePreview();
+        } catch (error) {
+          status.className = 'form-status error';
+          status.textContent = error.message || 'تعذر إرسال الطلب؛ حاول مرة أخرى.';
+          submitButton.disabled = false;
+          submitButton.textContent = 'إعادة إرسال الطلب';
+        }
+      }
       async function submitSpecialBooking() {
         if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
           status.className = 'form-status error';
@@ -787,10 +831,7 @@
           void submitSpecialBooking();
           return;
         }
-        updatePreview();
-        status.className = 'form-status ok';
-        status.textContent = 'تم تجهيز المعاينة. إرسال الراكب والأوردر سيُفعّل في مسار مستقل بعد اعتماد التشغيل.';
-        previewState.textContent = 'جاهزة للمراجعة';
+        void submitCustomerBooking();
       });
       updateFare();
       updateMapTargetStatuses();

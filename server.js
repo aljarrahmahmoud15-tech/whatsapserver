@@ -22,6 +22,7 @@ sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { calculateFare, farePolicyResponse } = require("./pricing");
 const { DEFAULT_SPECIAL_BOOKING_POLICY, normalizeSpecialBookingPolicy, specialBookingPolicyResponse, isSpecialBookingKind } = require("./special-booking-policy");
+const { DEFAULT_CUSTOMER_BOOKING_POLICY, normalizeCustomerBookingPolicy, customerBookingPolicyResponse } = require("./customer-booking-policy");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
@@ -568,6 +569,33 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   }
   res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: "تم استلام طلب الحجز الخاص. سيظهر للمالك للمراجعة وتحديد السعر." });
 });
+app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res) => {
+  const policy = currentCustomerBookingPolicy();
+  if (!policy.enabled) return res.status(409).json({ success: false, error: "استقبال طلبات الراكب والأوردر متوقف حاليًا من إعدادات المالك" });
+  const input = publicCustomerBookingInput(req.body || {});
+  if (input.error) return res.status(400).json({ success: false, error: input.error });
+  const priceCents = input.quote.status === "quoted" ? input.quote.priceCents : null;
+  const priceSource = input.quote.status === "quoted" ? input.quote.ruleKey : null;
+  const status = priceCents === null ? "new" : "owner_review";
+  const stamp = now();
+  const requestCode = customerBookingRequestCode();
+  const result = db.transaction(() => db.prepare(`INSERT INTO customer_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,distance_km,price_cents,price_source,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
+  const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(result.lastInsertRowid);
+  audit("customer_booking.received", "customer_booking", row.id, { requestCode, requestType: input.requestType, quoteStatus: input.quote.status, priceCents, phone: input.phone, financialMutation: false, published: false });
+  if (policy.ownerNotification) {
+    void notifyOperations({
+      event: `customer_booking.received.${row.id}`,
+      title: `طلب ${input.requestType === "order" ? "أوردر" : "راكب"} جديد`,
+      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, row.price_cents ? `السعر الأولي: ${money(row.price_cents)} JOD` : "المسافة/السعر يحتاجان مراجعة المالك.", "لم يتم النشر أو التسوية بعد."],
+      ownersOnly: true,
+    }).catch(() => null);
+  }
+  const message = row.price_cents
+    ? `تم استلام طلبك رقم ${row.request_code}. السعر الأولي ${money(row.price_cents)} د.أ، وينتظر اعتماد المالك قبل النشر.`
+    : `تم استلام طلبك رقم ${row.request_code}. سيحدد المالك المسافة والسعر قبل النشر.`;
+  res.status(201).json({ success: true, request: customerBookingRequestResponse(row), message });
+});
 app.post("/api/public/special-bookings/:id/confirm", publicSpecialBookingLimiter, (req, res) => {
   const id = Number(req.params.id);
   const token = String(req.body?.token || req.query?.token || "").trim();
@@ -615,10 +643,20 @@ app.get("/v27/special-booking", v27PageLimiter, (req, res) => {
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "special-booking-settings.html"));
 });
+app.get("/v27/customer-bookings", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "customer-booking-settings.html"));
+});
 app.get("/special-booking-settings.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "special-booking-settings.html"));
+});
+app.get("/customer-booking-settings.html", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "customer-booking-settings.html"));
 });
 app.get("/special-booking/confirm.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -932,6 +970,32 @@ CREATE TABLE IF NOT EXISTS special_booking_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_special_booking_status_updated ON special_booking_requests(status,updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_special_booking_phone_created ON special_booking_requests(phone,created_at DESC);
+CREATE TABLE IF NOT EXISTS customer_booking_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_code TEXT NOT NULL UNIQUE,
+  customer_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  trip_time TEXT NOT NULL,
+  request_type TEXT NOT NULL CHECK(request_type IN ('passenger','order')),
+  distance_km REAL,
+  price_cents INTEGER,
+  price_source TEXT,
+  status TEXT NOT NULL CHECK(status IN ('new','owner_review','owner_approved','published','completed','rejected','cancelled')) DEFAULT 'new',
+  owner_decision TEXT,
+  owner_note TEXT,
+  published_message_id TEXT,
+  published_at TEXT,
+  order_candidate_id INTEGER,
+  final_order_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(order_candidate_id) REFERENCES order_candidates(id),
+  FOREIGN KEY(final_order_id) REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_customer_booking_status_updated ON customer_booking_requests(status,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_customer_booking_phone_created ON customer_booking_requests(phone,created_at DESC);
 CREATE TABLE IF NOT EXISTS blocked_phones (
   phone TEXT PRIMARY KEY,
   note TEXT NOT NULL,
@@ -2607,6 +2671,83 @@ function saveSpecialBookingPolicy(policy) {
   return normalized;
 }
 const specialBookingPublishInFlight = new Set();
+const CUSTOMER_BOOKING_POLICY_SETTING_KEY = "customer_booking_policy_v1";
+function currentCustomerBookingPolicy() {
+  const raw = getSetting(CUSTOMER_BOOKING_POLICY_SETTING_KEY, null);
+  if (!raw) return normalizeCustomerBookingPolicy(DEFAULT_CUSTOMER_BOOKING_POLICY);
+  try { return normalizeCustomerBookingPolicy(JSON.parse(raw)); } catch { return normalizeCustomerBookingPolicy(DEFAULT_CUSTOMER_BOOKING_POLICY); }
+}
+function saveCustomerBookingPolicy(policy) {
+  const normalized = normalizeCustomerBookingPolicy(policy);
+  setSetting(CUSTOMER_BOOKING_POLICY_SETTING_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+const customerBookingPublishInFlight = new Set();
+function customerBookingRequestCode() {
+  let code = "";
+  do code = `CB-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+  while (db.prepare("SELECT id FROM customer_booking_requests WHERE request_code=? LIMIT 1").get(code));
+  return code;
+}
+function customerBookingRequestResponse(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    requestCode: row.request_code,
+    customerName: row.customer_name,
+    phone: row.phone,
+    origin: row.origin,
+    destination: row.destination,
+    tripTime: row.trip_time,
+    requestType: row.request_type,
+    distanceKm: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
+    price: row.price_cents === null || row.price_cents === undefined ? null : money(row.price_cents),
+    priceCents: row.price_cents === null || row.price_cents === undefined ? null : Number(row.price_cents),
+    priceSource: row.price_source || null,
+    status: row.status,
+    ownerDecision: row.owner_decision || null,
+    ownerNote: row.owner_note || null,
+    publishedAt: row.published_at || null,
+    publishedMessageId: row.published_message_id || null,
+    orderCandidateId: row.order_candidate_id ? Number(row.order_candidate_id) : null,
+    finalOrderId: row.final_order_id ? Number(row.final_order_id) : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+function customerBookingOperationalMessage(row) {
+  const label = row.request_type === "order" ? "أوردر" : "راكب";
+  return [
+    `${label} #${row.request_code}`,
+    `من ${row.origin} إلى ${row.destination}`,
+    `وقت الإقلاع: ${row.trip_time}`,
+    `القيمة: ${money(row.price_cents)} JOD`,
+    `العميل: ${row.customer_name} · ${row.phone}`,
+  ].join("\n");
+}
+function publicCustomerBookingInput(body = {}) {
+  const customerName = String(body.customerName || body.name || "").trim().slice(0, 80);
+  const phone = phoneWithCountry(String(body.phone || "").replace(/[^0-9+]/g, ""));
+  const origin = String(body.origin || "").trim().slice(0, 160);
+  const destination = String(body.destination || "").trim().slice(0, 160);
+  const tripTime = String(body.departureTime || body.tripTime || "").trim();
+  const requestType = String(body.requestType || body.serviceType || "").trim().toLowerCase();
+  const originConfirmed = body.originConfirmed === true;
+  const destinationConfirmed = body.destinationConfirmed === true;
+  const rawDistance = body.distanceKm;
+  const distanceKm = rawDistance === undefined || rawDistance === null || String(rawDistance).trim() === "" ? null : Number(String(rawDistance).replace(",", "."));
+  if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
+  if (origin.length < 2 || destination.length < 2) return { error: "موقع الإقلاع والوجهة مطلوبان" };
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
+  if (!["passenger", "order"].includes(requestType)) return { error: "نوع الطلب يجب أن يكون راكبًا أو أوردر" };
+  if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
+  if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return { error: "المسافة غير صالحة" };
+  const isAirport = /مطار|المطار|airport/i.test(`${origin} ${destination}`);
+  const quote = calculateFare({ serviceType: requestType, distanceKm, isAirport });
+  if (quote.status === "invalid") return { error: "المسافة غير صالحة" };
+  return { customerName, phone, origin, destination, tripTime, requestType, distanceKm, quote };
+}
 function specialBookingRequiresCustomerConfirmation(policy = currentSpecialBookingPolicy()) {
   return ["customer", "owner_and_customer"].includes(policy.approvalMode);
 }
@@ -2704,6 +2845,16 @@ function syncSpecialBookingFromCandidate(candidateId, patch = {}) {
   if (!assignments.length) return 0;
   assignments.push("updated_at=?"); values.push(now(), candidateId);
   return db.prepare(`UPDATE special_booking_requests SET ${assignments.join(",")} WHERE order_candidate_id=?`).run(...values).changes;
+}
+function syncCustomerBookingFromCandidate(candidateId, patch = {}) {
+  if (!candidateId) return 0;
+  const assignments = [];
+  const values = [];
+  if (patch.status) { assignments.push("status=?"); values.push(patch.status); }
+  if (patch.finalOrderId !== undefined) { assignments.push("final_order_id=?"); values.push(patch.finalOrderId || null); }
+  if (!assignments.length) return 0;
+  assignments.push("updated_at=?"); values.push(now(), candidateId);
+  return db.prepare(`UPDATE customer_booking_requests SET ${assignments.join(",")} WHERE order_candidate_id=?`).run(...values).changes;
 }
 const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
   operationsAlerts: { key: "notification_operations_alerts", label: "تنبيهات التشغيل للمالك", defaultValue: true },
@@ -7832,6 +7983,7 @@ function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, p
     const finalized = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='cancelled',lifecycle_blocker='producer_cancelled',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(stamp, stamp, candidateId, expectedMessageId);
     if (!finalized.changes) return { state: "stale" };
     if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "cancelled" });
+    if (typeof syncCustomerBookingFromCandidate === "function") syncCustomerBookingFromCandidate(candidateId, { status: "cancelled" });
     audit("order.cancelled_producer_x", "order_candidate", candidateId, { producerId: producer.id, captainId: acceptance.captain_user_id, messageId: expectedMessageId, financialMutation: false });
     return { state: "cancelled", candidate: current, producer, acceptance };
   })();
@@ -7981,6 +8133,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
         db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
         db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='settled',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(restored.order.id, stamp, stamp, stamp, candidateId, expectedMessageId);
         if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "completed", finalOrderId: restored.order.id });
+        if (typeof syncCustomerBookingFromCandidate === "function") syncCustomerBookingFromCandidate(candidateId, { status: "completed", finalOrderId: restored.order.id });
       }
       return restored;
     }
@@ -8040,6 +8193,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
     db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='settled',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, stamp, candidateId, expectedMessageId);
     if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "completed", finalOrderId: orderId });
+    if (typeof syncCustomerBookingFromCandidate === "function") syncCustomerBookingFromCandidate(candidateId, { status: "completed", finalOrderId: orderId });
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, externalOrderValueCents: settlement.externalOrderValueCents, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, executorWalletCreditCents: settlement.executorWalletCreditCents, confirmedBy: confirmer.phone });
     logSettlementCompleted({ mode: "live", orderId, orderNo, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
@@ -9921,6 +10075,121 @@ app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMuta
     specialBookingPublishInFlight.delete(id);
   }
 });
+app.get("/api/admin/customer-bookings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("customer-bookings", 1000), (req, res) => {
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const requestedStatus = String(req.query.status || "").trim();
+  const allowedStatuses = new Set(["new", "owner_review", "owner_approved", "published", "completed", "rejected", "cancelled"]);
+  const rows = allowedStatuses.has(requestedStatus)
+    ? db.prepare("SELECT * FROM customer_booking_requests WHERE status=? ORDER BY updated_at DESC,id DESC LIMIT ?").all(requestedStatus, limit)
+    : db.prepare("SELECT * FROM customer_booking_requests ORDER BY updated_at DESC,id DESC LIMIT ?").all(limit);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, policy: customerBookingPolicyResponse(currentCustomerBookingPolicy()), bookings: rows.map(customerBookingRequestResponse) });
+});
+app.patch("/api/admin/customer-bookings/:id/quote", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "لا يمكن تعديل تسعير طلب مغلق أو منشور" });
+  const rawDistance = req.body?.distanceKm;
+  const distanceKm = rawDistance === undefined || rawDistance === null || String(rawDistance).trim() === "" ? null : Number(String(rawDistance).replace(",", "."));
+  if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return res.status(400).json({ error: "المسافة غير صالحة" });
+  const hasManualPrice = req.body?.priceJod !== undefined && String(req.body.priceJod).trim() !== "";
+  let priceCents = null;
+  let priceSource = null;
+  if (hasManualPrice) {
+    const priceJod = Number(String(req.body.priceJod).replace(",", "."));
+    priceCents = Math.round(priceJod * 100);
+    priceSource = "manual";
+    if (!Number.isFinite(priceJod) || priceJod <= 0 || priceJod > 1000000 || !Number.isInteger(priceCents)) return res.status(400).json({ error: "أدخل سعرًا صحيحًا بالدينار" });
+  } else {
+    const isAirport = /مطار|المطار|airport/i.test(`${row.origin} ${row.destination}`);
+    const quote = calculateFare({ serviceType: row.request_type, distanceKm, isAirport });
+    if (quote.status !== "quoted") return res.status(400).json({ error: "حدد المسافة للراكب أو أدخل سعرًا يدويًا" });
+    priceCents = quote.priceCents;
+    priceSource = quote.ruleKey;
+  }
+  const ownerNote = String(req.body?.ownerNote || "").trim().slice(0, 500) || null;
+  const stamp = now();
+  db.prepare("UPDATE customer_booking_requests SET distance_km=?,price_cents=?,price_source=?,status='owner_review',owner_note=?,updated_at=? WHERE id=?").run(distanceKm, priceCents, priceSource, ownerNote, stamp, id);
+  const next = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id);
+  audit("customer_booking.quote_set", "customer_booking", id, { requestCode: next.request_code, requestType: next.request_type, distanceKm, priceCents, priceSource, financialMutation: false });
+  res.json({ success: true, request: customerBookingRequestResponse(next), message: "تم تثبيت المسافة/السعر وإعادة الطلب إلى مراجعة المالك." });
+});
+app.post("/api/admin/customer-bookings/:id/approve", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالاعتماد" });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "ثبت السعر قبل اعتماد الطلب" });
+  const ownerNote = String(req.body?.ownerNote || row.owner_note || "").trim().slice(0, 500) || null;
+  const stamp = now();
+  db.prepare("UPDATE customer_booking_requests SET status='owner_approved',owner_decision='approved',owner_note=?,updated_at=? WHERE id=?").run(ownerNote, stamp, id);
+  const next = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id);
+  audit("customer_booking.owner_approved", "customer_booking", id, { requestCode: next.request_code, requestType: next.request_type, financialMutation: false });
+  res.json({ success: true, request: customerBookingRequestResponse(next), message: "تم اعتماد الطلب وهو جاهز للنشر اليدوي من V27." });
+});
+app.post("/api/admin/customer-bookings/:id/reject", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason || "رفض الطلب بعد المراجعة").trim().slice(0, 500);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالرفض" });
+  const stamp = now();
+  db.prepare("UPDATE customer_booking_requests SET status='rejected',owner_decision='rejected',owner_note=?,updated_at=? WHERE id=?").run(reason || "رفض الطلب بعد المراجعة", stamp, id);
+  const next = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id);
+  audit("customer_booking.owner_rejected", "customer_booking", id, { requestCode: next.request_code, requestType: next.request_type, reason, financialMutation: false });
+  res.json({ success: true, request: customerBookingRequestResponse(next), message: "تم رفض الطلب وتسجيل السبب دون حركة مالية." });
+});
+app.post("/api/admin/customer-bookings/:id/publish", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  const id = Number(req.params.id);
+  const groupId = String(configuredRuntimeGroupId() || "").trim();
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "قروب التشغيل الرسمي غير مهيأ للنشر" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للنشر حاليًا" });
+  if (customerBookingPublishInFlight.has(id)) return res.status(409).json({ error: "نشر هذا الطلب قيد التنفيذ" });
+  const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
+  if (row.status === "published" && row.order_candidate_id) return res.json({ success: true, alreadyPublished: true, request: customerBookingRequestResponse(row) });
+  if (row.status !== "owner_approved") return res.status(409).json({ error: "لا يمكن النشر قبل اعتماد المالك", state: row.status });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "سعر الطلب غير محدد" });
+  customerBookingPublishInFlight.add(id);
+  try {
+    const chat = await resolveGroupChat(groupId);
+    if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") return res.status(503).json({ error: "تعذر فتح قروب التشغيل الرسمي" });
+    const body = customerBookingOperationalMessage(row);
+    const sent = await withTimeout(chat.sendMessage(body), ADMIN_SEND_TIMEOUT_MS, null);
+    const messageId = serializedMessageId(sent) || String(sent?.id?._serialized || sent?.id?.id || "").trim();
+    if (!messageId) return res.status(502).json({ error: "تم رفض النشر لأن WhatsApp لم يعطِ معرف رسالة قابلًا للتتبع" });
+    const company = companyUser();
+    if (!company) return res.status(500).json({ error: "حساب الشركة غير مهيأ لإنشاء طلب التشغيل" });
+    const stamp = now();
+    const result = db.transaction(() => {
+      const current = db.prepare("SELECT * FROM customer_booking_requests WHERE id=? LIMIT 1").get(id);
+      if (!current) return { state: "missing" };
+      if (current.status === "published" && current.order_candidate_id) return { state: "already_published", row: current };
+      if (current.status !== "owner_approved") return { state: "stale", row: current };
+      const inserted = db.prepare(`INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)`).run(messageId, groupId, body, current.price_cents, current.origin, current.destination, current.trip_time, current.request_type, company.id, phoneWithCountry(company.phone), company.name || COMPANY_BRAND_NAME, stamp, stamp);
+      const candidateId = Number(inserted.lastInsertRowid);
+      db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=?").run(stamp, stamp, candidateId);
+      db.prepare("UPDATE customer_booking_requests SET status='published',published_message_id=?,published_at=?,order_candidate_id=?,updated_at=? WHERE id=? AND status='owner_approved'").run(messageId, stamp, candidateId, stamp, id);
+      audit("customer_booking.published", "customer_booking", id, { requestCode: current.request_code, requestType: current.request_type, groupId, messageId, candidateId, financialMutation: false });
+      return { state: "published", candidateId, row: db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id) };
+    })();
+    if (result.state === "missing") return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
+    if (result.state === "stale") return res.status(409).json({ error: "تغيرت حالة الطلب قبل اكتمال النشر", state: result.row?.status });
+    return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: customerBookingRequestResponse(result.row), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر الطلب في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
+  } catch (error) {
+    audit("customer_booking.publish_failed", "customer_booking", id, { error: String(error?.message || error).slice(0, 240), financialMutation: false });
+    return res.status(502).json({ error: "تعذر نشر الطلب إلى قروب التشغيل" });
+  } finally {
+    customerBookingPublishInFlight.delete(id);
+  }
+});
 app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, v27AdminReadCache("whatsapp-send-diagnostics", 1000), async (req, res) => {
   try {
     const diagnostics = await readWhatsAppSendDiagnostics();
@@ -9932,7 +10201,30 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, 
 });
 app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
-  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+app.get("/api/admin/settings/customer-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("customer-booking-settings", 2000), (req, res) => {
+  res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
+  res.json({ success: true, policy: customerBookingPolicyResponse(currentCustomerBookingPolicy()), ownerOnly: true });
+});
+app.patch("/api/admin/settings/customer-booking", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  for (const key of ["enabled", "ownerNotification"]) {
+    if (body[key] !== undefined && typeof body[key] !== "boolean") return res.status(400).json({ error: `إعداد ${key} يجب أن يكون true أو false` });
+  }
+  const before = currentCustomerBookingPolicy();
+  const next = normalizeCustomerBookingPolicy({ ...before, ...body });
+  try {
+    db.transaction(() => {
+      saveCustomerBookingPolicy(next);
+      audit("admin.customer_booking_policy.changed", "system", "customer_booking_policy", { before, after: next, financialMutation: false, settlementMutation: false });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, policy: customerBookingPolicyResponse(next), message: "تم حفظ إعدادات دورة الراكب والأوردر؛ النشر والتسوية ما زالا بقرار المالك." });
+  } catch (error) {
+    console.error("[Settings] customer booking policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات دورة الراكب والأوردر" });
+  }
 });
 app.get("/api/admin/settings/special-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("special-booking-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
@@ -14118,6 +14410,7 @@ app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req,
         const updated = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='rejected',lifecycle_blocker='admin_rejected',lifecycle_updated_at=?,updated_at=? WHERE id=? AND group_id=? AND status IN ('candidate','pending')").run(stamp, stamp, id, configuredGroupId);
         if (!updated.changes) return { state: "stale" };
         if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(id, { status: "rejected" });
+        if (typeof syncCustomerBookingFromCandidate === "function") syncCustomerBookingFromCandidate(id, { status: "rejected" });
         const linkedOrder = db.prepare("SELECT id,order_no FROM orders WHERE source_message_id=? AND group_id=? AND status='open' AND captain_user_id IS NULL AND COALESCE(archive_state,'active')='active' LIMIT 1").get(candidate.source_message_id, configuredGroupId);
         if (linkedOrder) db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',updated_at=? WHERE id=? AND status='open' AND captain_user_id IS NULL").run(stamp, linkedOrder.id);
         audit("order.admin_unconfirmed.rejected", "order_candidate", id, { sourceMessageId: candidate.source_message_id, reason, financialMutation: false, linkedOrderNo: linkedOrder?.order_no || null });
