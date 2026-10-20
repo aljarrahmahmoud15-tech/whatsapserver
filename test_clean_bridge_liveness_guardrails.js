@@ -44,15 +44,21 @@ assert.match(server, /if \(orderId && confirmationDeliveryInFlight\.has\(orderId
 assert.match(server, /confirmationQueuedOrderIds/);
 assert.match(server, /async function findFinalBookingConfirmationInGroup\(groupId, orderNo\) \{/);
 assert.match(server, /app\.post\("\/api\/admin\/orders\/:id\/resend-confirmation", requireAdmin/);
-assert.match(server, /if \(delivery && delivery\.status === "sent" && delivery\.message_id\) \{/);
+assert.match(server, /if \(delivery && delivery\.status === "sent"\) \{/);
 assert.match(server, /state: "already_sent"/);
 
-// A send that resolves with no message object must not leave the card pending
-// forever: read the group back first (no duplicate card), then try the other
-// transport exactly once.
-assert.match(server, /const alternateSender = deliveryMode === "fallback"/);
-assert.match(server, /const observed = orderId && details\?\.orderNo/);
-assert.match(server, /confirmation alternate send failed/);
+// whatsapp-web.js resolves sendMessage with no message object on the current
+// WhatsApp Web build even though the card was delivered. That false negative is
+// what produced three identical cards for one booking, so a resolved send is
+// recorded as sent and no second card, retry or resend is ever attempted.
+assert.match(server, /confirmation delivered without a message id/);
+assert.match(server, /return \{ sentWithoutId: true \};/);
+assert.match(server, /send_timeout_unverified/);
+assert.doesNotMatch(server, /const alternateSender = deliveryMode === "fallback"/);
+assert.doesNotMatch(server, /"send_pending_waiting_message_create"/);
+// The real send is awaited so a genuine failure throws instead of being guessed.
+assert.match(server, /return client\.sendMessage\(groupId, message, \{ waitUntilMsgSent: true \}\);/);
+assert.match(server, /return await chat\.sendMessage\(message, \{ waitUntilMsgSent: true \}\);/);
 
 // 5) The confirmation send must stay bound to the configured clean group only.
 assert.match(server, /async function sendFinalBookingConfirmationDirect\(groupId, message\) \{/);

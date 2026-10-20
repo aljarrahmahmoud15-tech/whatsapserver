@@ -4437,7 +4437,10 @@ function enqueueFinalBookingConfirmation(groupId, details, options = {}) {
 async function sendFinalBookingConfirmationDirect(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
   if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
-  return client.sendMessage(groupId, message);
+  // waitUntilMsgSent makes whatsapp-web.js await the real send result and throw on
+  // failure. Without it the call resolves with no message object even when the
+  // card was never delivered, which left the delivery row pending forever.
+  return client.sendMessage(groupId, message, { waitUntilMsgSent: true });
 }
 async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
@@ -4460,13 +4463,13 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   }
   if (chat && typeof chat.sendMessage === "function") {
     try {
-      return await chat.sendMessage(message);
+      return await chat.sendMessage(message, { waitUntilMsgSent: true });
     } catch (chatError) {
       const detail = String(chatError?.stack || chatError?.message || chatError).slice(0, 500);
       console.warn(`[WhatsApp] confirmation chat.sendMessage failed; retrying client.sendMessage: chat=${groupId} detail=${detail}`);
       if (typeof client.sendMessage !== "function") throw chatError;
       try {
-        return await client.sendMessage(groupId, message);
+        return await client.sendMessage(groupId, message, { waitUntilMsgSent: true });
       } catch (clientError) {
         clientError.cause = chatError;
         throw clientError;
@@ -4474,7 +4477,7 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
     }
   }
   if (typeof client.sendMessage !== "function") throw new Error("WhatsApp text send path is unavailable");
-  return client.sendMessage(groupId, message);
+  return client.sendMessage(groupId, message, { waitUntilMsgSent: true });
 }
 async function whatsappPageResponsive(timeoutMs = 5000) {
   const page = client && (client.pupPage || client.page);
@@ -4558,7 +4561,9 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
     const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
     if (sent === sendTimeoutMarker) {
       releaseInFlightAfterSendPromise = Boolean(orderId);
-      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_pending_waiting_message_create", now(), orderId);
+      // Same reason as above: a late result cannot be trusted to mean "not sent",
+      // so the row is closed as sent-but-unverified instead of being resent.
+      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',ack_status=COALESCE(ack_status,'timeout'),sent_at=COALESCE(sent_at,?),last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run(now(), "send_timeout_unverified", now(), orderId);
       void sendPromise.then((lateSent) => {
         if (!orderId || !serializedMessageId(lateSent)) return;
         db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(serializedMessageId(lateSent), now(), now(), orderId);
@@ -4576,32 +4581,15 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
     if (!sent) {
-      // whatsapp-web.js can resolve sendMessage with no message object at all.
-      // Before giving up, verify on the group itself whether the card is already
-      // there (duplicate safety), then try the other transport exactly once.
-      const observed = orderId && details?.orderNo
-        ? await findFinalBookingConfirmationInGroup(groupId, details.orderNo).catch(() => null)
-        : null;
-      if (observed) {
-        if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(observed.messageId, now(), now(), now(), orderId);
-        if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
-        return observed;
-      }
-      const alternateSender = deliveryMode === "fallback"
-        ? () => sendFinalBookingConfirmationDirect(groupId, message)
-        : () => sendFinalBookingConfirmationViaConfiguredChat(groupId, message);
-      try {
-        const retried = await withTimeoutStrict(alternateSender(), ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
-        if (retried && retried !== sendTimeoutMarker) {
-          if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=?,updated_at=?,last_error=NULL WHERE order_id=?").run(retried.id?._serialized || null, now(), now(), orderId);
-          if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
-          return retried;
-        }
-      } catch (alternateError) {
-        console.warn(`[WhatsApp] confirmation alternate send failed: order=${details?.orderNo || "unknown"} error=${String(alternateError?.message || alternateError)}`);
-      }
-      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_waiting_message_create", now(), orderId);
-      return null;
+      // On the current WhatsApp Web build whatsapp-web.js resolves sendMessage with
+      // no message object even though the card was delivered. Treating that as a
+      // failure is exactly what produced three identical cards for one booking.
+      // A resolved call with no exception is therefore recorded as sent and no
+      // second card is ever attempted.
+      if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(now(), now(), orderId);
+      if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
+      console.warn(`[WhatsApp] confirmation delivered without a message id (library returned no object): order=${details?.orderNo || orderId || "unknown"}`);
+      return { sentWithoutId: true };
     }
     if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
     if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
@@ -13301,8 +13289,8 @@ app.post("/api/admin/orders/:id/resend-confirmation", requireAdmin, async (req, 
   if (!order) return res.status(404).json({ error: "الحجز غير موجود", mutation: "none" });
   if (order.settlement_state !== "settled") return res.status(409).json({ error: "الحجز غير مثبت ماليًا؛ لا يوجد إشعار تثبيت", mutation: "none" });
   const delivery = db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=?").get(orderId);
-  if (delivery && delivery.status === "sent" && delivery.message_id) {
-    return res.json({ success: true, state: "already_sent", orderId, messageId: delivery.message_id, mutation: "none" });
+  if (delivery && delivery.status === "sent") {
+    return res.json({ success: true, state: "already_sent", orderId, messageId: delivery.message_id || null, mutation: "none" });
   }
   const producer = order.producer_user_id ? db.prepare("SELECT name FROM users WHERE id=?").get(order.producer_user_id) : null;
   const captain = order.captain_user_id ? db.prepare("SELECT name FROM users WHERE id=?").get(order.captain_user_id) : null;
