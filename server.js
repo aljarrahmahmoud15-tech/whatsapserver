@@ -10717,6 +10717,11 @@ app.patch("/api/admin/users/:id", requireAdmin, adminMutationLimiter, (req, res)
   if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
   if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن تغيير دوره أو حذفه" });
   if (user.archived_at || user.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف ولا يمكن تعديله من الواجهة" });
+  const pinFieldRequested = Object.prototype.hasOwnProperty.call(req.body || {}, "pin") || Object.prototype.hasOwnProperty.call(req.body || {}, "authMethod");
+  if (pinFieldRequested) {
+    const session = getWebAdminSession(req);
+    if (!session || session.role !== "company") return res.status(403).json({ error: "تغيير رمز الكابتن متاح للمالك فقط" });
+  }
   const name = req.body.name === undefined ? user.name : String(req.body.name).trim();
   const vehicleType = req.body.vehicleType === undefined ? (user.vehicle_type || null) : String(req.body.vehicleType || "").trim().slice(0, 80) || null;
   const vehicleModel = req.body.vehicleModel === undefined ? (user.vehicle_model || null) : String(req.body.vehicleModel || "").trim().slice(0, 80) || null;

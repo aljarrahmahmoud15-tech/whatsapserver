@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const source = fs.readFileSync("./server.js", "utf8");
+const v26 = fs.readFileSync("./public/admin-v26.html", "utf8");
 assert.match(source, /function requireCompanyOwner\(req, res, next\)/);
 assert.match(source, /app\.patch\("\/api\/admin\/captains\/:id\/pin", requireCompanyOwner/);
 assert.match(source, /if \(!validCaptainPin\(pin\)\)/);
@@ -8,4 +9,15 @@ assert.match(source, /captain_pin_hash=\?,captain_pin_ciphertext=NULL,captain_au
 assert.match(source, /bcrypt\.hashSync\(pin, 10\)/);
 assert.match(source, /audit\("captain\.pin\.updated"/);
 assert.doesNotMatch(source, /pin: pin[^A-Za-z]/, "the response must not expose the PIN");
+const usersRouteStart = source.indexOf('app.patch("/api/admin/users/:id"');
+const usersRouteEnd = source.indexOf('app.delete("/api/admin/users/:id"', usersRouteStart);
+assert.ok(usersRouteStart >= 0 && usersRouteEnd > usersRouteStart, "general user update route boundaries must exist");
+const usersRoute = source.slice(usersRouteStart, usersRouteEnd);
+assert.match(usersRoute, /pinFieldRequested/);
+assert.match(usersRoute, /session\.role !== "company"/);
+assert.match(usersRoute, /تغيير رمز الكابتن متاح للمالك فقط/);
+assert.match(v26, /id="captainActionPin"/);
+assert.match(v26, /body\.pin=pin/);
+assert.match(v26, /body\.authMethod='pin'/);
+assert.match(v26, /لن يظهر PIN الحالي ولن يُخزّن في الواجهة/);
 console.log("owner-only captain PIN update guardrails verified");
