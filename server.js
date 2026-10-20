@@ -836,12 +836,12 @@ app.get("/customer-booking-settings.html", v27PageLimiter, (req, res) => {
 app.get("/ride.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
-  res.sendFile(path.join(__dirname, "public", "ride.html"));
+  res.redirect(302, "/book.html");
 });
 app.get("/v27/ride", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
-  res.sendFile(path.join(__dirname, "public", "ride.html"));
+  res.redirect(302, "/book.html");
 });
 app.get("/special-booking/confirm.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
