@@ -20,6 +20,8 @@ const sharp = require("sharp");
 sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
+const { calculateFare, farePolicyResponse } = require("./pricing");
+const { DEFAULT_SPECIAL_BOOKING_POLICY, normalizeSpecialBookingPolicy, specialBookingPolicyResponse, isSpecialBookingKind } = require("./special-booking-policy");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 const { createOwnerVault } = require("./owner-vault");
@@ -159,6 +161,13 @@ const adminMutationLimiter = rateLimit({
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: "Too many administrative changes; try again later",
+});
+const publicSpecialBookingLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: "Too many booking requests; try again later",
 });
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 120);
 const QR_RATE_LIMIT_MAX = Number(process.env.QR_RATE_LIMIT_MAX || 3000);
@@ -517,10 +526,63 @@ app.get("/health", (req, res) => {
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
   return res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
 });
+app.get("/api/public/pricing", (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.json({ success: true, policy: farePolicyResponse() });
+});
+app.post("/api/public/fare-quote", (req, res) => {
+  const rawAirport = req.body?.isAirport;
+  const isAirport = rawAirport === true || ["1", "true", "yes", "مطار", "المطار"].includes(String(rawAirport || "").trim().toLowerCase());
+  const result = calculateFare({
+    serviceType: req.body?.serviceType || req.body?.requestType || "passenger",
+    distanceKm: req.body?.distanceKm,
+    isAirport,
+  });
+  if (result.status === "invalid") return res.status(400).json({ success: false, ...result });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, ...result });
+});
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+});
+app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res) => {
+  const policy = currentSpecialBookingPolicy();
+  if (!policy.enabled) return res.status(409).json({ success: false, error: "استقبال الحجز الخاص متوقف حاليًا من إعدادات المالك" });
+  const input = publicSpecialBookingInput(req.body || {});
+  if (input.error) return res.status(400).json({ success: false, error: input.error });
+  const stamp = now();
+  const requestCode = specialBookingRequestCode();
+  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,price_cents,price_source,notes,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,NULL,NULL,?,'new',?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.notes, stamp, stamp))();
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
+  audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
+  if (policy.ownerNotification) {
+    void notifyOperations({
+      event: `special_booking.received.${row.id}`,
+      title: "طلب حجز خاص جديد",
+      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, "لم يتم تحديد السعر أو النشر أو التسوية بعد."],
+      ownersOnly: true,
+    }).catch(() => null);
+  }
+  res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: "تم استلام طلب الحجز الخاص. سيظهر للمالك للمراجعة وتحديد السعر." });
+});
+app.post("/api/public/special-bookings/:id/confirm", publicSpecialBookingLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const token = String(req.body?.token || req.query?.token || "").trim();
+  if (!Number.isInteger(id) || id < 1 || token.length < 16) return res.status(400).json({ success: false, error: "رابط التأكيد غير صالح" });
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row || row.status !== "awaiting_customer_confirmation" || !row.customer_confirmation_token_hash || !constantTimeEquals(row.customer_confirmation_token_hash, inviteTokenHash(token))) {
+    return res.status(409).json({ success: false, error: "رابط التأكيد غير صالح أو انتهت صلاحيته" });
+  }
+  const stamp = now();
+  const updated = db.prepare("UPDATE special_booking_requests SET customer_confirmed=1,customer_confirmed_at=?,status='owner_approved',updated_at=? WHERE id=? AND status='awaiting_customer_confirmation' AND customer_confirmation_token_hash=?").run(stamp, stamp, id, row.customer_confirmation_token_hash);
+  if (!updated.changes) return res.status(409).json({ success: false, error: "تم تأكيد الطلب أو تغيرت حالته؛ حدّث الصفحة" });
+  const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
+  audit("special_booking.customer_confirmed", "special_booking", id, { requestCode: next.request_code, financialMutation: false });
+  void notifyOperations({ event: `special_booking.customer_confirmed.${id}`, title: "تأكيد العميل للحجز الخاص", lines: [`الطلب: ${next.request_code}`, `العميل: ${next.customer_name}`, "تم تأكيد السعر/المسار من العميل؛ ينتظر نشر المالك إلى قروب التشغيل."], ownersOnly: true }).catch(() => null);
+  res.json({ success: true, request: specialBookingRequestResponse(next, req), message: "تم تأكيد طلبك بنجاح. سيكمل فريق وصلني الآن تجهيز الرحلة." });
 });
 app.get("/v27", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -547,6 +609,21 @@ app.get("/admin-v26.html", (req, res) => {
 app.get("/admin-v27.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
+app.get("/v27/special-booking", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "special-booking-settings.html"));
+});
+app.get("/special-booking-settings.html", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "special-booking-settings.html"));
+});
+app.get("/special-booking/confirm.html", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.sendFile(path.join(__dirname, "public", "special-booking-confirmation.html"));
 });
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
@@ -824,6 +901,37 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS special_booking_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_code TEXT NOT NULL UNIQUE,
+  customer_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  trip_time TEXT NOT NULL,
+  request_type TEXT NOT NULL DEFAULT 'full_car',
+  price_cents INTEGER,
+  price_source TEXT,
+  notes TEXT,
+  status TEXT NOT NULL CHECK(status IN ('new','owner_review','awaiting_customer_confirmation','owner_approved','published','completed','rejected','cancelled')) DEFAULT 'new',
+  customer_confirmed INTEGER NOT NULL DEFAULT 0,
+  customer_confirmed_at TEXT,
+  customer_confirmation_token_hash TEXT UNIQUE,
+  customer_confirmation_token_last4 TEXT,
+  customer_confirmation_token_ciphertext TEXT,
+  owner_decision TEXT,
+  owner_note TEXT,
+  published_message_id TEXT,
+  published_at TEXT,
+  order_candidate_id INTEGER,
+  final_order_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(order_candidate_id) REFERENCES order_candidates(id),
+  FOREIGN KEY(final_order_id) REFERENCES orders(id)
+);
+CREATE INDEX IF NOT EXISTS idx_special_booking_status_updated ON special_booking_requests(status,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_special_booking_phone_created ON special_booking_requests(phone,created_at DESC);
 CREATE TABLE IF NOT EXISTS blocked_phones (
   phone TEXT PRIMARY KEY,
   note TEXT NOT NULL,
@@ -2486,6 +2594,116 @@ function getSetting(key, fallback = null) {
 }
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
+}
+const SPECIAL_BOOKING_POLICY_SETTING_KEY = "special_booking_policy_v1";
+function currentSpecialBookingPolicy() {
+  const raw = getSetting(SPECIAL_BOOKING_POLICY_SETTING_KEY, null);
+  if (!raw) return normalizeSpecialBookingPolicy(DEFAULT_SPECIAL_BOOKING_POLICY);
+  try { return normalizeSpecialBookingPolicy(JSON.parse(raw)); } catch { return normalizeSpecialBookingPolicy(DEFAULT_SPECIAL_BOOKING_POLICY); }
+}
+function saveSpecialBookingPolicy(policy) {
+  const normalized = normalizeSpecialBookingPolicy(policy);
+  setSetting(SPECIAL_BOOKING_POLICY_SETTING_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+const specialBookingPublishInFlight = new Set();
+function specialBookingRequiresCustomerConfirmation(policy = currentSpecialBookingPolicy()) {
+  return ["customer", "owner_and_customer"].includes(policy.approvalMode);
+}
+function specialBookingRequestCode() {
+  let code = "";
+  do code = `SB-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
+  while (db.prepare("SELECT id FROM special_booking_requests WHERE request_code=? LIMIT 1").get(code));
+  return code;
+}
+function specialBookingBaseUrl(req) {
+  return captainInviteBaseUrl(req);
+}
+function issueSpecialBookingConfirmationToken(rowId) {
+  const token = crypto.randomBytes(24).toString("base64url");
+  const ciphertext = cardEncryptionKey ? encryptCardCode(token) : null;
+  db.prepare("UPDATE special_booking_requests SET customer_confirmation_token_hash=?,customer_confirmation_token_last4=?,customer_confirmation_token_ciphertext=?,updated_at=? WHERE id=?")
+    .run(inviteTokenHash(token), token.slice(-4), ciphertext, now(), rowId);
+  return token;
+}
+function specialBookingStoredConfirmationToken(row) {
+  if (!row?.customer_confirmation_token_ciphertext) return null;
+  try { return decryptCardCode(row.customer_confirmation_token_ciphertext); } catch { return null; }
+}
+function specialBookingConfirmationUrl(req, row, token = null) {
+  const confirmationToken = token || specialBookingStoredConfirmationToken(row);
+  if (!confirmationToken) return null;
+  return `${specialBookingBaseUrl(req)}/special-booking/confirm.html?request=${encodeURIComponent(row.id)}&token=${encodeURIComponent(confirmationToken)}`;
+}
+function specialBookingRequestResponse(row, req, { includePrivate = false, confirmationToken = null } = {}) {
+  if (!row) return null;
+  const response = {
+    id: Number(row.id),
+    requestCode: row.request_code,
+    customerName: row.customer_name,
+    phone: row.phone,
+    origin: row.origin,
+    destination: row.destination,
+    tripTime: row.trip_time,
+    requestType: row.request_type,
+    price: row.price_cents === null || row.price_cents === undefined ? null : money(row.price_cents),
+    priceCents: row.price_cents === null || row.price_cents === undefined ? null : Number(row.price_cents),
+    priceSource: row.price_source || null,
+    notes: row.notes || null,
+    status: row.status,
+    customerConfirmed: Number(row.customer_confirmed) === 1,
+    customerConfirmedAt: row.customer_confirmed_at || null,
+    ownerDecision: row.owner_decision || null,
+    ownerNote: row.owner_note || null,
+    publishedAt: row.published_at || null,
+    publishedMessageId: row.published_message_id || null,
+    orderCandidateId: row.order_candidate_id ? Number(row.order_candidate_id) : null,
+    finalOrderId: row.final_order_id ? Number(row.final_order_id) : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    confirmationUrl: specialBookingConfirmationUrl(req, row, confirmationToken),
+    confirmationLinkAvailable: Boolean(row.customer_confirmation_token_hash),
+  };
+  if (includePrivate) response.customerConfirmationTokenLast4 = row.customer_confirmation_token_last4 || null;
+  return response;
+}
+function publicSpecialBookingInput(body = {}) {
+  const customerName = String(body.customerName || body.name || "").trim().slice(0, 80);
+  const phone = phoneWithCountry(String(body.phone || "").replace(/[^0-9+]/g, ""));
+  const origin = String(body.origin || "").trim().slice(0, 160);
+  const destination = String(body.destination || "").trim().slice(0, 160);
+  const tripTime = String(body.departureTime || body.tripTime || "").trim();
+  const requestType = String(body.requestType || "").trim().toLowerCase();
+  const originConfirmed = body.originConfirmed === true;
+  const destinationConfirmed = body.destinationConfirmed === true;
+  const notes = String(body.notes || "").trim().slice(0, 500) || null;
+  if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
+  if (origin.length < 2 || destination.length < 2) return { error: "موقع الإقلاع والوجهة مطلوبان" };
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
+  if (requestType !== "full-car") return { error: "هذا المسار مخصص للحجز الخاص فقط" };
+  if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
+  return { customerName, phone, origin, destination, tripTime, requestType: "full_car", notes };
+}
+function specialBookingOperationalMessage(row) {
+  return [
+    `السعر ${money(row.price_cents)}`,
+    `من ${row.origin} إلى ${row.destination}`,
+    `وقت الإقلاع: ${row.trip_time}`,
+    `حجز خاص #${row.request_code}`,
+    `العميل: ${row.customer_name} · ${row.phone}`,
+    row.notes ? `ملاحظات: ${row.notes}` : "",
+  ].filter(Boolean).join("\n");
+}
+function syncSpecialBookingFromCandidate(candidateId, patch = {}) {
+  if (!candidateId) return 0;
+  const assignments = [];
+  const values = [];
+  if (patch.status) { assignments.push("status=?"); values.push(patch.status); }
+  if (patch.finalOrderId !== undefined) { assignments.push("final_order_id=?"); values.push(patch.finalOrderId || null); }
+  if (!assignments.length) return 0;
+  assignments.push("updated_at=?"); values.push(now(), candidateId);
+  return db.prepare(`UPDATE special_booking_requests SET ${assignments.join(",")} WHERE order_candidate_id=?`).run(...values).changes;
 }
 const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
   operationsAlerts: { key: "notification_operations_alerts", label: "تنبيهات التشغيل للمالك", defaultValue: true },
@@ -7613,6 +7831,7 @@ function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, p
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND status='pending'").run(stamp, candidateId);
     const finalized = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='cancelled',lifecycle_blocker='producer_cancelled',lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(stamp, stamp, candidateId, expectedMessageId);
     if (!finalized.changes) return { state: "stale" };
+    if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "cancelled" });
     audit("order.cancelled_producer_x", "order_candidate", candidateId, { producerId: producer.id, captainId: acceptance.captain_user_id, messageId: expectedMessageId, financialMutation: false });
     return { state: "cancelled", candidate: current, producer, acceptance };
   })();
@@ -7761,6 +7980,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
         db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
         db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
         db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='settled',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(restored.order.id, stamp, stamp, stamp, candidateId, expectedMessageId);
+        if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "completed", finalOrderId: restored.order.id });
       }
       return restored;
     }
@@ -7819,6 +8039,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     db.prepare("UPDATE order_candidate_acceptances SET status='selected',updated_at=? WHERE id=? AND status IN ('pending','selected')").run(stamp, acceptance.id);
     db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND id<>? AND status='pending'").run(stamp, candidateId, acceptance.id);
     db.prepare("UPDATE order_candidates SET status='finalized',final_order_id=?,finalized_at=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='settled',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=? AND status='pending' AND pending_message_id=?").run(orderId, stamp, stamp, stamp, candidateId, expectedMessageId);
+    if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(candidateId, { status: "completed", finalOrderId: orderId });
     db.prepare("INSERT OR IGNORE INTO order_confirmation_deliveries(order_id,group_id,status,attempts,created_at,updated_at) VALUES(?,?, 'pending',0,?,?)").run(orderId, current.group_id, stamp, stamp);
     audit("order.accepted", "order", orderId, { captainId: captain.id, producerCaptainId: producer.id, orderKind: current.order_kind, externalOrderValueCents: settlement.externalOrderValueCents, companyCents: settlement.companyCents, producerFeeCents: settlement.producerFeeCents, producerNetCents: settlement.producerNetCents, confirmingCaptainFeeCents: settlement.confirmingCaptainFeeCents, executorWalletCreditCents: settlement.executorWalletCreditCents, confirmedBy: confirmer.phone });
     logSettlementCompleted({ mode: "live", orderId, orderNo, priceCents: current.price_cents, producer, chargedWallet: walletOwner, settlement, settlementKey });
@@ -9589,6 +9810,117 @@ app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, 
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, mutation: "none", command, audit: auditRow, result });
 });
+app.get("/api/admin/special-bookings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("special-bookings", 1000), (req, res) => {
+  const requestedLimit = Number(req.query.limit || 100);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const requestedStatus = String(req.query.status || "").trim();
+  const allowedStatuses = new Set(["new", "owner_review", "awaiting_customer_confirmation", "owner_approved", "published", "completed", "rejected", "cancelled"]);
+  const rows = allowedStatuses.has(requestedStatus)
+    ? db.prepare("SELECT * FROM special_booking_requests WHERE status=? ORDER BY updated_at DESC,id DESC LIMIT ?").all(requestedStatus, limit)
+    : db.prepare("SELECT * FROM special_booking_requests ORDER BY updated_at DESC,id DESC LIMIT ?").all(limit);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, bookings: rows.map((row) => specialBookingRequestResponse(row, req, { includePrivate: true })) });
+});
+app.patch("/api/admin/special-bookings/:id/price", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const priceJod = Number(req.body?.priceJod);
+  const priceCents = Math.round(priceJod * 100);
+  const priceSource = ["manual", "tariff"].includes(String(req.body?.priceSource || "")) ? String(req.body.priceSource) : "manual";
+  if (!Number.isInteger(id) || id < 1 || !Number.isFinite(priceJod) || priceJod <= 0 || priceJod > 1000000 || !Number.isInteger(priceCents)) return res.status(400).json({ error: "أدخل سعرًا صحيحًا بالدينار" });
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "لا يمكن تعديل سعر طلب مغلق أو منشور" });
+  const stamp = now();
+  const priceChanged = Number(row.price_cents || 0) !== priceCents;
+  db.prepare(`UPDATE special_booking_requests SET price_cents=?,price_source=?,status=CASE WHEN ? THEN 'owner_review' ELSE status END,
+    customer_confirmed=CASE WHEN ? THEN 0 ELSE customer_confirmed END,customer_confirmed_at=CASE WHEN ? THEN NULL ELSE customer_confirmed_at END,
+    customer_confirmation_token_hash=CASE WHEN ? THEN NULL ELSE customer_confirmation_token_hash END,customer_confirmation_token_last4=CASE WHEN ? THEN NULL ELSE customer_confirmation_token_last4 END,customer_confirmation_token_ciphertext=CASE WHEN ? THEN NULL ELSE customer_confirmation_token_ciphertext END,updated_at=? WHERE id=?`)
+    .run(priceCents, priceSource, priceChanged ? 1 : 0, priceChanged ? 1 : 0, priceChanged ? 1 : 0, priceChanged ? 1 : 0, priceChanged ? 1 : 0, priceChanged ? 1 : 0, stamp, id);
+  const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
+  audit("special_booking.price_set", "special_booking", id, { requestCode: next.request_code, priceCents, priceSource, resetCustomerConfirmation: priceChanged, financialMutation: false });
+  res.json({ success: true, request: specialBookingRequestResponse(next, req), message: priceChanged ? "تم تحديث السعر وإعادة الطلب إلى مراجعة المالك." : "السعر محفوظ دون تغيير حالة التأكيد." });
+});
+app.post("/api/admin/special-bookings/:id/approve", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالاعتماد" });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "حدد السعر قبل اعتماد الحجز الخاص" });
+  const policy = currentSpecialBookingPolicy();
+  const needsCustomer = specialBookingRequiresCustomerConfirmation(policy);
+  const rotateConfirmation = req.body?.rotateConfirmation === true;
+  let confirmationToken = null;
+  if (needsCustomer && (!row.customer_confirmation_token_hash || rotateConfirmation)) confirmationToken = issueSpecialBookingConfirmationToken(id);
+  const status = needsCustomer && !row.customer_confirmed ? "awaiting_customer_confirmation" : "owner_approved";
+  const ownerNote = String(req.body?.ownerNote || "").trim().slice(0, 500) || null;
+  const stamp = now();
+  db.prepare("UPDATE special_booking_requests SET status=?,owner_decision='approved',owner_note=?,updated_at=? WHERE id=?").run(status, ownerNote, stamp, id);
+  const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
+  audit("special_booking.owner_approved", "special_booking", id, { requestCode: next.request_code, status, requiresCustomerConfirmation: needsCustomer, financialMutation: false });
+  res.json({ success: true, request: specialBookingRequestResponse(next, req, { includePrivate: true, confirmationToken }), confirmationUrl: specialBookingConfirmationUrl(req, next, confirmationToken), message: status === "awaiting_customer_confirmation" ? "تم اعتماد المالك مبدئيًا؛ أرسل رابط تأكيد السعر للعميل قبل النشر." : "تم اعتماد الحجز الخاص وهو جاهز للنشر اليدوي." });
+});
+app.post("/api/admin/special-bookings/:id/reject", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const reason = String(req.body?.reason || "رفض طلب الحجز الخاص بعد المراجعة").trim().slice(0, 500);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالرفض" });
+  const stamp = now();
+  db.prepare("UPDATE special_booking_requests SET status='rejected',owner_decision='rejected',owner_note=?,updated_at=? WHERE id=?").run(reason, stamp, id);
+  const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
+  audit("special_booking.owner_rejected", "special_booking", id, { requestCode: next.request_code, reason, financialMutation: false });
+  res.json({ success: true, request: specialBookingRequestResponse(next, req), message: "تم رفض طلب الحجز الخاص وتسجيل السبب." });
+});
+app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
+  const policy = currentSpecialBookingPolicy();
+  const groupId = String(configuredRuntimeGroupId() || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId) || !isServer2OutboundTargetAllowed(groupId)) return res.status(409).json({ error: "قروب التشغيل الرسمي غير مهيأ للنشر" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للنشر حاليًا" });
+  if (specialBookingPublishInFlight.has(id)) return res.status(409).json({ error: "نشر هذا الطلب قيد التنفيذ" });
+  const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (row.status === "published" && row.order_candidate_id) return res.json({ success: true, alreadyPublished: true, request: specialBookingRequestResponse(row, req) });
+  if (row.status !== "owner_approved") return res.status(409).json({ error: "لا يمكن النشر قبل اكتمال موافقة المالك وتأكيد العميل", state: row.status });
+  if (specialBookingRequiresCustomerConfirmation(policy) && Number(row.customer_confirmed) !== 1) return res.status(409).json({ error: "تأكيد العميل مطلوب قبل نشر الحجز الخاص" });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "سعر الحجز الخاص غير محدد" });
+  specialBookingPublishInFlight.add(id);
+  try {
+    const chat = await resolveGroupChat(groupId);
+    if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") return res.status(503).json({ error: "تعذر فتح قروب التشغيل الرسمي" });
+    const body = specialBookingOperationalMessage(row);
+    const sent = await withTimeout(chat.sendMessage(body), ADMIN_SEND_TIMEOUT_MS, null);
+    const messageId = serializedMessageId(sent) || String(sent?.id?._serialized || sent?.id?.id || "").trim();
+    if (!messageId) return res.status(502).json({ error: "تم رفض النشر لأن WhatsApp لم يعطِ معرف رسالة قابلًا للتتبع" });
+    const company = companyUser();
+    if (!company) return res.status(500).json({ error: "حساب الشركة غير مهيأ لإنشاء طلب التشغيل" });
+    const stamp = now();
+    const result = db.transaction(() => {
+      const current = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
+      if (!current) return { state: "missing" };
+      if (current.status === "published" && current.order_candidate_id) return { state: "already_published", row: current };
+      if (current.status !== "owner_approved") return { state: "stale", row: current };
+      const inserted = db.prepare(`INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)`).run(messageId, groupId, body, current.price_cents, current.origin, current.destination, current.trip_time, "special", company.id, phoneWithCountry(company.phone), company.name || COMPANY_BRAND_NAME, stamp, stamp);
+      const candidateId = Number(inserted.lastInsertRowid);
+      db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=?").run(stamp, stamp, candidateId);
+      db.prepare("UPDATE special_booking_requests SET status='published',published_message_id=?,published_at=?,order_candidate_id=?,updated_at=? WHERE id=? AND status='owner_approved'").run(messageId, stamp, candidateId, stamp, id);
+      audit("special_booking.published", "special_booking", id, { requestCode: current.request_code, groupId, messageId, candidateId, financialMutation: false });
+      return { state: "published", candidateId, row: db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id) };
+    })();
+    if (result.state === "missing") return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+    if (result.state === "stale") return res.status(409).json({ error: "تغيرت حالة الطلب قبل اكتمال النشر", state: result.row?.status });
+    return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: specialBookingRequestResponse(result.row, req), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر الحجز الخاص في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
+  } catch (error) {
+    audit("special_booking.publish_failed", "special_booking", id, { error: String(error?.message || error).slice(0, 240), financialMutation: false });
+    return res.status(502).json({ error: "تعذر نشر الحجز الخاص إلى قروب التشغيل" });
+  } finally {
+    specialBookingPublishInFlight.delete(id);
+  }
+});
 app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, v27AdminReadCache("whatsapp-send-diagnostics", 1000), async (req, res) => {
   try {
     const diagnostics = await readWhatsAppSendDiagnostics();
@@ -9600,7 +9932,38 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, 
 });
 app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
-  res.json({ success: true, policy: settlementPolicyResponse(), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+});
+app.get("/api/admin/settings/special-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("special-booking-settings", 2000), (req, res) => {
+  res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
+  res.json({ success: true, policy: specialBookingPolicyResponse(currentSpecialBookingPolicy()), ownerOnly: true });
+});
+app.patch("/api/admin/settings/special-booking", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const allowed = {
+    approvalMode: new Set(["owner", "customer", "owner_and_customer", "auto"]),
+    publishMode: new Set(["after_owner_approval", "manual"]),
+    priceMode: new Set(["manual", "tariff"]),
+  };
+  for (const key of Object.keys(allowed)) {
+    if (body[key] !== undefined && !allowed[key].has(String(body[key]))) return res.status(400).json({ error: `قيمة ${key} غير مدعومة` });
+  }
+  for (const key of ["enabled", "captainAcceptanceRequired", "ownerNotification"]) {
+    if (body[key] !== undefined && typeof body[key] !== "boolean") return res.status(400).json({ error: `إعداد ${key} يجب أن يكون true أو false` });
+  }
+  const before = currentSpecialBookingPolicy();
+  const next = normalizeSpecialBookingPolicy({ ...before, ...body });
+  try {
+    db.transaction(() => {
+      saveSpecialBookingPolicy(next);
+      audit("admin.special_booking_policy.changed", "system", "special_booking_policy", { before, after: next, financialMutation: false, settlementMutation: false });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, policy: specialBookingPolicyResponse(next), message: "تم حفظ إعدادات الحجز الخاص وتسجيل قرار المالك؛ لا توجد حركة مالية تلقائية." });
+  } catch (error) {
+    console.error("[Settings] special booking policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات الحجز الخاص" });
+  }
 });
 app.patch("/api/admin/settings/notifications", requireOwnerAdmin, (req, res) => {
   const requested = req.body?.notifications && typeof req.body.notifications === "object" ? req.body.notifications : req.body || {};
@@ -13702,6 +14065,9 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, 
   try {
     const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='pending' LIMIT 1").get(candidateId, configuredGroupId);
     if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none" });
+    if (isSpecialBookingKind(candidate.order_kind) && !currentSpecialBookingPolicy().enabled) {
+      return res.status(409).json({ error: "Special booking intake is disabled by the owner", state: "special_booking_disabled", mutation: "none", financialMutation: false });
+    }
     const expectedMessageId = String(candidate.pending_message_id || "").trim();
     if (!expectedMessageId) return res.status(409).json({ error: "A captain acceptance message is required before confirmation", state: "acceptance_missing", mutation: "none" });
     const acceptance = db.prepare(`SELECT a.*,e.name AS executor_name,e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
@@ -13751,6 +14117,7 @@ app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req,
         db.prepare("UPDATE order_candidate_acceptances SET status='rejected',updated_at=? WHERE candidate_id=? AND status IN ('pending','selected')").run(stamp, id);
         const updated = db.prepare("UPDATE order_candidates SET status='cancelled',pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,lifecycle_stage='rejected',lifecycle_blocker='admin_rejected',lifecycle_updated_at=?,updated_at=? WHERE id=? AND group_id=? AND status IN ('candidate','pending')").run(stamp, stamp, id, configuredGroupId);
         if (!updated.changes) return { state: "stale" };
+        if (typeof syncSpecialBookingFromCandidate === "function") syncSpecialBookingFromCandidate(id, { status: "rejected" });
         const linkedOrder = db.prepare("SELECT id,order_no FROM orders WHERE source_message_id=? AND group_id=? AND status='open' AND captain_user_id IS NULL AND COALESCE(archive_state,'active')='active' LIMIT 1").get(candidate.source_message_id, configuredGroupId);
         if (linkedOrder) db.prepare("UPDATE orders SET status='cancelled',settlement_state='cancelled',updated_at=? WHERE id=? AND status='open' AND captain_user_id IS NULL").run(stamp, linkedOrder.id);
         audit("order.admin_unconfirmed.rejected", "order_candidate", id, { sourceMessageId: candidate.source_message_id, reason, financialMutation: false, linkedOrderNo: linkedOrder?.order_no || null });

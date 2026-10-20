@@ -39,8 +39,41 @@
 .v27-readiness-card.bad .v27-icon{background:rgba(255,125,125,.1)!important;color:#ff9b9b!important;box-shadow:none!important}
 .v27-readiness-top{display:flex!important;align-items:center;gap:7px;min-width:0}.v27-readiness-top>span:last-child{font-size:10px!important;color:#c6d8e6!important;white-space:nowrap}.v27-readiness-card b{font-size:13px!important;line-height:1.2}.v27-readiness-card small{font-size:9px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.v27-readiness-card.good b{color:#7effc6!important}.v27-readiness-card.bad b{color:#ff9b9b!important}
 @media(max-width:760px){.v27-readiness-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.v27-readiness-card{min-height:58px!important}}
-</style>
-</head>
+  </style>
+  <style id="customer-promo-link-style">
+    .customer-promo-link{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 14px;border-radius:12px;border:1px solid rgba(247,201,111,.62);background:linear-gradient(135deg,#4a3a1e,#26303b);color:#ffe5a3;text-decoration:none;font-weight:800;font-size:12px;transition:transform .16s,filter .16s,background .16s}
+    .customer-promo-link:hover{filter:brightness(1.12);transform:translateY(-1px)}
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded',function(){
+      const actions=document.querySelector('.top-actions');
+      if(!actions||actions.querySelector('.customer-promo-link'))return;
+      const link=document.createElement('a');
+      link.className='customer-promo-link';
+      link.href='/book.html';
+      link.target='_blank';
+      link.rel='noopener';
+      link.textContent='واجهة العملاء ↗';
+      link.setAttribute('aria-label','فتح واجهة استقبال طلبات العملاء');
+      actions.insertBefore(link,actions.firstChild);
+    });
+  </script>
+  <style id="special-booking-link-style">
+    .special-booking-link{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 14px;border-radius:12px;border:1px solid rgba(72,223,176,.62);background:linear-gradient(135deg,#123d37,#0d2c35);color:#baffea;text-decoration:none;font-weight:800;font-size:12px;transition:transform .16s,filter .16s}.special-booking-link:hover{filter:brightness(1.12);transform:translateY(-1px)}
+  </style>
+  <script>
+    document.addEventListener('DOMContentLoaded',function(){
+      const actions=document.querySelector('.top-actions');
+      if(!actions||actions.querySelector('.special-booking-link'))return;
+      const link=document.createElement('a');
+      link.className='special-booking-link';
+      link.href='/v27/special-booking';
+      link.textContent='الحجز الخاص';
+      link.setAttribute('aria-label','فتح إعدادات وإدارة الحجز الخاص');
+      actions.insertBefore(link,actions.firstChild);
+    });
+  </script>
+  </head>
 <body>
   <main class="shell">
     <section id="loginView" class="panel login">
