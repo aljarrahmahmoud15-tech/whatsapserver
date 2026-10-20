@@ -7553,21 +7553,29 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     if (projectedCaptainBalance < 0) {
       audit("order.history.debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
     }
+    const ledgerAlreadyApplied = (userId, type) => Boolean(userId && db.prepare("SELECT 1 FROM wallet_ledger WHERE order_id=? AND user_id=? AND type=? LIMIT 1").get(orderId, userId, type));
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind });
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
     const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
-    if (!inserted.changes) return { state: "already_settled", order: current, captain };
+    if (!inserted.changes) {
+      const pendingSettlement = db.prepare("SELECT id,status FROM order_settlements WHERE order_id=? LIMIT 1").get(orderId);
+      const resumable = allowPendingResume && (!pendingSettlement || pendingSettlement.status === "pending") && current.settlement_state !== "settled";
+      audit("order.history.pending_settlement_seen", "order", orderId, { orderNo: current.order_no, existingStatus: pendingSettlement ? pendingSettlement.status : null, resumed: Boolean(resumable) });
+      if (!resumable) return { state: "already_settled", order: current, captain };
+    }
     db.prepare("UPDATE orders SET status='accepted',archive_state='active',archived_at=NULL,archive_reason=NULL,captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, importSource, now(), orderId);
+    if (!ledgerAlreadyApplied(company.id, "commission_company")) {
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
     db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "commission_company", settlement.companyCents, companyBalance, `ORDER-${current.order_no}`, "تسوية طلب مؤكد مستورد من سجل القروب", now(), details);
-    if (producer.id) {
+    }
+    if (producer.id && !ledgerAlreadyApplied(producer.id, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer")) {
       db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.producerNetCents, now(), producer.id);
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
       db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, producer.is_bot === 1 ? "commission_bot_producer" : "commission_producer", settlement.producerNetCents, producerBalance, `ORDER-${current.order_no}`, "صافي حصة المنتج لطلب مؤكد مستورد", now(), details);
     }
-    if (walletOwner.id) {
+    if (walletOwner.id && !ledgerAlreadyApplied(walletOwner.id, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee")) {
       db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.confirmingCaptainFeeCents, now(), walletOwner.id);
       const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(walletOwner.id).wallet_cents;
       db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(walletOwner.id, orderId, captain.is_bot === 1 ? "company_bot_fee" : "captain_fee", -settlement.confirmingCaptainFeeCents, captainBalance, `ORDER-${current.order_no}`, captain.is_bot === 1 ? "خصم 13% + 2% من محفظة الشركة لطلب مؤكد مستورد" : "خصم 13% لصاحب تنزيل الطلب و2% للشركة من محفظة الكابتن المنفذ (15% إجمالًا)", now(), details);
@@ -12347,7 +12355,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       unlinked.push({ orderNo: order.order_no, captainPhone: captainPhone || null, captainName: captainName || "غير مسجل", reason: "captain_identity_unavailable" });
       continue;
     }
-    const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain?.id || null, acceptedMessageId: acceptanceMessageId, acceptedAt, confirmedByPhone, captainSnapshot, producerSnapshot });
+    const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain?.id || null, acceptedMessageId: acceptanceMessageId, acceptedAt, confirmedByPhone, captainSnapshot, producerSnapshot, allowPendingResume: Boolean(ownerOverride) });
     if (result.state === "accepted") imported.push({ orderNo: order.order_no, captainId: captain.id, captainPhone: captain.phone });
     else skipped.push({ orderNo: order.order_no, reason: result.state });
   }

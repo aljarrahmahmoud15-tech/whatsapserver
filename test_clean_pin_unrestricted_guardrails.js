@@ -12,8 +12,8 @@ assert.ok(
 );
 assert.ok(
   source.includes("settleHistoricalConfirmedOrder({ orderId: order.id, captainId: captain?.id || null") &&
-    source.includes("captainSnapshot, producerSnapshot });"),
-  "the pin route must pass snapshot identities into the settlement"
+    source.includes("captainSnapshot, producerSnapshot, allowPendingResume: Boolean(ownerOverride) });"),
+  "the pin route must pass snapshot identities and the owner authorisation into the settlement"
 );
 assert.ok(
   /const producer = registeredProducer \|\| \(producerSnapshotPhone/.test(source),
@@ -30,12 +30,20 @@ assert.ok(/const rowCaptainName = order && order\.captain_name_snapshot/.test(so
 
 // 2) No wallet mutation for a party without a wallet row.
 assert.ok(
-  /if \(producer\.id\) \{\s*\n\s*db\.prepare\("UPDATE users SET wallet_cents=wallet_cents\+\?/.test(source),
-  "the producer credit must be skipped when the producer has no wallet row"
+  /if \(producer\.id && !ledgerAlreadyApplied\(producer\.id/.test(source),
+  "the producer credit must be skipped without a wallet row and written only once"
 );
 assert.ok(
-  /if \(walletOwner\.id\) \{\s*\n\s*db\.prepare\("UPDATE users SET wallet_cents=wallet_cents-\?/.test(source),
-  "the executor debit must be skipped when the executor has no wallet row"
+  /if \(walletOwner\.id && !ledgerAlreadyApplied\(walletOwner\.id/.test(source),
+  "the executor debit must be skipped without a wallet row and written only once"
+);
+assert.ok(
+  /const ledgerAlreadyApplied = \(userId, type\)/.test(source),
+  "wallet writes must be guarded against a repeated application"
+);
+assert.ok(
+  /allowPendingResume && \(!pendingSettlement \|\| pendingSettlement\.status === "pending"\)/.test(source),
+  "an interrupted settlement may only resume with the owner authorisation"
 );
 
 // 3) The like must be authorized by the poster's snapshot phone.
