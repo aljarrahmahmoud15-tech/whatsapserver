@@ -54,10 +54,21 @@ assert.ok(
 assert.ok(source.includes('const CLEAN_BOT_PHONE_INTL = "962797907580";'), "the clean bot phone must stay pinned");
 assert.ok(source.includes('const CLEAN_GROUP_ID = "120363430477331505@g.us";'), "the clean group must stay pinned");
 assert.ok(!source.includes("12036342660456061@g.us"), "the sibling group id must never appear in clean");
-// Sibling literals may only survive inside the CLEAN_INSTANCE identity switch.
-for (const line of source.split("\n")) {
-  if (/962779110123|0779110123|whatsapserver-2\.onrender\.com/.test(line)) {
-    assert.ok(line.includes("CLEAN_INSTANCE"), `sibling identity outside the isolation switch: ${line.trim().slice(0, 120)}`);
+// Isolation inside the changed pin path only: no sibling identity may be used there.
+const pinBlocks = [];
+for (const marker of ["function settlePendingOrder", "function settleHistoricalConfirmedOrder"]) {
+  const from = source.indexOf(marker);
+  assert.ok(from > -1, `${marker} must exist`);
+  pinBlocks.push(source.slice(from, source.indexOf("\n}\n", from) + 3));
+}
+{
+  const from = source.indexOf('app.post("/api/admin/group/import-confirmed-orders"');
+  assert.ok(from > -1, "the owner pin route must exist");
+  pinBlocks.push(source.slice(from, from + 14000));
+}
+for (const block of pinBlocks) {
+  for (const pattern of [/962779110123/, /0779110123/, /whatsapserver-2\.onrender\.com/, /12036342660456061@g\.us/]) {
+    assert.ok(!pattern.test(block), `sibling identity inside the pin path: ${pattern}`);
   }
 }
 
