@@ -22,13 +22,13 @@ assert.ok(vaultRouteStart >= 0 && vaultRouteEnd > vaultRouteStart);
 assert.doesNotMatch(server.slice(vaultRouteStart, vaultRouteEnd), /owner-vault\/execute|eval\(/);
 assert.doesNotMatch(vaultSource, /eval\(|Function\(/);
 for (const marker of [
-  "خزنة المالك V26",
+  "خزنة المالك V27",
   'data-admin-action="vault"',
   "/api/admin/owner-vault",
   "owner.decision.note",
   "مشفر",
   "لا تنفيذ آلي",
-  "أوامر المالك V26",
+  "أوامر المالك V27",
   "bot.restart",
   "session.refresh",
   "group.broadcast",
@@ -40,4 +40,4 @@ assert.doesNotMatch(page, /\/api\/admin\/owner-vault\/execute/);
 const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
 assert.ok(scripts.length > 0);
 new vm.Script(scripts.at(-1));
-console.log("V26 owner vault UI and route guard: PASS");
+console.log("V27 owner vault UI and route guard: PASS");

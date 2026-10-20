@@ -4,7 +4,7 @@ const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-merged-readonly.html', 'utf8');
 assert.match(page, /<title>وصلني الآن · لوحة الإدارة الموحدة<\/title>/);
-assert.match(page, /مصدرها V26/);
+assert.match(page, /مصدرها V27/);
 assert.match(page, /لا توجد حركة تلقائية/);
 assert.match(page, /id="metricCaptains"/);
 assert.match(page, /id="ordersList"/);
@@ -51,4 +51,4 @@ for (const forbidden of [
 const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
 assert.ok(scripts.length > 0, 'merged read-only page must contain a script');
 new vm.Script(scripts.at(-1));
-console.log('merged V26 read-only admin UI guard: PASS');
+console.log('merged V27 read-only admin UI guard: PASS');
