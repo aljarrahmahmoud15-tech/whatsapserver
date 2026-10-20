@@ -50,7 +50,11 @@ assert.match(server, /void refreshWarmGroupSnapshot\("ready"\)\.catch\(\(\) => n
 assert.match(server, /res\.setHeader\("X-Clean-Read-Source", "warm"\);/);
 assert.match(server, /let chat = warmGroupSnapshotFresh\("participants"\);/);
 assert.match(server, /let liveSnapshot = botReady \? warmGroupSnapshotFresh\("participants"\) : null;/);
-assert.match(server, /const warmMessages = !requestedMessageId && !bodyIncludes \? warmGroupSnapshotFresh\("messages"\) : null;/);
+assert.match(server, /const warmMessages = !requestedMessageId && !bodyIncludes && !includeOutgoing \? warmGroupSnapshotFresh\("messages"\) : null;/);
+// The stored page is the source that actually answers on this WhatsApp Web build,
+// and warming it costs no page work at all.
+assert.match(server, /SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=\? ORDER BY id DESC LIMIT \?/);
+assert.match(server, /messagesSource: warmGroupSnapshotStore\.messagesSource,/);
 assert.match(server, /app\.get\("\/api\/admin\/group\/warm-snapshot", requireAdmin/);
 // A warm snapshot must never be served stale forever: freshness is bounded.
 assert.match(server, /if \(Date\.now\(\) - at > \(Number\(maxAgeMs\) \|\| WARM_GROUP_SNAPSHOT_MS \* 3\)\) return null;/);

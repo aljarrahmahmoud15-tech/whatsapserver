@@ -3092,7 +3092,7 @@ async function readGroupSnapshot(groupId, timeoutMs = 30000) {
 // snapshot of the configured group (participants + recent messages) in memory, so
 // the read endpoints answer instantly and every page.evaluate happens off the
 // request path. Read-only: it only fills a cache the endpoints already serve.
-const warmGroupSnapshotStore = { participants: null, participantsAt: 0, messages: null, messagesAt: 0, groupId: null, inFlight: null, refreshes: 0, errors: 0, lastError: null, lastRefreshAt: null };
+const warmGroupSnapshotStore = { participants: null, participantsAt: 0, messages: null, messagesAt: 0, messagesSource: null, groupId: null, inFlight: null, refreshes: 0, errors: 0, lastError: null, lastRefreshAt: null };
 const WARM_GROUP_SNAPSHOT_MS = Math.max(10000, Number(process.env.WARM_GROUP_SNAPSHOT_MS || 20000));
 function warmGroupSnapshotFresh(kind, maxAgeMs) {
   const at = kind === "messages" ? warmGroupSnapshotStore.messagesAt : warmGroupSnapshotStore.participantsAt;
@@ -3112,6 +3112,7 @@ function warmGroupSnapshotStatus() {
     messagesAgeMs: warmGroupSnapshotStore.messagesAt ? Date.now() - warmGroupSnapshotStore.messagesAt : null,
     participantCount: Array.isArray(warmGroupSnapshotStore.participants && warmGroupSnapshotStore.participants.participants) ? warmGroupSnapshotStore.participants.participants.length : 0,
     messageCount: Array.isArray(warmGroupSnapshotStore.messages && warmGroupSnapshotStore.messages.messages) ? warmGroupSnapshotStore.messages.messages.length : 0,
+    messagesSource: warmGroupSnapshotStore.messagesSource,
   };
 }
 async function refreshWarmGroupSnapshot(reason = "interval") {
@@ -3126,10 +3127,40 @@ async function refreshWarmGroupSnapshot(reason = "interval") {
         warmGroupSnapshotStore.participants = participants;
         warmGroupSnapshotStore.participantsAt = Date.now();
       }
-      const history = await fetchGroupHistory(groupId, 50, { includeOutgoing: false }).catch(() => null);
-      if (history && Array.isArray(history.messages) && history.messages.length) {
-        warmGroupSnapshotStore.messages = history;
+      let warmedMessages = null;
+      try {
+        const storedRows = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=? ORDER BY id DESC LIMIT ?").all(groupId, 50);
+        if (storedRows.length) {
+          warmedMessages = {
+            chat: { id: groupId, isGroup: true, name: getSetting("group_name", "") || null },
+            messages: storedRows.reverse().map((row) => ({
+              id: { _serialized: row.message_id },
+              __serializedId: row.message_id,
+              from: groupId,
+              to: groupId,
+              fromMe: false,
+              body: row.body,
+              author: { _serialized: `${row.sender_phone || ""}@c.us` },
+              __authorPhone: row.sender_phone,
+              timestamp: Math.floor(new Date(row.sent_at).getTime() / 1000),
+              __storedRecovery: true,
+            })),
+            source: "database",
+          };
+        }
+      } catch (error) {
+        warmGroupSnapshotStore.lastError = String((error && error.message) || error).slice(0, 200);
+      }
+      if (!warmedMessages) {
+        const history = await fetchGroupHistory(groupId, 50, { includeOutgoing: false }).catch(() => null);
+        if (history && Array.isArray(history.messages) && history.messages.length) {
+          warmedMessages = { chat: history.chat, messages: history.messages, source: "live" };
+        }
+      }
+      if (warmedMessages) {
+        warmGroupSnapshotStore.messages = warmedMessages;
         warmGroupSnapshotStore.messagesAt = Date.now();
+        warmGroupSnapshotStore.messagesSource = warmedMessages.source || null;
       }
       warmGroupSnapshotStore.groupId = groupId;
       warmGroupSnapshotStore.refreshes += 1;
@@ -11388,7 +11419,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, adminReadSingleFlight("g
   const groupSnapshot = await readGroupSnapshot(groupId);
   let chat = null;
   let messages = [];
-  const warmMessages = !requestedMessageId && !bodyIncludes ? warmGroupSnapshotFresh("messages") : null;
+  const warmMessages = !requestedMessageId && !bodyIncludes && !includeOutgoing ? warmGroupSnapshotFresh("messages") : null;
   if (requestedMessageId && typeof client.getMessageById === "function") {
     const liveMessage = await getWhatsAppMessageByIdVariants(requestedMessageId, 5000);
     if (liveMessage && resolveGroupChatId(liveMessage) === groupId) {
