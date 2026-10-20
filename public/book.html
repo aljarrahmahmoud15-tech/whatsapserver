@@ -1,0 +1,1413 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07121f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="description" content="أرسل تفاصيل رحلتك إلى وصلني الآن بطريقة واضحة وسريعة.">
+  <title>احجز مشوارك · وصلني الآن · V27</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07121f;
+      --bg-deep: #050d18;
+      --surface: rgba(16, 34, 57, .92);
+      --surface-strong: #102239;
+      --surface-soft: #0b1d31;
+      --line: #294461;
+      --line-soft: rgba(126, 177, 214, .18);
+      --text: #f4f8ff;
+      --muted: #9eb1c8;
+      --mint: #48dfb0;
+      --mint-ink: #06251c;
+      --blue: #6db8ff;
+      --gold: #f7c96f;
+      --danger: #ff7f91;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .32);
+      --radius-lg: 24px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 92% 0%, rgba(72, 223, 176, .16), transparent 28rem),
+        radial-gradient(circle at 8% 30%, rgba(109, 184, 255, .14), transparent 26rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Tahoma, Arial, sans-serif;
+      line-height: 1.55;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .05;
+      background: linear-gradient(120deg, transparent 0 48%, rgba(247, 201, 111, .7) 49%, transparent 50% 100%);
+      background-size: 310px 310px;
+      mask-image: linear-gradient(to bottom, #000, transparent 78%);
+    }
+
+    a { color: inherit; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, a:focus-visible {
+      outline: 3px solid rgba(72, 223, 176, .72);
+      outline-offset: 3px;
+    }
+
+    .page-shell { width: min(100% - 28px, 1180px); margin: auto; padding: 18px 0 46px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
+    .brand { display: inline-flex; align-items: center; gap: 11px; text-decoration: none; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 46px;
+      height: 46px;
+      overflow: hidden;
+      border: 1px solid rgba(247, 201, 111, .56);
+      border-radius: 15px;
+      background: rgba(7, 18, 31, .86);
+      box-shadow: 0 0 0 5px rgba(247, 201, 111, .06), 0 12px 30px rgba(0, 0, 0, .22);
+    }
+    .brand-mark img { width: 100%; height: 100%; object-fit: contain; }
+    .brand-copy strong { display: block; font-size: 15px; }
+    .brand-copy span { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
+    .quiet-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 8px 12px;
+      color: var(--blue);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: rgba(10, 29, 49, .55);
+      font-size: 11px;
+      text-decoration: none;
+    }
+    .quiet-link:hover { border-color: rgba(109, 184, 255, .68); background: rgba(16, 42, 68, .8); }
+    .topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .install-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 13px;
+      border: 1px solid rgba(72, 223, 176, .64);
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--mint), #2caa9c);
+      color: var(--mint-ink);
+      font-size: 11px;
+      font-weight: 900;
+      box-shadow: 0 9px 22px rgba(72, 223, 176, .15);
+      transition: transform .16s, filter .16s;
+    }
+    .install-link:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .install-note { margin: -12px 0 16px; color: var(--muted); font-size: 10px; text-align: right; }
+    .install-note[hidden] { display: none; }
+
+    .hero {
+      display: block;
+      margin-bottom: 18px;
+    }
+    .hero-copy, .booking-card, .preview-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(145deg, rgba(16, 34, 57, .96), rgba(8, 22, 37, .96));
+      box-shadow: var(--shadow);
+    }
+    .hero-copy {
+      position: relative;
+      min-height: 300px;
+      overflow: hidden;
+      padding: clamp(25px, 5vw, 48px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .hero-copy::after {
+      content: "";
+      position: absolute;
+      width: 360px;
+      height: 360px;
+      left: -158px;
+      bottom: -180px;
+      border: 1px solid rgba(72, 223, 176, .38);
+      border-radius: 50%;
+      box-shadow: 0 0 0 24px rgba(72, 223, 176, .04), 0 0 0 48px rgba(72, 223, 176, .025);
+    }
+    .hero-copy .logo-watermark {
+      position: absolute;
+      left: 24px;
+      bottom: -24px;
+      width: 185px;
+      opacity: .11;
+      filter: saturate(.85) drop-shadow(0 0 20px rgba(72, 223, 176, .22));
+    }
+    .hero-copy > *:not(.logo-watermark) { position: relative; z-index: 1; }
+    .eyebrow { color: var(--mint); font-size: 11px; font-weight: 900; letter-spacing: .5px; }
+    h1, h2, p { margin-top: 0; }
+    h1 {
+      max-width: 590px;
+      margin-bottom: 13px;
+      font-size: clamp(31px, 5vw, 58px);
+      line-height: 1.08;
+      letter-spacing: -.045em;
+      text-wrap: pretty;
+    }
+    .hero-copy p { max-width: 530px; color: var(--muted); font-size: 14px; line-height: 1.9; margin-bottom: 22px; }
+    .hero-proof { display: flex; flex-wrap: wrap; gap: 8px; }
+    .proof-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      background: rgba(7, 18, 31, .46);
+      color: #c7d9eb;
+      font-size: 10px;
+    }
+    .proof-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px var(--mint); }
+
+    .booking-card { margin-bottom: 18px; padding: clamp(19px, 3vw, 28px); }
+    .booking-card[hidden] { display: none; }
+    .field input[readonly] { border-color: rgba(247, 201, 111, .48); background: rgba(74, 55, 23, .2); color: #ffe5a3; cursor: default; }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+    .card-head h2 { margin-bottom: 5px; font-size: 20px; }
+    .card-head p { margin-bottom: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+    .step-badge { flex: 0 0 auto; padding: 7px 10px; border: 1px solid rgba(247, 201, 111, .44); border-radius: 999px; background: rgba(247, 201, 111, .1); color: var(--gold); font-size: 10px; font-weight: 900; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field { display: grid; gap: 6px; min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+    .field label, .type-legend { color: #c5d5e7; font-size: 11px; font-weight: 800; }
+    .field label span { color: var(--danger); }
+    .field input {
+      width: 100%;
+      min-height: 46px;
+      padding: 10px 12px;
+      border: 1px solid #315273;
+      border-radius: var(--radius-sm);
+      background: rgba(5, 17, 29, .88);
+      color: var(--text);
+      font-size: 13px;
+      transition: border-color .18s, box-shadow .18s, background .18s;
+    }
+    .field input::placeholder { color: #6f88a1; }
+    .field input:hover { border-color: #4b749b; }
+    .field input:focus { border-color: var(--mint); background: #071827; box-shadow: 0 0 0 4px rgba(72, 223, 176, .1); }
+    .field input:user-invalid { border-color: rgba(255, 127, 145, .8); }
+    .field-note { color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .confirmed-route-card { display: grid; gap: 10px; grid-column: 1 / -1; padding: 13px 14px; border: 1px solid rgba(72, 223, 176, .28); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(10, 42, 51, .72), rgba(5, 19, 32, .86)); }
+    .confirmed-route-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .confirmed-route-head span { color: var(--muted); font-size: 10px; }
+    .confirmed-route-head strong { color: var(--mint); font-size: 12px; }
+    .confirmed-route-grid { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 9px; }
+    .confirmed-route-stop { min-width: 0; padding: 9px 10px; border: 1px solid rgba(126, 177, 214, .18); border-radius: 10px; background: rgba(5, 17, 29, .56); }
+    .confirmed-route-stop span, .confirmed-route-stop strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .confirmed-route-stop span { color: var(--muted); font-size: 9px; }
+    .confirmed-route-stop strong { margin-top: 4px; color: var(--text); font-size: 11px; }
+    .confirmed-route-arrow { color: var(--gold); font-size: 17px; }
+    .confirmed-route-note { color: var(--muted); font-size: 9px; line-height: 1.6; }
+    .type-field { grid-column: 1 / -1; display: grid; gap: 8px; }
+    .type-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .type-option { position: relative; min-width: 0; }
+    .type-option input { position: absolute; opacity: 0; pointer-events: none; }
+    .type-option span {
+      display: block;
+      min-height: 67px;
+      padding: 12px 10px 9px;
+      border: 1px solid #315273;
+      border-radius: var(--radius-sm);
+      background: rgba(5, 17, 29, .76);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+      transition: background .18s, border-color .18s, transform .18s;
+    }
+    .type-option small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; font-weight: 400; }
+    .type-option input:checked + span { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
+    .type-option span:hover { border-color: #4b749b; transform: translateY(-1px); }
+    .quick-type-picker { margin: 14px 0 13px; padding: 13px; border: 1px solid rgba(72, 223, 176, .34); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(10, 47, 53, .72), rgba(5, 17, 29, .7)); }
+    .quick-type-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .quick-type-head strong { color: var(--text); font-size: 11px; }
+    .quick-type-head small { color: var(--muted); font-size: 9px; }
+    .smart-ride-primary { display: grid; gap: 7px; }
+    .quick-type-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+    .quick-type-button { min-height: 55px; padding: 8px 7px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .78); color: var(--text); font-size: 11px; font-weight: 900; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
+    .quick-type-button small { display: block; margin-top: 4px; color: var(--muted); font-size: 8px; font-weight: 400; }
+    .quick-type-button:hover { border-color: #4b749b; transform: translateY(-1px); }
+    .quick-type-button.is-selected { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
+    .smart-ride-primary-button { display: block; width: 100%; min-height: 86px; padding: 14px 16px; border: 1px solid rgba(247, 201, 111, .76); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(247, 201, 111, .97), rgba(205, 143, 47, .92)); color: #241a08; text-align: right; box-shadow: 0 15px 28px rgba(247, 201, 111, .15); }
+    .smart-ride-primary-button:hover { border-color: var(--gold); filter: brightness(1.06); transform: translateY(-1px); }
+    .smart-ride-primary-button.is-selected { outline: 3px solid rgba(247, 201, 111, .15); }
+    .smart-ride-primary-title { display: block; font-size: 16px; font-weight: 900; }
+    .smart-ride-primary-button small { display: block; margin-top: 5px; color: #493612; font-size: 10px; font-weight: 700; }
+    .smart-ride-primary-note { color: #d9c58d; font-size: 9px; line-height: 1.7; }
+    .secondary-booking-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 47px; margin-top: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(5, 17, 29, .72); color: var(--text); font-size: 11px; font-weight: 900; text-align: right; }
+    .secondary-booking-trigger small { color: var(--muted); font-size: 9px; font-weight: 400; }
+    .secondary-booking-trigger:hover { border-color: var(--blue); background: rgba(16, 42, 68, .8); }
+    .secondary-booking-dialog { width: min(460px, calc(100% - 24px)); padding: 0; border: 1px solid rgba(72, 223, 176, .42); border-radius: var(--radius-lg); background: linear-gradient(145deg, #102239, #071522); color: var(--text); box-shadow: 0 28px 90px rgba(0, 0, 0, .5); }
+    .secondary-booking-dialog::backdrop { background: rgba(1, 8, 15, .76); backdrop-filter: blur(5px); }
+    .secondary-booking-dialog[open] { display: grid; }
+    .secondary-booking-dialog-inner { display: grid; gap: 13px; padding: 20px; }
+    .secondary-booking-dialog h3 { margin: 0; font-size: 18px; }
+    .secondary-booking-dialog p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.75; }
+    .secondary-booking-options { display: grid; gap: 8px; }
+    .secondary-booking-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 58px; padding: 10px 12px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .74); color: var(--text); text-align: right; }
+    .secondary-booking-option strong, .secondary-booking-option small { display: block; }
+    .secondary-booking-option small { margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 400; }
+    .secondary-booking-option:hover { border-color: var(--mint); background: rgba(22, 73, 66, .7); }
+    .secondary-booking-dialog-close { min-height: 42px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .secondary-booking-dialog-close:hover { border-color: var(--blue); color: var(--text); }
+    .price-wrap { display: flex; align-items: center; gap: 8px; }
+    .price-wrap input { flex: 1; }
+    .currency { color: var(--gold); font-size: 11px; font-weight: 900; }
+    .fare-box { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 1px solid rgba(247, 201, 111, .42); border-radius: var(--radius-sm); background: linear-gradient(135deg, rgba(74, 55, 23, .48), rgba(6, 23, 34, .9)); }
+    .fare-box strong { color: var(--gold); font-size: 18px; }
+    .fare-box small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+    .special-fare-panel { display: grid; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid rgba(72, 223, 176, .3); border-radius: var(--radius-sm); background: rgba(6, 23, 34, .7); }
+    .special-fare-panel[hidden] { display: none; }
+    .special-fare-heading, .special-fare-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .special-fare-heading strong { color: var(--mint); font-size: 11px; }
+    .special-fare-heading span { color: var(--muted); font-size: 9px; }
+    .special-fare-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .special-fare-fields label { display: grid; gap: 5px; color: #c5d5e7; font-size: 10px; font-weight: 800; }
+    .special-fare-fields label span { color: var(--muted); font-size: 9px; font-weight: 400; }
+    .special-fare-fields input { min-height: 42px; padding: 8px 10px; border: 1px solid #315273; border-radius: 10px; background: #071827; color: var(--text); font-size: 12px; }
+    .special-fare-result { padding-top: 9px; border-top: 1px solid rgba(126, 177, 214, .13); }
+    .special-fare-result span { color: var(--muted); font-size: 9px; }
+    .special-fare-result strong { color: var(--gold); font-size: 17px; }
+    .form-actions { display: flex; align-items: center; gap: 9px; margin-top: 17px; }
+    .primary-action, .secondary-action {
+      min-height: 46px;
+      padding: 10px 15px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 900;
+      transition: transform .16s, filter .16s, background .16s;
+    }
+    .primary-action { flex: 1; border: 0; background: var(--mint); color: var(--mint-ink); box-shadow: 0 10px 25px rgba(72, 223, 176, .18); }
+    .secondary-action { border: 1px solid var(--line); background: transparent; color: var(--muted); }
+    .primary-action:hover, .secondary-action:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .form-status { min-height: 22px; margin: 11px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+    .form-status.ok { color: #a8f8dc; }
+    .form-status.error { color: #ffb3bf; }
+    .smart-ride-result { margin-bottom: 18px; padding: clamp(18px, 3vw, 26px); border: 1px solid rgba(247, 201, 111, .4); border-radius: var(--radius-lg); background: linear-gradient(145deg, rgba(61, 48, 24, .72), rgba(8, 22, 37, .96)); box-shadow: var(--shadow); }
+    .smart-ride-result[hidden] { display: none; }
+    .smart-ride-result-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .smart-ride-result-head h2 { margin: 0 0 5px; font-size: 20px; }
+    .smart-ride-result-head p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+    .smart-ride-summary { display: grid; gap: 8px; padding: 12px; border: 1px solid rgba(247, 201, 111, .2); border-radius: var(--radius-md); background: rgba(5, 17, 29, .58); }
+    .smart-ride-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(126, 177, 214, .12); font-size: 11px; }
+    .smart-ride-row:last-child { padding-bottom: 0; border-bottom: 0; }
+    .smart-ride-row span { color: var(--muted); }
+    .smart-ride-row strong { max-width: 70%; text-align: left; overflow-wrap: anywhere; }
+    .smart-ride-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .smart-ride-actions button { flex: 1; }
+    .smart-ride-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 16px; }
+    .smart-ride-step { padding-top: 8px; border-top: 2px solid var(--line); color: #71899a; font-size: 9px; }
+    .smart-ride-step.on { border-color: var(--gold); color: var(--gold); }
+    .smart-ride-step.done { border-color: var(--mint); color: var(--mint); }
+    .smart-ride-notice { min-height: 22px; margin: 11px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+    .smart-ride-notice.ok { color: #a8f8dc; }
+    .smart-ride-notice.warn { color: #f7d996; }
+    .smart-ride-notice.error { color: #ffb3bf; }
+
+    .preview-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .82fr); gap: 18px; padding: clamp(19px, 3vw, 28px); }
+    .preview-intro { display: flex; flex-direction: column; justify-content: center; }
+    .preview-intro h2 { margin-bottom: 8px; font-size: 22px; }
+    .preview-intro p { margin-bottom: 0; max-width: 420px; color: var(--muted); font-size: 12px; line-height: 1.85; }
+    .preview-intro .eyebrow { margin-bottom: 9px; }
+    .preview-box { padding: 16px; border: 1px solid rgba(72, 223, 176, .25); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(12, 43, 52, .72), rgba(7, 24, 39, .92)); }
+    .preview-box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid rgba(126, 177, 214, .16); }
+    .preview-box-head strong { font-size: 13px; }
+    .preview-state { padding: 5px 8px; border-radius: 999px; background: rgba(247, 201, 111, .1); color: var(--gold); font-size: 9px; }
+    .preview-empty { display: grid; place-items: center; min-height: 190px; padding: 20px; color: var(--muted); text-align: center; font-size: 11px; line-height: 1.8; }
+    .preview-empty::before { content: ""; width: 45px; height: 45px; margin-bottom: 10px; border: 1px dashed #4a6b88; border-radius: 14px; background: rgba(72, 223, 176, .06); }
+    .preview-details { display: grid; gap: 8px; margin-top: 13px; }
+    .preview-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(126, 177, 214, .11); font-size: 11px; }
+    .preview-row:last-child { border-bottom: 0; }
+    .preview-row span { color: var(--muted); }
+    .preview-row strong { max-width: 65%; color: var(--text); text-align: left; overflow-wrap: anywhere; }
+    .map-section { display: block; margin-bottom: 18px; padding: clamp(18px, 3vw, 26px); border: 1px solid var(--line); border-radius: var(--radius-lg); background: linear-gradient(145deg, rgba(16, 34, 57, .96), rgba(8, 22, 37, .96)); box-shadow: var(--shadow); }
+    .map-copy { min-width: 0; }
+    .map-copy h2 { margin: 7px 0 7px; font-size: 22px; }
+    .map-copy > p { max-width: 720px; margin: 0 0 14px; color: var(--muted); font-size: 11px; line-height: 1.8; }
+    .map-progress { display: flex; align-items: center; gap: 8px; max-width: 420px; margin: 0 0 13px; }
+    .progress-step { display: inline-flex; align-items: center; gap: 6px; min-height: 29px; padding: 5px 9px; border: 1px solid #315273; border-radius: 999px; background: rgba(5, 17, 29, .66); color: var(--muted); font-size: 10px; font-weight: 800; }
+    .progress-step::first-letter { color: var(--blue); }
+    .progress-step.is-current { border-color: var(--mint); color: var(--mint); background: rgba(72, 223, 176, .1); }
+    .progress-step.is-complete { border-color: rgba(247, 201, 111, .68); color: var(--gold); background: rgba(247, 201, 111, .08); }
+    .progress-connector { width: 38px; height: 1px; background: linear-gradient(90deg, var(--mint), var(--gold)); opacity: .6; }
+    .map-targets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 720px; }
+    .map-target { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 61px; padding: 10px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .74); color: var(--text); text-align: right; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
+    .map-target:hover { border-color: #4b749b; transform: translateY(-1px); }
+    .map-target.is-active { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .86), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .08); }
+    .map-target.is-confirmed { border-color: rgba(247, 201, 111, .72); background: linear-gradient(145deg, rgba(78, 60, 28, .62), rgba(9, 34, 42, .92)); }
+    .map-target.is-active.is-confirmed { box-shadow: 0 0 0 3px rgba(247, 201, 111, .1); }
+    .map-target:disabled { opacity: .52; filter: saturate(.45); cursor: not-allowed; transform: none!important; }
+    .map-target.is-confirmed .target-index { background: var(--gold); color: #241a08; }
+    .target-index { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 10px; background: rgba(72, 223, 176, .12); color: var(--mint); font-size: 10px; font-weight: 900; }
+    .map-target strong, .map-target small { display: block; }
+    .map-target strong { font-size: 11px; }
+    .map-target small { margin-top: 3px; color: var(--muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .map-helper { margin-top: 14px; padding: 10px 11px; border: 1px solid rgba(247, 201, 111, .2); border-radius: var(--radius-sm); background: rgba(247, 201, 111, .06); color: #d9c58d; font-size: 10px; line-height: 1.7; }
+    .map-shell { position: relative; min-height: 360px; margin-top: 14px; overflow: hidden; border: 1px solid rgba(72, 223, 176, .34); border-radius: var(--radius-md); background: #0a1829; }
+    .map-frame { display: block; width: 100%; height: 100%; min-height: 360px; border: 0; filter: saturate(.88) contrast(1.02); }
+    .map-toolbar { position: absolute; z-index: 2; top: 12px; right: 12px; left: 12px; display: grid; gap: 8px; padding: 10px; border: 1px solid rgba(8, 24, 39, .28); border-radius: 13px; background: rgba(7, 18, 31, .88); box-shadow: 0 10px 30px rgba(0, 0, 0, .22); backdrop-filter: blur(12px); }
+    .map-search-row { display: flex; align-items: center; gap: 7px; }
+    .map-search-row input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #315273; border-radius: 10px; background: #071827; color: var(--text); font-size: 11px; }
+    .map-search-row input:focus { border-color: var(--mint); outline: 0; box-shadow: 0 0 0 3px rgba(72, 223, 176, .1); }
+    .coordinate-note { color: #a9bdd0; font-size: 9px; line-height: 1.6; }
+    .map-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .map-action, .map-google-link { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 10px; border: 1px solid #315273; border-radius: 9px; background: rgba(16, 42, 68, .84); color: #c7d9eb; font-size: 10px; font-weight: 800; text-decoration: none; cursor: pointer; }
+    .map-action.primary { border-color: var(--mint); background: var(--mint); color: var(--mint-ink); }
+    .map-action.confirm { border-color: rgba(247, 201, 111, .74); background: linear-gradient(135deg, #8f6a2b, #e0b74f); color: #241a08; box-shadow: 0 7px 17px rgba(247, 201, 111, .14); }
+    .map-action:hover, .map-google-link:hover { border-color: var(--mint); color: var(--text); }
+    .map-action.primary:hover { color: var(--mint-ink); }
+    .map-action.confirm:hover { color: #241a08; filter: brightness(1.08); }
+    .map-status { margin: 0; color: #c7d9eb; font-size: 10px; line-height: 1.6; }
+    .map-status.ok { color: #a8f8dc; }
+    .map-status.error { color: #ffb3bf; }
+    .route-summary { margin-top: 13px; padding: 12px 14px; border: 1px solid rgba(126, 177, 214, .19); border-radius: var(--radius-md); background: rgba(5, 17, 29, .55); }
+    .route-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .route-summary-head span { color: var(--muted); font-size: 10px; }
+    .route-summary-head strong { color: var(--gold); font-size: 10px; }
+    .route-summary-line { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 9px; }
+    .route-stop { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; min-width: 0; }
+    .route-stop i { display: block; width: 9px; height: 9px; border: 2px solid var(--mint); border-radius: 50%; box-shadow: 0 0 12px rgba(72, 223, 176, .45); }
+    .route-stop.destination i { border-color: var(--gold); box-shadow: 0 0 12px rgba(247, 201, 111, .35); }
+    .route-stop small, .route-stop strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .route-stop small { color: var(--muted); font-size: 9px; }
+    .route-stop strong { margin-top: 2px; color: var(--text); font-size: 11px; }
+    .route-arrow { color: var(--gold); font-size: 16px; }
+    .location-step-actions { display: flex; align-items: center; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid rgba(126, 177, 214, .13); }
+    .location-step-actions button { min-width: 210px; }
+    .location-step-actions button:disabled { opacity: .48; filter: saturate(.5); cursor: not-allowed; transform: none; }
+    .location-step-actions small { color: var(--muted); font-size: 9px; }
+    .page-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; color: #6f88a1; font-size: 10px; }
+    .page-foot strong { color: var(--gold); font-weight: 800; }
+
+    @media (max-width: 860px) {
+      .hero { grid-template-columns: 1fr; }
+      .hero-copy { min-height: 270px; }
+      .preview-card { grid-template-columns: 1fr; }
+      .preview-intro { display: block; }
+    }
+    @media (max-width: 560px) {
+      .page-shell { width: min(100% - 18px, 520px); padding-top: 12px; }
+      .topbar { align-items: flex-start; margin-bottom: 16px; }
+      .topbar-actions { width: 100%; justify-content: flex-start; }
+      .quiet-link { min-height: 36px; padding: 7px 9px; font-size: 10px; }
+      .brand-mark { width: 40px; height: 40px; border-radius: 13px; }
+      .brand-copy strong { font-size: 13px; }
+      .brand-copy span { font-size: 9px; }
+      .hero-copy { min-height: 315px; padding: 24px 20px; }
+      .map-targets { gap: 6px; }
+      .map-target { min-height: 69px; padding: 9px 8px; }
+      .map-shell, .map-frame { min-height: 390px; }
+      .map-search-row { align-items: stretch; flex-direction: column; }
+      h1 { font-size: 35px; }
+      .hero-copy p { font-size: 12px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .field.full, .type-field { grid-column: auto; }
+      .type-options { gap: 6px; }
+      .type-option span { min-height: 74px; padding: 10px 7px; font-size: 11px; }
+      .type-option small { font-size: 8px; }
+      .quick-type-options { gap: 5px; }
+      .quick-type-button { min-height: 63px; padding: 8px 5px; font-size: 10px; }
+      .smart-ride-primary-button { min-height: 82px; padding: 12px; }
+      .smart-ride-primary-title { font-size: 14px; }
+      .smart-ride-actions { align-items: stretch; flex-direction: column; }
+      .special-fare-fields { grid-template-columns: 1fr; }
+      .confirmed-route-grid { grid-template-columns: 1fr; gap: 6px; }
+      .confirmed-route-arrow { display: none; }
+      .form-actions { align-items: stretch; flex-direction: column; }
+      .primary-action, .secondary-action { width: 100%; }
+      .location-step-actions { align-items: stretch; flex-direction: column; }
+      .location-step-actions button { width: 100%; }
+      .page-foot { display: block; line-height: 1.8; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="/book.html" aria-label="وصلني الآن - الصفحة الرئيسية">
+        <span class="brand-mark"><img src="/aljarah-logo-mark-clean.webp" alt="شعار وصلني الآن"></span>
+        <span class="brand-copy"><strong>وصلني الآن · V27</strong><span>Waslni Now · النقل والخدمات اللوجستية</span></span>
+      </a>
+      <div class="topbar-actions">
+        <button class="install-link" id="install-app" type="button">ثبّت تطبيق الراكب</button>
+        <a class="quiet-link" href="/v27.html">عودة إلى لوحة V27</a>
+      </div>
+    </header>
+    <p class="install-note" id="install-note" role="status" aria-live="polite" hidden></p>
+
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <img class="logo-watermark" src="/aljarah-logo-mark-clean.webp" alt="">
+        <span class="eyebrow">واجهة استقبال العملاء · V27</span>
+        <h1 id="page-title">ابدأ من موقعك، ثم أكمل الرحلة.</h1>
+        <p>حدد موقع الالتقاء والوجهة أولًا من الخريطة. الراكب والأوردر يذهبان إلى دورة مراجعة مستقلة، بينما يطبق طلب الرحلة الذكية العداد الرسمي: فتحة + كيلومتر + انتظار، مع زيادة ليلية على فتحة العداد.</p>
+        <div class="hero-proof" aria-label="مزايا الواجهة">
+          <span class="proof-chip">01 · تحديد الموقع</span>
+          <span class="proof-chip">02 · تفاصيل الرحلة</span>
+          <span class="proof-chip">تعرفة واضحة</span>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="map-section" id="location-map" aria-labelledby="map-title">
+      <div class="map-copy">
+        <span class="eyebrow">تحديد الموقع على الخارطة</span>
+        <h2 id="map-title">اختر الإقلاع والوجهة بدقة.</h2>
+        <p>اعتمد الموقع المسجل من جهازك أو اختره من الخريطة. ستنتقل المواقع المعتمدة تلقائيًا إلى الطلب دون إعادة كتابتها.</p>
+        <div class="quick-type-picker" aria-label="اختيار نوع الطلب من البداية">
+          <div class="quick-type-head"><strong>ابدأ بالمسار الأساسي</strong><small>يمكن تغييره قبل الإرسال</small></div>
+          <div class="smart-ride-primary">
+            <button class="quick-type-button smart-ride-primary-button is-selected" id="smart-ride-primary" type="button" data-quick-type="full-car" aria-pressed="true">
+              <span class="smart-ride-primary-title">احجز رحلة ذكية</span>
+              <small>أقرب كابتن · تعرفة رسمية · تأكيد قبل التوزيع</small>
+            </button>
+            <div class="smart-ride-primary-note">حدد الإقلاع والوجهة، راجع المسافة والتقدير، ثم أكد الرحلة من بطاقة المتابعة.</div>
+          </div>
+          <button class="secondary-booking-trigger" id="open-secondary-booking" type="button" aria-haspopup="dialog">
+            <span>خيارات أخرى: حجز راكب أو أوردر</span><small>نافذة فرعية</small>
+          </button>
+        </div>
+        <dialog class="secondary-booking-dialog" id="secondary-booking-dialog" aria-labelledby="secondary-booking-title">
+          <div class="secondary-booking-dialog-inner">
+            <div><h3 id="secondary-booking-title">خيارات الطلب الأخرى</h3><p>هذه الطلبات تبقى مستقلة وتنتظر مراجعة المالك؛ لا تُعامل كرحلة ذكية ولا تُوزع تلقائيًا.</p></div>
+            <div class="secondary-booking-options" role="group" aria-label="الطلبات المستقلة">
+              <button class="quick-type-button secondary-booking-option" type="button" data-quick-type="passenger"><span><strong>حجز راكب</strong><small>طلب غير فوري · السعر يحدده المالك</small></span><b>راكب</b></button>
+              <button class="quick-type-button secondary-booking-option" type="button" data-quick-type="order"><span><strong>أوردر</strong><small>استلام أو توصيل · السعر الثابت 5 دنانير</small></span><b>أوردر</b></button>
+            </div>
+            <button class="secondary-booking-dialog-close" id="close-secondary-booking" type="button">إغلاق النافذة</button>
+          </div>
+        </dialog>
+        <div class="map-progress" aria-label="مراحل تحديد المسار"><span class="progress-step is-current" id="progress-origin">01 · الإقلاع</span><span class="progress-connector" aria-hidden="true"></span><span class="progress-step" id="progress-destination">02 · الوجهة</span></div>
+        <div class="map-targets" role="group" aria-label="اختيار موقع الرحلة">
+          <button class="map-target is-active" type="button" data-map-target="origin" aria-pressed="true">
+            <span class="target-index">01</span><span><strong>موقع الإقلاع</strong><small id="origin-map-status">لم يحدد بعد</small></span>
+          </button>
+          <button class="map-target" type="button" data-map-target="destination" aria-pressed="false" disabled>
+            <span class="target-index">02</span><span><strong>موقع الوجهة</strong><small id="destination-map-status">لم يحدد بعد</small></span>
+          </button>
+        </div>
+        <div class="map-helper">ابدأ افتراضيًا بزر «استخدم موقعي الحالي» لموقع الإقلاع، أو أدخل الإحداثيات يدويًا بصيغة <strong>خط العرض، خط الطول</strong> مثل <strong>31.9539,35.9106</strong>، ثم ثبّت الموقع وأكده.</div>
+      </div>
+      <div class="map-shell">
+        <iframe class="map-frame" id="google-map" title="خارطة Google لتحديد موقع الرحلة" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=31.9539%2C35.9106&z=12&output=embed"></iframe>
+        <div class="map-toolbar">
+          <div class="map-search-row"><input id="map-search" type="search" placeholder="إحداثيات مثل 31.9539,35.9106 أو اسم المكان" aria-label="إدخال الإحداثيات أو البحث عن المكان"><button class="map-action" id="map-search-button" type="button">عرض الموقع</button></div>
+          <small class="coordinate-note">للإحداثيات اليدوية: اكتب خط العرض ثم فاصلة ثم خط الطول، واضغط «عرض الموقع» أو Enter.</small>
+          <div class="map-actions"><button class="map-action" id="map-pin-button" type="button">تثبيت الموقع المختار</button><button class="map-action confirm" id="map-confirm-button" type="button">تأكيد موقع الإقلاع</button><button class="map-action primary" id="map-current-button" type="button">استخدم موقعي الحالي · الافتراضي</button><a class="map-google-link" id="map-open-google" href="https://www.google.com/maps/search/?api=1&query=31.9539%2C35.9106" target="_blank" rel="noopener">فتح في Google Maps ↗</a></div>
+          <p class="map-status" id="map-status" role="status" aria-live="polite">ابدأ بموقع الإقلاع: استخدم الموقع الحالي افتراضيًا أو أدخل إحداثيات يدوية.</p>
+        </div>
+      </div>
+      <div class="route-summary" aria-live="polite">
+        <div class="route-summary-head"><span>ملخص المسار</span><strong id="route-summary-state">بانتظار التحديد</strong></div>
+        <div class="route-summary-line"><div class="route-stop"><i aria-hidden="true"></i><span><small>الإقلاع</small><strong id="route-origin-value">لم يحدد بعد</strong></span></div><span class="route-arrow" aria-hidden="true">←</span><div class="route-stop destination"><i aria-hidden="true"></i><span><small>الوجهة</small><strong id="route-destination-value">لم يحدد بعد</strong></span></div></div>
+      </div>
+      <div class="location-step-actions"><button class="map-action confirm" id="continue-details" type="button" disabled>متابعة إلى تفاصيل الرحلة</button><small>بعد التأكيد ستُستخدم المواقع نفسها تلقائيًا في الطلب.</small></div>
+    </section>
+
+      <section class="booking-card" id="booking-card" aria-labelledby="booking-title" hidden>
+        <div class="card-head">
+          <div><h2 id="booking-title">الخطوة 02 · تفاصيل الرحلة</h2><p>المسار أدناه مأخوذ من الخطوة الأولى ولا يحتاج إلى إدخال مرة أخرى.</p></div>
+          <span class="step-badge">المسار مؤكد</span>
+        </div>
+        <form id="booking-form" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="customer-name">الاسم <span aria-hidden="true">*</span></label>
+              <input id="customer-name" name="customerName" type="text" autocomplete="name" placeholder="اكتب اسمك" required maxlength="80">
+            </div>
+            <div class="field">
+              <label for="customer-phone">رقم الهاتف <span aria-hidden="true">*</span></label>
+              <input id="customer-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required maxlength="20">
+            </div>
+            <div class="field">
+              <label for="departure-time">وقت الإقلاع <span aria-hidden="true">*</span></label>
+              <input id="departure-time" name="departureTime" type="time" required>
+            </div>
+            <div class="confirmed-route-card" aria-live="polite">
+              <div class="confirmed-route-head"><span>المسار ونوع الطلب المعتمدان</span><strong id="details-type-value">طلب رحلة ذكية</strong></div>
+              <div class="confirmed-route-grid">
+                <div class="confirmed-route-stop"><span>الإقلاع</span><strong id="details-origin-value">موقعي الحالي</strong></div>
+                <span class="confirmed-route-arrow" aria-hidden="true">←</span>
+                <div class="confirmed-route-stop"><span>الوجهة</span><strong id="details-destination-value">الموقع المسجل على الخريطة</strong></div>
+              </div>
+              <small class="confirmed-route-note">تم اعتماد هذه البيانات من الخطوة 01 ولن تحتاج إلى إدخالها مرة أخرى.</small>
+            </div>
+            <input id="origin" name="origin" type="hidden" required>
+            <input id="destination" name="destination" type="hidden" required>
+            <div class="type-field" hidden aria-hidden="true">
+              <input type="radio" name="requestType" value="passenger">
+              <input type="radio" name="requestType" value="order">
+              <input type="radio" name="requestType" value="full-car" checked>
+            </div>
+            <div class="field full">
+              <label>الأجرة المعتمدة</label>
+              <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة.</small></div></div>
+              <div class="special-fare-panel" id="special-fare-panel" hidden>
+                <div class="special-fare-heading"><strong>سعر طلب الرحلة الذكية</strong><span>نهاري / ليلي + انتظار</span></div>
+                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="تُحتسب من المسار"></label><label for="special-waiting">الانتظار المتوقع <span>دقيقة</span><input id="special-waiting" type="number" inputmode="decimal" min="0" step="1" value="0" placeholder="0"></label></div>
+                <div class="special-fare-result"><span id="special-fare-breakdown">ثبّت الموقعين لإظهار المسافة والتقدير.</span><strong id="special-fare-total">—</strong></div>
+                <small class="field-note">النهاري 0.468 د.أ فتح العداد، والليلي 0.518 د.أ بين 22:00 و06:00، والكيلومتر 0.336 د.أ، والانتظار 0.0576 د.أ/دقيقة. التقريب لأقرب 0.05 د.أ. رسم الإلغاء: 0.50 د.أ.</small>
+              </div>
+              <input id="optional-price" name="price" type="hidden" value="">
+            </div>
+          </div>
+          <div class="form-actions">
+              <button class="primary-action" type="submit">إرسال الطلب</button>
+            <button class="secondary-action" id="edit-locations" type="button">تعديل المواقع</button>
+            <button class="secondary-action" id="reset-form" type="button">مسح</button>
+          </div>
+          <p class="form-status" id="form-status" role="status" aria-live="polite">أكد الموقعين أولًا، ثم ستظهر هذه الخطوة تلقائيًا.</p>
+        </form>
+      </section>
+
+      <section class="smart-ride-result" id="smart-ride-result" aria-labelledby="smart-ride-result-title" hidden>
+        <div class="smart-ride-result-head">
+          <div><h2 id="smart-ride-result-title">متابعة الرحلة الذكية</h2><p>راجع بيانات الرحلة ثم أكدها. لا يتم تغيير المحفظة أو تنفيذ التسوية من هذه الخطوة.</p></div>
+          <span class="pill wait" id="smart-ride-status-pill">بانتظار التأكيد</span>
+        </div>
+        <div class="smart-ride-summary">
+          <div class="smart-ride-row"><span>رقم الرحلة</span><strong id="smart-ride-code">—</strong></div>
+          <div class="smart-ride-row"><span>المسار</span><strong id="smart-ride-route">—</strong></div>
+          <div class="smart-ride-row"><span>السعر المتوقع</span><strong id="smart-ride-price">—</strong></div>
+        </div>
+        <div class="smart-ride-actions"><button class="primary-action" id="confirm-smart-ride" type="button">تأكيد الرحلة والبحث عن أقرب كابتن</button><button class="secondary-action" id="cancel-smart-ride" type="button">إلغاء الطلب</button></div>
+        <div class="smart-ride-progress" aria-label="حالة الرحلة"><span class="smart-ride-step on" data-smart-status-step="priced">السعر</span><span class="smart-ride-step" data-smart-status-step="dispatch">البحث</span><span class="smart-ride-step" data-smart-status-step="assigned">الكابتن</span><span class="smart-ride-step" data-smart-status-step="trip">الرحلة</span></div>
+        <p class="smart-ride-notice" id="smart-ride-notice" role="status" aria-live="polite"></p>
+      </section>
+
+    <section class="preview-card" aria-labelledby="preview-title">
+      <div class="preview-intro">
+        <span class="eyebrow">مراجعة قبل الإرسال</span>
+        <h2 id="preview-title">طلبك في بطاقة واحدة.</h2>
+        <p>بعد اكتمال الحقول، ستظهر التفاصيل هنا بصيغة سهلة للمراجعة. عند الإرسال يُحفظ الطلب في دورة المراجعة ولا يُنشر للقروب دون اعتماد المالك.</p>
+      </div>
+      <div class="preview-box" aria-live="polite">
+        <div class="preview-box-head"><strong>معاينة الرحلة</strong><span class="preview-state" id="preview-state">بانتظار البيانات</span></div>
+        <div id="preview-empty" class="preview-empty">أكمل بيانات الرحلة لتظهر المعاينة هنا.</div>
+        <div id="preview-details" class="preview-details" hidden>
+          <div class="preview-row"><span>العميل</span><strong id="preview-name">—</strong></div>
+          <div class="preview-row"><span>الهاتف</span><strong id="preview-phone" dir="ltr">—</strong></div>
+          <div class="preview-row"><span>المسار</span><strong id="preview-route">—</strong></div>
+          <div class="preview-row"><span>وقت الإقلاع</span><strong id="preview-time" dir="ltr">—</strong></div>
+          <div class="preview-row"><span>نوع الطلب</span><strong id="preview-type">—</strong></div>
+          <div class="preview-row"><span>السعر</span><strong id="preview-price">يضاف أثناء التجهيز</strong></div>
+          <div class="preview-row"><span>رقم الطلب</span><strong id="preview-request">—</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="page-foot"><span>وصلني الآن · واجهة استقبال العميل</span><strong>طلب الرحلة الذكية يمر بالمراجعة قبل النشر</strong></footer>
+  </main>
+
+  <script src="/direct-ride-notifications.js"></script>
+  <script>
+    (() => {
+      const form = document.getElementById('booking-form');
+      const resetButton = document.getElementById('reset-form');
+      const status = document.getElementById('form-status');
+      const previewEmpty = document.getElementById('preview-empty');
+      const previewDetails = document.getElementById('preview-details');
+      const previewState = document.getElementById('preview-state');
+      const typeLabels = { passenger: 'راكب · طلب مستقل', order: 'أوردر · طلب مستقل', 'full-car': 'طلب رحلة ذكية' };
+      const fields = {
+        name: document.getElementById('customer-name'),
+        phone: document.getElementById('customer-phone'),
+        origin: document.getElementById('origin'),
+        time: document.getElementById('departure-time'),
+        destination: document.getElementById('destination'),
+        price: document.getElementById('optional-price')
+      };
+      const mapFrame = document.getElementById('google-map');
+      const mapSearch = document.getElementById('map-search');
+      const mapStatus = document.getElementById('map-status');
+      const mapOpenGoogle = document.getElementById('map-open-google');
+      const mapConfirmButton = document.getElementById('map-confirm-button');
+      const quickTypeButtons = [...document.querySelectorAll('[data-quick-type]')];
+      const routeSummaryState = document.getElementById('route-summary-state');
+      const progressOrigin = document.getElementById('progress-origin');
+      const progressDestination = document.getElementById('progress-destination');
+      const continueDetailsButton = document.getElementById('continue-details');
+      const detailsCard = document.getElementById('booking-card');
+      const secondaryDialog = document.getElementById('secondary-booking-dialog');
+      const smartRideResult = document.getElementById('smart-ride-result');
+      const smartRideStatusPill = document.getElementById('smart-ride-status-pill');
+      const smartRideNotice = document.getElementById('smart-ride-notice');
+      const confirmSmartRideButton = document.getElementById('confirm-smart-ride');
+      const cancelSmartRideButton = document.getElementById('cancel-smart-ride');
+      const detailsOriginValue = document.getElementById('details-origin-value');
+      const detailsDestinationValue = document.getElementById('details-destination-value');
+      const detailsTypeValue = document.getElementById('details-type-value');
+      const editLocationsButton = document.getElementById('edit-locations');
+      const installButton = document.getElementById('install-app');
+      const installNote = document.getElementById('install-note');
+      const fareDisplay = document.getElementById('fare-display');
+      const fareNote = document.getElementById('fare-note');
+      const specialFarePanel = document.getElementById('special-fare-panel');
+      const specialDistance = document.getElementById('special-distance');
+      const specialWaiting = document.getElementById('special-waiting');
+      const specialFareBreakdown = document.getElementById('special-fare-breakdown');
+      const specialFareTotal = document.getElementById('special-fare-total');
+      const submitButton = form.querySelector('button[type="submit"]');
+      let activeMapTarget = 'origin';
+      let deferredInstallPrompt = null;
+      let specialRequest = null;
+      let customerRequest = null;
+      let smartRide = null;
+      let smartRideCreateKey = null;
+      let smartRidePoll = null;
+      let smartRideStream = null;
+      let locationCoordinates = { origin: null, destination: null };
+      let automaticRouteQuote = null;
+      const confirmedMapTargets = { origin: false, destination: false };
+      const specialTariff = { dayOpeningFare: 0.468, nightOpeningFare: 0.518, perKm: 0.336, waitingPerMinute: 0.0576, minimumFare: 1, cancellationFee: 0.5, roundingIncrement: 0.05, nightStartHour: 22, nightEndHour: 6 };
+
+      function valueOf(field) { return field.value.trim(); }
+      function parseCoordinatePair(value) {
+        const match = String(value || '').match(/(-?\d+(?:\.\d+)?)\s*[,،]\s*(-?\d+(?:\.\d+)?)/);
+        if (!match) return null;
+        const lat = Number(match[1]);
+        const lng = Number(match[2]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+        return { lat, lng };
+      }
+      function readStoredCoordinates(field) {
+        if (!field?.dataset.coordinates) return null;
+        try { return JSON.parse(field.dataset.coordinates); } catch { return null; }
+      }
+      function syncCoordinatesFromField(target) {
+        locationCoordinates[target] = readStoredCoordinates(fields[target]) || parseCoordinatePair(valueOf(fields[target]));
+        automaticRouteQuote = null;
+      }
+      function setRequestType(type) {
+        const input = form.querySelector(`input[name="requestType"][value="${type}"]`);
+        if (!input) return;
+        input.checked = true;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      function syncQuickTypeButtons() {
+        const type = selectedType();
+        quickTypeButtons.forEach(button => {
+          const selected = button.dataset.quickType === type;
+          button.classList.toggle('is-selected', selected);
+          button.setAttribute('aria-pressed', String(selected));
+        });
+        if (detailsTypeValue) detailsTypeValue.textContent = typeLabels[type] || 'راكب';
+      }
+      function syncDetailsRouteSummary() {
+        if (detailsOriginValue) detailsOriginValue.textContent = locationDisplayLabel('origin', valueOf(fields.origin)) || 'لم يحدد بعد';
+        if (detailsDestinationValue) detailsDestinationValue.textContent = locationDisplayLabel('destination', valueOf(fields.destination)) || 'لم يحدد بعد';
+        if (detailsTypeValue) detailsTypeValue.textContent = typeLabels[selectedType()] || 'راكب';
+      }
+      function locationDisplayLabel(target, value) {
+        if (String(value || '').startsWith('موقعي الحالي')) return 'موقعي الحالي';
+        if (parseCoordinatePair(value) || readStoredCoordinates(fields[target])) return 'الموقع المسجل على الخريطة';
+        return value;
+      }
+      function selectedType() { return form.querySelector('input[name="requestType"]:checked')?.value || 'passenger'; }
+      function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value || '—'; }
+      function formatTime(value) {
+        if (!value) return '—';
+        const [hours, minutes] = value.split(':').map(Number);
+        if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
+        const period = hours >= 12 ? 'م' : 'ص';
+        const displayHours = hours % 12 || 12;
+        return `${String(displayHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
+      }
+      function routeMentionsAirport() { return /مطار|المطار|airport/i.test(`${valueOf(fields.origin)} ${valueOf(fields.destination)}`); }
+      function isNightTime(timeValue) {
+        const match = String(timeValue || '').match(/^(\d{1,2}):([0-5]\d)$/);
+        if (!match) return false;
+        const hour = Number(match[1]);
+        return hour >= specialTariff.nightStartHour || hour < specialTariff.nightEndHour;
+      }
+      function roundFare(value) { return Number((Math.round((Number(value) + Number.EPSILON) / specialTariff.roundingIncrement) * specialTariff.roundingIncrement).toFixed(2)); }
+      function isPositiveDistance(value) {
+        const raw = String(value ?? '').trim().replace(',', '.');
+        const distance = Number(raw);
+        return Boolean(raw) && Number.isFinite(distance) && distance > 0 && distance <= 10000;
+      }
+      function calculateSpecialFare(distanceKm, waitingMin = specialWaiting.value, tripTime = valueOf(fields.time)) {
+        const rawDistance = String(distanceKm ?? '').trim().replace(',', '.');
+        const distance = Number(rawDistance);
+        const waiting = waitingMin === '' || waitingMin === null || waitingMin === undefined ? 0 : Number(waitingMin);
+        if (!isPositiveDistance(rawDistance) || !Number.isFinite(waiting) || waiting < 0) return null;
+        const night = isNightTime(tripTime);
+        const opening = night ? specialTariff.nightOpeningFare : specialTariff.dayOpeningFare;
+        const waitingCharge = waiting * specialTariff.waitingPerMinute;
+        const rawFare = opening + distance * specialTariff.perKm + waitingCharge;
+        const fare = Math.max(roundFare(rawFare), specialTariff.minimumFare);
+        return { distance, waiting, opening, distanceCharge: distance * specialTariff.perKm, waitingCharge, fare, night };
+      }
+      function updateSpecialFare() {
+        const isSpecial = selectedType() === 'full-car';
+        specialFarePanel.hidden = !isSpecial;
+        if (!isSpecial) return;
+        const quote = calculateSpecialFare(specialDistance.value, specialWaiting.value, valueOf(fields.time));
+        if (!quote) {
+          fields.price.value = '';
+          fareDisplay.textContent = 'بانتظار المسافة';
+          fareNote.textContent = 'تُحتسب من فتحة العداد والمسافة والانتظار، مع تعرفة ليلية بعد 22:00.';
+          specialFareBreakdown.textContent = 'ثبّت الموقعين لإظهار المسافة والسعر.';
+          specialFareTotal.textContent = '—';
+          return;
+        }
+        fields.price.value = quote.fare.toFixed(2);
+        fareDisplay.textContent = `${quote.fare.toFixed(2)} د.أ تقديريًا`;
+        fareNote.textContent = `${quote.night ? 'تعرفة ليلية' : 'تعرفة نهارية'} · التقريب لأقرب 5 قروش؛ القيمة النهائية تعتمد اعتماد المالك.`;
+        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(3)} + مسافة ${quote.distanceCharge.toFixed(3)} + انتظار ${quote.waitingCharge.toFixed(3)} · ${quote.night ? 'ليلي' : 'نهاري'}`;
+        specialFareTotal.textContent = `${quote.fare.toFixed(2)} د.أ`;
+      }
+      function updateFare() {
+        const type = selectedType();
+        if (routeMentionsAirport() && type !== 'full-car') {
+          fields.price.value = '25';
+          fareDisplay.textContent = '25 د.أ';
+          fareNote.textContent = 'تسعيرة المطار ثابتة: 25 دينارًا.';
+        } else if (type === 'order') {
+          fields.price.value = '5';
+          fareDisplay.textContent = '5 د.أ';
+          fareNote.textContent = 'الأوردر بسعر ثابت: 5 دنانير.';
+        } else if (type === 'passenger') {
+          fields.price.value = '';
+          fareDisplay.textContent = 'يحدده المالك';
+          fareNote.textContent = 'طلب راكب مستقل؛ لا يُحتسب بالكيلومتر تلقائيًا ولا يُرسل فورًا.';
+        } else {
+          fields.price.value = '';
+          fareDisplay.textContent = 'بانتظار المسافة';
+          fareNote.textContent = 'طلب رحلة ذكية؛ فتح العداد + الكيلومتر + الانتظار عند القياس.';
+        }
+        updateSpecialFare();
+        applyAutomaticFare();
+      }
+      function applyAutomaticFare() {
+        if (!automaticRouteQuote || selectedType() !== 'full-car') return;
+        const { distanceKm, fare } = automaticRouteQuote;
+        if (!isPositiveDistance(distanceKm) || !Number.isFinite(Number(fare))) {
+          automaticRouteQuote = null;
+          specialDistance.value = '';
+          updateSpecialFare();
+          return;
+        }
+        if (Number.isFinite(Number(distanceKm))) specialDistance.value = Number(distanceKm).toFixed(1);
+        updateSpecialFare();
+        fareDisplay.textContent = `${Number(fare).toFixed(2)} د.أ`;
+        fareNote.textContent = `حساب ذكي بالكيلومتر: ${Number(distanceKm).toFixed(1)} كم · ${automaticRouteQuote.routeSource === 'google_directions_proxy' ? 'مسار خرائط Google' : 'تقدير الإحداثيات'}.`;
+      }
+      async function refreshAutomaticFare() {
+        if (!locationCoordinates.origin || !locationCoordinates.destination || selectedType() !== 'full-car') return;
+        setMapStatus('تم تأكيد الموقعين. جارٍ احتساب مسافة طلب الرحلة الذكية…', 'ok');
+        try {
+          const routeResponse = await fetch('/api/public/direct-rides/quote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ origin: locationCoordinates.origin, destination: locationCoordinates.destination, tripTime: valueOf(fields.time), waitingMin: valueOf(specialWaiting) || 0 }),
+          });
+          const routeData = await routeResponse.json().catch(() => ({}));
+          if (!routeResponse.ok) throw new Error(routeData.error || 'تعذر احتساب المسار');
+          if (!isPositiveDistance(routeData.route?.distanceKm)) throw new Error('تعذر احتساب مسافة فعلية؛ ثبّت موقعين مختلفين على الخريطة.');
+          automaticRouteQuote = { distanceKm: routeData.route.distanceKm, durationMin: routeData.route.durationMin, routeSource: routeData.route.routeSource, fare: routeData.quote?.fare };
+          if (!Number.isFinite(Number(automaticRouteQuote.fare))) throw new Error('تعذر احتساب سعر طلب الرحلة الذكية');
+          applyAutomaticFare();
+          updatePreview();
+          setMapStatus(`تم احتساب طلب الرحلة الذكية: ${Number(automaticRouteQuote.distanceKm).toFixed(1)} كم · ${Number(automaticRouteQuote.fare).toFixed(2)} د.أ.`, 'ok');
+        } catch (error) {
+          automaticRouteQuote = null;
+          updateFare();
+          setMapStatus(error.message || 'تعذر احتساب السعر تلقائيًا؛ راجع الموقعين وحاول مرة أخرى.', 'error');
+        }
+      }
+      function updatePreview() {
+        const hasAny = Object.entries(fields).some(([key, field]) => key !== 'price' && valueOf(field));
+        if (!hasAny) {
+          previewEmpty.hidden = false;
+          previewDetails.hidden = true;
+          previewState.textContent = 'بانتظار البيانات';
+          return;
+        }
+        previewEmpty.hidden = true;
+        previewDetails.hidden = false;
+        setText('preview-name', valueOf(fields.name));
+        setText('preview-phone', valueOf(fields.phone));
+        setText('preview-route', `${locationDisplayLabel('origin', valueOf(fields.origin)) || 'موقع الإقلاع'} ← ${locationDisplayLabel('destination', valueOf(fields.destination)) || 'موقع الوجهة'}`);
+        setText('preview-time', formatTime(valueOf(fields.time)));
+        setText('preview-type', typeLabels[selectedType()]);
+        setText('preview-price', fareDisplay.textContent || 'يحدد عند التجهيز');
+        setText('preview-request', smartRide?.requestCode || specialRequest?.requestCode || customerRequest?.requestCode || '—');
+        previewState.textContent = 'معاينة محدثة';
+      }
+      function smartRideStatusStep(statusValue) {
+        if (statusValue === 'priced') return 0;
+        if (['rider_confirmed', 'dispatch_pending', 'offered'].includes(statusValue)) return 1;
+        if (['assigned', 'arrived'].includes(statusValue)) return 2;
+        if (['in_trip', 'completed'].includes(statusValue)) return 3;
+        return 0;
+      }
+      function setSmartRideNotice(message, tone = '') {
+        if (!smartRideNotice) return;
+        smartRideNotice.className = `smart-ride-notice${tone ? ` ${tone}` : ''}`;
+        smartRideNotice.textContent = message || '';
+      }
+      function closeSmartRideStream() {
+        if (smartRideStream) smartRideStream.close();
+        smartRideStream = null;
+      }
+      function clearSmartRideTracking() {
+        clearInterval(smartRidePoll);
+        smartRidePoll = null;
+        closeSmartRideStream();
+        localStorage.removeItem('v27-direct-ride-token');
+        localStorage.removeItem('v27-direct-ride-id');
+      }
+      function connectSmartRideStream() {
+        if (!smartRide || !smartRide.riderToken || smartRideStream || !window.V27Notifications) return;
+        smartRideStream = V27Notifications.connect({
+          url: `/api/public/direct-rides/${smartRide.id}/events?token=${encodeURIComponent(smartRide.riderToken)}`,
+          audience: 'rider',
+          onEvent: payload => {
+            if (payload.ride) {
+              smartRide = { ...smartRide, ...payload.ride, riderToken: smartRide.riderToken };
+              renderSmartRide();
+            }
+            if (['completed', 'cancelled'].includes(payload.status || payload.ride?.status)) {
+              clearInterval(smartRidePoll);
+              smartRidePoll = null;
+              closeSmartRideStream();
+            }
+          },
+          onConnectionChange: connectionStatus => {
+            if (connectionStatus === 'connected' && smartRide?.status !== 'priced') setSmartRideNotice('الإشعارات الفورية مفعلة.', 'ok');
+            if (connectionStatus === 'reconnecting' && smartRide?.status !== 'priced') setSmartRideNotice('جاري إعادة الاتصال بالإشعارات؛ التحديث الاحتياطي يعمل.', 'warn');
+          },
+        });
+      }
+      function startSmartRidePoll() {
+        clearInterval(smartRidePoll);
+        smartRidePoll = setInterval(() => { void refreshSmartRide(); }, 7000);
+      }
+      async function refreshSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken) return;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}?token=${encodeURIComponent(smartRide.riderToken)}`, { credentials: 'same-origin', cache: 'no-store' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) return;
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          if (['completed', 'cancelled'].includes(smartRide.status)) clearSmartRideTracking();
+        } catch {
+          // The next polling cycle or SSE reconnect will retry without changing the ride state.
+        }
+      }
+      function renderSmartRide() {
+        if (!smartRide) {
+          smartRideResult.hidden = true;
+          return;
+        }
+        smartRideResult.hidden = false;
+        setText('smart-ride-code', smartRide.requestCode);
+        setText('smart-ride-route', `${smartRide.origin} ← ${smartRide.destination}`);
+        setText('smart-ride-price', smartRide.finalPrice || smartRide.quotedPrice || '—');
+        const labels = { priced: 'بانتظار التأكيد', rider_confirmed: 'تم التأكيد', dispatch_pending: 'بانتظار التوزيع', offered: 'عرض عند كابتن', assigned: 'كابتن معيّن', arrived: 'وصل الكابتن', in_trip: 'الرحلة بدأت', completed: 'اكتملت الرحلة', cancelled: 'ملغاة' };
+        const label = labels[smartRide.status] || smartRide.status || 'غير معروف';
+        smartRideStatusPill.textContent = label;
+        smartRideStatusPill.className = `pill ${['priced', 'dispatch_pending', 'offered'].includes(smartRide.status) ? 'wait' : smartRide.status === 'cancelled' ? 'red' : ''}`;
+        const currentStep = smartRideStatusStep(smartRide.status);
+        smartRideResult.querySelectorAll('[data-smart-status-step]').forEach((node, index) => { node.classList.toggle('done', index < currentStep); node.classList.toggle('on', index === currentStep); });
+        confirmSmartRideButton.disabled = smartRide.status !== 'priced';
+        cancelSmartRideButton.disabled = ['completed', 'cancelled'].includes(smartRide.status);
+        const messages = {
+          priced: 'راجع السعر والمسار ثم أكد الرحلة لبدء دورة البحث.',
+          rider_confirmed: 'تم تأكيد الرحلة وتجهيزها للتوزيع.',
+          dispatch_pending: smartRide.liveDispatchEnabled ? 'تم تأكيد الرحلة؛ يجري البحث عن أقرب كابتن.' : 'تم تأكيد الرحلة. التشغيل الحي بانتظار اعتماد الإدارة من V27.',
+          offered: 'تم إرسال العرض إلى كابتن مؤهل.',
+          assigned: `تم تعيين الكابتن${smartRide.captain?.name ? ` · ${smartRide.captain.name}` : ''}.`,
+          arrived: 'وصل الكابتن إلى موقع الإقلاع.',
+          in_trip: 'بدأت الرحلة والعداد نشط؛ التحديثات تصل تلقائيًا.',
+          completed: `انتهت الرحلة. السعر النهائي ${smartRide.finalPrice || 'قيد المراجعة'}.`,
+          cancelled: `أُلغيت الرحلة${smartRide.cancelReason ? ` · ${smartRide.cancelReason}` : ''}.`,
+        };
+        setSmartRideNotice(messages[smartRide.status] || 'راجع بيانات الرحلة.', smartRide.status === 'cancelled' ? 'warn' : smartRide.status === 'priced' ? '' : 'ok');
+        updatePreview();
+      }
+      async function confirmSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken || smartRide.status !== 'priced') return;
+        confirmSmartRideButton.disabled = true;
+        confirmSmartRideButton.textContent = 'جارٍ تأكيد الرحلة…';
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': `BOOK-DIRECT-RIDE-${smartRide.id}-CONFIRM` }, credentials: 'same-origin', body: JSON.stringify({ token: smartRide.riderToken }) });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر تأكيد الرحلة');
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          connectSmartRideStream();
+          startSmartRidePoll();
+        } catch (error) {
+          setSmartRideNotice(error.message || 'تعذر تأكيد الرحلة؛ حاول مرة أخرى.', 'error');
+          confirmSmartRideButton.disabled = false;
+        } finally {
+          confirmSmartRideButton.textContent = 'تأكيد الرحلة والبحث عن أقرب كابتن';
+        }
+      }
+      async function cancelSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken || ['completed', 'cancelled'].includes(smartRide.status)) return;
+        cancelSmartRideButton.disabled = true;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': `BOOK-DIRECT-RIDE-${smartRide.id}-CANCEL` }, credentials: 'same-origin', body: JSON.stringify({ token: smartRide.riderToken, reason: 'إلغاء من واجهة الراكب' }) });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر إلغاء الرحلة');
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          clearSmartRideTracking();
+        } catch (error) {
+          setSmartRideNotice(error.message || 'تعذر إلغاء الرحلة؛ حاول مرة أخرى.', 'error');
+          cancelSmartRideButton.disabled = false;
+        }
+      }
+      async function restoreSmartRide() {
+        const token = localStorage.getItem('v27-direct-ride-token');
+        const id = Number(localStorage.getItem('v27-direct-ride-id') || 0);
+        if (!token || !Number.isInteger(id) || id < 1) return;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${id}?token=${encodeURIComponent(token)}`, { credentials: 'same-origin', cache: 'no-store' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error('stale ride');
+          smartRide = { ...data.ride, riderToken: token };
+          renderSmartRide();
+          connectSmartRideStream();
+          if (!['completed', 'cancelled'].includes(smartRide.status)) startSmartRidePoll();
+        } catch {
+          localStorage.removeItem('v27-direct-ride-token');
+          localStorage.removeItem('v27-direct-ride-id');
+        }
+      }
+      function resetState() {
+        if (smartRide && !['completed', 'cancelled'].includes(smartRide.status)) {
+          status.className = 'form-status error';
+          status.textContent = 'لديك رحلة ذكية قيد المتابعة؛ ألغها أو انتظر اكتمالها قبل المسح.';
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        clearSmartRideTracking();
+        form.reset();
+        status.className = 'form-status';
+        status.textContent = 'أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.';
+        specialRequest = null;
+        customerRequest = null;
+        smartRide = null;
+        smartRideCreateKey = null;
+        locationCoordinates = { origin: null, destination: null };
+        automaticRouteQuote = null;
+        fields.origin.dataset.coordinates = '';
+        fields.destination.dataset.coordinates = '';
+        submitButton.disabled = false;
+        submitButton.textContent = 'إرسال الطلب';
+        confirmedMapTargets.origin = false;
+        confirmedMapTargets.destination = false;
+        detailsCard.hidden = true;
+        smartRideResult.hidden = true;
+        specialDistance.value = '';
+        specialWaiting.value = '0';
+        mapSearch.value = '';
+        activateMapTarget('origin');
+        updateFare();
+        updateMapTargetStatuses();
+        updatePreview();
+        mapSearch.focus();
+      }
+
+      function mapTargetField() { return activeMapTarget === 'destination' ? fields.destination : fields.origin; }
+      function setMapStatus(message, tone = '') {
+        mapStatus.className = `map-status${tone ? ` ${tone}` : ''}`;
+        mapStatus.textContent = message;
+      }
+      function updateMapTargetStatuses() {
+        if (!confirmedMapTargets.origin && confirmedMapTargets.destination) {
+          confirmedMapTargets.destination = false;
+          fields.destination.value = '';
+        }
+        [['origin', fields.origin, 'موقع الإقلاع', '01'], ['destination', fields.destination, 'موقع الوجهة', '02']].forEach(([target, field, label, number]) => {
+          const button = document.querySelector(`[data-map-target="${target}"]`);
+          const statusNode = document.getElementById(`${target}-map-status`);
+          const confirmed = confirmedMapTargets[target];
+          const locked = target === 'destination' && !confirmedMapTargets.origin;
+          if (button) {
+            button.disabled = locked;
+            button.setAttribute('aria-disabled', String(locked));
+            button.classList.toggle('is-confirmed', confirmed);
+            const index = button.querySelector('.target-index');
+            if (index) index.textContent = confirmed ? '✓' : number;
+          }
+          if (statusNode) statusNode.textContent = confirmed ? `تم تأكيد ${label}` : (locked ? 'مقفل حتى تأكيد الإقلاع' : (valueOf(field) ? 'جاهز للتأكيد' : 'لم يحدد بعد'));
+        });
+        const originValue = locationDisplayLabel('origin', valueOf(fields.origin)) || 'لم يحدد بعد';
+        const destinationValue = locationDisplayLabel('destination', valueOf(fields.destination)) || 'لم يحدد بعد';
+        setText('route-origin-value', originValue);
+        setText('route-destination-value', destinationValue);
+        syncDetailsRouteSummary();
+        const routeComplete = confirmedMapTargets.origin && confirmedMapTargets.destination;
+        routeSummaryState.textContent = routeComplete ? 'المسار مؤكد' : (valueOf(fields.origin) || valueOf(fields.destination) ? 'قيد التحديد' : 'بانتظار التحديد');
+        continueDetailsButton.disabled = !routeComplete;
+        continueDetailsButton.textContent = routeComplete ? 'متابعة إلى تفاصيل الرحلة' : 'أكمل تأكيد الموقعين أولًا';
+        if (!routeComplete) detailsCard.hidden = true;
+        progressOrigin.classList.toggle('is-complete', confirmedMapTargets.origin);
+        progressOrigin.classList.toggle('is-current', activeMapTarget === 'origin' && !confirmedMapTargets.origin);
+        progressDestination.classList.toggle('is-complete', confirmedMapTargets.destination);
+        progressDestination.classList.toggle('is-current', activeMapTarget === 'destination' && !confirmedMapTargets.destination);
+        setMapConfirmLabel();
+      }
+      function setMapConfirmLabel() {
+        const label = activeMapTarget === 'destination' ? 'الوجهة' : 'موقع الإقلاع';
+        mapConfirmButton.textContent = `تأكيد ${label}`;
+        mapConfirmButton.setAttribute('aria-label', `تأكيد ${label} المختار`);
+      }
+      function activateMapTarget(target) {
+        if (target === 'destination' && !confirmedMapTargets.origin) {
+          activeMapTarget = 'origin';
+          updateMapTargetStatuses();
+          setMapConfirmLabel();
+          setMapStatus('حدد موقع الإقلاع وثبّته أولًا، ثم ستُفتح الوجهة.', 'error');
+          return;
+        }
+        activeMapTarget = target === 'destination' ? 'destination' : 'origin';
+        document.querySelectorAll('[data-map-target]').forEach(button => {
+          const active = button.dataset.mapTarget === activeMapTarget;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-pressed', String(active));
+        });
+        const field = mapTargetField();
+        mapSearch.value = (field.dataset.coordinates || valueOf(field).startsWith('موقعي الحالي')) ? '' : valueOf(field);
+        updateMapTargetStatuses();
+        setMapConfirmLabel();
+        setMapStatus(activeMapTarget === 'origin' ? 'أنت تحدد الآن موقع الإقلاع.' : 'أنت تحدد الآن موقع الوجهة.');
+      }
+      function setMapQuery(query) {
+        const cleanQuery = String(query || '').trim() || '31.9539,35.9106';
+        const encoded = encodeURIComponent(cleanQuery);
+        mapFrame.src = `https://www.google.com/maps?q=${encoded}&z=15&output=embed`;
+        mapOpenGoogle.href = `https://www.google.com/maps/search/?api=1&query=${encoded}`;
+        const coordinates = parseCoordinatePair(cleanQuery);
+        if (coordinates) locationCoordinates[activeMapTarget] = coordinates;
+        setMapStatus(`الخريطة جاهزة للموقع: ${cleanQuery}`, 'ok');
+      }
+      async function pinMapLocation() {
+        const field = mapTargetField();
+        const query = valueOf(mapSearch) || valueOf(mapTargetField());
+        const storedCoordinates = readStoredCoordinates(field);
+        if (!query && !storedCoordinates) {
+          setMapStatus('اكتب اسم المكان أو استخدم موقعك الحالي أولًا.', 'error');
+          mapSearch.focus();
+          return;
+        }
+        mapPinButton.disabled = true;
+        try {
+          const directCoordinates = parseCoordinatePair(query) || storedCoordinates;
+          let coordinates = directCoordinates;
+          let label = query;
+          if (!coordinates) {
+            setMapStatus('جارٍ تثبيت العنوان من الخريطة…');
+            const response = await fetch('/api/public/direct-rides/geocode', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ query }),
+            });
+            const data = await response.json().catch(() => ({}));
+            const first = Array.isArray(data.results) ? data.results[0] : null;
+            if (!response.ok || !first || !Number.isFinite(Number(first.lat)) || !Number.isFinite(Number(first.lng))) throw new Error(data.error || 'لم يتم العثور على موقع مطابق');
+            coordinates = { lat: Number(first.lat), lng: Number(first.lng) };
+            label = first.label || query;
+          }
+          field.dataset.coordinates = JSON.stringify(coordinates);
+          field.value = directCoordinates && valueOf(field).startsWith('موقعي الحالي') ? 'موقعي الحالي' : (directCoordinates ? 'الموقع المسجل على الخريطة' : label);
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+          syncCoordinatesFromField(activeMapTarget);
+          updateMapTargetStatuses();
+          setMapQuery(label || query);
+          setMapStatus(activeMapTarget === 'origin' ? 'تم تثبيت الإقلاع بإحداثيات فعلية. اضغط «تأكيد موقع الإقلاع».': 'تم تثبيت الوجهة بإحداثيات فعلية. اضغط «تأكيد الوجهة».', 'ok');
+        } catch (error) {
+          setMapStatus(error.message || 'تعذر تثبيت العنوان؛ استخدم موقع الجهاز أو الإحداثيات.', 'error');
+        } finally {
+          mapPinButton.disabled = false;
+        }
+      }
+      function confirmMapLocation() {
+        if (activeMapTarget === 'destination' && !confirmedMapTargets.origin) {
+          activateMapTarget('origin');
+          setMapStatus('لا يمكن تأكيد الوجهة قبل تثبيت موقع الإقلاع.', 'error');
+          return;
+        }
+        const query = valueOf(mapTargetField()) || valueOf(mapSearch);
+        if (!query) {
+          setMapStatus(activeMapTarget === 'destination' ? 'ابحث عن الوجهة أو استخدم موقعك الحالي أولًا.' : 'ابحث عن موقع الإقلاع أو استخدم موقعك الحالي أولًا.', 'error');
+          mapSearch.focus();
+          return;
+        }
+        if (selectedType() === 'full-car' && !locationCoordinates[activeMapTarget]) {
+          setMapStatus('ثبّت الموقع المختار أولًا للحصول على إحداثيات فعلية وحساب المسافة.', 'error');
+          return;
+        }
+        const field = mapTargetField();
+        if (!valueOf(field)) {
+          field.value = query;
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        confirmedMapTargets[activeMapTarget] = true;
+        updateMapTargetStatuses();
+        if (activeMapTarget === 'origin') {
+          activateMapTarget('destination');
+          setMapStatus('تم تأكيد موقع الإقلاع. حدد الآن الوجهة ثم اضغط «تأكيد الوجهة».', 'ok');
+        } else {
+          if (locationCoordinates.origin && locationCoordinates.destination) void refreshAutomaticFare();
+          else setMapStatus('تم تأكيد الوجهة. للاحتساب التلقائي استخدم GPS أو أدخل إحداثيات الموقع.', 'ok');
+        }
+      }
+      function useCurrentLocation() {
+        if (!navigator.geolocation) {
+          setMapStatus('المتصفح لا يدعم تحديد الموقع الحالي.', 'error');
+          return;
+        }
+        setMapStatus('نطلب إذن الوصول إلى موقع جهازك…');
+        navigator.geolocation.getCurrentPosition(position => {
+          const query = `${position.coords.latitude.toFixed(5)},${position.coords.longitude.toFixed(5)}`;
+          mapSearch.value = query;
+          const field = mapTargetField();
+          field.dataset.coordinates = JSON.stringify({ lat: position.coords.latitude, lng: position.coords.longitude });
+          field.value = 'موقعي الحالي';
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+          locationCoordinates[activeMapTarget] = { lat: position.coords.latitude, lng: position.coords.longitude };
+          updateMapTargetStatuses();
+          setMapQuery(query);
+        }, error => {
+          if (error?.code === 1) setMapStatus('لم تسمح بالوصول للموقع. فعّل إذن الموقع لهذا الموقع من إعدادات Chrome ثم حاول مرة أخرى.', 'error');
+          else if (error?.code === 2) setMapStatus('تعذر قراءة موقع الجهاز حاليًا. فعّل GPS أو ابحث عن المكان يدويًا.', 'error');
+          else if (error?.code === 3) setMapStatus('انتهت مهلة تحديد الموقع. حاول مرة أخرى أو ابحث عن المكان يدويًا.', 'error');
+          else setMapStatus('تعذر تحديد موقعك. ابحث عن المكان يدويًا.', 'error');
+        }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+      }
+      function showInstallNote(message) {
+        installNote.hidden = false;
+        installNote.textContent = message;
+      }
+      async function submitCustomerBooking() {
+        if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
+          status.className = 'form-status error';
+          status.textContent = 'أكد موقع الإقلاع والوجهة من الخريطة قبل إرسال الطلب.';
+          setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
+          return;
+        }
+        submitButton.disabled = true;
+        submitButton.textContent = 'جارٍ استلام الطلب…';
+        status.className = 'form-status';
+        status.textContent = 'يتم حفظ الطلب في دورة المراجعة؛ لم يُنشر في قروب التشغيل بعد.';
+        try {
+          const response = await fetch('/api/public/customer-bookings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              customerName: valueOf(fields.name),
+              phone: valueOf(fields.phone),
+              origin: valueOf(fields.origin),
+              destination: valueOf(fields.destination),
+              originCoordinates: locationCoordinates.origin,
+              destinationCoordinates: locationCoordinates.destination,
+              departureTime: valueOf(fields.time),
+              requestType: selectedType(),
+              originConfirmed: confirmedMapTargets.origin,
+              destinationConfirmed: confirmedMapTargets.destination,
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'تعذر استلام طلب الراكب أو الأوردر');
+          customerRequest = data.request || null;
+          status.className = 'form-status ok';
+          status.textContent = `${data.message || 'تم استلام الطلب.'} رقم الطلب: ${customerRequest?.requestCode || 'غير محدد'}.`;
+          previewState.textContent = 'تم الاستلام';
+          submitButton.textContent = 'تم استلام الطلب';
+          updatePreview();
+        } catch (error) {
+          status.className = 'form-status error';
+          status.textContent = error.message || 'تعذر إرسال الطلب؛ حاول مرة أخرى.';
+          submitButton.disabled = false;
+          submitButton.textContent = 'إعادة إرسال الطلب';
+        }
+      }
+      async function submitSpecialBooking() {
+        if (smartRide) {
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
+          status.className = 'form-status error';
+          status.textContent = 'أكد موقع الإقلاع والوجهة من الزرين قبل إرسال طلب الرحلة الذكية.';
+          setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
+          return;
+        }
+        if (!locationCoordinates.origin || !locationCoordinates.destination) {
+          status.className = 'form-status error';
+          status.textContent = 'ثبّت الإقلاع والوجهة بإحداثيات فعلية قبل إرسال طلب الرحلة الذكية.';
+          setMapStatus('استخدم «تثبيت الموقع المختار» بعد البحث عن كل موقع.', 'error');
+          return;
+        }
+        if (!automaticRouteQuote || !isPositiveDistance(automaticRouteQuote.distanceKm) || !calculateSpecialFare(automaticRouteQuote.distanceKm, specialWaiting.value, valueOf(fields.time))) {
+          status.className = 'form-status error';
+          status.textContent = 'أعد تثبيت الموقعين لاحتساب مسافة فعلية قبل إرسال طلب الرحلة الذكية.';
+          setMapStatus('يجب أن يظهر تقدير لمسافة أكبر من صفر قبل الإرسال.', 'error');
+          return;
+        }
+        submitButton.disabled = true;
+        submitButton.textContent = 'جارٍ تجهيز الرحلة الذكية…';
+        status.className = 'form-status';
+        status.textContent = 'تم تجهيز المسار؛ بعد الاستلام راجع بطاقة الرحلة ثم أكد البحث عن كابتن.';
+        smartRideCreateKey = smartRideCreateKey || `BOOK-DIRECT-RIDE-${Date.now()}-${window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+        try {
+          const response = await fetch('/api/public/direct-rides', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': smartRideCreateKey },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              customerName: valueOf(fields.name),
+              phone: valueOf(fields.phone),
+              originLabel: valueOf(fields.origin),
+              destinationLabel: valueOf(fields.destination),
+              origin: locationCoordinates.origin,
+              destination: locationCoordinates.destination,
+              distanceKm: automaticRouteQuote.distanceKm,
+              durationMin: automaticRouteQuote.durationMin,
+              routeSource: automaticRouteQuote.routeSource,
+              waitingMin: valueOf(specialWaiting) || 0,
+              tripTime: valueOf(fields.time),
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر تجهيز طلب الرحلة الذكية');
+          if (!data.ride.riderToken) throw new Error('تم إنشاء الطلب دون رمز متابعة؛ لا تعِد الإرسال وراجع لوحة V27.');
+          smartRide = { ...data.ride, riderToken: data.ride.riderToken };
+          localStorage.setItem('v27-direct-ride-token', smartRide.riderToken);
+          localStorage.setItem('v27-direct-ride-id', String(smartRide.id));
+          renderSmartRide();
+          status.className = 'form-status ok';
+          status.textContent = `${data.message || 'تم تجهيز الرحلة الذكية.'} راجع البطاقة ثم أكد الرحلة.`;
+          previewState.textContent = 'بانتظار التأكيد';
+          submitButton.textContent = 'تم تجهيز الرحلة الذكية';
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          if (window.V27Notifications) {
+            V27Notifications.prime();
+            void V27Notifications.requestPermission();
+          }
+          connectSmartRideStream();
+          updatePreview();
+        } catch (error) {
+          status.className = 'form-status error';
+          status.textContent = error.message || 'تعذر تجهيز الرحلة؛ حاول مرة أخرى.';
+          submitButton.disabled = false;
+          submitButton.textContent = 'إعادة تجهيز الرحلة الذكية';
+        }
+      }
+
+      Object.entries(fields).forEach(([key, field]) => field.addEventListener('input', () => { if (key === 'origin' || key === 'destination') updateFare(); updatePreview(); }));
+      [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { syncCoordinatesFromField(target); confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
+      form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { syncQuickTypeButtons(); updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination) void refreshAutomaticFare(); }));
+      quickTypeButtons.forEach(button => button.addEventListener('click', () => {
+        setRequestType(button.dataset.quickType);
+        if (secondaryDialog?.contains(button)) secondaryDialog.close?.();
+      }));
+      document.getElementById('open-secondary-booking').addEventListener('click', () => {
+        if (typeof secondaryDialog.showModal === 'function') secondaryDialog.showModal();
+        else secondaryDialog.setAttribute('open', '');
+      });
+      document.getElementById('close-secondary-booking').addEventListener('click', () => secondaryDialog.close?.());
+      confirmSmartRideButton.addEventListener('click', confirmSmartRide);
+      cancelSmartRideButton.addEventListener('click', cancelSmartRide);
+      [specialDistance, specialWaiting].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
+      fields.time.addEventListener('input', () => { updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination && selectedType() === 'full-car') void refreshAutomaticFare(); });
+      resetButton.addEventListener('click', resetState);
+      continueDetailsButton.addEventListener('click', () => {
+        if (continueDetailsButton.disabled) return;
+        detailsCard.hidden = false;
+        window.scrollTo({ top: Math.max(0, detailsCard.offsetTop - 18), behavior: 'smooth' });
+        setTimeout(() => document.getElementById('customer-name').focus(), 220);
+      });
+      editLocationsButton.addEventListener('click', () => {
+        detailsCard.hidden = true;
+        window.scrollTo({ top: Math.max(0, document.getElementById('location-map').offsetTop - 18), behavior: 'smooth' });
+        setMapStatus('عدّل الموقعين ثم أكد المسار من جديد.');
+      });
+      document.querySelectorAll('[data-map-target]').forEach(button => button.addEventListener('click', () => activateMapTarget(button.dataset.mapTarget)));
+      document.getElementById('map-search-button').addEventListener('click', () => { const query = valueOf(mapSearch) || valueOf(mapTargetField()); if (parseCoordinatePair(query)) void pinMapLocation(); else setMapQuery(query); });
+      document.getElementById('map-pin-button').addEventListener('click', pinMapLocation);
+      mapConfirmButton.addEventListener('click', confirmMapLocation);
+      document.getElementById('map-current-button').addEventListener('click', useCurrentLocation);
+      mapSearch.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); const query = valueOf(mapSearch) || valueOf(mapTargetField()); if (parseCoordinatePair(query)) void pinMapLocation(); else setMapQuery(query); } });
+      window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; installButton.textContent = 'ثبّت تطبيق الراكب'; });
+      installButton.addEventListener('click', async () => {
+        if (!deferredInstallPrompt) {
+          showInstallNote('من قائمة المتصفح اختر «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».');
+          return;
+        }
+        deferredInstallPrompt.prompt();
+        const choice = await deferredInstallPrompt.userChoice;
+        showInstallNote(choice.outcome === 'accepted' ? 'تم بدء تثبيت تطبيق الراكب على جهازك.' : 'يمكنك تثبيت التطبيق لاحقًا من قائمة المتصفح.');
+        deferredInstallPrompt = null;
+      });
+      window.addEventListener('appinstalled', () => showInstallNote('تم تثبيت تطبيق الراكب بنجاح.'));
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/book-sw.js').then(registration => registration.update()).catch(() => {});
+        let serviceWorkerReloaded = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (serviceWorkerReloaded) return;
+          serviceWorkerReloaded = true;
+          window.location.reload();
+        });
+      }
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (!form.checkValidity()) {
+          status.className = 'form-status error';
+          status.textContent = 'أكمل الحقول المطلوبة أولًا لتجهيز المعاينة.';
+          form.reportValidity();
+          updatePreview();
+          return;
+        }
+        if (selectedType() === 'full-car') {
+          void submitSpecialBooking();
+          return;
+        }
+        void submitCustomerBooking();
+      });
+      updateFare();
+      syncQuickTypeButtons();
+      updateMapTargetStatuses();
+      updatePreview();
+      void restoreSmartRide();
+    })();
+  </script>
+</body>
+</html>

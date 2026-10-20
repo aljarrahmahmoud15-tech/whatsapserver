@@ -1,16 +1,16 @@
 services:
   - type: web
     name: whatsapserver-2
-    runtime: node
+    runtime: docker
     plan: standard
-    buildCommand: npm ci --omit=dev
-    startCommand: node --expose-gc --max-old-space-size=768 server.js
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /health
     autoDeploy: true
     disk:
       name: data
-      mountPath: /var/data
-      sizeGB: 1
+      mountPath: /app/data
+      sizeGB: 10
     envVars:
       - key: NODE_ENV
         value: production
@@ -23,9 +23,9 @@ services:
       - key: PUPPETEER_EXECUTABLE_PATH
         value: /usr/bin/chromium
       - key: DATA_DIR
-        value: /var/data
+        value: /app/data
       - key: RENDER_DATA_DIR
-        value: /var/data
+        value: /app/data
       - key: WHATSAPP_GROUP_ID
         value: 120363426604560611@g.us
       - key: BOT_PHONE
@@ -33,9 +33,9 @@ services:
       - key: BOT_PHONE_INTL
         value: "962779039586"
       - key: AUTH_PATH
-        value: /var/data/.wwebjs_auth
+        value: /app/data/.wwebjs_auth
       - key: BAILEYS_AUTH_PATH
-        value: /var/data/.baileys_auth
+        value: /app/data/.baileys_auth
       - key: BAILEYS_ENABLED
         value: "false"
       - key: API_RATE_LIMIT_MAX

@@ -1,0 +1,20 @@
+{
+  "name": "وصلني الآن · تطبيق الراكب",
+  "short_name": "وصلني",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/book.html?source=installed",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07121f",
+  "theme_color": "#07121f",
+  "description": "واجهة الراكب لإرسال تفاصيل الرحلة إلى وصلني الآن.",
+  "icons": [
+    {
+      "src": "/aljarah-logo-mark-clean.webp",
+      "sizes": "768x768",
+      "type": "image/webp",
+      "purpose": "any maskable"
+    }
+  ]
+}

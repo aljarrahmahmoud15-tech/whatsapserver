@@ -9,7 +9,10 @@ const dockerfile = fs.readFileSync('./Dockerfile', 'utf8');
 
 assert.match(packageJson.scripts.start, /--expose-gc/);
 assert.match(packageJson.scripts.start, /--max-old-space-size=\$\{NODE_HEAP_MB:-768\}/);
-assert.match(renderConfig, /startCommand: node --expose-gc --max-old-space-size=768 server\.js/);
+assert.match(renderConfig, /runtime: docker/);
+assert.match(renderConfig, /dockerfilePath: \.\/Dockerfile/);
+assert.match(renderConfig, /dockerContext: \./);
+assert.doesNotMatch(renderConfig, /startCommand:/);
 assert.match(dockerfile, /node --expose-gc --max-old-space-size=768 server\.js/);
 
 assert.match(server, /WHATSAPP_LID_CACHE_TTL_MS/);

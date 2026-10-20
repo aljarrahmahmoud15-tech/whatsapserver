@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#07121f">
+  <title>تأكيد طلب الرحلة الذكية · وصلني الآن · V27</title>
+  <style>
+    :root{color-scheme:dark;--bg:#07121f;--panel:#102239f5;--panel2:#0b1b2e;--line:#294461;--muted:#9eb1c8;--text:#f4f8ff;--mint:#48dfb0;--gold:#f7c96f;--danger:#ff7f91;--shadow:0 20px 60px #0007}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:16px;background:radial-gradient(circle at 100% -10%,#163c62 0,transparent 34rem),radial-gradient(circle at 0 30%,#0c2944 0,transparent 28rem),var(--bg);color:var(--text);font-family:Tahoma,Arial,sans-serif;line-height:1.6}.card{width:min(100%,560px);padding:clamp(22px,5vw,38px);border:1px solid var(--line);border-radius:25px;background:linear-gradient(145deg,var(--panel),var(--panel2));box-shadow:var(--shadow);text-align:right}.brand{display:flex;align-items:center;gap:10px;margin-bottom:28px}.mark{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,var(--mint),#2f9cf5);color:#06251c;font-size:20px;font-weight:1000}.brand strong{display:block;font-size:15px}.brand span{display:block;color:var(--muted);font-size:10px}.eyebrow{color:var(--mint);font-size:11px;font-weight:900;letter-spacing:.6px}.card h1{margin:8px 0 8px;font-size:clamp(27px,6vw,40px);line-height:1.15}.card p{margin:0;color:var(--muted);font-size:13px;line-height:1.9}.request-code{display:inline-flex;margin:22px 0 12px;padding:7px 10px;border:1px solid rgba(247,201,111,.5);border-radius:999px;background:rgba(247,201,111,.1);color:var(--gold);font-size:11px;font-weight:900;direction:ltr}.notice{margin:15px 0;padding:12px 13px;border:1px solid #315273;border-radius:13px;background:#0b1d31;color:#c7d9eb;font-size:11px;line-height:1.8}.notice.ok{border-color:#2ca882;background:#103c34;color:#baffea}.notice.error{border-color:#8e4d61;background:#3a202c;color:#ffd4dd}.primary{width:100%;min-height:48px;margin-top:8px;border:0;border-radius:12px;background:var(--mint);color:#06251c;font:inherit;font-size:13px;font-weight:900;cursor:pointer;transition:filter .16s,transform .16s}.primary:hover{filter:brightness(1.08);transform:translateY(-1px)}.primary:disabled{opacity:.55;cursor:not-allowed;transform:none}.details{display:grid;gap:7px;margin:16px 0}.detail{display:flex;justify-content:space-between;gap:12px;padding:9px 10px;border-bottom:1px solid rgba(126,177,214,.14);font-size:11px}.detail span{color:var(--muted)}.detail strong{text-align:left;overflow-wrap:anywhere}.foot{margin-top:21px;color:#6f88a1;font-size:10px;text-align:center}@media(max-width:520px){body{padding:9px}.card{border-radius:19px;padding:21px 17px}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="mark"><img src="/aljarah-logo-mark-clean.webp" alt="شعار وصلني الآن"></span><span><strong>وصلني الآن · V27</strong><span>تأكيد طلب الرحلة الذكية</span></span></div>
+    <span class="eyebrow">CUSTOMER CONFIRMATION</span>
+    <h1>راجع السعر وأكد رحلتك.</h1>
+    <p>تم تجهيز طلب الرحلة الذكية من فريق وصلني الآن وفق العداد الرسمي: فتحة + كيلومتر + انتظار، مع زيادة ليلية على فتحة العداد. عند التأكيد، ينتقل الطلب إلى المالك للنشر في قروب التشغيل حسب المسار المعتمد.</p>
+    <div id="request-code" class="request-code">طلب رحلة ذكية</div>
+    <div id="details" class="details hidden"></div>
+    <div id="message" class="notice">اضغط الزر لتأكيد السعر والمسار. لا يتم خصم أي مبلغ من هذه الصفحة.</div>
+    <button id="confirm-button" class="primary" type="button">تأكيد السعر والرحلة</button>
+    <div class="foot">وصلني الآن · تأكيد العميل لا ينشر الطلب ولا ينفذ تسوية مالية تلقائيًا</div>
+  </main>
+<script>
+(() => {
+  'use strict';
+  const params = new URLSearchParams(location.search);
+  const requestId = params.get('request') || '';
+  const token = params.get('token') || '';
+  const code = document.getElementById('request-code');
+  const details = document.getElementById('details');
+  const message = document.getElementById('message');
+  const button = document.getElementById('confirm-button');
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  if (!requestId || !token) {
+    message.className = 'notice error';
+    message.textContent = 'رابط التأكيد ناقص أو غير صالح. اطلب من فريق وصلني الآن إصدار رابط جديد.';
+    button.disabled = true;
+  } else {
+    code.textContent = `طلب رحلة ذكية #${requestId}`;
+  }
+  button.addEventListener('click', async () => {
+    if (!requestId || !token) return;
+    button.disabled = true;
+    button.textContent = 'جارٍ تأكيد الطلب…';
+    try {
+      const response = await fetch(`/api/public/special-bookings/${encodeURIComponent(requestId)}/confirm`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token }), credentials: 'same-origin' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'تعذر تأكيد الطلب');
+      const request = data.request || {};
+      message.className = 'notice ok';
+      message.textContent = data.message || 'تم تأكيد طلبك بنجاح.';
+      details.classList.remove('hidden');
+      details.innerHTML = `<div class="detail"><span>المسار</span><strong>${esc(request.origin || '—')} ← ${esc(request.destination || '—')}</strong></div><div class="detail"><span>وقت الإقلاع</span><strong>${esc(request.tripTime || '—')}</strong></div><div class="detail"><span>المسافة</span><strong>${esc(request.distanceKm ?? '—')} كم</strong></div><div class="detail"><span>الانتظار</span><strong>${esc(request.waitingMin ?? 0)} دقيقة</strong></div><div class="detail"><span>السعر</span><strong>${esc(request.price || '—')} JOD</strong></div>`;
+      button.textContent = 'تم تأكيد الرحلة';
+    } catch (error) {
+      message.className = 'notice error';
+      message.textContent = error.message || 'تعذر تأكيد الطلب.';
+      button.disabled = false;
+      button.textContent = 'إعادة محاولة التأكيد';
+    }
+  });
+})();
+</script>
+</body>
+</html>
