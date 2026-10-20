@@ -13213,6 +13213,50 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
     res.status(500).json({ error: "تعذر إلغاء الحجز وعكس الحوالة؛ أُلغيت العملية كاملة", financialMutation: false });
   }
 });
+app.post("/api/admin/orders/:id/resend-confirmation", requireAdmin, async (req, res) => {
+  const orderId = Number(req.params.id);
+  if (!Number.isInteger(orderId) || orderId < 1) return res.status(400).json({ error: "رقم الحجز غير صحيح", mutation: "none" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا", mutation: "none" });
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+  if (!order) return res.status(404).json({ error: "الحجز غير موجود", mutation: "none" });
+  if (order.settlement_state !== "settled") return res.status(409).json({ error: "الحجز غير مثبت ماليًا؛ لا يوجد إشعار تثبيت", mutation: "none" });
+  const delivery = db.prepare("SELECT * FROM order_confirmation_deliveries WHERE order_id=?").get(orderId);
+  if (delivery && delivery.status === "sent" && delivery.message_id) {
+    return res.json({ success: true, state: "already_sent", orderId, messageId: delivery.message_id, mutation: "none" });
+  }
+  const producer = order.producer_user_id ? db.prepare("SELECT name FROM users WHERE id=?").get(order.producer_user_id) : null;
+  const captain = order.captain_user_id ? db.prepare("SELECT name FROM users WHERE id=?").get(order.captain_user_id) : null;
+  const confirmationDetails = {
+    orderId: order.id,
+    orderNo: order.order_no,
+    executorName: (captain && captain.name) || order.captain_name_snapshot || "غير مسجل",
+    downloaderName: (producer && producer.name) || order.producer_name_snapshot || "غير مسجل",
+    priceCents: order.price_cents,
+    origin: order.origin,
+    destination: order.destination,
+    tripTime: order.trip_time,
+    bookingMode: Number(order.booking_mode || 0) === 1,
+  };
+  try {
+    await sendFinalBookingConfirmation(order.group_id, confirmationDetails, { deliveryMode: "direct", immediateReaction: true, forceFinalRecovery: true });
+  } catch (error) {
+    console.warn("[resend-confirmation] send failed:", String((error && error.message) || error));
+  }
+  const fresh = db.prepare("SELECT status,message_id,last_error,attempts FROM order_confirmation_deliveries WHERE order_id=?").get(orderId);
+  const sent = Boolean(fresh && fresh.status === "sent" && fresh.message_id);
+  audit("order.confirmation.resend_requested", "order", orderId, { orderNo: order.order_no, status: fresh?.status || null, messageId: fresh?.message_id || null, attempts: fresh?.attempts || null, sent });
+  return res.status(sent ? 201 : 202).json({
+    success: sent,
+    state: sent ? "sent" : "pending",
+    orderId,
+    orderNo: order.order_no,
+    messageId: (fresh && fresh.message_id) || null,
+    lastError: (fresh && fresh.last_error) || null,
+    attempts: (fresh && fresh.attempts) || null,
+    confirmationText: finalBookingConfirmationText(confirmationDetails),
+    mutation: "none",
+  });
+});
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   if (openCleanReadCache(req, res, "/api/admin/orders")) return;
   const requestedOrderLimit = Number(req.query.limit || 200);
