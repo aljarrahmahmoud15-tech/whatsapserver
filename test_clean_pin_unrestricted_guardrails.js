@@ -24,6 +24,10 @@ assert.ok(
   "the pending settlement must fall back to the producer phone snapshot"
 );
 
+// 1b) The executor identity may be recovered from the order row as well.
+assert.ok(/if \(!captainPhone && order && order\.captain_phone_snapshot\)/.test(source), "the pin must reuse the captured executor phone");
+assert.ok(/const rowCaptainName = order && order\.captain_name_snapshot/.test(source), "the pin must reuse the captured executor name");
+
 // 2) No wallet mutation for a party without a wallet row.
 assert.ok(
   /if \(producer\.id\) \{\s*\n\s*db\.prepare\("UPDATE users SET wallet_cents=wallet_cents\+\?/.test(source),

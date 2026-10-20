@@ -12299,9 +12299,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const confirmedByPhone = quoted.fromMe ? connectedBotPhone() : producerPhone;
     if (!(typeof ownerOverride !== "undefined" && ownerOverride) && (!reactionPresentOnAcceptance)) { skipped.push({ messageId: acceptanceMessageId, reason: "missing_thumb_reaction", reactions: Array.isArray(reactions) ? reactions.length : 0, thumbs: thumbs.length, validReactionPhones: reactionPhones.length, reactedByBot, hasBotConfirmationCard, visibleThumbReaction }); continue; }
     const acceptanceContact = typeof liveAcceptance.getContact === "function" ? await withTimeout(liveAcceptance.getContact(), 8000, null) : null;
-    const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
+    let captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
-    const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
+    let captain = findCaptainByPhone(captainPhone, { activeOnly: true });
     let producer = quoted.fromMe && BOT_FINANCIAL_MODE === "company" ? companyUser() : (quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone));
     let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
     // Owner-authorized recovery: reuse the identity already captured on the order row
@@ -12310,6 +12310,10 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       const rowProducer = order && order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
       if (!producer && rowProducer && rowProducer.active === 1 && rowProducer.account_status === "active") producer = rowProducer;
       if (!producerPhone && order && order.producer_phone_snapshot) producerPhone = order.producer_phone_snapshot;
+      if (!captainPhone && order && order.captain_phone_snapshot) {
+        captainPhone = order.captain_phone_snapshot;
+        if (!captain) captain = findCaptainByPhone(captainPhone, { activeOnly: true });
+      }
       if (!producer && !order?.producer_phone_snapshot && ownerOverride) {
         try {
           const liveSource = client && typeof client.getMessageById === "function"
@@ -12334,7 +12338,9 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     if (!order || (order.status === "accepted" && order.settlement_state === "settled")) { skipped.push({ messageId: acceptanceMessageId, reason: "already_registered_and_settled", orderNo: order?.order_no }); continue; }
     if (order.archive_state === "archived") { skipped.push({ messageId: acceptanceMessageId, reason: "order_archived", orderNo: order.order_no }); continue; }
     const acceptedAt = new Date(Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0) * 1000 || Date.now()).toISOString();
-    const captainSnapshot = (!captain && captainPhone) ? { phone: captainPhone, name: captainName || null } : null;
+    const rowCaptainName = order && order.captain_name_snapshot ? String(order.captain_name_snapshot) : null;
+    const effectiveCaptainName = (captainName && captainName !== "غير معروف") ? captainName : (rowCaptainName && rowCaptainName !== "غير معروف" ? rowCaptainName : captainName || null);
+    const captainSnapshot = (!captain && captainPhone) ? { phone: captainPhone, name: effectiveCaptainName || null } : null;
     const producerSnapshot = (!producer && (producerPhone || order.producer_phone_snapshot)) ? { phone: producerPhone || order.producer_phone_snapshot, name: order.producer_name_snapshot || null } : null;
     if (!captain && !captainSnapshot) {
       db.prepare("UPDATE orders SET status='accepted',captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,settlement_state='unlinked',import_source='group_history_24h',updated_at=? WHERE id=?").run(null, captainPhone || null, captainName || null, acceptanceMessageId, acceptedAt, confirmedByPhone, now(), order.id);
