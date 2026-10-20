@@ -4576,6 +4576,30 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
     if (!sent) {
+      // whatsapp-web.js can resolve sendMessage with no message object at all.
+      // Before giving up, verify on the group itself whether the card is already
+      // there (duplicate safety), then try the other transport exactly once.
+      const observed = orderId && details?.orderNo
+        ? await findFinalBookingConfirmationInGroup(groupId, details.orderNo).catch(() => null)
+        : null;
+      if (observed) {
+        if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(observed.messageId, now(), now(), now(), orderId);
+        if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
+        return observed;
+      }
+      const alternateSender = deliveryMode === "fallback"
+        ? () => sendFinalBookingConfirmationDirect(groupId, message)
+        : () => sendFinalBookingConfirmationViaConfiguredChat(groupId, message);
+      try {
+        const retried = await withTimeoutStrict(alternateSender(), ADMIN_SEND_TIMEOUT_MS, sendTimeoutMarker);
+        if (retried && retried !== sendTimeoutMarker) {
+          if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=?,updated_at=?,last_error=NULL WHERE order_id=?").run(retried.id?._serialized || null, now(), now(), orderId);
+          if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
+          return retried;
+        }
+      } catch (alternateError) {
+        console.warn(`[WhatsApp] confirmation alternate send failed: order=${details?.orderNo || "unknown"} error=${String(alternateError?.message || alternateError)}`);
+      }
       if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("send_waiting_message_create", now(), orderId);
       return null;
     }

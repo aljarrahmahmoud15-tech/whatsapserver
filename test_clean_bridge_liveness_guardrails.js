@@ -47,6 +47,13 @@ assert.match(server, /app\.post\("\/api\/admin\/orders\/:id\/resend-confirmation
 assert.match(server, /if \(delivery && delivery\.status === "sent" && delivery\.message_id\) \{/);
 assert.match(server, /state: "already_sent"/);
 
+// A send that resolves with no message object must not leave the card pending
+// forever: read the group back first (no duplicate card), then try the other
+// transport exactly once.
+assert.match(server, /const alternateSender = deliveryMode === "fallback"/);
+assert.match(server, /const observed = orderId && details\?\.orderNo/);
+assert.match(server, /confirmation alternate send failed/);
+
 // 5) The confirmation send must stay bound to the configured clean group only.
 assert.match(server, /async function sendFinalBookingConfirmationDirect\(groupId, message\) \{/);
 assert.match(server, /if \(!isServer2OutboundTargetAllowed\(groupId\)\) throw new Error\("server2_group_target_not_allowed"\);/);
