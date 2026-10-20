@@ -3702,7 +3702,7 @@ async function resolveGroupChat(groupId, inviteCode = "") {
   if (!groupId || !client || !isReady) return null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const chat = await withTimeout(client.getChatById(groupId), 15000, null);
-    if (chat && chat.isGroup && Array.isArray(chat.participants)) return chat;
+    if (chat && chat.isGroup && (Array.isArray(chat.participants) || typeof chat.sendMessage === "function")) return chat;
     if (inviteCode && attempt === 0) await withTimeout(client.acceptInvite(inviteCode), 60000, null);
     if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 2000));
   }
