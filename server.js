@@ -10931,8 +10931,11 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   }
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   let snapshot = null;
-  try { snapshot = await readGroupSnapshot(officialGroupId, 15000); } catch (_) { snapshot = null; }
-  if (!snapshot) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
+  try { snapshot = await readGroupSnapshot(officialGroupId, 30000); } catch (_) { snapshot = null; }
+  if (!snapshot) {
+    const knownMembers = db.prepare("SELECT COUNT(DISTINCT sender_phone) AS count FROM messages WHERE group_id=? AND sender_phone IS NOT NULL AND sender_phone<>''").get(officialGroupId);
+    return res.json({ success: true, source: "database", groups: [{ id: officialGroupId, name: getSetting("group_name", "") || null, participants: knownMembers ? Number(knownMembers.count || 0) : null }] });
+  }
   return res.json({ success: true, source: "snapshot", groups: [{ id: officialGroupId, name: snapshot.name || null, participants: Array.isArray(snapshot.participants) ? snapshot.participants.length : null }] });
 });
 app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
@@ -10957,14 +10960,30 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
     if (!fallbackMembers.length) return res.status(503).json({ error: "تعذر قراءة أعضاء القروب حاليًا؛ أعد المحاولة بعد لحظات", mutation: "none" });
     return res.json({ success: true, groupId, groupName: getSetting("group_name", "") || null, members: fallbackMembers, participantSource: "database", participantRawCount: fallbackMembers.length, partial: true });
   }
+  const normalizeMemberPhone = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const dbNameMap = new Map(db.prepare("SELECT phone, name FROM users WHERE name IS NOT NULL AND name<>''").all().map((row) => [normalizeMemberPhone(row.phone), String(row.name)]));
+  const observedNameMap = new Map();
+  try {
+    for (const row of db.prepare("SELECT sender_phone, sender_name FROM messages WHERE group_id=? AND sender_name IS NOT NULL AND sender_name<>'' GROUP BY sender_phone").all(groupId)) {
+      const key = normalizeMemberPhone(row.sender_phone);
+      if (key && !observedNameMap.has(key)) observedNameMap.set(key, String(row.sender_name));
+    }
+  } catch (_) {}
+  const contactLookups = { left: 25 };
   const members = [];
   for (const participant of (chat.participants || [])) {
     const serialized = participant && participant.id && (participant.id._serialized || String(participant.id));
     const phone = participant && (participant.user || (participant.id && participant.id.user)) ? String(participant.user || participant.id.user) : "";
     if (!phone || phone === BOT_PHONE_INTL) continue;
-    let contact = null;
-    try { contact = await withTimeout(client.getContactById(serialized), 10000, null); } catch (_) {}
-    members.push({ phone, name: String((contact && (contact.name || contact.pushname)) || phone).trim(), id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
+    const phoneKey = normalizeMemberPhone(phone);
+    let name = dbNameMap.get(phoneKey) || observedNameMap.get(phoneKey) || "";
+    if (!name && contactLookups.left > 0 && serialized) {
+      contactLookups.left -= 1;
+      let contact = null;
+      try { contact = await withTimeout(client.getContactById(serialized), 4000, null); } catch (_) {}
+      name = String((contact && (contact.name || contact.pushname)) || "").trim();
+    }
+    members.push({ phone, name: name || phone, id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
   }
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
