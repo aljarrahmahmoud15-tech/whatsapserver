@@ -14,8 +14,21 @@
     @media(max-width:900px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.captain-grid,.order-grid,.admin-grid{grid-template-columns:1fr}}
     @media(max-width:600px){.service-grid{grid-template-columns:1fr 1fr}.service-item:last-child{grid-column:1/-1}.shell{width:min(100% - 16px,540px);padding-top:6px}.topbar{margin:0 -2px 10px;padding:9px 2px}.brand-mark{width:36px;height:36px;border-radius:12px;font-size:17px}.brand-copy strong{font-size:13px}.brand-copy span{font-size:10px}.live-status{order:3;flex:1 1 100%;padding:7px 9px;border-radius:13px}.topbar-inner{align-items:flex-start;flex-wrap:wrap}.main-nav{gap:6px;margin-top:5px}.main-nav button{font-size:11px;padding:8px 7px}.hero{padding:18px;border-radius:20px}.hero h1{font-size:24px}.hero p{font-size:12px}.hero-actions{margin-top:14px}.hero-actions button{flex:1 1 calc(50% - 8px);padding:10px 8px;font-size:12px}.metric-grid{gap:8px}.metric{padding:12px}.metric b{font-size:19px}.metric small{font-size:10px}.panel{padding:14px;border-radius:17px;scroll-margin-top:100px}.panel-head{display:block}.panel-actions{justify-content:flex-start;margin-top:12px}.panel-title h2{font-size:18px}.person-card,.order-card,.admin-card{padding:13px}.person-top{gap:8px}.identity h3{font-size:15px}.balance-top{min-width:92px;padding:7px 8px}.balance-icon{width:25px;height:25px}.balance-top b{font-size:11px}.captain-counts{gap:7px}.stat-button{min-height:64px}.stat-button b{font-size:14px}.captain-actions{gap:6px}.captain-actions button{font-size:10px;padding:9px 5px}.order-price{font-size:19px}.route{font-size:15px}.finance-strip{gap:5px}.finance-box{padding:7px 5px}.finance-box span{font-size:8px}.finance-box b{font-size:10px}.admin-grid{gap:9px}.admin-card h3{font-size:14px}.admin-card p{font-size:10px}.modal{padding:15px;border-radius:18px}.modal-head h2{font-size:18px}}
 
-    .order-actions{display:flex;gap:8px;margin-top:12px;padding-top:11px;border-top:1px solid #193650}.order-actions button{width:100%;font-size:11px}.cancel-order-btn{background:#54283a!important;color:#ffdce3!important;border-color:#a35069!important}.cancelled-order{border-right-color:var(--red)!important;background:linear-gradient(145deg,#321f2a,#172132)!important}
-</style>
+	    .order-actions{display:flex;gap:8px;margin-top:12px;padding-top:11px;border-top:1px solid #193650}.order-actions button{width:100%;font-size:11px}.cancel-order-btn{background:#54283a!important;color:#ffdce3!important;border-color:#a35069!important}.cancelled-order{border-right-color:var(--red)!important;background:linear-gradient(145deg,#321f2a,#172132)!important}
+	    .v26-operations-link{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:10px 14px;border-radius:12px;border:1px solid rgba(72,223,176,.64);background:linear-gradient(135deg,#123d37,#0d2c35);color:#baffea;text-decoration:none;font-weight:900;font-size:12px;transition:transform .16s,filter .16s}.v26-operations-link:hover{filter:brightness(1.1);transform:translateY(-1px)}
+	</style>
+	<script>
+	  document.addEventListener('DOMContentLoaded',function(){
+	    const actions=document.querySelector('.top-actions');
+	    if(!actions||actions.querySelector('.v26-operations-link')) return;
+	    const link=document.createElement('a');
+	    link.className='v26-operations-link';
+	    link.href='/v27/customer-bookings';
+	    link.textContent='مركز الرحلات';
+	    link.setAttribute('aria-label','فتح مركز إدارة طلبات الرحلات');
+	    actions.insertBefore(link,actions.firstChild);
+	  });
+	</script>
 </head>
 <body>
   <main class="shell">

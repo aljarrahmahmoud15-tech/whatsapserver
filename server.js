@@ -21,6 +21,7 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { calculateFare, farePolicyResponse } = require("./pricing");
+const { calculateSpecialTripFare, specialTripTariffResponse } = require("./special-trip-pricing");
 const { DEFAULT_SPECIAL_BOOKING_POLICY, normalizeSpecialBookingPolicy, specialBookingPolicyResponse, isSpecialBookingKind } = require("./special-booking-policy");
 const { DEFAULT_CUSTOMER_BOOKING_POLICY, normalizeCustomerBookingPolicy, customerBookingPolicyResponse } = require("./customer-booking-policy");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
@@ -529,7 +530,7 @@ app.get("/health", (req, res) => {
 });
 app.get("/api/public/pricing", (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-  res.json({ success: true, policy: farePolicyResponse() });
+  res.json({ success: true, policy: farePolicyResponse(), specialTripTariff: specialTripTariffResponse() });
 });
 app.post("/api/public/fare-quote", (req, res) => {
   const rawAirport = req.body?.isAirport;
@@ -543,6 +544,12 @@ app.post("/api/public/fare-quote", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, ...result });
 });
+app.post("/api/public/special-trip-fare", publicSpecialBookingLimiter, (req, res) => {
+  const result = calculateSpecialTripFare({ distanceKm: req.body?.distanceKm, durationMin: req.body?.durationMin });
+  if (result.status === "invalid") return res.status(400).json({ success: false, error: "أدخل مسافة ومدة صحيحتين" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, ...result });
+});
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
@@ -553,21 +560,24 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   if (!policy.enabled) return res.status(409).json({ success: false, error: "استقبال الحجز الخاص متوقف حاليًا من إعدادات المالك" });
   const input = publicSpecialBookingInput(req.body || {});
   if (input.error) return res.status(400).json({ success: false, error: input.error });
+  const priceCents = input.quote.status === "quoted" ? input.quote.fareCents : null;
+  const priceSource = input.quote.status === "quoted" ? "special_meter" : null;
+  const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = specialBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,price_cents,price_source,notes,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,NULL,NULL,?,'new',?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.notes, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,distance_km,duration_min,price_cents,price_source,notes,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.distanceKm, input.durationMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
   if (policy.ownerNotification) {
     void notifyOperations({
       event: `special_booking.received.${row.id}`,
       title: "طلب حجز خاص جديد",
-      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, "لم يتم تحديد السعر أو النشر أو التسوية بعد."],
+      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, row.price_cents ? `تقدير العداد: ${money(row.price_cents)} JOD` : "لم تُدخل المسافة والمدة بعد؛ يحتاج السعر مراجعة المالك.", "لم يتم النشر أو التسوية بعد."],
       ownersOnly: true,
     }).catch(() => null);
   }
-  res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: "تم استلام طلب الحجز الخاص. سيظهر للمالك للمراجعة وتحديد السعر." });
+  res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: row.price_cents ? "تم احتساب تقدير الرحلة الخاصة وإرساله للمالك للمراجعة." : "تم استلام طلب الرحلة الخاصة. سيظهر للمالك للمراجعة واحتساب السعر." });
 });
 app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res) => {
   const policy = currentCustomerBookingPolicy();
@@ -948,6 +958,8 @@ CREATE TABLE IF NOT EXISTS special_booking_requests (
   destination TEXT NOT NULL,
   trip_time TEXT NOT NULL,
   request_type TEXT NOT NULL DEFAULT 'full_car',
+  distance_km REAL,
+  duration_min REAL,
   price_cents INTEGER,
   price_source TEXT,
   notes TEXT,
@@ -1233,6 +1245,9 @@ if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER T
 if (!existingCandidateColumns.includes("archive_state")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_state TEXT NOT NULL DEFAULT 'active'");
 if (!existingCandidateColumns.includes("archived_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN archived_at TEXT");
 if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_reason TEXT");
+const existingSpecialBookingColumns = db.prepare("PRAGMA table_info(special_booking_requests)").all().map((column) => column.name);
+if (!existingSpecialBookingColumns.includes("distance_km")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN distance_km REAL");
+if (!existingSpecialBookingColumns.includes("duration_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN duration_min REAL");
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
@@ -2787,6 +2802,8 @@ function specialBookingRequestResponse(row, req, { includePrivate = false, confi
     destination: row.destination,
     tripTime: row.trip_time,
     requestType: row.request_type,
+    distanceKm: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
+    durationMin: row.duration_min === null || row.duration_min === undefined ? null : Number(row.duration_min),
     price: row.price_cents === null || row.price_cents === undefined ? null : money(row.price_cents),
     priceCents: row.price_cents === null || row.price_cents === undefined ? null : Number(row.price_cents),
     priceSource: row.price_source || null,
@@ -2805,6 +2822,7 @@ function specialBookingRequestResponse(row, req, { includePrivate = false, confi
     confirmationUrl: specialBookingConfirmationUrl(req, row, confirmationToken),
     confirmationLinkAvailable: Boolean(row.customer_confirmation_token_hash),
   };
+  if (response.distanceKm !== null && response.durationMin !== null) response.meterFare = calculateSpecialTripFare({ distanceKm: response.distanceKm, durationMin: response.durationMin });
   if (includePrivate) response.customerConfirmationTokenLast4 = row.customer_confirmation_token_last4 || null;
   return response;
 }
@@ -2817,6 +2835,10 @@ function publicSpecialBookingInput(body = {}) {
   const requestType = String(body.requestType || "").trim().toLowerCase();
   const originConfirmed = body.originConfirmed === true;
   const destinationConfirmed = body.destinationConfirmed === true;
+  const rawDistance = body.distanceKm;
+  const rawDuration = body.durationMin;
+  const distanceKm = rawDistance === undefined || rawDistance === null || String(rawDistance).trim() === "" ? null : Number(String(rawDistance).replace(",", "."));
+  const durationMin = rawDuration === undefined || rawDuration === null || String(rawDuration).trim() === "" ? null : Number(String(rawDuration).replace(",", "."));
   const notes = String(body.notes || "").trim().slice(0, 500) || null;
   if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
@@ -2824,11 +2846,17 @@ function publicSpecialBookingInput(body = {}) {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
   if (requestType !== "full-car") return { error: "هذا المسار مخصص للحجز الخاص فقط" };
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
-  return { customerName, phone, origin, destination, tripTime, requestType: "full_car", notes };
+  if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return { error: "المسافة غير صالحة" };
+  if (durationMin !== null && (!Number.isFinite(durationMin) || durationMin < 0 || durationMin > 100000)) return { error: "المدة الزمنية غير صالحة" };
+  if ((distanceKm === null) !== (durationMin === null)) return { error: "أدخل المسافة والمدة معًا لاحتساب تعرفة الرحلة الخاصة" };
+  const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm, durationMin });
+  if (quote.status === "invalid") return { error: "المسافة أو المدة غير صالحة" };
+  return { customerName, phone, origin, destination, tripTime, requestType: "full_car", distanceKm, durationMin, quote, notes };
 }
 function specialBookingOperationalMessage(row) {
   return [
     `السعر ${money(row.price_cents)}`,
+    row.distance_km !== null && row.duration_min !== null ? `المسافة ${row.distance_km} كم · المدة ${row.duration_min} دقيقة` : "",
     `من ${row.origin} إلى ${row.destination}`,
     `وقت الإقلاع: ${row.trip_time}`,
     `حجز خاص #${row.request_code}`,

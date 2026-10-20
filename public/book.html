@@ -118,10 +118,7 @@
     .install-note[hidden] { display: none; }
 
     .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1.04fr) minmax(330px, .96fr);
-      gap: 18px;
-      align-items: stretch;
+      display: block;
       margin-bottom: 18px;
     }
     .hero-copy, .booking-card, .preview-card {
@@ -185,7 +182,9 @@
     }
     .proof-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px var(--mint); }
 
-    .booking-card { padding: clamp(19px, 3vw, 28px); }
+    .booking-card { margin-bottom: 18px; padding: clamp(19px, 3vw, 28px); }
+    .booking-card[hidden] { display: none; }
+    .field input[readonly] { border-color: rgba(247, 201, 111, .48); background: rgba(74, 55, 23, .2); color: #ffe5a3; cursor: default; }
     .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
     .card-head h2 { margin-bottom: 5px; font-size: 20px; }
     .card-head p { margin-bottom: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
@@ -237,6 +236,18 @@
     .fare-box { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 14px; border: 1px solid rgba(247, 201, 111, .42); border-radius: var(--radius-sm); background: linear-gradient(135deg, rgba(74, 55, 23, .48), rgba(6, 23, 34, .9)); }
     .fare-box strong { color: var(--gold); font-size: 18px; }
     .fare-box small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+    .special-fare-panel { display: grid; gap: 10px; margin-top: 10px; padding: 12px; border: 1px solid rgba(72, 223, 176, .3); border-radius: var(--radius-sm); background: rgba(6, 23, 34, .7); }
+    .special-fare-panel[hidden] { display: none; }
+    .special-fare-heading, .special-fare-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .special-fare-heading strong { color: var(--mint); font-size: 11px; }
+    .special-fare-heading span { color: var(--muted); font-size: 9px; }
+    .special-fare-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .special-fare-fields label { display: grid; gap: 5px; color: #c5d5e7; font-size: 10px; font-weight: 800; }
+    .special-fare-fields label span { color: var(--muted); font-size: 9px; font-weight: 400; }
+    .special-fare-fields input { min-height: 42px; padding: 8px 10px; border: 1px solid #315273; border-radius: 10px; background: #071827; color: var(--text); font-size: 12px; }
+    .special-fare-result { padding-top: 9px; border-top: 1px solid rgba(126, 177, 214, .13); }
+    .special-fare-result span { color: var(--muted); font-size: 9px; }
+    .special-fare-result strong { color: var(--gold); font-size: 17px; }
     .form-actions { display: flex; align-items: center; gap: 9px; margin-top: 17px; }
     .primary-action, .secondary-action {
       min-height: 46px;
@@ -319,6 +330,10 @@
     .route-stop small { color: var(--muted); font-size: 9px; }
     .route-stop strong { margin-top: 2px; color: var(--text); font-size: 11px; }
     .route-arrow { color: var(--gold); font-size: 16px; }
+    .location-step-actions { display: flex; align-items: center; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid rgba(126, 177, 214, .13); }
+    .location-step-actions button { min-width: 210px; }
+    .location-step-actions button:disabled { opacity: .48; filter: saturate(.5); cursor: not-allowed; transform: none; }
+    .location-step-actions small { color: var(--muted); font-size: 9px; }
     .page-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; color: #6f88a1; font-size: 10px; }
     .page-foot strong { color: var(--gold); font-weight: 800; }
 
@@ -348,8 +363,11 @@
       .type-options { gap: 6px; }
       .type-option span { min-height: 74px; padding: 10px 7px; font-size: 11px; }
       .type-option small { font-size: 8px; }
+      .special-fare-fields { grid-template-columns: 1fr; }
       .form-actions { align-items: stretch; flex-direction: column; }
       .primary-action, .secondary-action { width: 100%; }
+      .location-step-actions { align-items: stretch; flex-direction: column; }
+      .location-step-actions button { width: 100%; }
       .page-foot { display: block; line-height: 1.8; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -375,63 +393,15 @@
       <div class="hero-copy">
         <img class="logo-watermark" src="/aljarah-logo-mark-clean.webp" alt="">
         <span class="eyebrow">واجهة استقبال العملاء · V27</span>
-        <h1 id="page-title">احجز مشوارك من أول رسالة.</h1>
-        <p>أرسل تفاصيل الرحلة في نموذج واضح، من موقع الإقلاع إلى الوجهة. تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة، مع سعر خاص للمطار.</p>
+        <h1 id="page-title">ابدأ من موقعك، ثم أكمل الرحلة.</h1>
+        <p>حدد موقع الالتقاء والوجهة أولًا من الخريطة. بعد التأكيد، تنتقل التفاصيل تلقائيًا إلى نموذج الرحلة دون إعادة إدخال أي موقع.</p>
         <div class="hero-proof" aria-label="مزايا الواجهة">
-          <span class="proof-chip">تفاصيل مرتبة</span>
-          <span class="proof-chip">مسار سريع من الهاتف</span>
-          <span class="proof-chip">تسعيرة معلنة</span>
+          <span class="proof-chip">01 · تحديد الموقع</span>
+          <span class="proof-chip">02 · تفاصيل الرحلة</span>
+          <span class="proof-chip">تعرفة واضحة</span>
         </div>
       </div>
 
-      <section class="booking-card" id="booking" aria-labelledby="booking-title">
-        <div class="card-head">
-          <div><h2 id="booking-title">تفاصيل الرحلة</h2><p>أكمل المعلومات الأساسية، ثم راجع المعاينة قبل الإرسال.</p></div>
-          <span class="step-badge">خطوة واحدة</span>
-        </div>
-        <form id="booking-form" novalidate>
-          <div class="form-grid">
-            <div class="field">
-              <label for="customer-name">الاسم <span aria-hidden="true">*</span></label>
-              <input id="customer-name" name="customerName" type="text" autocomplete="name" placeholder="اكتب اسمك" required maxlength="80">
-            </div>
-            <div class="field">
-              <label for="customer-phone">رقم الهاتف <span aria-hidden="true">*</span></label>
-              <input id="customer-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required maxlength="20">
-            </div>
-            <div class="field">
-              <label for="origin">موقع الإقلاع <span aria-hidden="true">*</span></label>
-              <input id="origin" name="origin" type="text" placeholder="من أين نلتقي؟" required maxlength="160">
-            </div>
-            <div class="field">
-              <label for="departure-time">وقت الإقلاع <span aria-hidden="true">*</span></label>
-              <input id="departure-time" name="departureTime" type="time" required>
-            </div>
-            <div class="field full">
-              <label for="destination">موقع الوجهة <span aria-hidden="true">*</span></label>
-              <input id="destination" name="destination" type="text" placeholder="إلى أين تتجه؟" required maxlength="160">
-            </div>
-            <fieldset class="type-field">
-              <legend class="type-legend">نوع الطلب <span aria-hidden="true" style="color:var(--danger)">*</span></legend>
-              <div class="type-options">
-                <label class="type-option"><input type="radio" name="requestType" value="passenger" checked><span>راكب<small>رحلة شخصية</small></span></label>
-                <label class="type-option"><input type="radio" name="requestType" value="order"><span>أوردر<small>استلام أو توصيل</small></span></label>
-                <label class="type-option"><input type="radio" name="requestType" value="full-car"><span>حجز خاص<small>موعد أو سعر مخصص</small></span></label>
-              </div>
-            </fieldset>
-            <div class="field full">
-              <label>الأجرة المعتمدة</label>
-              <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">راكب حتى 90 كم: 5 دنانير؛ بعد 90 كم تضاف 1 دينار لكل 15 كم، وأكثر من 150 كم = 15 دينارًا.</small></div></div>
-              <input id="optional-price" name="price" type="hidden" value="">
-            </div>
-          </div>
-          <div class="form-actions">
-              <button class="primary-action" type="submit">إرسال الطلب</button>
-            <button class="secondary-action" id="reset-form" type="button">مسح</button>
-          </div>
-          <p class="form-status" id="form-status" role="status" aria-live="polite">أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.</p>
-        </form>
-      </section>
     </section>
 
     <section class="map-section" id="location-map" aria-labelledby="map-title">
@@ -462,13 +432,72 @@
         <div class="route-summary-head"><span>ملخص المسار</span><strong id="route-summary-state">بانتظار التحديد</strong></div>
         <div class="route-summary-line"><div class="route-stop"><i aria-hidden="true"></i><span><small>الإقلاع</small><strong id="route-origin-value">لم يحدد بعد</strong></span></div><span class="route-arrow" aria-hidden="true">←</span><div class="route-stop destination"><i aria-hidden="true"></i><span><small>الوجهة</small><strong id="route-destination-value">لم يحدد بعد</strong></span></div></div>
       </div>
+      <div class="location-step-actions"><button class="map-action confirm" id="continue-details" type="button" disabled>متابعة إلى تفاصيل الرحلة</button><small>بعد التأكيد ستُستخدم المواقع نفسها تلقائيًا في الطلب.</small></div>
     </section>
+
+      <section class="booking-card" id="booking-card" aria-labelledby="booking-title" hidden>
+        <div class="card-head">
+          <div><h2 id="booking-title">الخطوة 02 · تفاصيل الرحلة</h2><p>الموقعان أدناه مأخوذان من الخطوة الأولى ولا يحتاجان إدخالًا مرة أخرى.</p></div>
+          <span class="step-badge">المسار مؤكد</span>
+        </div>
+        <form id="booking-form" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="customer-name">الاسم <span aria-hidden="true">*</span></label>
+              <input id="customer-name" name="customerName" type="text" autocomplete="name" placeholder="اكتب اسمك" required maxlength="80">
+            </div>
+            <div class="field">
+              <label for="customer-phone">رقم الهاتف <span aria-hidden="true">*</span></label>
+              <input id="customer-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required maxlength="20">
+            </div>
+            <div class="field">
+              <label for="origin">موقع الإقلاع <span aria-hidden="true">*</span></label>
+              <input id="origin" name="origin" type="text" placeholder="يظهر بعد تحديد موقع الالتقاء" required maxlength="160" readonly aria-readonly="true">
+              <small class="field-note">يُعبأ تلقائيًا من الخطوة 01.</small>
+            </div>
+            <div class="field">
+              <label for="departure-time">وقت الإقلاع <span aria-hidden="true">*</span></label>
+              <input id="departure-time" name="departureTime" type="time" required>
+            </div>
+            <div class="field full">
+              <label for="destination">موقع الوجهة <span aria-hidden="true">*</span></label>
+              <input id="destination" name="destination" type="text" placeholder="يظهر بعد تحديد موقع الوجهة" required maxlength="160" readonly aria-readonly="true">
+              <small class="field-note">يُعبأ تلقائيًا من الخطوة 01.</small>
+            </div>
+            <fieldset class="type-field">
+              <legend class="type-legend">نوع الطلب <span aria-hidden="true" style="color:var(--danger)">*</span></legend>
+              <div class="type-options">
+                <label class="type-option"><input type="radio" name="requestType" value="passenger" checked><span>راكب<small>رحلة شخصية</small></span></label>
+                <label class="type-option"><input type="radio" name="requestType" value="order"><span>أوردر<small>استلام أو توصيل</small></span></label>
+                <label class="type-option"><input type="radio" name="requestType" value="full-car"><span>حجز خاص<small>موعد أو سعر مخصص</small></span></label>
+              </div>
+            </fieldset>
+            <div class="field full">
+              <label>الأجرة المعتمدة</label>
+              <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة.</small></div></div>
+              <div class="special-fare-panel" id="special-fare-panel" hidden>
+                <div class="special-fare-heading"><strong>تقدير الرحلة الخاصة</strong><span>تعرفة العداد المعتمدة</span></div>
+                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="مثال: 18.5"></label><label for="special-duration">المدة الزمنية <span>دقيقة</span><input id="special-duration" type="number" inputmode="decimal" min="0" step="1" placeholder="مثال: 32"></label></div>
+                <div class="special-fare-result"><span id="special-fare-breakdown">أدخل المسافة والمدة لإظهار التقدير.</span><strong id="special-fare-total">—</strong></div>
+                <small class="field-note">يُعاد احتساب الأجرة في الخادم قبل اعتماد الرحلة. رسوم الإلغاء المنفصلة: 1.14 د.أ.</small>
+              </div>
+              <input id="optional-price" name="price" type="hidden" value="">
+            </div>
+          </div>
+          <div class="form-actions">
+              <button class="primary-action" type="submit">إرسال الطلب</button>
+            <button class="secondary-action" id="edit-locations" type="button">تعديل المواقع</button>
+            <button class="secondary-action" id="reset-form" type="button">مسح</button>
+          </div>
+          <p class="form-status" id="form-status" role="status" aria-live="polite">أكد الموقعين أولًا، ثم ستظهر هذه الخطوة تلقائيًا.</p>
+        </form>
+      </section>
 
     <section class="preview-card" aria-labelledby="preview-title">
       <div class="preview-intro">
         <span class="eyebrow">مراجعة قبل الإرسال</span>
         <h2 id="preview-title">طلبك في بطاقة واحدة.</h2>
-        <p>بعد اكتمال الحقول، ستظهر التفاصيل هنا بصيغة سهلة للمراجعة. هذا النموذج الأولي يحافظ على البيانات داخل الصفحة فقط.</p>
+        <p>بعد اكتمال الحقول، ستظهر التفاصيل هنا بصيغة سهلة للمراجعة. عند الإرسال يُحفظ الطلب في دورة المراجعة ولا يُنشر للقروب دون اعتماد المالك.</p>
       </div>
       <div class="preview-box" aria-live="polite">
         <div class="preview-box-head"><strong>معاينة الرحلة</strong><span class="preview-state" id="preview-state">بانتظار البيانات</span></div>
@@ -513,16 +542,25 @@
       const routeSummaryState = document.getElementById('route-summary-state');
       const progressOrigin = document.getElementById('progress-origin');
       const progressDestination = document.getElementById('progress-destination');
+      const continueDetailsButton = document.getElementById('continue-details');
+      const detailsCard = document.getElementById('booking-card');
+      const editLocationsButton = document.getElementById('edit-locations');
       const installButton = document.getElementById('install-app');
       const installNote = document.getElementById('install-note');
       const fareDisplay = document.getElementById('fare-display');
       const fareNote = document.getElementById('fare-note');
+      const specialFarePanel = document.getElementById('special-fare-panel');
+      const specialDistance = document.getElementById('special-distance');
+      const specialDuration = document.getElementById('special-duration');
+      const specialFareBreakdown = document.getElementById('special-fare-breakdown');
+      const specialFareTotal = document.getElementById('special-fare-total');
       const submitButton = form.querySelector('button[type="submit"]');
       let activeMapTarget = 'origin';
       let deferredInstallPrompt = null;
       let specialRequest = null;
       let customerRequest = null;
       const confirmedMapTargets = { origin: false, destination: false };
+      const specialTariff = { thresholdKm: 25, baseFareUnderThreshold: 0.8455, perKmUnderThreshold: 0.1786, perMinuteUnderThreshold: 0.0456, baseFareOverThreshold: 0.9025, perKmOverThreshold: 0.19, perMinuteOverThreshold: 0.0475, minimumFare: 1.6074, cancellationFee: 1.14 };
 
       function valueOf(field) { return field.value.trim(); }
       function selectedType() { return form.querySelector('input[name="requestType"]:checked')?.value || 'passenger'; }
@@ -536,6 +574,38 @@
         return `${String(displayHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
       }
       function routeMentionsAirport() { return /مطار|المطار|airport/i.test(`${valueOf(fields.origin)} ${valueOf(fields.destination)}`); }
+      function calculateSpecialFare(distanceKm, durationMin) {
+        const distance = Number(distanceKm);
+        const duration = Number(durationMin);
+        if (!Number.isFinite(distance) || distance < 0 || !Number.isFinite(duration) || duration < 0) return null;
+        const over = distance >= specialTariff.thresholdKm;
+        const opening = over ? specialTariff.baseFareOverThreshold : specialTariff.baseFareUnderThreshold;
+        const perKm = over ? specialTariff.perKmOverThreshold : specialTariff.perKmUnderThreshold;
+        const perMinute = over ? specialTariff.perMinuteOverThreshold : specialTariff.perMinuteUnderThreshold;
+        const distanceCharge = distance * perKm;
+        const timeCharge = duration * perMinute;
+        const fare = Math.max(opening + distanceCharge + timeCharge, specialTariff.minimumFare);
+        return { distance, duration, opening, distanceCharge, timeCharge, fare, over };
+      }
+      function updateSpecialFare() {
+        const isSpecial = selectedType() === 'full-car';
+        specialFarePanel.hidden = !isSpecial;
+        if (!isSpecial) return;
+        const quote = calculateSpecialFare(specialDistance.value, specialDuration.value);
+        if (!quote) {
+          fields.price.value = '';
+          fareDisplay.textContent = 'بانتظار المسافة والمدة';
+          fareNote.textContent = 'أدخل القيم المحتسبة من المسار لإظهار أجرة الرحلة الخاصة.';
+          specialFareBreakdown.textContent = 'أدخل المسافة والمدة لإظهار التقدير.';
+          specialFareTotal.textContent = '—';
+          return;
+        }
+        fields.price.value = quote.fare.toFixed(2);
+        fareDisplay.textContent = `${quote.fare.toFixed(2)} د.أ تقديريًا`;
+        fareNote.textContent = quote.over ? 'تعرفة ما بعد 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.' : 'تعرفة أقل من 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.';
+        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(4)} + مسافة ${quote.distanceCharge.toFixed(4)} + وقت ${quote.timeCharge.toFixed(4)}`;
+        specialFareTotal.textContent = `${quote.fare.toFixed(2)} د.أ`;
+      }
       function updateFare() {
         const type = selectedType();
         if (routeMentionsAirport()) {
@@ -552,9 +622,10 @@
           fareNote.textContent = 'بعد 90 كم تضاف 1 دينار لكل 15 كم؛ وأكثر من 150 كم = 15 دينارًا.';
         } else {
           fields.price.value = '';
-          fareDisplay.textContent = 'يحدد عند التجهيز';
-              fareNote.textContent = 'سعر الحجز الخاص يحتاج اعتمادًا يدويًا في هذه المرحلة.';
+          fareDisplay.textContent = 'بانتظار المسافة والمدة';
+          fareNote.textContent = 'الرحلة الخاصة تُحسب بتعرفة العداد المعتمدة.';
         }
+        updateSpecialFare();
       }
       function updatePreview() {
         const hasAny = Object.entries(fields).some(([key, field]) => key !== 'price' && valueOf(field));
@@ -585,12 +656,15 @@
         submitButton.textContent = 'إرسال الطلب';
         confirmedMapTargets.origin = false;
         confirmedMapTargets.destination = false;
+        detailsCard.hidden = true;
+        specialDistance.value = '';
+        specialDuration.value = '';
         mapSearch.value = '';
         activateMapTarget('origin');
         updateFare();
         updateMapTargetStatuses();
         updatePreview();
-        fields.name.focus();
+        mapSearch.focus();
       }
 
       function mapTargetField() { return activeMapTarget === 'destination' ? fields.destination : fields.origin; }
@@ -616,6 +690,9 @@
         setText('route-destination-value', destinationValue);
         const routeComplete = confirmedMapTargets.origin && confirmedMapTargets.destination;
         routeSummaryState.textContent = routeComplete ? 'المسار مؤكد' : (valueOf(fields.origin) || valueOf(fields.destination) ? 'قيد التحديد' : 'بانتظار التحديد');
+        continueDetailsButton.disabled = !routeComplete;
+        continueDetailsButton.textContent = routeComplete ? 'متابعة إلى تفاصيل الرحلة' : 'أكمل تأكيد الموقعين أولًا';
+        if (!routeComplete) detailsCard.hidden = true;
         progressOrigin.classList.toggle('is-complete', confirmedMapTargets.origin);
         progressOrigin.classList.toggle('is-current', activeMapTarget === 'origin' && !confirmedMapTargets.origin);
         progressDestination.classList.toggle('is-complete', confirmedMapTargets.destination);
@@ -751,6 +828,12 @@
           setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
           return;
         }
+        if (!calculateSpecialFare(specialDistance.value, specialDuration.value)) {
+          status.className = 'form-status error';
+          status.textContent = 'أدخل المسافة والمدة المحتسبتين للرحلة الخاصة قبل الإرسال.';
+          specialDistance.focus();
+          return;
+        }
         submitButton.disabled = true;
         submitButton.textContent = 'جارٍ استلام الطلب…';
         status.className = 'form-status';
@@ -767,6 +850,8 @@
               destination: valueOf(fields.destination),
               departureTime: valueOf(fields.time),
               requestType: selectedType(),
+              distanceKm: valueOf(specialDistance),
+              durationMin: valueOf(specialDuration),
               originConfirmed: confirmedMapTargets.origin,
               destinationConfirmed: confirmedMapTargets.destination,
             }),
@@ -790,7 +875,19 @@
       Object.entries(fields).forEach(([key, field]) => field.addEventListener('input', () => { if (key === 'origin' || key === 'destination') updateFare(); updatePreview(); }));
       [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
       form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { updateFare(); updatePreview(); }));
+      [specialDistance, specialDuration].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
       resetButton.addEventListener('click', resetState);
+      continueDetailsButton.addEventListener('click', () => {
+        if (continueDetailsButton.disabled) return;
+        detailsCard.hidden = false;
+        window.scrollTo({ top: Math.max(0, detailsCard.offsetTop - 18), behavior: 'smooth' });
+        setTimeout(() => document.getElementById('customer-name').focus(), 220);
+      });
+      editLocationsButton.addEventListener('click', () => {
+        detailsCard.hidden = true;
+        window.scrollTo({ top: Math.max(0, document.getElementById('location-map').offsetTop - 18), behavior: 'smooth' });
+        setMapStatus('عدّل الموقعين ثم أكد المسار من جديد.');
+      });
       document.querySelectorAll('[data-map-target]').forEach(button => button.addEventListener('click', () => activateMapTarget(button.dataset.mapTarget)));
       document.getElementById('map-search-button').addEventListener('click', () => setMapQuery(valueOf(mapSearch) || valueOf(mapTargetField())));
       document.getElementById('map-pin-button').addEventListener('click', pinMapLocation);
