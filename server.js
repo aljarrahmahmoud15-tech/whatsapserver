@@ -4562,10 +4562,11 @@ function enqueueFinalBookingConfirmation(groupId, details, options = {}) {
 async function sendFinalBookingConfirmationDirect(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
   if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
-  // waitUntilMsgSent makes whatsapp-web.js await the real send result and throw on
-  // failure. Without it the call resolves with no message object even when the
-  // card was never delivered, which left the delivery row pending forever.
-  return client.sendMessage(groupId, message, { waitUntilMsgSent: true });
+  // No waitUntilMsgSent on purpose: that option makes whatsapp-web.js wait for a
+  // message_create event which this WhatsApp Web build does not deliver for group
+  // sends (the delivery rows were left with send_waiting_message_create). The page
+  // accepting the call is the send; the card is then confirmed by reading the group.
+  return client.sendMessage(groupId, message);
 }
 async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   if (!isServer2OutboundTargetAllowed(groupId)) throw new Error("server2_group_target_not_allowed");
@@ -4588,13 +4589,13 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   }
   if (chat && typeof chat.sendMessage === "function") {
     try {
-      return await chat.sendMessage(message, { waitUntilMsgSent: true });
+      return await chat.sendMessage(message);
     } catch (chatError) {
       const detail = String(chatError?.stack || chatError?.message || chatError).slice(0, 500);
       console.warn(`[WhatsApp] confirmation chat.sendMessage failed; retrying client.sendMessage: chat=${groupId} detail=${detail}`);
       if (typeof client.sendMessage !== "function") throw chatError;
       try {
-        return await client.sendMessage(groupId, message, { waitUntilMsgSent: true });
+        return await client.sendMessage(groupId, message);
       } catch (clientError) {
         clientError.cause = chatError;
         throw clientError;
@@ -4602,7 +4603,7 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
     }
   }
   if (typeof client.sendMessage !== "function") throw new Error("WhatsApp text send path is unavailable");
-  return client.sendMessage(groupId, message, { waitUntilMsgSent: true });
+  return client.sendMessage(groupId, message);
 }
 async function whatsappPageResponsive(timeoutMs = 5000) {
   const page = client && (client.pupPage || client.page);
@@ -4701,14 +4702,19 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
     if (!sent) {
-      // On the current WhatsApp Web build whatsapp-web.js resolves sendMessage with
-      // no message object even though the card was delivered. Treating that as a
-      // failure is exactly what produced three identical cards for one booking.
-      // A resolved call with no exception is therefore recorded as sent and no
-      // second card is ever attempted.
+      // The page accepted the send but returned no message object. Read the card back
+      // from the group: if it is there the row gets a real message id and an observed
+      // acknowledgement; if not it is closed as sent-but-unverified, never resent.
+      const observed = await readbackGroupCard(() => findFinalBookingConfirmationInGroup(groupId, details?.orderNo));
+      if (observed) {
+        if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(observed.messageId, now(), now(), now(), orderId);
+        if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
+        console.log(`[WhatsApp] confirmation observed in group after a send without a message id: order=${details?.orderNo || orderId || "unknown"} message=${observed.messageId || "none"}`);
+        return { sentWithoutId: true, observed: true, messageId: observed.messageId };
+      }
       if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=?").run(now(), now(), orderId);
       if (orderId) void enforceConfirmedOrderDebtRemoval({ orderId, reason: "خصم حصة تسوية طلب", reference: `ORDER-${details?.orderNo || orderId}` }).catch(() => null);
-      console.warn(`[WhatsApp] confirmation delivered without a message id (library returned no object): order=${details?.orderNo || orderId || "unknown"}`);
+      console.warn(`[WhatsApp] confirmation delivered without a message id and not yet readable in the group: order=${details?.orderNo || orderId || "unknown"}`);
       return { sentWithoutId: true };
     }
     if (orderId) db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=?,ack_status=NULL,ack_at=NULL,sent_at=?,updated_at=? WHERE order_id=?").run(sent.id?._serialized || null, now(), now(), orderId);
@@ -4805,13 +4811,25 @@ function observeFinalBookingConfirmationMessage(message) {
 async function sendGroupCardAtMostOnce(groupId, text, { timeoutMs = 25000 } = {}) {
   if (!isServer2OutboundTargetAllowed(groupId)) return { status: "blocked", messageId: null, error: "group_target_not_allowed" };
   if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", messageId: null, error: "whatsapp_not_ready" };
-  const result = await sendWhatsAppAtMostOnce(groupId, text, { waitUntilMsgSent: true }, timeoutMs);
+  // No waitUntilMsgSent: this build does not emit message_create for group sends, so
+  // waiting for it turned a delivered card into a pending delivery row.
+  const result = await sendWhatsAppAtMostOnce(groupId, text, undefined, timeoutMs);
   if (!result) return { status: "duplicate_suppressed", messageId: null, error: "group_dedupe_blocked_identical_card" };
   return {
     status: result.status,
     messageId: result.message?.id?._serialized || null,
     error: result.error || null,
   };
+}
+// Read the group until the card appears. This is the only trustworthy confirmation
+// on this build, and it never sends anything.
+async function readbackGroupCard(matcher, attempts = 3, gapMs = 3500) {
+  for (let index = 0; index < attempts; index += 1) {
+    const found = await matcher();
+    if (found) return found;
+    if (index < attempts - 1) await new Promise((resolve) => setTimeout(resolve, gapMs));
+  }
+  return null;
 }
 async function findFinalBookingCancellationInGroup(groupId, orderNo) {
   if (!client || !isReady || !groupId || !Number(orderNo)) return null;
@@ -4835,18 +4853,16 @@ async function sendFinalBookingCancellation(groupId, order = null) {
   const text = finalBookingCancellationText(order);
   try {
     const attempt = await sendGroupCardAtMostOnce(groupId, text, { timeoutMs: 25000 });
-    if (attempt.status === "sent") return { status: "sent", messageId: attempt.messageId };
-    if (attempt.status === "uncertain") {
-      // A strict timeout is not proof of failure: the page can still deliver it, so
-      // the card is reported as sent-but-unverified and never sent twice.
-      console.warn(`[WhatsApp] cancellation card outcome unverified (timeout); no resend: order=${order?.order_no || "unknown"}`);
+    if (attempt.status === "sent" || attempt.status === "uncertain") {
+      // Definitive confirmation comes from the group, not from the library result.
+      const observed = await readbackGroupCard(() => findFinalBookingCancellationInGroup(groupId, order?.order_no));
+      if (observed) return { status: "sent", messageId: observed.messageId, observed: true };
+      console.warn(`[WhatsApp] cancellation card unverified (no readback yet); no resend: order=${order?.order_no || "unknown"} status=${attempt.status}`);
       audit("order.cancellation_card.unverified", "order", order?.id || null, { orderNo: order?.order_no || null, status: attempt.status, financialMutation: false });
       return { status: "sent_unverified", messageId: null };
     }
-    if (attempt.status === "failed" || attempt.status === "duplicate_suppressed") {
-      const observed = await findFinalBookingCancellationInGroup(groupId, order?.order_no);
-      if (observed) return { status: "sent", messageId: observed.messageId, observed: true };
-    }
+    const observedAfterFailure = await readbackGroupCard(() => findFinalBookingCancellationInGroup(groupId, order?.order_no));
+    if (observedAfterFailure) return { status: "sent", messageId: observedAfterFailure.messageId, observed: true };
     throw new Error(attempt.error || `cancellation card ${attempt.status}`);
   } catch (error) {
     console.error("[WhatsApp] final booking cancellation not sent:", error.message);
@@ -6383,12 +6399,22 @@ function createClient() {
       if (readyGeneration !== connectionGeneration || !isReady || client !== instance) return;
       void enforceCaptainWalletThresholdsForAll().catch((error) => console.error("[BalancePolicy] ready-triggered sweep failed:", error.message));
     }, 30000).unref();
-    void installWhatsAppSendDiagnostics(instance, generation)
-      .then(() => startWhatsAppStorageMonitor(generation))
-      .catch((error) => {
-        recordWhatsAppPageDiagnostic("install_unhandled_failure", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
-        startWhatsAppStorageMonitor(generation);
-      });
+    void (async () => {
+      // The first page evaluation after ready can be slow (the page is still loading
+      // the store), which is why the send hook reported installed=false and the page
+      // side of the send path stayed invisible. Retry before giving up.
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        if (generation !== connectionGeneration || !isReady || client !== instance) break;
+        const result = await installWhatsAppSendDiagnostics(instance, generation).catch((error) => {
+          recordWhatsAppPageDiagnostic("install_unhandled_failure", { message: boundedDiagnosticText(error?.message || error, 1200), stack: boundedDiagnosticText(error?.stack, 2400) });
+          return { installed: false };
+        });
+        if (result?.installed) break;
+        console.warn(`[WhatsApp][PageDiagnostic] send hook not installed yet (attempt ${attempt}): ${result?.reason || "unknown"}`);
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+      }
+      startWhatsAppStorageMonitor(generation);
+    })();
     setTimeout(() => {
       if (generation !== connectionGeneration || !isReady) return;
       void normalizeAllCaptains()

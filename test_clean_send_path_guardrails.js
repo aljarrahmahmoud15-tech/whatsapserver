@@ -6,7 +6,14 @@ const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 
 // --- one honest card transport -------------------------------------------------
 assert.match(server, /async function sendGroupCardAtMostOnce\(groupId, text, \{ timeoutMs = 25000 \} = \{\}\) \{/);
-assert.match(server, /const result = await sendWhatsAppAtMostOnce\(groupId, text, \{ waitUntilMsgSent: true \}, timeoutMs\);/);
+assert.match(server, /const result = await sendWhatsAppAtMostOnce\(groupId, text, undefined, timeoutMs\);/);
+// No card path may wait for a message_create event: this build does not emit it for
+// group sends, and waiting for it left delivery rows pending (send_waiting_message_create).
+assert.doesNotMatch(server, /waitUntilMsgSent: true/);
+assert.match(server, /async function readbackGroupCard\(matcher, attempts = 3, gapMs = 3500\) \{/);
+assert.match(server, /const observed = await readbackGroupCard\(\(\) => findFinalBookingConfirmationInGroup\(groupId, details\?\.orderNo\)\);/);
+assert.match(server, /ack_status='observed',ack_at=COALESCE\(ack_at,\?\),sent_at=COALESCE\(sent_at,\?\),updated_at=\?,last_error=NULL WHERE order_id=\? AND status<>'sent'"\)\.run\(observed\.messageId/);
+assert.match(server, /for \(let attempt = 1; attempt <= 3; attempt \+= 1\) \{/);
 assert.match(server, /if \(!result\) return \{ status: "duplicate_suppressed"/);
 assert.match(server, /status: result\.status,\n    messageId: result\.message\?\.id\?\._serialized \|\| null,/);
 
@@ -16,9 +23,10 @@ const cancelEnd = server.indexOf('function formatAcceptance(');
 assert.ok(cancelStart > 0 && cancelEnd > cancelStart, 'cancellation function must exist');
 const cancelBlock = server.slice(cancelStart, cancelEnd);
 assert.match(cancelBlock, /const attempt = await sendGroupCardAtMostOnce\(groupId, text, \{ timeoutMs: 25000 \}\);/);
-assert.match(cancelBlock, /if \(attempt\.status === "uncertain"\) \{/);
+assert.match(cancelBlock, /if \(attempt\.status === "sent" \|\| attempt\.status === "uncertain"\) \{/);
 assert.match(cancelBlock, /return \{ status: "sent_unverified", messageId: null \};/);
-assert.match(cancelBlock, /const observed = await findFinalBookingCancellationInGroup\(groupId, order\?\.order_no\);/);
+assert.match(cancelBlock, /const observed = await readbackGroupCard\(\(\) => findFinalBookingCancellationInGroup\(groupId, order\?\.order_no\)\);/);
+assert.match(cancelBlock, /const observedAfterFailure = await readbackGroupCard\(\(\) => findFinalBookingCancellationInGroup\(groupId, order\?\.order_no\)\);/);
 assert.doesNotMatch(cancelBlock, /cancellation message was not acknowledged/);
 assert.doesNotMatch(cancelBlock, /sendServer2DirectAtMostOnce\(/);
 // The unverified outcome is audited and never resent.

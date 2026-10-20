@@ -76,8 +76,14 @@ assert.match(server, /send_timeout_unverified/);
 assert.doesNotMatch(server, /const alternateSender = deliveryMode === "fallback"/);
 assert.doesNotMatch(server, /"send_pending_waiting_message_create"/);
 // The real send is awaited so a genuine failure throws instead of being guessed.
-assert.match(server, /return client\.sendMessage\(groupId, message, \{ waitUntilMsgSent: true \}\);/);
-assert.match(server, /return await chat\.sendMessage\(message, \{ waitUntilMsgSent: true \}\);/);
+// The card transport must not wait for a message_create event (this build does not
+// emit it for group sends); delivery is confirmed by reading the group back.
+assert.match(server, /return client\.sendMessage\(groupId, message\);/);
+assert.doesNotMatch(server, /waitUntilMsgSent: true/);
+// The card transport must not wait for a message_create event (this build does not
+// emit it for group sends); delivery is confirmed by reading the group back.
+assert.match(server, /return client\.sendMessage\(groupId, message\);/);
+assert.doesNotMatch(server, /waitUntilMsgSent: true/);
 
 // 5) The confirmation send must stay bound to the configured clean group only.
 assert.match(server, /async function sendFinalBookingConfirmationDirect\(groupId, message\) \{/);
