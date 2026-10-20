@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const server = fs.readFileSync('./server.js', 'utf8');
 const page = fs.readFileSync('./public/admin-v26.html', 'utf8');
 
-assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/suspend-and-remove", requireAdmin, async/);
+assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/suspend-and-remove", requireOwnerAdmin, async/);
 const routeStart = server.indexOf('app.post("/api/admin/captains/:id/suspend-and-remove"');
 const routeEnd = server.indexOf('app.delete("/api/admin/captains/:id"', routeStart);
 assert.ok(routeStart >= 0 && routeEnd > routeStart, 'suspend/remove route boundaries must exist');
@@ -21,10 +21,12 @@ assert.doesNotMatch(route, /wallet_cents|sendCaptainStatusText|sendServer2Direct
 for (const marker of [
   'data-safe-action="edit"',
   'data-safe-action="credit"',
+  'data-safe-action="archive"',
   'data-safe-action="suspend"',
   'function openCaptainAction',
   'function saveCaptainEdit',
   'function applyCaptainCredit',
+  'function archiveCaptainAccount',
   'function suspendCaptainAndRemove',
   '/api/admin/users/',
   '/api/admin/captains/',

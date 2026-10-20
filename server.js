@@ -12002,7 +12002,7 @@ app.patch("/api/admin/captains/:id/pin", requireCompanyOwner, (req, res) => {
   audit("captain.pin.updated", "user", id, { phone: captain.phone, name: captain.name, actor: "company_owner", authMethod: "pin" });
   res.json({ success: true, id, captain: { id: captain.id, name: captain.name, phone: captain.phone }, authMethod: "pin", pinChanged: true });
 });
-app.post("/api/admin/captains/:id/suspend-and-remove", requireAdmin, async (req, res) => {
+app.post("/api/admin/captains/:id/suspend-and-remove", requireOwnerAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const confirmation = String(req.body?.confirmation || "").trim();
   const reason = String(req.body?.reason || "").trim().slice(0, 240);
@@ -12049,7 +12049,7 @@ app.post("/api/admin/captains/:id/suspend-and-remove", requireAdmin, async (req,
   });
   res.json({ success: true, state: "suspended_and_removed", mutation: "captain_suspended_and_removed", id, removed: true, statusChanged: Boolean(updated.changes), notificationSent: false, financialMutation: false });
 });
-app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
+app.delete("/api/admin/captains/:id", requireOwnerAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
   const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,archived_at FROM users WHERE id=? AND role='captain'").get(id);
@@ -12063,7 +12063,7 @@ app.delete("/api/admin/captains/:id", requireAdmin, (req, res) => {
   audit("captain.archived", "user", id, { phone: captain.phone, name: captain.name, reason, financialMutation: false, settlementMutation: false });
   res.json({ success: true, archived: id, archivedAt: stamp, removedFromInterface: true, financialMutation: false, settlementMutation: false });
 });
-app.post("/api/admin/captains/:id/restore", requireAdmin, (req, res) => {
+app.post("/api/admin/captains/:id/restore", requireOwnerAdmin, (req, res) => {
   const id = Number(req.params.id);
   const confirmation = String(req.body?.confirmation || "").trim();
   if (!Number.isInteger(id) || id < 1 || confirmation !== "RESTORE_ARCHIVED_CAPTAIN") {
