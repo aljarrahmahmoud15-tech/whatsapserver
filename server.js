@@ -366,6 +366,14 @@ app.get("/captain/register", (req, res) => {
 });
 app.get("/admin.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
+  // The Oct-16 legacy panel had no reverse transfer, no captain editing and no owner
+  // commands. Serve the modern panel here so an old bookmark opens the current version.
+  const modernPanel = path.join(__dirname, "public", "admin-v27.html");
+  if (fs.existsSync(modernPanel)) return res.sendFile(modernPanel);
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
+app.get("/admin-legacy.html", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/admin-v26.html", (req, res) => {
