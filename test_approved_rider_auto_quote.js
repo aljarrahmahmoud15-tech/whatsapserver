@@ -11,6 +11,11 @@ test('approved rider page calculates a fare from confirmed coordinates without r
   assert.match(html, /data-quick-type="passenger"/);
   assert.match(html, /data-quick-type="order"/);
   assert.match(html, /data-quick-type="full-car"/);
+  assert.match(html, /id="origin" name="origin" type="hidden"/);
+  assert.match(html, /id="destination" name="destination" type="hidden"/);
+  assert.match(html, /id="details-origin-value"/);
+  assert.match(html, /id="details-destination-value"/);
+  assert.match(html, /id="details-type-value"/);
   assert.match(html, /parseCoordinatePair/);
   assert.match(html, /locationDisplayLabel/);
   assert.match(html, /موقعي الحالي/);

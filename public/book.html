@@ -210,6 +210,17 @@
     .field input:focus { border-color: var(--mint); background: #071827; box-shadow: 0 0 0 4px rgba(72, 223, 176, .1); }
     .field input:user-invalid { border-color: rgba(255, 127, 145, .8); }
     .field-note { color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .confirmed-route-card { display: grid; gap: 10px; grid-column: 1 / -1; padding: 13px 14px; border: 1px solid rgba(72, 223, 176, .28); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(10, 42, 51, .72), rgba(5, 19, 32, .86)); }
+    .confirmed-route-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .confirmed-route-head span { color: var(--muted); font-size: 10px; }
+    .confirmed-route-head strong { color: var(--mint); font-size: 12px; }
+    .confirmed-route-grid { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 9px; }
+    .confirmed-route-stop { min-width: 0; padding: 9px 10px; border: 1px solid rgba(126, 177, 214, .18); border-radius: 10px; background: rgba(5, 17, 29, .56); }
+    .confirmed-route-stop span, .confirmed-route-stop strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .confirmed-route-stop span { color: var(--muted); font-size: 9px; }
+    .confirmed-route-stop strong { margin-top: 4px; color: var(--text); font-size: 11px; }
+    .confirmed-route-arrow { color: var(--gold); font-size: 17px; }
+    .confirmed-route-note { color: var(--muted); font-size: 9px; line-height: 1.6; }
     .type-field { grid-column: 1 / -1; display: grid; gap: 8px; }
     .type-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .type-option { position: relative; min-width: 0; }
@@ -376,6 +387,8 @@
       .quick-type-options { gap: 5px; }
       .quick-type-button { min-height: 63px; padding: 8px 5px; font-size: 10px; }
       .special-fare-fields { grid-template-columns: 1fr; }
+      .confirmed-route-grid { grid-template-columns: 1fr; gap: 6px; }
+      .confirmed-route-arrow { display: none; }
       .form-actions { align-items: stretch; flex-direction: column; }
       .primary-action, .secondary-action { width: 100%; }
       .location-step-actions { align-items: stretch; flex-direction: column; }
@@ -457,7 +470,7 @@
 
       <section class="booking-card" id="booking-card" aria-labelledby="booking-title" hidden>
         <div class="card-head">
-          <div><h2 id="booking-title">الخطوة 02 · تفاصيل الرحلة</h2><p>الموقعان أدناه مأخوذان من الخطوة الأولى ولا يحتاجان إدخالًا مرة أخرى.</p></div>
+          <div><h2 id="booking-title">الخطوة 02 · تفاصيل الرحلة</h2><p>المسار أدناه مأخوذ من الخطوة الأولى ولا يحتاج إلى إدخال مرة أخرى.</p></div>
           <span class="step-badge">المسار مؤكد</span>
         </div>
         <form id="booking-form" novalidate>
@@ -471,27 +484,25 @@
               <input id="customer-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required maxlength="20">
             </div>
             <div class="field">
-              <label for="origin">موقع الإقلاع <span aria-hidden="true">*</span></label>
-              <input id="origin" name="origin" type="text" placeholder="يظهر بعد تحديد موقع الالتقاء" required maxlength="160" readonly aria-readonly="true">
-              <small class="field-note">يُعبأ تلقائيًا من الخطوة 01.</small>
-            </div>
-            <div class="field">
               <label for="departure-time">وقت الإقلاع <span aria-hidden="true">*</span></label>
               <input id="departure-time" name="departureTime" type="time" required>
             </div>
-            <div class="field full">
-              <label for="destination">موقع الوجهة <span aria-hidden="true">*</span></label>
-              <input id="destination" name="destination" type="text" placeholder="يظهر بعد تحديد موقع الوجهة" required maxlength="160" readonly aria-readonly="true">
-              <small class="field-note">يُعبأ تلقائيًا من الخطوة 01.</small>
-            </div>
-            <fieldset class="type-field">
-              <legend class="type-legend">نوع الطلب <span aria-hidden="true" style="color:var(--danger)">*</span></legend>
-              <div class="type-options">
-                <label class="type-option"><input type="radio" name="requestType" value="passenger" checked><span>راكب<small>رحلة شخصية</small></span></label>
-                <label class="type-option"><input type="radio" name="requestType" value="order"><span>أوردر<small>استلام أو توصيل</small></span></label>
-                <label class="type-option"><input type="radio" name="requestType" value="full-car"><span>حجز خاص<small>موعد أو سعر مخصص</small></span></label>
+            <div class="confirmed-route-card" aria-live="polite">
+              <div class="confirmed-route-head"><span>المسار ونوع الطلب المعتمدان</span><strong id="details-type-value">راكب</strong></div>
+              <div class="confirmed-route-grid">
+                <div class="confirmed-route-stop"><span>الإقلاع</span><strong id="details-origin-value">موقعي الحالي</strong></div>
+                <span class="confirmed-route-arrow" aria-hidden="true">←</span>
+                <div class="confirmed-route-stop"><span>الوجهة</span><strong id="details-destination-value">الموقع المسجل على الخريطة</strong></div>
               </div>
-            </fieldset>
+              <small class="confirmed-route-note">تم اعتماد هذه البيانات من الخطوة 01 ولن تحتاج إلى إدخالها مرة أخرى.</small>
+            </div>
+            <input id="origin" name="origin" type="hidden" required>
+            <input id="destination" name="destination" type="hidden" required>
+            <div class="type-field" hidden aria-hidden="true">
+              <input type="radio" name="requestType" value="passenger" checked>
+              <input type="radio" name="requestType" value="order">
+              <input type="radio" name="requestType" value="full-car">
+            </div>
             <div class="field full">
               <label>الأجرة المعتمدة</label>
               <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة.</small></div></div>
@@ -565,6 +576,9 @@
       const progressDestination = document.getElementById('progress-destination');
       const continueDetailsButton = document.getElementById('continue-details');
       const detailsCard = document.getElementById('booking-card');
+      const detailsOriginValue = document.getElementById('details-origin-value');
+      const detailsDestinationValue = document.getElementById('details-destination-value');
+      const detailsTypeValue = document.getElementById('details-type-value');
       const editLocationsButton = document.getElementById('edit-locations');
       const installButton = document.getElementById('install-app');
       const installNote = document.getElementById('install-note');
@@ -615,6 +629,12 @@
           button.classList.toggle('is-selected', selected);
           button.setAttribute('aria-pressed', String(selected));
         });
+        if (detailsTypeValue) detailsTypeValue.textContent = typeLabels[type] || 'راكب';
+      }
+      function syncDetailsRouteSummary() {
+        if (detailsOriginValue) detailsOriginValue.textContent = locationDisplayLabel('origin', valueOf(fields.origin)) || 'لم يحدد بعد';
+        if (detailsDestinationValue) detailsDestinationValue.textContent = locationDisplayLabel('destination', valueOf(fields.destination)) || 'لم يحدد بعد';
+        if (detailsTypeValue) detailsTypeValue.textContent = typeLabels[selectedType()] || 'راكب';
       }
       function locationDisplayLabel(target, value) {
         if (String(value || '').startsWith('موقعي الحالي')) return 'موقعي الحالي';
@@ -795,6 +815,7 @@
         const destinationValue = locationDisplayLabel('destination', valueOf(fields.destination)) || 'لم يحدد بعد';
         setText('route-origin-value', originValue);
         setText('route-destination-value', destinationValue);
+        syncDetailsRouteSummary();
         const routeComplete = confirmedMapTargets.origin && confirmedMapTargets.destination;
         routeSummaryState.textContent = routeComplete ? 'المسار مؤكد' : (valueOf(fields.origin) || valueOf(fields.destination) ? 'قيد التحديد' : 'بانتظار التحديد');
         continueDetailsButton.disabled = !routeComplete;
