@@ -9435,7 +9435,7 @@ app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => r
   official: { groupId: lastOfficialGroupEventGroupId, telemetry: lastOfficialGroupMessageTelemetry },
   ignored: { groupId: lastIgnoredGroupEventGroupId, telemetry: lastIgnoredGroupMessageTelemetry },
 }));
-app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
+app.get("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-summary", 8000), async (req, res) => {
   if (openCleanReadCache(req, res, "/api/admin/group/summary")) return;
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) {
@@ -10980,7 +10980,7 @@ async function waitForWhatsAppReady(maxMs = 8000) {
   return Boolean(client && isReady);
 }
 
-app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
+app.get("/api/admin/group/diagnostic", requireAdmin, adminReadSingleFlight("group-diagnostic", 8000), async (req, res) => {
   await waitForWhatsAppReady(6000);
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const officialGroupId = configuredRuntimeGroupId();
@@ -11033,7 +11033,7 @@ app.get("/api/admin/groups", requireAdmin, async (req, res) => {
   }
   return res.json({ success: true, source: "snapshot", groups: [{ id: officialGroupId, name: snapshot.name || null, participants: Array.isArray(snapshot.participants) ? snapshot.participants.length : null }] });
 });
-app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
+app.get("/api/admin/group/members", requireAdmin, adminReadSingleFlight("group-members", 8000), async (req, res) => {
   await waitForWhatsAppReady(6000);
   const officialGroupId = configuredRuntimeGroupId();
   const groupId = String(req.query.groupId || officialGroupId).trim();
@@ -11080,7 +11080,20 @@ app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
     }
     members.push({ phone, name: name || phone, id: serialized || null, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) });
   }
-  res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
+  const requestedMemberLimit = Number(req.query.limit || 0);
+  const memberLimit = Number.isInteger(requestedMemberLimit) && requestedMemberLimit > 0 ? Math.max(1, Math.min(requestedMemberLimit, 800)) : 300;
+  const pagedMembers = members.slice(0, memberLimit);
+  res.json({
+    success: true,
+    groupId,
+    groupName: chat.name || null,
+    members: pagedMembers,
+    membersTotal: members.length,
+    membersLimit: memberLimit,
+    truncated: members.length > pagedMembers.length,
+    participantSource: chat.participantSource || null,
+    participantRawCount: chat.participantRawCount ?? null,
+  });
 });
 app.post("/api/admin/group/send-balance-notifications", requireAdmin, async (req, res) => {
   if (rejectCleanOutboundOperation(res, "balance_notifications")) return;
@@ -11288,12 +11301,12 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
   if (!CLEAN_INSTANCE) void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId} — الفارغة المحذوفة: ${deleted.length}`, `الموقوفة: ${suspended.length} — النسخة: ${backupName}`], ownersOnly: true });
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
-app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
+app.get("/api/admin/group/live-messages", requireAdmin, adminReadSingleFlight("group-live-messages", 5000), async (req, res) => {
   await waitForWhatsAppReady(6000);
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
-  const requestedLimit = Number(req.query.limit || 100);
-  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
+  const requestedLimit = Number(req.query.limit || 50);
+  const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   const requestedMessageId = String(req.query.messageId || "").trim();
   const bodyIncludes = String(req.query.bodyIncludes || "").trim().slice(0, 200);
@@ -11664,6 +11677,64 @@ function v27AdminReadCache(scope, ttlMs) {
   };
 }
 
+// Heavy read endpoints (group snapshot, members, live messages) each drive the
+// single WhatsApp page through page.evaluate, so a few open panel tabs serialise
+// into 20-60s waits. This middleware gives them a short TTL cache and coalesces
+// identical concurrent reads into one execution (single flight). Read-only: it
+// only ever replays a payload that was already produced.
+const adminReadSingleFlightStore = new Map();
+function adminReadSingleFlight(scope, ttlMs) {
+  const ttl = Math.max(0, Number(ttlMs) || 0);
+  return function adminReadSingleFlightMiddleware(req, res, next) {
+    if (String(req.method || "").toUpperCase() !== "GET" || ttl <= 0) return next();
+    const key = `${scope}|${req.originalUrl || req.url || ""}`;
+    const startedAt = Date.now();
+    const cached = adminReadCacheStore.get(key);
+    if (cached && cached.expiresAt > startedAt) {
+      res.setHeader("X-Clean-Read-Cache", "MEMORY-HIT");
+      res.setHeader("Cache-Control", `private, max-age=${Math.max(0, Math.floor(ttl / 1000))}, stale-while-revalidate=2`);
+      return res.json(cached.payload);
+    }
+    const pending = adminReadSingleFlightStore.get(key);
+    if (pending && pending.expiresAt > startedAt) {
+      res.setHeader("X-Clean-Read-Cache", "SINGLE-FLIGHT-HIT");
+      return pending.promise
+        .then((payload) => {
+          if (payload) return res.json(payload);
+          if (!res.headersSent) return res.status(503).json({ success: false, mutation: "none", error: "تعذر إتمام القراءة؛ أعد المحاولة بعد لحظات" });
+        })
+        .catch(() => {
+          if (!res.headersSent) res.status(503).json({ success: false, mutation: "none", error: "تعذر إتمام القراءة؛ أعد المحاولة بعد لحظات" });
+        });
+    }
+    let settle = () => {};
+    const promise = new Promise((resolve) => { settle = resolve; });
+    adminReadSingleFlightStore.set(key, { promise, expiresAt: startedAt + 60000 });
+    const originalJson = res.json.bind(res);
+    res.json = (payload) => {
+      try {
+        const statusCode = Number(res.statusCode || 200);
+        if (statusCode >= 200 && statusCode < 300 && payload && payload.success !== false) {
+          adminReadCacheStore.set(key, { payload, expiresAt: Date.now() + ttl });
+        }
+        settle(payload);
+      } catch (_) { settle(payload); }
+      return originalJson(payload);
+    };
+    res.on("close", () => { if (!res.writableEnded) settle(null); });
+    if (adminReadSingleFlightStore.size > 200) {
+      for (const [staleKey, entry] of [...adminReadSingleFlightStore.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt).slice(0, 100)) {
+        if (staleKey !== key) adminReadSingleFlightStore.delete(staleKey);
+      }
+    }
+    if (adminReadCacheStore.size > 400) {
+      for (const [staleKey, entry] of [...adminReadCacheStore.entries()]) {
+        if (entry.expiresAt <= Date.now() || adminReadCacheStore.size > 400) adminReadCacheStore.delete(staleKey);
+      }
+    }
+    return next();
+  };
+}
 function requireOwnerAdmin(req, res, next) {
   const admin = isAdmin(req);
   if (!admin) return res.status(401).json({ success: false, mutation: "none", error: "Unauthorized" });
