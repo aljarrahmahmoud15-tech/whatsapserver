@@ -10875,8 +10875,19 @@ app.post("/api/admin/group/join-invite", requireAdmin, async (req, res) => {
     groupJoinInFlight = false;
   }
 });
+async function waitForWhatsAppReady(maxMs = 8000) {
+  const budget = Math.max(0, Number(maxMs) || 0);
+  const deadline = Date.now() + budget;
+  while (Date.now() < deadline) {
+    if (client && isReady) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return Boolean(client && isReady);
+}
+
 app.get("/api/admin/group/diagnostic", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  await waitForWhatsAppReady(6000);
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const officialGroupId = configuredRuntimeGroupId();
   if (!officialGroupId) return res.status(409).json({ error: "This service has no verified environment group", mutation: "none" });
   const inviteCode = extractInviteCode(req.query.inviteLink || req.query.inviteCode || "");
@@ -10910,18 +10921,42 @@ app.post("/api/admin/group/adopt-last-seen", requireAdmin, async (req, res) => {
   res.json({ success: true, groupId, groupName, previousGroupId, membersLoaded: Array.isArray(chat.participants) ? chat.participants.length : null });
 });
 app.get("/api/admin/groups", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const chats = await withTimeout(client.getChats(), 25000, null);
-  if (!Array.isArray(chats)) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
-  res.json({ groups: chats.filter((chat) => chat.isGroup && String(chat.id?._serialized || "") === WHATSAPP_GROUP_ID).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
+  const officialGroupId = configuredRuntimeGroupId();
+  if (!officialGroupId) return res.status(409).json({ error: "This service has no verified environment group", mutation: "none" });
+  await waitForWhatsAppReady(6000);
+  let chats = null;
+  try { chats = await withTimeout(client.getChats(), 25000, null); } catch (_) { chats = null; }
+  if (Array.isArray(chats)) {
+    return res.json({ success: true, source: "chats", groups: chats.filter((chat) => chat.isGroup && String(chat.id?._serialized || "") === officialGroupId).map((chat) => ({ id: chat.id._serialized, name: chat.name, participants: chat.participants ? chat.participants.length : 0 })) });
+  }
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
+  let snapshot = null;
+  try { snapshot = await readGroupSnapshot(officialGroupId, 15000); } catch (_) { snapshot = null; }
+  if (!snapshot) return res.status(502).json({ error: "Unable to read WhatsApp chats; the bot remains online" });
+  return res.json({ success: true, source: "snapshot", groups: [{ id: officialGroupId, name: snapshot.name || null, participants: Array.isArray(snapshot.participants) ? snapshot.participants.length : null }] });
 });
 app.get("/api/admin/group/members", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  await waitForWhatsAppReady(6000);
   const officialGroupId = configuredRuntimeGroupId();
   const groupId = String(req.query.groupId || officialGroupId).trim();
   if (!officialGroupId || groupId !== officialGroupId || !isConfiguredGroup(groupId)) return res.status(403).json({ error: "Only this service's configured environment group may be inspected" });
-  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
-  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured chat is not a group" });
+  let chat = null;
+  try { chat = await readGroupSnapshot(groupId); } catch (_) { chat = null; }
+  if (!chat || !chat.isGroup) {
+    try { chat = await resolveGroupChat(groupId); } catch (_) { chat = null; }
+  }
+  if (!chat || !chat.isGroup) {
+    const fallbackRows = db.prepare("SELECT sender_phone, sender_name, MAX(sent_at) AS last_at FROM messages WHERE group_id=? AND sender_phone IS NOT NULL AND sender_phone<>'' GROUP BY sender_phone ORDER BY last_at DESC LIMIT 500").all(groupId);
+    const fallbackMembers = fallbackRows
+      .map((row) => {
+        const phone = phoneWithCountry(String(row.sender_phone || "").replace(/@c\.us$/, "").split(":")[0]);
+        if (!phone || isBotPhone(phone)) return null;
+        return { phone, name: String(row.sender_name || "").trim() || phone, id: null, isAdmin: false };
+      })
+      .filter(Boolean);
+    if (!fallbackMembers.length) return res.status(503).json({ error: "تعذر قراءة أعضاء القروب حاليًا؛ أعد المحاولة بعد لحظات", mutation: "none" });
+    return res.json({ success: true, groupId, groupName: getSetting("group_name", "") || null, members: fallbackMembers, participantSource: "database", participantRawCount: fallbackMembers.length, partial: true });
+  }
   const members = [];
   for (const participant of (chat.participants || [])) {
     const serialized = participant && participant.id && (participant.id._serialized || String(participant.id));
@@ -11140,7 +11175,8 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  await waitForWhatsAppReady(6000);
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
@@ -11550,7 +11586,8 @@ app.get("/api/admin/owner-token", requireAdmin, (req, res) => {
 app.get("/api/admin/group/permissions", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("group-permissions", 2000), async (req, res) => {
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
-  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  await waitForWhatsAppReady(6000);
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "WhatsApp غير جاهز حاليًا" });
   try {
     const snapshot = await readGroupSnapshot(groupId, 3500);
     const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
