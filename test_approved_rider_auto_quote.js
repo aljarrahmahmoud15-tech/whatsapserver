@@ -24,6 +24,10 @@ test('approved rider page keeps independent rider flow and uses the official sma
   assert.match(html, /function isPositiveDistance/);
   assert.match(html, /distance > 0/);
   assert.match(html, /إحداثيات فعلية/);
+  assert.match(html, /إحداثيات مثل 31\.9539,35\.9106 أو اسم المكان/);
+  assert.match(html, /خط العرض، خط الطول/);
+  assert.match(html, /استخدم موقعي الحالي · الافتراضي/);
+  assert.match(html, /parseCoordinatePair\(query\)\) void pinMapLocation/);
   assert.match(html, /فتح العداد \+ الكيلومتر \+ الانتظار/);
   assert.match(html, /طلب راكب مستقل؛ لا يُحتسب بالكيلومتر تلقائيًا/);
   assert.doesNotMatch(html, /special-duration/);

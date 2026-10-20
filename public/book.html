@@ -329,6 +329,7 @@
     .map-search-row { display: flex; align-items: center; gap: 7px; }
     .map-search-row input { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #315273; border-radius: 10px; background: #071827; color: var(--text); font-size: 11px; }
     .map-search-row input:focus { border-color: var(--mint); outline: 0; box-shadow: 0 0 0 3px rgba(72, 223, 176, .1); }
+    .coordinate-note { color: #a9bdd0; font-size: 9px; line-height: 1.6; }
     .map-actions { display: flex; flex-wrap: wrap; gap: 6px; }
     .map-action, .map-google-link { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 10px; border: 1px solid #315273; border-radius: 9px; background: rgba(16, 42, 68, .84); color: #c7d9eb; font-size: 10px; font-weight: 800; text-decoration: none; cursor: pointer; }
     .map-action.primary { border-color: var(--mint); background: var(--mint); color: var(--mint-ink); }
@@ -451,14 +452,15 @@
             <span class="target-index">02</span><span><strong>موقع الوجهة</strong><small id="destination-map-status">لم يحدد بعد</small></span>
           </button>
         </div>
-        <div class="map-helper">اعتمد الموقع المسجل بزر «استخدم موقعي الحالي»، أو اختر الوجهة من الخريطة، ثم اضغط «تثبيت الموقع» و«تأكيد».</div>
+        <div class="map-helper">ابدأ افتراضيًا بزر «استخدم موقعي الحالي» لموقع الإقلاع، أو أدخل الإحداثيات يدويًا بصيغة <strong>خط العرض، خط الطول</strong> مثل <strong>31.9539,35.9106</strong>، ثم ثبّت الموقع وأكده.</div>
       </div>
       <div class="map-shell">
         <iframe class="map-frame" id="google-map" title="خارطة Google لتحديد موقع الرحلة" allowfullscreen referrerpolicy="no-referrer-when-downgrade" src="https://www.google.com/maps?q=31.9539%2C35.9106&z=12&output=embed"></iframe>
         <div class="map-toolbar">
-          <div class="map-search-row"><input id="map-search" type="search" placeholder="ابحث عن اسم المكان أو العنوان" aria-label="البحث في Google Maps"><button class="map-action primary" id="map-search-button" type="button">عرض الموقع</button></div>
-          <div class="map-actions"><button class="map-action" id="map-pin-button" type="button">تثبيت الموقع المختار</button><button class="map-action confirm" id="map-confirm-button" type="button">تأكيد موقع الإقلاع</button><button class="map-action" id="map-current-button" type="button">استخدم موقعي الحالي</button><a class="map-google-link" id="map-open-google" href="https://www.google.com/maps/search/?api=1&query=31.9539%2C35.9106" target="_blank" rel="noopener">فتح في Google Maps ↗</a></div>
-          <p class="map-status" id="map-status" role="status" aria-live="polite">اختر موقع الإقلاع ثم ابحث عن المكان أو استخدم موقعك الحالي.</p>
+          <div class="map-search-row"><input id="map-search" type="search" placeholder="إحداثيات مثل 31.9539,35.9106 أو اسم المكان" aria-label="إدخال الإحداثيات أو البحث عن المكان"><button class="map-action" id="map-search-button" type="button">عرض الموقع</button></div>
+          <small class="coordinate-note">للإحداثيات اليدوية: اكتب خط العرض ثم فاصلة ثم خط الطول، واضغط «عرض الموقع» أو Enter.</small>
+          <div class="map-actions"><button class="map-action" id="map-pin-button" type="button">تثبيت الموقع المختار</button><button class="map-action confirm" id="map-confirm-button" type="button">تأكيد موقع الإقلاع</button><button class="map-action primary" id="map-current-button" type="button">استخدم موقعي الحالي · الافتراضي</button><a class="map-google-link" id="map-open-google" href="https://www.google.com/maps/search/?api=1&query=31.9539%2C35.9106" target="_blank" rel="noopener">فتح في Google Maps ↗</a></div>
+          <p class="map-status" id="map-status" role="status" aria-live="polite">ابدأ بموقع الإقلاع: استخدم الموقع الحالي افتراضيًا أو أدخل إحداثيات يدوية.</p>
         </div>
       </div>
       <div class="route-summary" aria-live="polite">
@@ -1094,11 +1096,11 @@
         setMapStatus('عدّل الموقعين ثم أكد المسار من جديد.');
       });
       document.querySelectorAll('[data-map-target]').forEach(button => button.addEventListener('click', () => activateMapTarget(button.dataset.mapTarget)));
-      document.getElementById('map-search-button').addEventListener('click', () => setMapQuery(valueOf(mapSearch) || valueOf(mapTargetField())));
+      document.getElementById('map-search-button').addEventListener('click', () => { const query = valueOf(mapSearch) || valueOf(mapTargetField()); if (parseCoordinatePair(query)) void pinMapLocation(); else setMapQuery(query); });
       document.getElementById('map-pin-button').addEventListener('click', pinMapLocation);
       mapConfirmButton.addEventListener('click', confirmMapLocation);
       document.getElementById('map-current-button').addEventListener('click', useCurrentLocation);
-      mapSearch.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); setMapQuery(valueOf(mapSearch) || valueOf(mapTargetField())); } });
+      mapSearch.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); const query = valueOf(mapSearch) || valueOf(mapTargetField()); if (parseCoordinatePair(query)) void pinMapLocation(); else setMapQuery(query); } });
       window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstallPrompt = event; installButton.textContent = 'ثبّت تطبيق الراكب'; });
       installButton.addEventListener('click', async () => {
         if (!deferredInstallPrompt) {
