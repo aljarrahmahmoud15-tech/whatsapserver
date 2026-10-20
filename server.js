@@ -10,6 +10,7 @@ const compression = require("compression");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pino = require("pino");
+const { createWhatsAppWorkerBridge } = require("./whatsapp-worker-bridge");
 const { execFileSync } = require("child_process");
 const applyWhatsAppMediaPatch = require("./scripts/patch-whatsapp-web-media");
 const whatsappMediaPatchState = applyWhatsAppMediaPatch();
@@ -6214,6 +6215,24 @@ function stopRuntimeMemoryWatchdog() {
   runtimeMemoryWatchdogTimer = null;
 }
 
+// Client placement. "inline" keeps whatsapp-web.js inside this process (default);
+// "worker" runs it in a separate process that owns the session, the browser and every
+// page interaction, so the API event loop never carries that work. Only one of them
+// may ever own the WhatsApp session at a time, and a failed worker falls back to
+// inline exactly once instead of leaving the service without a client.
+const WHATSAPP_CLIENT_MODE = String(process.env.WHATSAPP_CLIENT_MODE || "inline").trim().toLowerCase() === "worker" ? "worker" : "inline";
+const WHATSAPP_WORKER_FALLBACK = String(process.env.WHATSAPP_WORKER_FALLBACK || "true").trim().toLowerCase() !== "false";
+let whatsappClientModeActive = WHATSAPP_CLIENT_MODE;
+let whatsappWorkerFallbackUsed = false;
+function whatsappClientPlacement() {
+  return {
+    configuredMode: WHATSAPP_CLIENT_MODE,
+    activeMode: whatsappClientModeActive,
+    fallbackAllowed: WHATSAPP_WORKER_FALLBACK,
+    fallbackUsed: whatsappWorkerFallbackUsed,
+    worker: client && typeof client.status === "function" ? client.status() : null,
+  };
+}
 function createClient() {
   restoreSessionSnapshotIfNeeded();
   const generation = ++connectionGeneration;
@@ -6224,10 +6243,22 @@ function createClient() {
   } catch (error) {
     console.warn("[session-hygiene] startup cleanup skipped:", String((error && error.message) || error));
   }
-  const instance = new Client({
-    authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
-    puppeteer: puppeteerConfig,
-  });
+  let instance = null;
+  if (whatsappClientModeActive === "worker") {
+    instance = createWhatsAppWorkerBridge({
+      config: { clientId: WHATSAPP_CLIENT_ID, authPath: AUTH_PATH, puppeteer: puppeteerConfig },
+      onFatal: (reason) => {
+        whatsappLastError = `worker:${reason}`;
+        console.error("[WhatsApp][worker] fatal:", reason);
+      },
+    });
+    console.log("[WhatsApp] client placement: independent worker process (session and browser stay in the worker)");
+  } else {
+    instance = new Client({
+      authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
+      puppeteer: puppeteerConfig,
+    });
+  }
   instance.on("qr", (qr) => {
     if (generation !== connectionGeneration) {
       // A previous generation must not report "qr" without a usable code: that
@@ -6456,6 +6487,18 @@ async function initializeWhatsApp() {
     console.error("[WhatsApp] initialize:", message);
     isReady = false;
     recordOwnerControlCheckpoint("whatsapp.initialize_error", { force: true });
+    if (whatsappClientModeActive === "worker" && WHATSAPP_WORKER_FALLBACK && !whatsappWorkerFallbackUsed && runId === initializationRunId) {
+      // The worker owns the session, so it must be fully stopped before an
+      // in-process client may take over: two clients on one session logs it out.
+      whatsappWorkerFallbackUsed = true;
+      whatsappClientModeActive = "inline";
+      console.error("[WhatsApp] worker placement failed; falling back to an in-process client once:", message);
+      recordOwnerControlCheckpoint("whatsapp.worker_fallback", { force: true });
+      if (client === currentClient) client = null;
+      await withTimeout(disposeClientInstance(currentClient, "worker_fallback"), 20000, null);
+      scheduleReconnect();
+      return;
+    }
     // WhatsApp Web reloads its own page, which surfaces here as "Execution context
     // was destroyed, most likely because of a navigation". whatsapp-web.js re-injects
     // itself on navigation, so give the page time to come back before any teardown:
@@ -14749,6 +14792,9 @@ app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
 });
 
 
+app.get("/api/admin/whatsapp/client-placement", requireAdmin, (req, res) => {
+  res.json({ success: true, mutation: "none", ready: isReady, whatsappState, ...whatsappClientPlacement() });
+});
 app.get("/api/admin/group/warm-snapshot", requireAdmin, (req, res) => {
   res.json({ success: true, mutation: "none", ready: isReady, ...warmGroupSnapshotStatus() });
 });
