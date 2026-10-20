@@ -404,6 +404,10 @@ function invalidateV27AdminReadCache() {
 
 function v27AdminReadCache(kind, ttlMs = 1000) {
   return async (req, res, next) => {
+    if (String(req.query?.fresh || '') === '1') {
+      res.setHeader('X-V27-Read-Cache', 'BYPASS');
+      return next();
+    }
     const requestSuffix = v27AdminReadCacheRequestSuffix(req);
     const generation = await currentV27AdminReadCacheGeneration();
     const memoryKey = v27AdminReadCacheMemoryKey(generation, kind, requestSuffix);
@@ -10695,14 +10699,15 @@ app.post("/api/admin/direct-rides/:id/cancel", requireOwnerAdmin, adminMutationL
   res.json({ success: true, ride: directRideService.getRide(id), walletChanged: false });
 });
 app.get("/api/admin/v27/bootstrap", requireAdmin, async (req, res) => {
+  const forceFresh = String(req.query?.fresh || '') === '1';
   const currentTime = Date.now();
-  if (v27BootstrapCache.payload && v27BootstrapCache.expiresAt > currentTime) {
+  if (!forceFresh && v27BootstrapCache.payload && v27BootstrapCache.expiresAt > currentTime) {
     res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=10');
     res.setHeader('X-V27-Bootstrap-Cache', 'MEMORY-HIT');
     return res.json(v27BootstrapCache.payload);
   }
-  const redisPayload = await readRedisJson(redisCacheKey('bootstrap'));
-  if (redisPayload?.success) {
+  const redisPayload = forceFresh ? null : await readRedisJson(redisCacheKey('bootstrap'));
+  if (!forceFresh && redisPayload?.success) {
     v27BootstrapCache = { payload: redisPayload, expiresAt: currentTime + V27_BOOTSTRAP_CACHE_TTL_MS };
     res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=10');
     res.setHeader('X-V27-Bootstrap-Cache', 'REDIS-HIT');
@@ -10711,8 +10716,8 @@ app.get("/api/admin/v27/bootstrap", requireAdmin, async (req, res) => {
   const payload = buildV27BootstrapPayload();
   v27BootstrapCache = { payload, expiresAt: currentTime + V27_BOOTSTRAP_CACHE_TTL_MS };
   void writeRedisJson(redisCacheKey('bootstrap'), payload, V27_BOOTSTRAP_CACHE_TTL_MS);
-  res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=10');
-  res.setHeader('X-V27-Bootstrap-Cache', 'MISS');
+  res.setHeader('Cache-Control', forceFresh ? 'no-store, max-age=0' : 'private, max-age=5, stale-while-revalidate=10');
+  res.setHeader('X-V27-Bootstrap-Cache', forceFresh ? 'FORCED-FRESH' : 'MISS');
   return res.json(payload);
 });
 app.get("/api/admin/bot/status", requireAdmin, adminReadLimiter, v27AdminReadCache("bot-status", 1000), (req, res) => {
