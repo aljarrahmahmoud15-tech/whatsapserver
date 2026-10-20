@@ -1,0 +1,14 @@
+{
+  "name": "V27",
+  "short_name": "V27",
+  "start_url": "/ride.html",
+  "display": "standalone",
+  "background_color": "#071522",
+  "theme_color": "#071522",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    { "src": "/aljarah-logo-mark-clean.webp", "sizes": "192x192", "type": "image/webp", "purpose": "any maskable" },
+    { "src": "/aljarah-logo-mark-clean.webp", "sizes": "512x512", "type": "image/webp", "purpose": "any maskable" }
+  ]
+}

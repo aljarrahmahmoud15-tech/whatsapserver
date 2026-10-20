@@ -22,6 +22,8 @@ sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { calculateFare, farePolicyResponse } = require("./pricing");
 const { calculateSpecialTripFare, specialTripTariffResponse } = require("./special-trip-pricing");
+const { ensureDirectRideSchema, createDirectRideService } = require("./direct-ride-service");
+const { haversineDistanceKm, normalizeCoordinatePair, normalizeRouteEstimate } = require("./direct-ride-policy");
 const { DEFAULT_SPECIAL_BOOKING_POLICY, normalizeSpecialBookingPolicy, specialBookingPolicyResponse, isSpecialBookingKind } = require("./special-booking-policy");
 const { DEFAULT_CUSTOMER_BOOKING_POLICY, normalizeCustomerBookingPolicy, customerBookingPolicyResponse } = require("./customer-booking-policy");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
@@ -128,6 +130,8 @@ const PRODUCER_RATE_BPS = 1250;
 const SPECIAL_ORDER_RATE_BPS = 1250;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
+const DIRECT_RIDE_LIVE_DISPATCH = process.env.DIRECT_RIDE_LIVE_DISPATCH === "true";
+const DIRECT_RIDE_ROUTE_TIMEOUT_MS = Math.max(3000, Math.min(15000, Number(process.env.DIRECT_RIDE_ROUTE_TIMEOUT_MS || 8000)));
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const v27PageLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
@@ -528,6 +532,70 @@ app.get("/health", (req, res) => {
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
   return res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
 });
+app.get("/captain/register", (req, res) => {
+  const token = getSetting("captain_public_invite_token", null);
+  if (!token) return res.status(503).send("Captain registration link is not ready");
+  res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+});
+async function directRideRouteEstimate({ origin, destination } = {}) {
+  const originCoordinates = normalizeCoordinatePair(origin);
+  const destinationCoordinates = normalizeCoordinatePair(destination);
+  if (!originCoordinates || !destinationCoordinates) return { ok: false, error: "إحداثيات الإقلاع والوجهة مطلوبة" };
+  const fallback = normalizeRouteEstimate({ origin: originCoordinates, destination: destinationCoordinates });
+  const apiUrl = String(process.env.MANUS_API_URL || "").replace(/\/$/, "");
+  const apiKey = String(process.env.MANUS_API_KEY || "").trim();
+  if (!apiUrl || !apiKey || typeof fetch !== "function") {
+    return fallback ? { ok: true, ...fallback, routeSource: "coordinate_estimate" } : { ok: false, error: "تعذر تقدير المسار" };
+  }
+  const query = new URLSearchParams({
+    origin: `${originCoordinates.lat},${originCoordinates.lng}`,
+    destination: `${destinationCoordinates.lat},${destinationCoordinates.lng}`,
+    mode: "driving",
+    alternatives: "false",
+    key: apiKey,
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DIRECT_RIDE_ROUTE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${apiUrl}/v1/maps/proxy/maps/api/directions/json?${query.toString()}`, { signal: controller.signal, headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    const leg = payload?.status === "OK" ? payload?.routes?.[0]?.legs?.[0] : null;
+    const distanceKm = Number(leg?.distance?.value) / 1000;
+    const durationMin = Number(leg?.duration?.value) / 60;
+    if (response.ok && leg && Number.isFinite(distanceKm) && Number.isFinite(durationMin)) return { ok: true, distanceKm, durationMin, routeSource: "google_directions_proxy" };
+    audit("direct_ride.route_fallback", "direct_ride", null, { upstreamStatus: payload?.status || response.status, routeSource: "coordinate_estimate", financialMutation: false });
+  } catch (error) {
+    audit("direct_ride.route_fallback", "direct_ride", null, { error: String(error?.message || error).slice(0, 160), routeSource: "coordinate_estimate", financialMutation: false });
+  } finally {
+    clearTimeout(timeout);
+  }
+  return fallback ? { ok: true, ...fallback, routeSource: "coordinate_estimate" } : { ok: false, error: "تعذر تقدير المسار" };
+}
+async function directRideGeocode(query) {
+  const text = String(query || "").trim().slice(0, 160);
+  const apiUrl = String(process.env.MANUS_API_URL || "").replace(/\/$/, "");
+  const apiKey = String(process.env.MANUS_API_KEY || "").trim();
+  if (!text || text.length < 2) return { ok: false, error: "اكتب اسم المكان أولًا" };
+  if (!apiUrl || !apiKey || typeof fetch !== "function") return { ok: false, error: "بحث العناوين غير مهيأ حاليًا؛ استخدم موقع الجهاز أو الإحداثيات" };
+  const queryParams = new URLSearchParams({ address: text, region: "jo", language: "ar", key: apiKey });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DIRECT_RIDE_ROUTE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${apiUrl}/v1/maps/proxy/maps/api/geocode/json?${queryParams.toString()}`, { signal: controller.signal, headers: { accept: "application/json" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.status !== "OK") return { ok: false, error: "لم يتم العثور على موقع مطابق" };
+    const results = (Array.isArray(payload.results) ? payload.results : []).slice(0, 5).map((item) => ({
+      label: item.formatted_address,
+      lat: Number(item.geometry?.location?.lat),
+      lng: Number(item.geometry?.location?.lng),
+    })).filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng));
+    return results.length ? { ok: true, results } : { ok: false, error: "لم يتم العثور على موقع مطابق" };
+  } catch (error) {
+    return { ok: false, error: "تعذر الاتصال بخدمة بحث العناوين" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 app.get("/api/public/pricing", (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   res.json({ success: true, policy: farePolicyResponse(), specialTripTariff: specialTripTariffResponse() });
@@ -550,10 +618,85 @@ app.post("/api/public/special-trip-fare", publicSpecialBookingLimiter, (req, res
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, ...result });
 });
-app.get("/captain/register", (req, res) => {
-  const token = getSetting("captain_public_invite_token", null);
-  if (!token) return res.status(503).send("Captain registration link is not ready");
-  res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+app.post("/api/public/direct-rides/quote", publicSpecialBookingLimiter, async (req, res) => {
+  const origin = { lat: req.body?.originLat ?? req.body?.origin?.lat, lng: req.body?.originLng ?? req.body?.origin?.lng };
+  const destination = { lat: req.body?.destinationLat ?? req.body?.destination?.lat, lng: req.body?.destinationLng ?? req.body?.destination?.lng };
+  const route = await directRideRouteEstimate({ origin, destination });
+  if (!route.ok) return res.status(400).json({ success: false, error: route.error });
+  const quote = calculateSpecialTripFare(route);
+  if (quote.status !== "quoted") return res.status(400).json({ success: false, error: "تعذر احتساب سعر الرحلة" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, route: { ...route }, quote });
+});
+app.post("/api/public/direct-rides/geocode", publicSpecialBookingLimiter, async (req, res) => {
+  const result = await directRideGeocode(req.body?.query);
+  if (!result.ok) return res.status(400).json({ success: false, error: result.error });
+  res.json({ success: true, results: result.results });
+});
+app.post("/api/public/direct-rides", publicSpecialBookingLimiter, async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9+]/g, ""));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ success: false, error: "رقم هاتف أردني صالح مطلوب" });
+  const origin = { lat: req.body?.originLat ?? req.body?.origin?.lat, lng: req.body?.originLng ?? req.body?.origin?.lng };
+  const destination = { lat: req.body?.destinationLat ?? req.body?.destination?.lat, lng: req.body?.destinationLng ?? req.body?.destination?.lng };
+  const route = await directRideRouteEstimate({ origin, destination });
+  if (!route.ok) return res.status(400).json({ success: false, error: route.error });
+  const result = directRideService.createRequest({
+    customerName: req.body?.customerName || req.body?.name,
+    phone,
+    origin: req.body?.originLabel || req.body?.origin,
+    destination: req.body?.destinationLabel || req.body?.destination,
+    originLat: origin.lat,
+    originLng: origin.lng,
+    destinationLat: destination.lat,
+    destinationLng: destination.lng,
+    distanceKm: route.distanceKm,
+    durationMin: route.durationMin,
+    routeSource: route.routeSource,
+    idempotencyKey: req.get("X-Idempotency-Key") || req.body?.idempotencyKey,
+  });
+  if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.error });
+  res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: Boolean(result.duplicate), ride: directRideService.response(result.row, { includeToken: true, token: result.token }), message: result.duplicate ? "تم العثور على طلب الرحلة السابق" : "تم تجهيز السعر؛ أكد الرحلة للبحث عن أقرب كابتن" });
+});
+app.get("/api/public/direct-rides/:id", publicSpecialBookingLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const token = String(req.query?.token || "").trim();
+  const ride = directRideService.getPublicRide(id, token);
+  if (!ride) return res.status(404).json({ success: false, error: "الرحلة غير موجودة أو رابط المتابعة غير صالح" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, ride });
+});
+app.post("/api/public/direct-rides/:id/confirm", publicSpecialBookingLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const token = String(req.body?.token || req.query?.token || "").trim();
+  const result = directRideService.confirmRider(id, token, req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error, ride: result.row ? directRideService.response(result.row) : null });
+  const dispatch = directRideService.dispatch(id, { actorRole: "rider", idempotencyKey: `DIRECT-RIDE-${id}-DISPATCH` });
+  if (dispatch.ok && dispatch.captain?.id && DIRECT_RIDE_LIVE_DISPATCH) {
+    const captain = db.prepare("SELECT id,phone,name FROM users WHERE id=? AND role='captain' LIMIT 1").get(dispatch.captain.id);
+    if (captain?.phone) void sendCaptainStatusText({
+      phone: captain.phone,
+      event: `direct_ride.offer.${id}`,
+      title: "عرض رحلة مباشر جديد",
+      text: `رحلة ${dispatch.row?.requestCode || id}\nمن ${dispatch.row?.origin || "موقع الإقلاع"} إلى ${dispatch.row?.destination || "الوجهة"}\nالسعر المتوقع: ${dispatch.row?.quotedPrice || "—"}\nافتح تطبيق V27 لمراجعة العرض وقبوله.`,
+      idempotencyKey: `DIRECT-RIDE-OFFER-${id}-${captain.id}`,
+    }).catch(() => null);
+  }
+  const ride = directRideService.getPublicRide(id, token);
+  res.json({ success: true, ride, dispatch: { enabled: DIRECT_RIDE_LIVE_DISPATCH, waiting: Boolean(dispatch.waiting), paused: Boolean(dispatch.paused) }, message: DIRECT_RIDE_LIVE_DISPATCH ? "تم تأكيد الرحلة وبدأ البحث عن أقرب كابتن" : "تم تأكيد الرحلة؛ التشغيل الحي بانتظار اعتماد الإدارة" });
+});
+app.post("/api/public/direct-rides/:id/cancel", publicSpecialBookingLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const token = String(req.body?.token || req.query?.token || "").trim();
+  const ride = directRideService.getPublicRide(id, token);
+  if (!ride) return res.status(404).json({ success: false, error: "الرحلة غير موجودة أو رابط المتابعة غير صالح" });
+  const result = directRideService.cancel(id, "rider", null, req.body?.reason || "إلغاء من الراكب", req.get("X-Idempotency-Key") || `DIRECT-RIDE-${id}-RIDER-CANCEL`);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getPublicRide(id, token), walletChanged: false });
+});
+app.get("/captain/ride", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "ride-captain.html"));
 });
 app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res) => {
   const policy = currentSpecialBookingPolicy();
@@ -658,6 +801,11 @@ app.get("/v27/customer-bookings", v27PageLimiter, (req, res) => {
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "customer-booking-settings.html"));
 });
+app.get("/v27/direct-rides", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "direct-ride-admin.html"));
+});
 app.get("/special-booking-settings.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -667,6 +815,16 @@ app.get("/customer-booking-settings.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "customer-booking-settings.html"));
+});
+app.get("/ride.html", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "ride.html"));
+});
+app.get("/v27/ride", v27PageLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "ride.html"));
 });
 app.get("/special-booking/confirm.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -1304,6 +1462,7 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_void_idempotency ON topup_cards(void_idempotency_key) WHERE void_idempotency_key IS NOT NULL AND void_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_redemption_idempotency ON topup_cards(redemption_idempotency_key) WHERE redemption_idempotency_key IS NOT NULL AND redemption_idempotency_key <> ''");
+ensureDirectRideSchema(db);
 db.exec(`
   UPDATE users SET account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END
   WHERE account_status IS NULL OR account_status NOT IN ('pending','approved','active','suspended','merged','rejected');
@@ -1316,8 +1475,13 @@ db.exec(`
   UPDATE orders SET settlement_state='settled'
   WHERE status IN ('accepted','completed') AND EXISTS(SELECT 1 FROM wallet_ledger WHERE wallet_ledger.order_id=orders.id);
 `);
-
 const now = () => new Date().toISOString();
+const directRideService = createDirectRideService({
+  db,
+  now,
+  dispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH,
+  audit: (action, entityType, entityId, details, actorUserId = null) => audit(action, entityType, entityId, details, actorUserId),
+});
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
 const phoneWithCountry = (value = "") => {
   const raw = cleanPhone(value);
@@ -9512,6 +9676,47 @@ app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
   res.json({ success: true });
 });
+app.get("/api/captain/direct-rides", requireCaptain, captainReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, liveDispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH, rides: directRideService.listCaptainRides(req.captainSession.userId) });
+});
+app.post("/api/captain/direct-rides/location", requireCaptain, captainReadLimiter, (req, res) => {
+  const result = directRideService.upsertCaptainLocation(req.captainSession.userId, { lat: req.body?.lat, lng: req.body?.lng, accuracyM: req.body?.accuracyM }, { rideId: req.body?.rideId ? Number(req.body.rideId) : null });
+  if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.error });
+  res.json({ success: true, location: result.location });
+});
+app.post("/api/captain/direct-rides/:id/accept", requireCaptain, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.accept(id, req.captainSession.userId, req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getRide(id), walletChanged: false });
+});
+app.post("/api/captain/direct-rides/:id/arrived", requireCaptain, adminMutationLimiter, async (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.markArrived(id, req.captainSession.userId, req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  const ride = directRideService.getRide(id);
+  if (ride?.phone) void sendBotText(`${ride.phone}@c.us`, `وصل الكابتن إلى موقع الإقلاع للرحلة ${ride.requestCode}. افتح تطبيق V27 لمتابعة الحالة.`).catch(() => null);
+  res.json({ success: true, ride, notification: "best_effort", walletChanged: false });
+});
+app.post("/api/captain/direct-rides/:id/start", requireCaptain, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.start(id, req.captainSession.userId, { lat: req.body?.lat, lng: req.body?.lng, accuracyM: req.body?.accuracyM }, req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getRide(id), walletChanged: false });
+});
+app.post("/api/captain/direct-rides/:id/finish", requireCaptain, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.finish(id, req.captainSession.userId, { lat: req.body?.lat, lng: req.body?.lng, accuracyM: req.body?.accuracyM }, req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getRide(id), settlement: result.settlement, walletChanged: false });
+});
+app.post("/api/captain/direct-rides/:id/cancel", requireCaptain, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.cancel(id, "captain", req.captainSession.userId, req.body?.reason || "إلغاء من الكابتن", req.get("X-Idempotency-Key") || req.body?.idempotencyKey);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getRide(id), walletChanged: false });
+});
 app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) => {
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
@@ -10442,6 +10647,26 @@ function buildV27BootstrapPayload() {
     } : null,
   };
 }
+app.get("/api/admin/direct-rides", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, liveDispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH, rides: directRideService.listAdmin({ limit: req.query?.limit }) });
+});
+app.post("/api/admin/direct-rides/:id/dispatch", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.dispatch(id, { actorRole: "owner", actorUserId: req.ownerSession?.userId || null, idempotencyKey: req.get("X-Idempotency-Key") || `DIRECT-RIDE-${id}-OWNER-DISPATCH` });
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  if (result.captain?.id && DIRECT_RIDE_LIVE_DISPATCH) {
+    const captain = db.prepare("SELECT id,phone FROM users WHERE id=? AND role='captain' LIMIT 1").get(result.captain.id);
+    if (captain?.phone) void sendCaptainStatusText({ phone: captain.phone, event: `direct_ride.offer.${id}`, title: "عرض رحلة مباشر جديد", text: `رحلة ${result.row?.requestCode || id}\\nمن ${result.row?.origin || "موقع الإقلاع"} إلى ${result.row?.destination || "الوجهة"}\\nالسعر المتوقع: ${result.row?.quotedPrice || "—"}\\nافتح تطبيق V27 لمراجعة العرض وقبوله.`, idempotencyKey: `DIRECT-RIDE-OFFER-${id}-${captain.id}` }).catch(() => null);
+  }
+  res.json({ success: true, ride: directRideService.getRide(id), dispatch: { enabled: DIRECT_RIDE_LIVE_DISPATCH, waiting: Boolean(result.waiting), paused: Boolean(result.paused) }, walletChanged: false });
+});
+app.post("/api/admin/direct-rides/:id/cancel", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const result = directRideService.cancel(id, "owner", req.ownerSession?.userId || null, req.body?.reason || "إلغاء بقرار المالك", req.get("X-Idempotency-Key") || `DIRECT-RIDE-${id}-OWNER-CANCEL`);
+  if (!result.ok) return res.status(result.status || 409).json({ success: false, error: result.error });
+  res.json({ success: true, ride: directRideService.getRide(id), walletChanged: false });
+});
 app.get("/api/admin/v27/bootstrap", requireAdmin, async (req, res) => {
   const currentTime = Date.now();
   if (v27BootstrapCache.payload && v27BootstrapCache.expiresAt > currentTime) {
