@@ -59,6 +59,10 @@ process.on('message', async (msg) => {
   const echoed = await bridge.echoArg(chat);
   assert.match(String(echoed.received), /__handleRef/);
 
+  // InterfaceController methods are addressed on client.interface.
+  const opened = await bridge.interface.openChatWindowAt('120363430477331505@g.us');
+  assert.equal(opened.echoed, 'interface.openChatWindowAt');
+
   // Worker failures surface as rejections, not silent successes.
   await assert.rejects(() => bridge.boom(), /stub_failure/);
 

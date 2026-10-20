@@ -93,11 +93,22 @@ function reviveArg(value, depth = 0) {
   return out;
 }
 
-async function invoke(handle, method, args) {
-  const target = handle === 'client' ? client : resolveHandle(handle);
-  if (!target) throw new Error('client_not_ready');
-  const fn = target[method];
+function resolveTarget(handle, method) {
+  const base = handle === 'client' ? client : resolveHandle(handle);
+  if (!base) throw new Error('client_not_ready');
+  // InterfaceController methods live on client.interface, not on the client itself.
+  if (method.startsWith('interface.')) {
+    const name = method.slice('interface.'.length);
+    if (!base.interface || typeof base.interface[name] !== 'function') throw new Error(`unknown_method:${method}`);
+    return { target: base.interface, fn: base.interface[name] };
+  }
+  const fn = base[method];
   if (typeof fn !== 'function') throw new Error(`unknown_method:${method}`);
+  return { target: base, fn };
+}
+
+async function invoke(handle, method, args) {
+  const { target, fn } = resolveTarget(handle, method);
   const revived = Array.isArray(args) ? args.map((item) => reviveArg(item)) : [];
   const result = await fn.apply(target, revived);
   return snapshot(result);
@@ -194,7 +205,12 @@ process.on('message', async (message) => {
     }
     if (id !== undefined) send({ id, ok: true, result });
   } catch (error) {
-    if (id !== undefined) send({ id, ok: false, error: `${String(method || 'call')}:${String((error && error.message) || error)}` });
+    if (id !== undefined) {
+      // Include where the failure came from: a minified one-letter message means the
+      // page rejected it, a bridge failure names itself explicitly.
+      const origin = String((error && error.stack) || "").split("\n")[1] || "";
+      send({ id, ok: false, error: `${String(method || 'call')}:${String((error && error.message) || error)}|${origin.trim().slice(0, 90)}` });
+    }
   }
 });
 

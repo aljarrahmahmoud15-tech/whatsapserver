@@ -222,7 +222,7 @@ class WhatsAppWorkerBridge extends EventEmitter {
 
   get interface() {
     const bridge = this;
-    const call = (name) => (...args) => bridge.callClient(name, args);
+    const call = (name) => (...args) => bridge.callClient(`interface.${name}`, args);
     return { openChatWindowAt: call('openChatWindowAt'), openChatWindow: call('openChatWindow') };
   }
 
