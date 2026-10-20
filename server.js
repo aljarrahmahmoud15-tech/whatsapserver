@@ -12227,7 +12227,11 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
     const visibleThumbReaction = acceptance.__ownerOverrideBody ? false : await hasVisibleThumbReaction(acceptanceMessageId);
-    const liveAcceptance = (client && typeof client.getMessageById === "function" && !acceptance.__ownerOverrideBody) ? await getWhatsAppMessageByIdVariants(acceptanceMessageId, 5000) || acceptance : acceptance;
+    const baseAcceptanceId = String(acceptanceMessageId).replace(/:(?:ov|owner)[0-9A-Za-z_-]*$/, "");
+    const liveAcceptance = (client && typeof client.getMessageById === "function"
+      && (!acceptance.__ownerOverrideBody || /^[0-9A-Fa-f]{16,}$/.test(baseAcceptanceId)))
+      ? await getWhatsAppMessageByIdVariants(baseAcceptanceId, 5000) || acceptance
+      : acceptance;
     let quoted = null;
     if (acceptance.__ownerOverrideBody) {
       const deterministicSourceId = String(acceptance.__ownerOverrideSourceId || ("owner-override-" + acceptanceMessageId));
