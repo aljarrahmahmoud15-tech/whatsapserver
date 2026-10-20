@@ -29,7 +29,7 @@ function customerBookingPolicyResponse(policy = DEFAULT_CUSTOMER_BOOKING_POLICY)
       enabled: "استقبال طلبات الراكب والأوردر",
       approvalMode: "موافقة المالك قبل النشر",
       publishMode: "نشر يدوي من V27",
-      passengerDistanceMode: "تثبيت المسافة والسعر عند المراجعة",
+      passengerDistanceMode: "تثبيت السعر من المالك عند المراجعة",
     },
   };
 }

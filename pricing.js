@@ -52,18 +52,7 @@ function calculateFare({ serviceType = "passenger", distanceKm, isAirport = fals
   if (normalizedType === "full_car") {
     return { status: "manual_required", serviceType: "full_car", ruleKey: "full_car_manual", priceCents: null, priceJod: null, currency: "JOD" };
   }
-
-  const distance = normalizedDistanceKm(distanceKm);
-  if (Number.isNaN(distance)) return { status: "invalid", serviceType: "passenger", error: "distanceKm must be a number between 0 and 10000" };
-  if (distance === null) return { status: "distance_required", serviceType: "passenger", ruleKey: "passenger_distance_required", currency: "JOD" };
-  if (distance <= policy.passenger.baseDistanceKm) {
-    return quote(policy.passenger.baseCents, "passenger", "passenger_base", { distanceKm: distance });
-  }
-  if (distance > policy.passenger.longDistanceThresholdKm) {
-    return quote(policy.passenger.longDistanceFixedCents, "passenger", "passenger_over_150_fixed", { distanceKm: distance });
-  }
-  const increments = Math.ceil((distance - policy.passenger.baseDistanceKm) / policy.passenger.incrementKm);
-  return quote(policy.passenger.baseCents + increments * policy.passenger.incrementCents, "passenger", "passenger_distance_step", { distanceKm: distance, increments });
+  return { status: "manual_required", serviceType: "passenger", ruleKey: "passenger_owner_quote", priceCents: null, priceJod: null, currency: "JOD" };
 }
 
 function farePolicyResponse(policy = DEFAULT_FARE_POLICY) {
@@ -73,16 +62,11 @@ function farePolicyResponse(policy = DEFAULT_FARE_POLICY) {
     rules: {
       order: { fixedJod: policy.order.fixedCents / 100, label: "أوردر" },
       passenger: {
-        baseDistanceKm: policy.passenger.baseDistanceKm,
-        baseJod: policy.passenger.baseCents / 100,
-        incrementKm: policy.passenger.incrementKm,
-        incrementJod: policy.passenger.incrementCents / 100,
-        overDistanceKm: policy.passenger.longDistanceThresholdKm,
-        overDistanceFixedJod: policy.passenger.longDistanceFixedCents / 100,
-        label: "راكب",
+        priceMode: "owner_quote",
+        label: "راكب · سعر يثبته المالك",
       },
       airport: { fixedJod: policy.airport.fixedCents / 100, label: "المطار" },
-      fullCar: { fixedJod: null, label: "حجز خاص · تسعير يدوي" },
+      fullCar: { fixedJod: null, label: "طلب رحلة ذكية · حساب بالكيلومتر" },
     },
   };
 }

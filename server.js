@@ -626,8 +626,8 @@ app.post("/api/public/fare-quote", (req, res) => {
   res.json({ success: true, ...result });
 });
 app.post("/api/public/special-trip-fare", publicSpecialBookingLimiter, (req, res) => {
-  const result = calculateSpecialTripFare({ distanceKm: req.body?.distanceKm, durationMin: req.body?.durationMin });
-  if (result.status === "invalid") return res.status(400).json({ success: false, error: "أدخل مسافة ومدة صحيحتين" });
+  const result = calculateSpecialTripFare({ distanceKm: req.body?.distanceKm });
+  if (result.status === "invalid") return res.status(400).json({ success: false, error: "أدخل مسافة صحيحة" });
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, ...result });
 });
@@ -721,7 +721,7 @@ app.get("/captain/ride", v27PageLimiter, (req, res) => {
 });
 app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res) => {
   const policy = currentSpecialBookingPolicy();
-  if (!policy.enabled) return res.status(409).json({ success: false, error: "استقبال الحجز الخاص متوقف حاليًا من إعدادات المالك" });
+  if (!policy.enabled) return res.status(409).json({ success: false, error: "استقبال طلبات الرحلة الذكية متوقف حاليًا من إعدادات المالك" });
   const input = publicSpecialBookingInput(req.body || {});
   if (input.error) return res.status(400).json({ success: false, error: input.error });
   const priceCents = input.quote.status === "quoted" ? input.quote.fareCents : null;
@@ -736,12 +736,12 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   if (policy.ownerNotification) {
     void notifyOperations({
       event: `special_booking.received.${row.id}`,
-      title: "طلب حجز خاص جديد",
-      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, row.price_cents ? `تقدير العداد: ${money(row.price_cents)} JOD` : "لم تُدخل المسافة والمدة بعد؛ يحتاج السعر مراجعة المالك.", "لم يتم النشر أو التسوية بعد."],
+      title: "طلب رحلة ذكية جديدة",
+      lines: [`الطلب: ${row.request_code}`, `العميل: ${row.customer_name}`, `الهاتف: ${row.phone}`, `المسار: ${row.origin} ← ${row.destination}`, `وقت الإقلاع: ${row.trip_time}`, row.price_cents ? `تقدير العداد: ${money(row.price_cents)} JOD` : "لم تُدخل المسافة بعد؛ يحتاج السعر مراجعة المالك.", "لم يتم النشر أو التسوية بعد."],
       ownersOnly: true,
     }).catch(() => null);
   }
-  res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: row.price_cents ? "تم احتساب تقدير الرحلة الخاصة وإرساله للمالك للمراجعة." : "تم استلام طلب الرحلة الخاصة. سيظهر للمالك للمراجعة واحتساب السعر." });
+  res.status(201).json({ success: true, request: specialBookingRequestResponse(row, req), message: row.price_cents ? "تم احتساب سعر طلب الرحلة الذكية بالكيلومتر وإرساله للمالك للمراجعة." : "تم استلام طلب الرحلة الذكية. سيظهر للمالك للمراجعة واحتساب السعر بالكيلومتر." });
 });
 app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res) => {
   const policy = currentCustomerBookingPolicy();
@@ -3072,18 +3072,17 @@ function publicSpecialBookingInput(body = {}) {
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
   if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return { error: "المسافة غير صالحة" };
   if (durationMin !== null && (!Number.isFinite(durationMin) || durationMin < 0 || durationMin > 100000)) return { error: "المدة الزمنية غير صالحة" };
-  if ((distanceKm === null) !== (durationMin === null)) return { error: "أدخل المسافة والمدة معًا لاحتساب تعرفة الرحلة الخاصة" };
-  const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm, durationMin });
-  if (quote.status === "invalid") return { error: "المسافة أو المدة غير صالحة" };
+  const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm });
+  if (quote.status === "invalid") return { error: "المسافة غير صالحة" };
   return { customerName, phone, origin, destination, originCoordinatesJson: locationCoordinatesJson(originCoordinates), destinationCoordinatesJson: locationCoordinatesJson(destinationCoordinates), tripTime, requestType: "full_car", distanceKm, durationMin, quote, notes };
 }
 function specialBookingOperationalMessage(row) {
   return [
     `السعر ${money(row.price_cents)}`,
-    row.distance_km !== null && row.duration_min !== null ? `المسافة ${row.distance_km} كم · المدة ${row.duration_min} دقيقة` : "",
+    row.distance_km !== null ? `المسافة ${row.distance_km} كم${row.duration_min !== null ? ` · المدة ${row.duration_min} دقيقة` : ""}` : "",
     `من ${row.origin} إلى ${row.destination}`,
     `وقت الإقلاع: ${row.trip_time}`,
-    `حجز خاص #${row.request_code}`,
+    `طلب رحلة ذكية #${row.request_code}`,
     `العميل: ${row.customer_name} · ${row.phone}`,
     row.notes ? `ملاحظات: ${row.notes}` : "",
   ].filter(Boolean).join("\n");
@@ -10279,7 +10278,7 @@ app.patch("/api/admin/special-bookings/:id/price", requireOwnerAdmin, adminMutat
   const priceSource = ["manual", "tariff"].includes(String(req.body?.priceSource || "")) ? String(req.body.priceSource) : "manual";
   if (!Number.isInteger(id) || id < 1 || !Number.isFinite(priceJod) || priceJod <= 0 || priceJod > 1000000 || !Number.isInteger(priceCents)) return res.status(400).json({ error: "أدخل سعرًا صحيحًا بالدينار" });
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
-  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (!row) return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
   if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "لا يمكن تعديل سعر طلب مغلق أو منشور" });
   const stamp = now();
   const priceChanged = Number(row.price_cents || 0) !== priceCents;
@@ -10295,9 +10294,9 @@ app.post("/api/admin/special-bookings/:id/approve", requireOwnerAdmin, adminMuta
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
-  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (!row) return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
   if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالاعتماد" });
-  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "حدد السعر قبل اعتماد الحجز الخاص" });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "حدد سعر طلب الرحلة الذكية قبل الاعتماد" });
   const policy = currentSpecialBookingPolicy();
   const needsCustomer = specialBookingRequiresCustomerConfirmation(policy);
   const rotateConfirmation = req.body?.rotateConfirmation === true;
@@ -10309,20 +10308,20 @@ app.post("/api/admin/special-bookings/:id/approve", requireOwnerAdmin, adminMuta
   db.prepare("UPDATE special_booking_requests SET status=?,owner_decision='approved',owner_note=?,updated_at=? WHERE id=?").run(status, ownerNote, stamp, id);
   const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
   audit("special_booking.owner_approved", "special_booking", id, { requestCode: next.request_code, status, requiresCustomerConfirmation: needsCustomer, financialMutation: false });
-  res.json({ success: true, request: specialBookingRequestResponse(next, req, { includePrivate: true, confirmationToken }), confirmationUrl: specialBookingConfirmationUrl(req, next, confirmationToken), message: status === "awaiting_customer_confirmation" ? "تم اعتماد المالك مبدئيًا؛ أرسل رابط تأكيد السعر للعميل قبل النشر." : "تم اعتماد الحجز الخاص وهو جاهز للنشر اليدوي." });
+  res.json({ success: true, request: specialBookingRequestResponse(next, req, { includePrivate: true, confirmationToken }), confirmationUrl: specialBookingConfirmationUrl(req, next, confirmationToken), message: status === "awaiting_customer_confirmation" ? "تم اعتماد المالك مبدئيًا؛ أرسل رابط تأكيد السعر للعميل قبل النشر." : "تم اعتماد طلب الرحلة الذكية وهو جاهز للنشر اليدوي." });
 });
 app.post("/api/admin/special-bookings/:id/reject", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
   const id = Number(req.params.id);
-  const reason = String(req.body?.reason || "رفض طلب الحجز الخاص بعد المراجعة").trim().slice(0, 500);
+  const reason = String(req.body?.reason || "رفض طلب الرحلة الذكية بعد المراجعة").trim().slice(0, 500);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "معرّف الطلب غير صحيح" });
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
-  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (!row) return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
   if (["published", "completed", "rejected", "cancelled"].includes(row.status)) return res.status(409).json({ error: "حالة الطلب لا تسمح بالرفض" });
   const stamp = now();
   db.prepare("UPDATE special_booking_requests SET status='rejected',owner_decision='rejected',owner_note=?,updated_at=? WHERE id=?").run(reason, stamp, id);
   const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
   audit("special_booking.owner_rejected", "special_booking", id, { requestCode: next.request_code, reason, financialMutation: false });
-  res.json({ success: true, request: specialBookingRequestResponse(next, req), message: "تم رفض طلب الحجز الخاص وتسجيل السبب." });
+  res.json({ success: true, request: specialBookingRequestResponse(next, req), message: "تم رفض طلب الرحلة الذكية وتسجيل السبب." });
 });
 app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
   const id = Number(req.params.id);
@@ -10333,11 +10332,11 @@ app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMuta
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز للنشر حاليًا" });
   if (specialBookingPublishInFlight.has(id)) return res.status(409).json({ error: "نشر هذا الطلب قيد التنفيذ" });
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=? LIMIT 1").get(id);
-  if (!row) return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+  if (!row) return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
   if (row.status === "published" && row.order_candidate_id) return res.json({ success: true, alreadyPublished: true, request: specialBookingRequestResponse(row, req) });
   if (row.status !== "owner_approved") return res.status(409).json({ error: "لا يمكن النشر قبل اكتمال موافقة المالك وتأكيد العميل", state: row.status });
-  if (specialBookingRequiresCustomerConfirmation(policy) && Number(row.customer_confirmed) !== 1) return res.status(409).json({ error: "تأكيد العميل مطلوب قبل نشر الحجز الخاص" });
-  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "سعر الحجز الخاص غير محدد" });
+  if (specialBookingRequiresCustomerConfirmation(policy) && Number(row.customer_confirmed) !== 1) return res.status(409).json({ error: "تأكيد العميل مطلوب قبل نشر طلب الرحلة الذكية" });
+  if (!row.price_cents || Number(row.price_cents) <= 0) return res.status(409).json({ error: "سعر طلب الرحلة الذكية غير محدد" });
   specialBookingPublishInFlight.add(id);
   try {
     const chat = await resolveGroupChat(groupId);
@@ -10362,12 +10361,12 @@ app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMuta
       audit("special_booking.published", "special_booking", id, { requestCode: current.request_code, groupId, messageId, candidateId, financialMutation: false });
       return { state: "published", candidateId, row: db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id) };
     })();
-    if (result.state === "missing") return res.status(404).json({ error: "طلب الحجز الخاص غير موجود" });
+    if (result.state === "missing") return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
     if (result.state === "stale") return res.status(409).json({ error: "تغيرت حالة الطلب قبل اكتمال النشر", state: result.row?.status });
-    return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: specialBookingRequestResponse(result.row, req), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر الحجز الخاص في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
+    return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: specialBookingRequestResponse(result.row, req), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر طلب الرحلة الذكية في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
   } catch (error) {
     audit("special_booking.publish_failed", "special_booking", id, { error: String(error?.message || error).slice(0, 240), financialMutation: false });
-    return res.status(502).json({ error: "تعذر نشر الحجز الخاص إلى قروب التشغيل" });
+    return res.status(502).json({ error: "تعذر نشر طلب الرحلة الذكية إلى قروب التشغيل" });
   } finally {
     specialBookingPublishInFlight.delete(id);
   }
@@ -10403,7 +10402,7 @@ app.patch("/api/admin/customer-bookings/:id/quote", requireOwnerAdmin, adminMuta
   } else {
     const isAirport = /مطار|المطار|airport/i.test(`${row.origin} ${row.destination}`);
     const quote = calculateFare({ serviceType: row.request_type, distanceKm, isAirport });
-    if (quote.status !== "quoted") return res.status(400).json({ error: "حدد المسافة للراكب أو أدخل سعرًا يدويًا" });
+    if (quote.status !== "quoted") return res.status(400).json({ error: "أدخل السعر اليدوي لطلب الراكب؛ لا يُحتسب بالكيلومتر تلقائيًا" });
     priceCents = quote.priceCents;
     priceSource = quote.ruleKey;
   }
@@ -10548,10 +10547,10 @@ app.patch("/api/admin/settings/special-booking", requireOwnerAdmin, adminMutatio
       audit("admin.special_booking_policy.changed", "system", "special_booking_policy", { before, after: next, financialMutation: false, settlementMutation: false });
     })();
     res.setHeader("Cache-Control", "no-store, max-age=0");
-    res.json({ success: true, policy: specialBookingPolicyResponse(next), message: "تم حفظ إعدادات الحجز الخاص وتسجيل قرار المالك؛ لا توجد حركة مالية تلقائية." });
+    res.json({ success: true, policy: specialBookingPolicyResponse(next), message: "تم حفظ إعدادات طلب الرحلة الذكية وتسجيل قرار المالك؛ لا توجد حركة مالية تلقائية." });
   } catch (error) {
     console.error("[Settings] special booking policy update failed:", error.message);
-    res.status(500).json({ error: "تعذر حفظ إعدادات الحجز الخاص" });
+    res.status(500).json({ error: "تعذر حفظ إعدادات طلب الرحلة الذكية" });
   }
 });
 app.patch("/api/admin/settings/notifications", requireOwnerAdmin, (req, res) => {

@@ -22,7 +22,7 @@ const DEFAULT_SPECIAL_BOOKING_POLICY = Object.freeze({
   enabled: true,
   approvalMode: APPROVAL_MODES.owner_and_customer,
   publishMode: PUBLISH_MODES.after_owner_approval,
-  priceMode: PRICE_MODES.manual,
+  priceMode: PRICE_MODES.tariff,
   captainAcceptanceRequired: true,
   ownerNotification: true,
 });
@@ -40,8 +40,8 @@ const PUBLISH_MODE_LABELS = Object.freeze({
 });
 
 const PRICE_MODE_LABELS = Object.freeze({
-  manual: "سعر خاص يدخله المالك",
-  tariff: "حسب جدول التسعيرة المعتمد",
+  manual: "تعديل مالك استثنائي",
+  tariff: "حسب الكيلومتر فقط · التعرفة الذكية",
 });
 
 function booleanValue(value, fallback) {

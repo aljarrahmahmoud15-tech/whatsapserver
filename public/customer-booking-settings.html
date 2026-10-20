@@ -12,11 +12,11 @@
 <body>
   <main class="shell">
     <header class="topbar"><div class="topbar-inner"><a class="brand" href="/v27"><span class="brand-mark"><img src="/aljarah-logo-mark-clean.webp" alt="شعار وصلني الآن"></span><span class="brand-copy"><strong>وصلني الآن · V27</strong><span>دورة الراكب والأوردر</span></span></a><nav class="top-actions"><a href="/v27">العودة إلى V27</a><a class="primary" href="/book.html" target="_blank" rel="noopener">فتح واجهة العميل ↗</a></nav></div></header>
-    <section class="hero"><div class="hero-content"><span class="eyebrow">INDEPENDENT CUSTOMER CYCLE · V27</span><h1>دورة الراكب والأوردر</h1><p>استقبال مستقل من واجهة العميل، ثم تسعير وموافقة المالك، وبعدها نشر يدوي إلى قروب التشغيل. لا توجد تسوية مالية عند الاستقبال.</p><div class="hero-badges"><span class="badge">راكب · طلب مستقل</span><span class="badge">أوردر · 5 د.أ</span><span class="badge gold">النشر يحتاج قرار المالك</span></div></div></section>
+    <section class="hero"><div class="hero-content"><span class="eyebrow">INDEPENDENT CUSTOMER CYCLE · V27</span><h1>دورة الراكب والأوردر</h1><p>الراكب هنا طلب مستقل غير فوري، وليس حجزًا خاصًا. يُستقبل ثم يثبت المالك سعره يدويًا قبل الاعتماد والنشر إلى قروب التشغيل؛ لا توجد تسوية مالية عند الاستقبال.</p><div class="hero-badges"><span class="badge">راكب · طلب مستقل غير فوري</span><span class="badge">أوردر · 5 د.أ</span><span class="badge gold">النشر يحتاج قرار المالك</span></div></div></section>
     <div id="auth-error" class="notice error hidden" style="margin-bottom:14px">افتح الصفحة من جلسة V27 المسجلة ثم أعد المحاولة.</div>
     <div class="layout">
       <section class="panel"><div class="panel-head"><div><h2>إعدادات الدورة</h2><p>هذه الإعدادات تتحكم بالاستقبال والتنبيه فقط؛ الموافقة والنشر يظلان قرارين منفصلين.</p></div><span id="policy-badge" class="badge">جارٍ القراءة</span></div><form id="policy-form" class="policy-form"><label class="check-row"><input id="policy-enabled" type="checkbox"><span><strong>استقبال طلبات الراكب والأوردر</strong><br><small>عند الإيقاف لا ينشئ النموذج العام طلبًا جديدًا.</small></span></label><label class="check-row"><input id="policy-notification" type="checkbox"><span><strong>تنبيه المالك عند وصول طلب</strong><br><small>التنبيه للمراجعة فقط ولا ينشر ولا يسوي.</small></span></label><div class="notice">طريقة الموافقة: <strong>موافقة المالك قبل النشر</strong><br>الراكب بلا مسافة يذهب إلى المراجعة حتى يثبت المالك المسافة أو السعر.</div><div class="form-actions"><button class="primary" type="submit">حفظ الإعدادات</button><button id="refresh-button" class="secondary" type="button">تحديث الطلبات</button></div><div id="policy-result" class="notice" aria-live="polite"></div></form></section>
-      <section class="panel"><div class="panel-head"><div><h2>خطوات التشغيل</h2><p>تسلسل ثابت يمنع النشر أو التسوية قبل القرار.</p></div></div><div class="flow"><div class="flow-step"><span class="flow-number">01</span><span><strong>استقبال العميل</strong><small>سجل مستقل ورقم CB واضح</small></span><span class="flow-state">تلقائي</span></div><div class="flow-step"><span class="flow-number">02</span><span><strong>تثبيت السعر</strong><small>الأوردر ثابت؛ الراكب يحتاج مسافة أو سعرًا يدويًا</small></span><span class="flow-state">V27</span></div><div class="flow-step"><span class="flow-number">03</span><span><strong>اعتماد المالك</strong><small>ينقل الطلب إلى جاهز للنشر</small></span><span class="flow-state">قرار</span></div><div class="flow-step"><span class="flow-number">04</span><span><strong>النشر للكباتن</strong><small>إنشاء candidate دون تسوية تلقائية</small></span><span class="flow-state">يدوي</span></div></div></section>
+      <section class="panel"><div class="panel-head"><div><h2>خطوات التشغيل</h2><p>تسلسل ثابت يمنع النشر أو التسوية قبل القرار.</p></div></div><div class="flow"><div class="flow-step"><span class="flow-number">01</span><span><strong>استقبال العميل</strong><small>سجل مستقل ورقم CB واضح</small></span><span class="flow-state">تلقائي</span></div><div class="flow-step"><span class="flow-number">02</span><span><strong>تثبيت السعر</strong><small>الأوردر ثابت 5 د.أ؛ الراكب يحتاج سعرًا يدويًا من المالك</small></span><span class="flow-state">V27</span></div><div class="flow-step"><span class="flow-number">03</span><span><strong>اعتماد المالك</strong><small>ينقل الطلب إلى جاهز للنشر</small></span><span class="flow-state">قرار</span></div><div class="flow-step"><span class="flow-number">04</span><span><strong>النشر للكباتن</strong><small>إنشاء candidate دون تسوية تلقائية</small></span><span class="flow-state">يدوي</span></div></div></section>
       <section class="panel" style="grid-column:1/-1"><div class="panel-head"><div><h2>طلبات الراكب والأوردر</h2><p>المراحل: جديد، مراجعة السعر، معتمد، منشور، مكتمل أو مرفوض.</p></div><span id="booking-count" class="badge">—</span></div><div id="booking-status" class="notice">جارٍ قراءة الطلبات…</div><div id="booking-list" class="booking-list" style="margin-top:12px"><div class="empty">جارٍ تحميل الطلبات…</div></div></section>
     </div>
     <footer class="footer">وصلني الآن · لا حركة مالية ولا نشر تلقائي عند استقبال الطلب</footer>
@@ -43,7 +43,7 @@
         $('booking-list').innerHTML = rows.length ? rows.map(row => {
           const terminal = ['completed','rejected','cancelled'].includes(row.status);
           const price = row.price ? `${esc(row.price)} د.أ` : 'السعر غير محدد';
-          const quoteButton = !terminal && row.status !== 'published' && row.status !== 'owner_approved' ? `<button class="secondary" type="button" data-quote="${row.id}">${row.requestType === 'passenger' && !row.distanceKm ? 'تحديد المسافة والسعر' : 'تحديث السعر'}</button>` : '';
+          const quoteButton = !terminal && row.status !== 'published' && row.status !== 'owner_approved' ? `<button class="secondary" type="button" data-quote="${row.id}">${row.requestType === 'passenger' ? 'تحديد سعر الراكب' : 'تحديث السعر'}</button>` : '';
           const approveButton = !terminal && row.status !== 'published' && row.status !== 'owner_approved' && row.price ? `<button class="primary" type="button" data-approve="${row.id}">اعتماد الطلب</button>` : '';
           const publishButton = row.status === 'owner_approved' ? `<button class="primary" type="button" data-publish="${row.id}">نشر للكباتن</button>` : '';
           const rejectButton = !terminal && row.status !== 'published' ? `<button class="danger" type="button" data-reject="${row.id}">رفض</button>` : '';
@@ -58,11 +58,10 @@
       async function quoteBooking(id, button) {
         const row = state.bookings.find(item => Number(item.id) === id); if (!row) return;
         let body = {};
-        if (row.requestType === 'passenger' && !row.distanceKm) {
-          const distance = window.prompt('أدخل المسافة التقريبية بالكيلومتر. اتركها فارغة لإدخال سعر يدوي:', '');
-          if (distance === null) return;
-          if (distance.trim()) body.distanceKm = Number(distance.replace(',', '.'));
-          else { const price = window.prompt('أدخل السعر اليدوي بالدينار:', ''); if (price === null) return; body.priceJod = Number(price.replace(',', '.')); }
+        if (row.requestType === 'passenger') {
+          const price = window.prompt('أدخل السعر اليدوي لطلب الراكب بالدينار:', row.price || '');
+          if (price === null) return;
+          body.priceJod = Number(price.replace(',', '.'));
         }
         button.disabled = true;
         try { await api(`/api/admin/customer-bookings/${encodeURIComponent(id)}/quote`, { method: 'PATCH', body: JSON.stringify(body) }); await load(); } catch (error) { alert(`تعذر تثبيت السعر: ${error.message}`); button.disabled = false; }

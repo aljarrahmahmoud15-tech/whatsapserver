@@ -4,37 +4,33 @@ const SPECIAL_TRIP_TARIFF = Object.freeze({
   thresholdKm: 25,
   baseFareUnderThreshold: 0.8455,
   perKmUnderThreshold: 0.1786,
-  perMinuteUnderThreshold: 0.0456,
   baseFareOverThreshold: 0.9025,
   perKmOverThreshold: 0.19,
-  perMinuteOverThreshold: 0.0475,
   minimumFare: 1.6074,
   cancellationFee: 1.14,
 });
 
 function calculateSpecialTripFare({ distanceKm, durationMin } = {}) {
   const distance = Number(distanceKm);
-  const duration = Number(durationMin);
   if (!Number.isFinite(distance) || distance < 0 || distance > 10000) return { status: "invalid", reason: "distance" };
-  if (!Number.isFinite(duration) || duration < 0 || duration > 100000) return { status: "invalid", reason: "duration" };
   const overThreshold = distance >= SPECIAL_TRIP_TARIFF.thresholdKm;
   const opening = overThreshold ? SPECIAL_TRIP_TARIFF.baseFareOverThreshold : SPECIAL_TRIP_TARIFF.baseFareUnderThreshold;
   const perKm = overThreshold ? SPECIAL_TRIP_TARIFF.perKmOverThreshold : SPECIAL_TRIP_TARIFF.perKmUnderThreshold;
-  const perMinute = overThreshold ? SPECIAL_TRIP_TARIFF.perMinuteOverThreshold : SPECIAL_TRIP_TARIFF.perMinuteUnderThreshold;
   const distanceCharge = distance * perKm;
-  const timeCharge = duration * perMinute;
-  const rawFare = opening + distanceCharge + timeCharge;
+  const rawFare = opening + distanceCharge;
   const fare = Math.max(rawFare, SPECIAL_TRIP_TARIFF.minimumFare);
+  const suppliedDuration = durationMin === undefined || durationMin === null || durationMin === "" ? null : Number(durationMin);
+  if (suppliedDuration !== null && (!Number.isFinite(suppliedDuration) || suppliedDuration < 0 || suppliedDuration > 100000)) return { status: "invalid", reason: "duration" };
   return {
     status: "quoted",
+    calculationMode: "distance_only",
     distanceKm: distance,
-    durationMin: duration,
+    durationMin: suppliedDuration,
     band: overThreshold ? "over_25km" : "under_25km",
     opening,
     perKm,
-    perMinute,
     distanceCharge,
-    timeCharge,
+    timeCharge: 0,
     rawFare,
     fare,
     fareCents: Math.round(fare * 100),

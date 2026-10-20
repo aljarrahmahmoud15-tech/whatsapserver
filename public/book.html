@@ -419,7 +419,7 @@
         <img class="logo-watermark" src="/aljarah-logo-mark-clean.webp" alt="">
         <span class="eyebrow">واجهة استقبال العملاء · V27</span>
         <h1 id="page-title">ابدأ من موقعك، ثم أكمل الرحلة.</h1>
-        <p>حدد موقع الالتقاء والوجهة أولًا من الخريطة. بعد التأكيد، تنتقل التفاصيل تلقائيًا إلى نموذج الرحلة دون إعادة إدخال أي موقع.</p>
+        <p>حدد موقع الالتقاء والوجهة أولًا من الخريطة. الراكب والأوردر يذهبان إلى دورة مراجعة مستقلة، بينما يحسب طلب الرحلة الذكية سعره بالكيلومتر فقط.</p>
         <div class="hero-proof" aria-label="مزايا الواجهة">
           <span class="proof-chip">01 · تحديد الموقع</span>
           <span class="proof-chip">02 · تفاصيل الرحلة</span>
@@ -439,7 +439,7 @@
           <div class="quick-type-options" role="group" aria-label="نوع الطلب">
             <button class="quick-type-button is-selected" type="button" data-quick-type="passenger">راكب<small>رحلة شخصية</small></button>
             <button class="quick-type-button" type="button" data-quick-type="order">أوردر<small>استلام أو توصيل</small></button>
-            <button class="quick-type-button" type="button" data-quick-type="full-car">حجز خاص<small>موعد أو سعر مخصص</small></button>
+            <button class="quick-type-button" type="button" data-quick-type="full-car">طلب رحلة ذكية<small>حساب بالكيلومتر</small></button>
           </div>
         </div>
         <div class="map-progress" aria-label="مراحل تحديد المسار"><span class="progress-step is-current" id="progress-origin">01 · الإقلاع</span><span class="progress-connector" aria-hidden="true"></span><span class="progress-step" id="progress-destination">02 · الوجهة</span></div>
@@ -507,10 +507,10 @@
               <label>الأجرة المعتمدة</label>
               <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة.</small></div></div>
               <div class="special-fare-panel" id="special-fare-panel" hidden>
-                <div class="special-fare-heading"><strong>تقدير الرحلة الخاصة</strong><span>تعرفة العداد المعتمدة</span></div>
-                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="مثال: 18.5"></label><label for="special-duration">المدة الزمنية <span>دقيقة</span><input id="special-duration" type="number" inputmode="decimal" min="0" step="1" placeholder="مثال: 32"></label></div>
-                <div class="special-fare-result"><span id="special-fare-breakdown">أدخل المسافة والمدة لإظهار التقدير.</span><strong id="special-fare-total">—</strong></div>
-                <small class="field-note">يُعاد احتساب الأجرة في الخادم قبل اعتماد الرحلة. رسوم الإلغاء المنفصلة: 1.14 د.أ.</small>
+                <div class="special-fare-heading"><strong>سعر طلب الرحلة الذكية</strong><span>الحساب بالكيلومتر فقط</span></div>
+                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="تُحتسب من المسار"></label></div>
+                <div class="special-fare-result"><span id="special-fare-breakdown">ثبّت الموقعين لإظهار المسافة والتقدير.</span><strong id="special-fare-total">—</strong></div>
+                <small class="field-note">يُعاد احتساب الأجرة في الخادم من المسافة فقط قبل اعتماد الرحلة. رسوم الإلغاء المنفصلة: 1.14 د.أ.</small>
               </div>
               <input id="optional-price" name="price" type="hidden" value="">
             </div>
@@ -545,7 +545,7 @@
       </div>
     </section>
 
-    <footer class="page-foot"><span>وصلني الآن · واجهة استقبال العميل</span><strong>الحجز الخاص يمر بالمراجعة قبل النشر</strong></footer>
+    <footer class="page-foot"><span>وصلني الآن · واجهة استقبال العميل</span><strong>طلب الرحلة الذكية يمر بالمراجعة قبل النشر</strong></footer>
   </main>
 
   <script>
@@ -556,7 +556,7 @@
       const previewEmpty = document.getElementById('preview-empty');
       const previewDetails = document.getElementById('preview-details');
       const previewState = document.getElementById('preview-state');
-      const typeLabels = { passenger: 'راكب', order: 'أوردر', 'full-car': 'حجز خاص' };
+      const typeLabels = { passenger: 'راكب · طلب مستقل', order: 'أوردر · طلب مستقل', 'full-car': 'طلب رحلة ذكية' };
       const fields = {
         name: document.getElementById('customer-name'),
         phone: document.getElementById('customer-phone'),
@@ -586,7 +586,6 @@
       const fareNote = document.getElementById('fare-note');
       const specialFarePanel = document.getElementById('special-fare-panel');
       const specialDistance = document.getElementById('special-distance');
-      const specialDuration = document.getElementById('special-duration');
       const specialFareBreakdown = document.getElementById('special-fare-breakdown');
       const specialFareTotal = document.getElementById('special-fare-total');
       const submitButton = form.querySelector('button[type="submit"]');
@@ -597,7 +596,7 @@
       let locationCoordinates = { origin: null, destination: null };
       let automaticRouteQuote = null;
       const confirmedMapTargets = { origin: false, destination: false };
-      const specialTariff = { thresholdKm: 25, baseFareUnderThreshold: 0.8455, perKmUnderThreshold: 0.1786, perMinuteUnderThreshold: 0.0456, baseFareOverThreshold: 0.9025, perKmOverThreshold: 0.19, perMinuteOverThreshold: 0.0475, minimumFare: 1.6074, cancellationFee: 1.14 };
+      const specialTariff = { thresholdKm: 25, baseFareUnderThreshold: 0.8455, perKmUnderThreshold: 0.1786, baseFareOverThreshold: 0.9025, perKmOverThreshold: 0.19, minimumFare: 1.6074, cancellationFee: 1.14 };
 
       function valueOf(field) { return field.value.trim(); }
       function parseCoordinatePair(value) {
@@ -652,41 +651,38 @@
         return `${String(displayHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
       }
       function routeMentionsAirport() { return /مطار|المطار|airport/i.test(`${valueOf(fields.origin)} ${valueOf(fields.destination)}`); }
-      function calculateSpecialFare(distanceKm, durationMin) {
+      function calculateSpecialFare(distanceKm) {
         const distance = Number(distanceKm);
-        const duration = Number(durationMin);
-        if (!Number.isFinite(distance) || distance < 0 || !Number.isFinite(duration) || duration < 0) return null;
+        if (!Number.isFinite(distance) || distance < 0) return null;
         const over = distance >= specialTariff.thresholdKm;
         const opening = over ? specialTariff.baseFareOverThreshold : specialTariff.baseFareUnderThreshold;
         const perKm = over ? specialTariff.perKmOverThreshold : specialTariff.perKmUnderThreshold;
-        const perMinute = over ? specialTariff.perMinuteOverThreshold : specialTariff.perMinuteUnderThreshold;
         const distanceCharge = distance * perKm;
-        const timeCharge = duration * perMinute;
-        const fare = Math.max(opening + distanceCharge + timeCharge, specialTariff.minimumFare);
-        return { distance, duration, opening, distanceCharge, timeCharge, fare, over };
+        const fare = Math.max(opening + distanceCharge, specialTariff.minimumFare);
+        return { distance, opening, distanceCharge, timeCharge: 0, fare, over };
       }
       function updateSpecialFare() {
         const isSpecial = selectedType() === 'full-car';
         specialFarePanel.hidden = !isSpecial;
         if (!isSpecial) return;
-        const quote = calculateSpecialFare(specialDistance.value, specialDuration.value);
+        const quote = calculateSpecialFare(specialDistance.value);
         if (!quote) {
           fields.price.value = '';
-          fareDisplay.textContent = 'بانتظار المسافة والمدة';
-          fareNote.textContent = 'أدخل القيم المحتسبة من المسار لإظهار أجرة الرحلة الخاصة.';
-          specialFareBreakdown.textContent = 'أدخل المسافة والمدة لإظهار التقدير.';
+          fareDisplay.textContent = 'بانتظار المسافة';
+          fareNote.textContent = 'تُحتسب الرحلة الذكية من المسافة بالكيلومتر فقط.';
+          specialFareBreakdown.textContent = 'ثبّت الموقعين لإظهار المسافة والسعر.';
           specialFareTotal.textContent = '—';
           return;
         }
         fields.price.value = quote.fare.toFixed(2);
         fareDisplay.textContent = `${quote.fare.toFixed(2)} د.أ تقديريًا`;
         fareNote.textContent = quote.over ? 'تعرفة ما بعد 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.' : 'تعرفة أقل من 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.';
-        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(4)} + مسافة ${quote.distanceCharge.toFixed(4)} + وقت ${quote.timeCharge.toFixed(4)}`;
+        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(4)} + مسافة ${quote.distanceCharge.toFixed(4)} · حساب بالكيلومتر فقط`;
         specialFareTotal.textContent = `${quote.fare.toFixed(2)} د.أ`;
       }
       function updateFare() {
         const type = selectedType();
-        if (routeMentionsAirport()) {
+        if (routeMentionsAirport() && type !== 'full-car') {
           fields.price.value = '25';
           fareDisplay.textContent = '25 د.أ';
           fareNote.textContent = 'تسعيرة المطار ثابتة: 25 دينارًا.';
@@ -695,27 +691,28 @@
           fareDisplay.textContent = '5 د.أ';
           fareNote.textContent = 'الأوردر بسعر ثابت: 5 دنانير.';
         } else if (type === 'passenger') {
-          fields.price.value = '5';
-          fareDisplay.textContent = '5 د.أ حتى 90 كم';
-          fareNote.textContent = 'بعد 90 كم تضاف 1 دينار لكل 15 كم؛ وأكثر من 150 كم = 15 دينارًا.';
+          fields.price.value = '';
+          fareDisplay.textContent = 'يحدده المالك';
+          fareNote.textContent = 'طلب راكب مستقل؛ لا يُحتسب بالكيلومتر تلقائيًا ولا يُرسل فورًا.';
         } else {
           fields.price.value = '';
-          fareDisplay.textContent = 'بانتظار المسافة والمدة';
-          fareNote.textContent = 'الرحلة الخاصة تُحسب بتعرفة العداد المعتمدة.';
+          fareDisplay.textContent = 'بانتظار المسافة';
+          fareNote.textContent = 'طلب رحلة ذكية؛ الحساب بالكيلومتر فقط.';
         }
         updateSpecialFare();
         applyAutomaticFare();
       }
       function applyAutomaticFare() {
-        if (!automaticRouteQuote || selectedType() === 'full-car' || routeMentionsAirport()) return;
-        const { distanceKm, durationMin, fare } = automaticRouteQuote;
+        if (!automaticRouteQuote || selectedType() !== 'full-car') return;
+        const { distanceKm, fare } = automaticRouteQuote;
+        if (Number.isFinite(Number(distanceKm))) specialDistance.value = Number(distanceKm).toFixed(1);
+        updateSpecialFare();
         fareDisplay.textContent = `${Number(fare).toFixed(2)} د.أ`;
-        fareNote.textContent = `حساب تلقائي: ${Number(distanceKm).toFixed(1)} كم · ${Math.round(Number(durationMin))} دقيقة · ${automaticRouteQuote.routeSource === 'google_directions_proxy' ? 'مسار خرائط Google' : 'تقدير الإحداثيات'}.`;
+        fareNote.textContent = `حساب ذكي بالكيلومتر: ${Number(distanceKm).toFixed(1)} كم · ${automaticRouteQuote.routeSource === 'google_directions_proxy' ? 'مسار خرائط Google' : 'تقدير الإحداثيات'}.`;
       }
       async function refreshAutomaticFare() {
-        if (!locationCoordinates.origin || !locationCoordinates.destination) return;
-        if (selectedType() === 'full-car' || routeMentionsAirport()) return;
-        setMapStatus('تم تأكيد الموقعين. جارٍ احتساب المسافة والمدة والسعر تلقائيًا…', 'ok');
+        if (!locationCoordinates.origin || !locationCoordinates.destination || selectedType() !== 'full-car') return;
+        setMapStatus('تم تأكيد الموقعين. جارٍ احتساب مسافة طلب الرحلة الذكية…', 'ok');
         try {
           const routeResponse = await fetch('/api/public/direct-rides/quote', {
             method: 'POST',
@@ -725,18 +722,11 @@
           });
           const routeData = await routeResponse.json().catch(() => ({}));
           if (!routeResponse.ok) throw new Error(routeData.error || 'تعذر احتساب المسار');
-          const fareResponse = await fetch('/api/public/fare-quote', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({ serviceType: selectedType(), distanceKm: routeData.route?.distanceKm, isAirport: false }),
-          });
-          const fareData = await fareResponse.json().catch(() => ({}));
-          if (!fareResponse.ok) throw new Error(fareData.error || 'تعذر احتساب الأجرة');
-          automaticRouteQuote = { distanceKm: routeData.route.distanceKm, durationMin: routeData.route.durationMin, routeSource: routeData.route.routeSource, fare: fareData.priceJod };
+          automaticRouteQuote = { distanceKm: routeData.route.distanceKm, durationMin: routeData.route.durationMin, routeSource: routeData.route.routeSource, fare: routeData.quote?.fare };
+          if (!Number.isFinite(Number(automaticRouteQuote.fare))) throw new Error('تعذر احتساب سعر طلب الرحلة الذكية');
           applyAutomaticFare();
           updatePreview();
-          setMapStatus(`تم الحساب تلقائيًا: ${Number(automaticRouteQuote.distanceKm).toFixed(1)} كم · ${Math.round(Number(automaticRouteQuote.durationMin))} دقيقة · ${Number(automaticRouteQuote.fare).toFixed(2)} د.أ.`, 'ok');
+          setMapStatus(`تم احتساب طلب الرحلة الذكية: ${Number(automaticRouteQuote.distanceKm).toFixed(1)} كم · ${Number(automaticRouteQuote.fare).toFixed(2)} د.أ.`, 'ok');
         } catch (error) {
           automaticRouteQuote = null;
           updateFare();
@@ -778,7 +768,6 @@
         confirmedMapTargets.destination = false;
         detailsCard.hidden = true;
         specialDistance.value = '';
-        specialDuration.value = '';
         mapSearch.value = '';
         activateMapTarget('origin');
         updateFare();
@@ -979,13 +968,13 @@
       async function submitSpecialBooking() {
         if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
           status.className = 'form-status error';
-          status.textContent = 'أكد موقع الإقلاع والوجهة من الزرين الذهبيين قبل إرسال الحجز الخاص.';
+          status.textContent = 'أكد موقع الإقلاع والوجهة من الزرين قبل إرسال طلب الرحلة الذكية.';
           setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
           return;
         }
-        if (!calculateSpecialFare(specialDistance.value, specialDuration.value)) {
+        if (!calculateSpecialFare(specialDistance.value)) {
           status.className = 'form-status error';
-          status.textContent = 'أدخل المسافة والمدة المحتسبتين للرحلة الخاصة قبل الإرسال.';
+          status.textContent = 'ثبّت الموقعين لاحتساب مسافة طلب الرحلة الذكية قبل الإرسال.';
           specialDistance.focus();
           return;
         }
@@ -1008,24 +997,23 @@
               departureTime: valueOf(fields.time),
               requestType: selectedType(),
               distanceKm: valueOf(specialDistance),
-              durationMin: valueOf(specialDuration),
               originConfirmed: confirmedMapTargets.origin,
               destinationConfirmed: confirmedMapTargets.destination,
             }),
           });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || 'تعذر استلام طلب الحجز الخاص');
+          if (!response.ok) throw new Error(data.error || 'تعذر استلام طلب الرحلة الذكية');
           specialRequest = data.request || null;
           status.className = 'form-status ok';
           status.textContent = `${data.message || 'تم استلام الطلب.'} رقم الطلب: ${specialRequest?.requestCode || 'غير محدد'}.`;
           previewState.textContent = 'تم الاستلام';
-          submitButton.textContent = 'تم استلام الحجز الخاص';
+          submitButton.textContent = 'تم استلام طلب الرحلة الذكية';
           updatePreview();
         } catch (error) {
           status.className = 'form-status error';
           status.textContent = error.message || 'تعذر إرسال الطلب؛ حاول مرة أخرى.';
           submitButton.disabled = false;
-          submitButton.textContent = 'إعادة إرسال الحجز الخاص';
+          submitButton.textContent = 'إعادة إرسال طلب الرحلة الذكية';
         }
       }
 
@@ -1033,7 +1021,7 @@
       [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { syncCoordinatesFromField(target); confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
       form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { syncQuickTypeButtons(); updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination) void refreshAutomaticFare(); }));
       quickTypeButtons.forEach(button => button.addEventListener('click', () => setRequestType(button.dataset.quickType)));
-      [specialDistance, specialDuration].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
+      [specialDistance].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
       resetButton.addEventListener('click', resetState);
       continueDetailsButton.addEventListener('click', () => {
         if (continueDetailsButton.disabled) return;

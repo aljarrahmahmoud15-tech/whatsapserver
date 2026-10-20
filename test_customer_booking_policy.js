@@ -22,6 +22,6 @@ assert.equal(disabled.publishMode, "manual");
 
 const response = customerBookingPolicyResponse(defaults);
 assert.equal(response.labels.publishMode, "نشر يدوي من V27");
-assert.equal(response.labels.passengerDistanceMode, "تثبيت المسافة والسعر عند المراجعة");
+assert.equal(response.labels.passengerDistanceMode, "تثبيت السعر من المالك عند المراجعة");
 
 console.log("customer booking policy tests passed");
