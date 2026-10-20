@@ -4476,6 +4476,18 @@ async function sendFinalBookingConfirmationViaConfiguredChat(groupId, message) {
   if (typeof client.sendMessage !== "function") throw new Error("WhatsApp text send path is unavailable");
   return client.sendMessage(groupId, message);
 }
+async function whatsappPageResponsive(timeoutMs = 5000) {
+  const page = client && (client.pupPage || client.page);
+  if (!page || typeof page.evaluate !== "function") return false;
+  const probeTimeoutMarker = Symbol("whatsapp_page_probe_timeout");
+  try {
+    const value = await withTimeoutStrict(page.evaluate(() => 1 + 1), timeoutMs, probeTimeoutMarker);
+    return value !== probeTimeoutMarker;
+  } catch (error) {
+    console.warn(`[WhatsApp] page probe failed: ${String(error?.message || error)}`);
+    return false;
+  }
+}
 async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   const orderId = Number(details?.orderId || 0) || null;
   const forceFinalRecovery = options.forceFinalRecovery === true;
@@ -4524,6 +4536,19 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
   }
+  // A hung WhatsApp Web page accepts no work and never returns, so the card
+  // used to stay pending forever behind the 20s timeout. Probe the page first
+  // and rebuild the client once instead of hanging silently. No duplicate is
+  // possible: the delivery row is reused and the send is not attempted.
+  if (!(await whatsappPageResponsive())) {
+    console.warn(`[WhatsApp] confirmation send deferred: WhatsApp page is unresponsive (order=${details?.orderNo || orderId || "unknown"})`);
+    if (orderId) {
+      db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("whatsapp_page_unresponsive", now(), orderId);
+      confirmationDeliveryInFlight.delete(orderId);
+    }
+    void restartWhatsApp("confirmation send found an unresponsive WhatsApp page").catch((error) => console.error("[WhatsApp] unresponsive-page restart:", error.message));
+    return null;
+  }
   try {
     const message = finalBookingConfirmationText(details);
     const sendPromise = deliveryMode === "fallback"
@@ -4543,6 +4568,11 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       }).finally(() => {
         if (orderId) confirmationDeliveryInFlight.delete(orderId);
       });
+      void whatsappPageResponsive(3000).then((alive) => {
+        if (alive) return;
+        console.warn("[WhatsApp] confirmation send timed out with an unresponsive page; rebuilding the client");
+        return restartWhatsApp("confirmation send timed out with an unresponsive page");
+      }).catch((error) => console.error("[WhatsApp] timeout self-heal failed:", error.message));
       return null;
     }
     if (!sent) {
@@ -5270,8 +5300,26 @@ async function terminateChromiumPids(pids, label = "client") {
   }
   return signalled;
 }
+function liveClientBrowserPids() {
+  const pids = [];
+  try {
+    const browserProcess = getChromiumBrowserProcess(client);
+    const pid = Number(browserProcess?.pid || 0);
+    if (pid > 1 && pid !== process.pid) pids.push(pid, ...descendantPids(pid));
+  } catch (_) { /* no live browser to protect */ }
+  return pids;
+}
 async function cleanupOwnedChromiumProcesses(label = "orphan cleanup") {
-  const ownedPids = listOwnedChromiumPids();
+  // Never tear down the browser that belongs to the live client, and never run
+  // this while an initialization/restart is in flight. Doing so killed the page
+  // mid-initialize ("Execution context was destroyed"), which left the stored
+  // WhatsApp session unusable and produced the QR loop.
+  if (initializing || whatsappRestartInFlight) {
+    console.warn(`[WhatsApp] ${label} skipped: client initialization/restart in flight`);
+    return false;
+  }
+  const protectedPids = new Set(liveClientBrowserPids());
+  const ownedPids = listOwnedChromiumPids().filter((pid) => !protectedPids.has(pid));
   if (!ownedPids.length) return false;
   return terminateChromiumPids(ownedPids, label);
 }
