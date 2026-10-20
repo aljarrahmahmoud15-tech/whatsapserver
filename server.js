@@ -12244,6 +12244,16 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
       const ownerSourceId = String(overrideEntry.sourceMessageId || ("owner-override-" + acceptanceMessageId));
       if (ownerBody) {
         quoted = { body: ownerBody, fromMe: false, id: { _serialized: ownerSourceId }, _data: { id: { _serialized: ownerSourceId } } };
+        if (ownerOverride && client && typeof client.getMessageById === "function") {
+          try {
+            const liveSource = await getWhatsAppMessageByIdVariants(ownerSourceId, 5000);
+            if (liveSource) {
+              quoted = { ...liveSource, body: ownerBody };
+            }
+          } catch (error) {
+            console.warn("[pin-by-id] live source fetch failed:", String((error && error.message) || error));
+          }
+        }
         console.log("[pin-by-id] owner-supplied order body applied for", String(acceptanceMessageId).slice(0, 18));
       }
     }
@@ -12273,7 +12283,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     if (!reactedByBot && reactionPhones.some((phone) => isBotReactionSender(phone, connectedBotPhone()))) reactedByBot = true;
     const orderMessageId = serializedMessageId(quoted);
     const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function" ? await withTimeout(quoted.getContact(), 8000, null) : null;
-    const producerPhone = quoted.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(quoted, quotedContact);
+    let producerPhone = quoted.fromMe ? connectedBotPhone() : await resolveMessageSenderPhone(quoted, quotedContact);
     const acceptanceTimestamp = Number(liveAcceptance.timestamp || acceptance.timestamp || acceptance.__timestamp || 0);
     const hasBotConfirmationCard = (Array.isArray(messages) ? messages : []).some((message) => {
       const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
@@ -12288,8 +12298,26 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const captainPhone = await resolveMessageSenderPhone(liveAcceptance, acceptanceContact) || await resolveMessageSenderPhone(acceptance);
     const captainName = String(acceptanceContact?.pushname || acceptanceContact?.name || liveAcceptance?._data?.notifyName || acceptance?._data?.notifyName || displayPhone(captainPhone)).trim().slice(0, 100);
     const captain = findCaptainByPhone(captainPhone, { activeOnly: true });
-    const producer = quoted.fromMe && BOT_FINANCIAL_MODE === "company" ? companyUser() : (quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone));
+    let producer = quoted.fromMe && BOT_FINANCIAL_MODE === "company" ? companyUser() : (quoted.fromMe ? botEmployeeUser() : findActiveRegisteredUser(producerPhone));
     let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
+    // Owner-authorized recovery: reuse the identity already captured on the order row
+    // so a confirmed booking is pinned instead of being parked as unlinked.
+    if (!producer || !producerPhone) {
+      const rowProducer = order && order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
+      if (!producer && rowProducer && rowProducer.active === 1 && rowProducer.account_status === "active") producer = rowProducer;
+      if (!producerPhone && order && order.producer_phone_snapshot) producerPhone = order.producer_phone_snapshot;
+      if (!producer && !order?.producer_phone_snapshot && ownerOverride) {
+        try {
+          const liveSource = client && typeof client.getMessageById === "function"
+            ? await getWhatsAppMessageByIdVariants(orderMessageId, 5000)
+            : null;
+          const liveSourcePhone = liveSource ? await resolveMessageSenderPhone(liveSource, null) : null;
+          if (liveSourcePhone) producerPhone = liveSourcePhone;
+        } catch (error) {
+          console.warn("[pin-by-id] live source identity lookup failed:", String((error && error.message) || error));
+        }
+      }
+    }
     if (!order) {
       if (producer) order = createOrderRecord({ messageId: orderMessageId, groupId, body: String(quoted.body || ""), producer, parsed });
       else {
