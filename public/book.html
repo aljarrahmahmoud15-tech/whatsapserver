@@ -793,7 +793,12 @@
           field.dispatchEvent(new Event('input', { bubbles: true }));
           updateMapTargetStatuses();
           setMapQuery(query);
-        }, () => setMapStatus('تعذر تحديد موقعك. اسمح بالوصول للموقع أو ابحث عن المكان يدويًا.', 'error'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+        }, error => {
+          if (error?.code === 1) setMapStatus('لم تسمح بالوصول للموقع. فعّل إذن الموقع لهذا الموقع من إعدادات Chrome ثم حاول مرة أخرى.', 'error');
+          else if (error?.code === 2) setMapStatus('تعذر قراءة موقع الجهاز حاليًا. فعّل GPS أو ابحث عن المكان يدويًا.', 'error');
+          else if (error?.code === 3) setMapStatus('انتهت مهلة تحديد الموقع. حاول مرة أخرى أو ابحث عن المكان يدويًا.', 'error');
+          else setMapStatus('تعذر تحديد موقعك. ابحث عن المكان يدويًا.', 'error');
+        }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
       }
       function showInstallNote(message) {
         installNote.hidden = false;
