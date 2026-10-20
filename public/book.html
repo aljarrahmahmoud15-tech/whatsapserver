@@ -560,10 +560,24 @@
       let deferredInstallPrompt = null;
       let specialRequest = null;
       let customerRequest = null;
+      let locationCoordinates = { origin: null, destination: null };
+      let automaticRouteQuote = null;
       const confirmedMapTargets = { origin: false, destination: false };
       const specialTariff = { thresholdKm: 25, baseFareUnderThreshold: 0.8455, perKmUnderThreshold: 0.1786, perMinuteUnderThreshold: 0.0456, baseFareOverThreshold: 0.9025, perKmOverThreshold: 0.19, perMinuteOverThreshold: 0.0475, minimumFare: 1.6074, cancellationFee: 1.14 };
 
       function valueOf(field) { return field.value.trim(); }
+      function parseCoordinatePair(value) {
+        const match = String(value || '').match(/(-?\d+(?:\.\d+)?)\s*[,،]\s*(-?\d+(?:\.\d+)?)/);
+        if (!match) return null;
+        const lat = Number(match[1]);
+        const lng = Number(match[2]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+        return { lat, lng };
+      }
+      function syncCoordinatesFromField(target) {
+        locationCoordinates[target] = parseCoordinatePair(valueOf(fields[target]));
+        automaticRouteQuote = null;
+      }
       function selectedType() { return form.querySelector('input[name="requestType"]:checked')?.value || 'passenger'; }
       function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value || '—'; }
       function formatTime(value) {
@@ -627,6 +641,44 @@
           fareNote.textContent = 'الرحلة الخاصة تُحسب بتعرفة العداد المعتمدة.';
         }
         updateSpecialFare();
+        applyAutomaticFare();
+      }
+      function applyAutomaticFare() {
+        if (!automaticRouteQuote || selectedType() === 'full-car' || routeMentionsAirport()) return;
+        const { distanceKm, durationMin, fare } = automaticRouteQuote;
+        fareDisplay.textContent = `${Number(fare).toFixed(2)} د.أ`;
+        fareNote.textContent = `حساب تلقائي: ${Number(distanceKm).toFixed(1)} كم · ${Math.round(Number(durationMin))} دقيقة · ${automaticRouteQuote.routeSource === 'google_directions_proxy' ? 'مسار خرائط Google' : 'تقدير الإحداثيات'}.`;
+      }
+      async function refreshAutomaticFare() {
+        if (!locationCoordinates.origin || !locationCoordinates.destination) return;
+        if (selectedType() === 'full-car' || routeMentionsAirport()) return;
+        setMapStatus('تم تأكيد الموقعين. جارٍ احتساب المسافة والمدة والسعر تلقائيًا…', 'ok');
+        try {
+          const routeResponse = await fetch('/api/public/direct-rides/quote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ origin: locationCoordinates.origin, destination: locationCoordinates.destination }),
+          });
+          const routeData = await routeResponse.json().catch(() => ({}));
+          if (!routeResponse.ok) throw new Error(routeData.error || 'تعذر احتساب المسار');
+          const fareResponse = await fetch('/api/public/fare-quote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ serviceType: selectedType(), distanceKm: routeData.route?.distanceKm, isAirport: false }),
+          });
+          const fareData = await fareResponse.json().catch(() => ({}));
+          if (!fareResponse.ok) throw new Error(fareData.error || 'تعذر احتساب الأجرة');
+          automaticRouteQuote = { distanceKm: routeData.route.distanceKm, durationMin: routeData.route.durationMin, routeSource: routeData.route.routeSource, fare: fareData.priceJod };
+          applyAutomaticFare();
+          updatePreview();
+          setMapStatus(`تم الحساب تلقائيًا: ${Number(automaticRouteQuote.distanceKm).toFixed(1)} كم · ${Math.round(Number(automaticRouteQuote.durationMin))} دقيقة · ${Number(automaticRouteQuote.fare).toFixed(2)} د.أ.`, 'ok');
+        } catch (error) {
+          automaticRouteQuote = null;
+          updateFare();
+          setMapStatus(error.message || 'تعذر احتساب السعر تلقائيًا؛ راجع الموقعين وحاول مرة أخرى.', 'error');
+        }
       }
       function updatePreview() {
         const hasAny = Object.entries(fields).some(([key, field]) => key !== 'price' && valueOf(field));
@@ -653,6 +705,8 @@
         status.textContent = 'أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.';
         specialRequest = null;
         customerRequest = null;
+        locationCoordinates = { origin: null, destination: null };
+        automaticRouteQuote = null;
         submitButton.disabled = false;
         submitButton.textContent = 'إرسال الطلب';
         confirmedMapTargets.origin = false;
@@ -737,6 +791,8 @@
         const encoded = encodeURIComponent(cleanQuery);
         mapFrame.src = `https://www.google.com/maps?q=${encoded}&z=15&output=embed`;
         mapOpenGoogle.href = `https://www.google.com/maps/search/?api=1&query=${encoded}`;
+        const coordinates = parseCoordinatePair(cleanQuery);
+        if (coordinates) locationCoordinates[activeMapTarget] = coordinates;
         setMapStatus(`الخريطة جاهزة للموقع: ${cleanQuery}`, 'ok');
       }
       function pinMapLocation() {
@@ -749,6 +805,7 @@
         const field = mapTargetField();
         field.value = query;
         field.dispatchEvent(new Event('input', { bubbles: true }));
+        syncCoordinatesFromField(activeMapTarget);
         updateMapTargetStatuses();
         setMapQuery(query);
         setMapStatus(activeMapTarget === 'origin' ? 'تم تحديد الإقلاع. اضغط «تأكيد موقع الإقلاع».': 'تم تحديد الوجهة. اضغط «تأكيد الوجهة».', 'ok');
@@ -776,7 +833,8 @@
           activateMapTarget('destination');
           setMapStatus('تم تأكيد موقع الإقلاع. حدد الآن الوجهة ثم اضغط «تأكيد الوجهة».', 'ok');
         } else {
-          setMapStatus('تم تأكيد الوجهة. المسار جاهز للمراجعة.', 'ok');
+          if (locationCoordinates.origin && locationCoordinates.destination) void refreshAutomaticFare();
+          else setMapStatus('تم تأكيد الوجهة. للاحتساب التلقائي استخدم GPS أو أدخل إحداثيات الموقع.', 'ok');
         }
       }
       function useCurrentLocation() {
@@ -791,6 +849,7 @@
           const field = mapTargetField();
           field.value = `موقعي الحالي (${query})`;
           field.dispatchEvent(new Event('input', { bubbles: true }));
+          locationCoordinates[activeMapTarget] = { lat: position.coords.latitude, lng: position.coords.longitude };
           updateMapTargetStatuses();
           setMapQuery(query);
         }, error => {

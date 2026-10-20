@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const html = fs.readFileSync(path.join(__dirname, 'public', 'book.html'), 'utf8');
+const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+
+test('approved rider page calculates a fare from confirmed coordinates without replacing its UI', () => {
+  assert.match(html, /id="map-current-button"/);
+  assert.match(html, /parseCoordinatePair/);
+  assert.match(html, /direct-rides\/quote/);
+  assert.match(html, /fare-quote/);
+  assert.match(html, /تم الحساب تلقائيًا/);
+  assert.match(server, /app\.get\("\/ride\.html", v27PageLimiter[\s\S]*?res\.redirect\(302, "\/book\.html"\)/);
+  assert.doesNotMatch(server, /app\.get\("\/v27\/pilot\/ride"/);
+});

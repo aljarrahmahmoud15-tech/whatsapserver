@@ -827,11 +827,6 @@ app.get("/v27/direct-rides", v27PageLimiter, (req, res) => {
   res.setHeader("Referrer-Policy", "same-origin");
   res.sendFile(path.join(__dirname, "public", "direct-ride-admin.html"));
 });
-app.get("/v27/pilot/ride", v27PageLimiter, (req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Referrer-Policy", "same-origin");
-  res.sendFile(path.join(__dirname, "public", "ride.html"));
-});
 app.get("/special-booking-settings.html", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
