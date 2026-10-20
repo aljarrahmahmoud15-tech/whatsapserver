@@ -37,4 +37,22 @@ assert.match(server, /truncated: members\.length > pagedMembers\.length,/);
 // Live messages default to a smaller page (an explicit limit up to 200 still works).
 assert.match(server, /const requestedLimit = Number\(req\.query\.limit \|\| 50\);\n  const limit = Number\.isInteger\(requestedLimit\) \? Math\.max\(1, Math\.min\(requestedLimit, 200\)\) : 50;\n  const includeOutgoing/);
 
-console.log('Clean read cache guardrails verified: TTL cache, single-flight coalescing, bounded stores, paging, auth preserved');
+// The panel must never wait on the WhatsApp page: a background loop keeps the group
+// snapshot (participants + recent messages) warm in memory and the read endpoints
+// serve it, so page.evaluate only ever runs off the request path.
+assert.match(server, /const warmGroupSnapshotStore = \{/);
+assert.match(server, /const WARM_GROUP_SNAPSHOT_MS = Math\.max\(10000, Number\(process\.env\.WARM_GROUP_SNAPSHOT_MS \|\| 20000\)\);/);
+assert.match(server, /function warmGroupSnapshotFresh\(kind, maxAgeMs\) \{/);
+assert.match(server, /async function refreshWarmGroupSnapshot\(reason = "interval"\) \{/);
+assert.match(server, /function startWarmGroupSnapshotLoop\(\) \{/);
+assert.match(server, /initializeWhatsApp\(\);\n  startWarmGroupSnapshotLoop\(\);/);
+assert.match(server, /void refreshWarmGroupSnapshot\("ready"\)\.catch\(\(\) => null\);/);
+assert.match(server, /res\.setHeader\("X-Clean-Read-Source", "warm"\);/);
+assert.match(server, /let chat = warmGroupSnapshotFresh\("participants"\);/);
+assert.match(server, /let liveSnapshot = botReady \? warmGroupSnapshotFresh\("participants"\) : null;/);
+assert.match(server, /const warmMessages = !requestedMessageId && !bodyIncludes \? warmGroupSnapshotFresh\("messages"\) : null;/);
+assert.match(server, /app\.get\("\/api\/admin\/group\/warm-snapshot", requireAdmin/);
+// A warm snapshot must never be served stale forever: freshness is bounded.
+assert.match(server, /if \(Date\.now\(\) - at > \(Number\(maxAgeMs\) \|\| WARM_GROUP_SNAPSHOT_MS \* 3\)\) return null;/);
+
+console.log('Clean read cache guardrails verified: TTL cache, single-flight coalescing, bounded stores, paging, warm group snapshot off the request path, auth preserved');

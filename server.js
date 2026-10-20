@@ -3088,6 +3088,69 @@ async function readGroupSnapshot(groupId, timeoutMs = 30000) {
 }
 // Fast, public-API group participant read (whatsapp-web.js getChatById) used before the
 // legacy in-page snapshot so a stale WhatsApp Web bundle can never stall the dashboard.
+// The panel must never wait on the WhatsApp page. A background loop keeps a warm
+// snapshot of the configured group (participants + recent messages) in memory, so
+// the read endpoints answer instantly and every page.evaluate happens off the
+// request path. Read-only: it only fills a cache the endpoints already serve.
+const warmGroupSnapshotStore = { participants: null, participantsAt: 0, messages: null, messagesAt: 0, groupId: null, inFlight: null, refreshes: 0, errors: 0, lastError: null, lastRefreshAt: null };
+const WARM_GROUP_SNAPSHOT_MS = Math.max(10000, Number(process.env.WARM_GROUP_SNAPSHOT_MS || 20000));
+function warmGroupSnapshotFresh(kind, maxAgeMs) {
+  const at = kind === "messages" ? warmGroupSnapshotStore.messagesAt : warmGroupSnapshotStore.participantsAt;
+  const value = kind === "messages" ? warmGroupSnapshotStore.messages : warmGroupSnapshotStore.participants;
+  if (!value || !at) return null;
+  if (Date.now() - at > (Number(maxAgeMs) || WARM_GROUP_SNAPSHOT_MS * 3)) return null;
+  return value;
+}
+function warmGroupSnapshotStatus() {
+  return {
+    intervalMs: WARM_GROUP_SNAPSHOT_MS,
+    refreshes: warmGroupSnapshotStore.refreshes,
+    errors: warmGroupSnapshotStore.errors,
+    lastError: warmGroupSnapshotStore.lastError,
+    lastRefreshAt: warmGroupSnapshotStore.lastRefreshAt,
+    participantsAgeMs: warmGroupSnapshotStore.participantsAt ? Date.now() - warmGroupSnapshotStore.participantsAt : null,
+    messagesAgeMs: warmGroupSnapshotStore.messagesAt ? Date.now() - warmGroupSnapshotStore.messagesAt : null,
+    participantCount: Array.isArray(warmGroupSnapshotStore.participants && warmGroupSnapshotStore.participants.participants) ? warmGroupSnapshotStore.participants.participants.length : 0,
+    messageCount: Array.isArray(warmGroupSnapshotStore.messages && warmGroupSnapshotStore.messages.messages) ? warmGroupSnapshotStore.messages.messages.length : 0,
+  };
+}
+async function refreshWarmGroupSnapshot(reason = "interval") {
+  if (!client || !isReady) return null;
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return null;
+  if (warmGroupSnapshotStore.inFlight) return warmGroupSnapshotStore.inFlight;
+  warmGroupSnapshotStore.inFlight = (async () => {
+    try {
+      const participants = await readGroupSnapshot(groupId, 6000).catch(() => null);
+      if (participants && Array.isArray(participants.participants) && participants.participants.length) {
+        warmGroupSnapshotStore.participants = participants;
+        warmGroupSnapshotStore.participantsAt = Date.now();
+      }
+      const history = await fetchGroupHistory(groupId, 50, { includeOutgoing: false }).catch(() => null);
+      if (history && Array.isArray(history.messages) && history.messages.length) {
+        warmGroupSnapshotStore.messages = history;
+        warmGroupSnapshotStore.messagesAt = Date.now();
+      }
+      warmGroupSnapshotStore.groupId = groupId;
+      warmGroupSnapshotStore.refreshes += 1;
+      warmGroupSnapshotStore.lastRefreshAt = now();
+      warmGroupSnapshotStore.lastError = null;
+      return warmGroupSnapshotStore.participants;
+    } catch (error) {
+      warmGroupSnapshotStore.errors += 1;
+      warmGroupSnapshotStore.lastError = String((error && error.message) || error).slice(0, 200);
+      return null;
+    } finally {
+      warmGroupSnapshotStore.inFlight = null;
+    }
+  })();
+  return warmGroupSnapshotStore.inFlight;
+}
+function startWarmGroupSnapshotLoop() {
+  const timer = setInterval(() => { void refreshWarmGroupSnapshot("interval"); }, WARM_GROUP_SNAPSHOT_MS);
+  if (timer.unref) timer.unref();
+  return timer;
+}
 async function readGroupParticipantsQuick(groupId, timeoutMs = 8000) {
   if (!groupId || !client || !isReady || typeof client.getChatById !== "function") return null;
   try {
@@ -6178,6 +6241,12 @@ function createClient() {
     qrCodeData = null;
     console.log(`[WhatsApp] ready: ${connectedPhone || expectedPhone}`);
     recordOwnerControlCheckpoint("whatsapp.ready", { force: true });
+    // Warm the group snapshot right away so the first panel reads after a
+    // reconnect are already served from memory.
+    setTimeout(() => {
+      if (generation !== connectionGeneration || !isReady || client !== instance) return;
+      void refreshWarmGroupSnapshot("ready").catch(() => null);
+    }, 4000).unref();
     const readyGeneration = generation;
     setTimeout(() => {
       if (readyGeneration !== connectionGeneration || !isReady || client !== instance) return;
@@ -9451,7 +9520,9 @@ app.get("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-s
     live: false,
   };
   const botReady = Boolean(client && isReady);
-  let liveSnapshot = botReady ? await readGroupParticipantsQuick(groupId, 2500).catch(() => null) : null;
+  let liveSnapshot = botReady ? warmGroupSnapshotFresh("participants") : null;
+  if (liveSnapshot) res.setHeader("X-Clean-Read-Source", "warm");
+  if (!liveSnapshot && botReady) liveSnapshot = await readGroupParticipantsQuick(groupId, 2500).catch(() => null);
   if (!liveSnapshot && botReady) liveSnapshot = await readGroupSnapshot(groupId, 2000).catch(() => null);
   res.setHeader("Cache-Control", "no-store, max-age=0");
   if (liveSnapshot && Array.isArray(liveSnapshot.participants) && liveSnapshot.participants.length) {
@@ -11038,8 +11109,11 @@ app.get("/api/admin/group/members", requireAdmin, adminReadSingleFlight("group-m
   const officialGroupId = configuredRuntimeGroupId();
   const groupId = String(req.query.groupId || officialGroupId).trim();
   if (!officialGroupId || groupId !== officialGroupId || !isConfiguredGroup(groupId)) return res.status(403).json({ error: "Only this service's configured environment group may be inspected" });
-  let chat = null;
-  try { chat = await readGroupSnapshot(groupId); } catch (_) { chat = null; }
+  let chat = warmGroupSnapshotFresh("participants");
+  if (chat) res.setHeader("X-Clean-Read-Source", "warm");
+  if (!chat) {
+    try { chat = await readGroupSnapshot(groupId); } catch (_) { chat = null; }
+  }
   if (!chat || !chat.isGroup) {
     try { chat = await resolveGroupChat(groupId); } catch (_) { chat = null; }
   }
@@ -11314,6 +11388,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, adminReadSingleFlight("g
   const groupSnapshot = await readGroupSnapshot(groupId);
   let chat = null;
   let messages = [];
+  const warmMessages = !requestedMessageId && !bodyIncludes ? warmGroupSnapshotFresh("messages") : null;
   if (requestedMessageId && typeof client.getMessageById === "function") {
     const liveMessage = await getWhatsAppMessageByIdVariants(requestedMessageId, 5000);
     if (liveMessage && resolveGroupChatId(liveMessage) === groupId) {
@@ -11322,6 +11397,11 @@ app.get("/api/admin/group/live-messages", requireAdmin, adminReadSingleFlight("g
       if ((!Array.isArray(liveMessage.__reactions) || !liveMessage.__reactions.length) && internalReactions.length) liveMessage.__reactions = internalReactions;
       messages = [liveMessage];
     }
+  } else if (warmMessages) {
+    // Served from the background snapshot: the request never waits on the page.
+    res.setHeader("X-Clean-Read-Source", "warm");
+    chat = warmMessages.chat || groupSnapshot || { id: groupId, isGroup: true };
+    messages = warmMessages.messages.slice(-limit);
   } else {
     const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });
     chat = history.chat;
@@ -14628,6 +14708,9 @@ app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
 });
 
 
+app.get("/api/admin/group/warm-snapshot", requireAdmin, (req, res) => {
+  res.json({ success: true, mutation: "none", ready: isReady, ...warmGroupSnapshotStatus() });
+});
 app.get("/api/admin/send-diagnostics", requireAdmin, (req, res) => {
   res.json({ success: true, ready: isReady, clientPresent: Boolean(client), diagnostics: sendDiagnostics, adminSendTimeoutMs: ADMIN_SEND_TIMEOUT_MS });
 });
@@ -14701,6 +14784,7 @@ app.listen(PORT, () => {
   startCaptainBalancePolicyScheduler();
   startConfirmationDeliveryMonitor();
   initializeWhatsApp();
+  startWarmGroupSnapshotLoop();
   startWhatsAppWatchdog();
   startWhatsAppReactionScanner();
   if (BAILEYS_ENABLED) initializeBaileys();
