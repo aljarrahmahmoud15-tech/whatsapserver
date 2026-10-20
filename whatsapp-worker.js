@@ -82,12 +82,24 @@ function resolveHandle(handle) {
   return entry;
 }
 
+function reviveArg(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (depth > 6) return null;
+  if (value.__handleRef) return resolveHandle(value.__handleRef).obj ?? resolveHandle(value.__handleRef);
+  if (Array.isArray(value)) return value.map((item) => reviveArg(item, depth + 1));
+  const out = {};
+  for (const [key, item] of Object.entries(value)) out[key] = reviveArg(item, depth + 1);
+  return out;
+}
+
 async function invoke(handle, method, args) {
   const target = handle === 'client' ? client : resolveHandle(handle);
   if (!target) throw new Error('client_not_ready');
   const fn = target[method];
   if (typeof fn !== 'function') throw new Error(`unknown_method:${method}`);
-  const result = await fn.apply(target, args || []);
+  const revived = Array.isArray(args) ? args.map((item) => reviveArg(item)) : [];
+  const result = await fn.apply(target, revived);
   return snapshot(result);
 }
 
@@ -182,7 +194,7 @@ process.on('message', async (message) => {
     }
     if (id !== undefined) send({ id, ok: true, result });
   } catch (error) {
-    if (id !== undefined) send({ id, ok: false, error: String((error && error.message) || error) });
+    if (id !== undefined) send({ id, ok: false, error: `${String(method || 'call')}:${String((error && error.message) || error)}` });
   }
 });
 

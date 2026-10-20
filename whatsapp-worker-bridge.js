@@ -43,6 +43,8 @@ class WhatsAppWorkerBridge extends EventEmitter {
     this.onFatal = typeof onFatal === 'function' ? onFatal : null;
     this.rpcCount = 0;
     this.rpcFailures = 0;
+    this.failuresByMethod = new Map();
+    this.lastFailure = null;
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'symbol' || prop in target) return Reflect.get(target, prop, receiver);
@@ -99,8 +101,9 @@ class WhatsAppWorkerBridge extends EventEmitter {
     if (message.ok) {
       entry.resolve(this.revive(message.result));
     } else {
-      this.rpcFailures += 1;
-      entry.reject(new Error(String(message.error || 'worker_rpc_failed')));
+      const failure = new Error(String(message.error || 'worker_rpc_failed'));
+      this.recordFailure(entry.method, failure);
+      entry.reject(failure);
     }
   }
 
@@ -118,26 +121,60 @@ class WhatsAppWorkerBridge extends EventEmitter {
     if (this.onFatal) this.onFatal(reason);
   }
 
+  // Objects that came from the worker travel back as handle references, so a value
+  // received from one call can be passed straight into the next one.
+  sanitizeArg(value, depth = 0) {
+    if (value === null || value === undefined) return value;
+    const type = typeof value;
+    if (type === 'string' || type === 'number' || type === 'boolean') return value;
+    if (type === 'function') return undefined;
+    if (type !== 'object') return value;
+    if (depth > 6) return null;
+    if (value.__handleRef) return { __handleRef: value.__handleRef };
+    if (Array.isArray(value)) return value.slice(0, 200).map((item) => this.sanitizeArg(item, depth + 1));
+    if (value instanceof Date) return value.toISOString();
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      const clean = this.sanitizeArg(item, depth + 1);
+      if (clean !== undefined) out[key] = clean;
+    }
+    return out;
+  }
+
   send(method, args, extra = {}) {
     if (!this.child) return Promise.reject(new Error('worker_not_started'));
     const id = this.nextId++;
     this.rpcCount += 1;
+    const safeArgs = this.sanitizeArg(args);
+    const safeExtra = this.sanitizeArg(extra) || {};
+    // Report the target method, not just the envelope, so a failing WhatsApp call is
+    // identifiable from the status endpoint.
+    const label = extra && extra.target ? `${method}:${extra.target}` : method;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        this.rpcFailures += 1;
-        reject(new Error(`worker_rpc_timeout:${method}`));
+        const failure = new Error(`worker_rpc_timeout:${method}`);
+        this.recordFailure(label, failure);
+        reject(failure);
       }, this.requestTimeoutMs);
       if (timer.unref) timer.unref();
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method: label });
       try {
-        this.child.send({ id, method, args, ...extra });
+        this.child.send({ id, method, args: safeArgs, ...safeExtra });
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
+        this.recordFailure(label, error);
         reject(error);
       }
     });
+  }
+
+  recordFailure(method, error) {
+    this.rpcFailures += 1;
+    const label = String(method || 'unknown');
+    this.failuresByMethod.set(label, (this.failuresByMethod.get(label) || 0) + 1);
+    this.lastFailure = { method: label, error: String((error && error.message) || error).slice(0, 200), at: new Date().toISOString() };
   }
 
   callClient(method, args) {
@@ -166,6 +203,7 @@ class WhatsAppWorkerBridge extends EventEmitter {
       data[key] = this.revive(value);
     }
     const bridge = this;
+    Object.defineProperty(data, '__handleRef', { value: handle, enumerable: false });
     return new Proxy(data, {
       get(target, prop, receiver) {
         if (typeof prop === 'symbol' || prop === 'then' || prop in target) return Reflect.get(target, prop, receiver);
@@ -226,6 +264,8 @@ class WhatsAppWorkerBridge extends EventEmitter {
       startedAt: this.startedAt,
       rpcCount: this.rpcCount,
       rpcFailures: this.rpcFailures,
+      failuresByMethod: Object.fromEntries([...this.failuresByMethod.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)),
+      lastFailure: this.lastFailure,
       pending: this.pending.size,
       lastError: this.lastError,
       hasInfo: Boolean(this.infoSnapshot),

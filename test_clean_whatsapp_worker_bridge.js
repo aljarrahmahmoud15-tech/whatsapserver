@@ -15,6 +15,7 @@ process.on('message', async (msg) => {
   if (msg.method === 'invoke') {
     if (msg.target === 'getChatById') return send({ id: msg.id, ok: true, result: { __handle: 'h1', __kind: 'Chat', id: { __wid: { _serialized: '120363430477331505@g.us', user: '120363430477331505', server: 'g.us' } }, name: 'TAKE&GO الشمال', isGroup: true, participants: [{ __handle: 'h2', __kind: 'Participant', id: { __wid: { _serialized: '962799999999@c.us', user: '962799999999', server: 'c.us' } }, isAdmin: false }] } });
     if (msg.target === 'sendMessage') return send({ id: msg.id, ok: true, result: { __handle: 'h3', __kind: 'Message', id: { __wid: { _serialized: 'MID1', user: 'MID1', server: 'c.us' } }, body: String(msg.args[0] || ''), fromMe: true } });
+    if (msg.target === 'echoArg') return send({ id: msg.id, ok: true, result: { received: JSON.stringify(msg.args[0] || null) } });
     if (msg.target === 'boom') return send({ id: msg.id, ok: false, error: 'stub_failure' });
     return send({ id: msg.id, ok: true, result: { echoed: msg.target, args: msg.args } });
   }
@@ -53,6 +54,11 @@ process.on('message', async (msg) => {
   assert.equal(pageResult.ran, true);
   assert.deepEqual(pageResult.args, ['arg1']);
 
+  // An object received from the worker travels back as a handle reference, so it can
+  // be passed straight into the next call instead of failing serialization.
+  const echoed = await bridge.echoArg(chat);
+  assert.match(String(echoed.received), /__handleRef/);
+
   // Worker failures surface as rejections, not silent successes.
   await assert.rejects(() => bridge.boom(), /stub_failure/);
 
@@ -71,6 +77,8 @@ process.on('message', async (msg) => {
   assert.equal(status.mode, 'worker');
   assert.ok(status.rpcCount >= 4);
   assert.equal(status.rpcFailures, 1);
+  assert.equal(status.failuresByMethod['invoke:boom'], 1);
+  assert.match(String(status.lastFailure.method), /boom/);
 
   await bridge.destroy();
   assert.equal(bridge.child, null);
