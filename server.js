@@ -8951,6 +8951,9 @@ app.get("/status", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.json({
       ready: readinessReported(),
+      botPhone: BOT_PHONE_INTL || BOT_PHONE || connectedBotPhone() || null,
+      groupId: configuredRuntimeGroupId() || null,
+      groupInviteUrl: String(getSetting("official_group_invite_url", CLEAN_GROUP_INVITE_URL) || "") || null,
       groupConfigured: Boolean(configuredRuntimeGroupId()),
       outboundMessaging: { enabled: CLEAN_OUTBOUND_SENDS_ENABLED, blocked: CLEAN_OUTBOUND_SENDS_DISABLED, scope: ["messages", "media", "invitations", "reactions"] },
       groupIsolation: { exactMatchRequired: true, crossGroupOperations: false, unverifiedLidOutbound: false },
@@ -9264,6 +9267,8 @@ app.get("/api/admin/bot/status", requireAdmin, (req, res) => {
       ready: Boolean(health.whatsapp?.ready),
       phone: BOT_PHONE || null,
       phoneInternational: BOT_PHONE_INTL || null,
+      phoneDisplay: BOT_PHONE_INTL || BOT_PHONE || connectedBotPhone() || null,
+      groupInviteUrl: CLEAN_INSTANCE ? (String(getSetting("official_group_invite_url", CLEAN_GROUP_INVITE_URL) || "") || null) : null,
       groupId: configuredRuntimeGroupId() || null,
       state: health.whatsapp?.state || "unknown",
       lastEvent: health.whatsapp?.lastEvent || null,
