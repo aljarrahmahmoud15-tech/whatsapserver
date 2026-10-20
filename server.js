@@ -5310,14 +5310,11 @@ function liveClientBrowserPids() {
   return pids;
 }
 async function cleanupOwnedChromiumProcesses(label = "orphan cleanup") {
-  // Never tear down the browser that belongs to the live client, and never run
-  // this while an initialization/restart is in flight. Doing so killed the page
-  // mid-initialize ("Execution context was destroyed"), which left the stored
-  // WhatsApp session unusable and produced the QR loop.
-  if (initializing || whatsappRestartInFlight) {
-    console.warn(`[WhatsApp] ${label} skipped: client initialization/restart in flight`);
-    return false;
-  }
+  // Never tear down the browser that belongs to the live client: doing so killed
+  // the page mid-initialize ("Execution context was destroyed") and left the
+  // stored WhatsApp session unusable. Genuine leftovers must still be removed,
+  // because a stale Chromium keeps the profile lock and makes the next
+  // initialization time out.
   const protectedPids = new Set(liveClientBrowserPids());
   const ownedPids = listOwnedChromiumPids().filter((pid) => !protectedPids.has(pid));
   if (!ownedPids.length) return false;
@@ -6103,9 +6100,14 @@ function createClient() {
     puppeteer: puppeteerConfig,
   });
   instance.on("qr", (qr) => {
+    if (generation !== connectionGeneration) {
+      // A previous generation must not report "qr" without a usable code: that
+      // made the panel claim a QR was waiting while the live client was fine.
+      console.warn("[WhatsApp] ignoring QR from a stale client generation");
+      return;
+    }
     whatsappState = "qr";
     whatsappLastEvent = "qr";
-    if (generation !== connectionGeneration) return;
     qrCodeData = qr;
     lastQrTime = new Date();
     isReady = false;
@@ -6283,6 +6285,12 @@ async function initializeWhatsApp() {
   let currentClient = null;
   try {
     await destroyClient();
+    if (runId !== initializationRunId) return;
+    // A leftover Chromium from an earlier crashed attempt keeps the profile lock
+    // and makes this initialization time out. The live client is already gone at
+    // this point, so this only removes genuine orphans.
+    await cleanupOwnedChromiumProcesses("pre-initialize orphan cleanup");
+    clearChromiumProfileLocks();
     if (runId !== initializationRunId) return;
     currentClient = createClient();
     client = currentClient;

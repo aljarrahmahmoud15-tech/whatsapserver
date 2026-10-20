@@ -10,10 +10,17 @@ const server = fs.readFileSync('./server.js', 'utf8');
 assert.match(server, /function liveClientBrowserPids\(\)/);
 assert.match(server, /const browserProcess = getChromiumBrowserProcess\(client\);/);
 assert.match(server, /async function cleanupOwnedChromiumProcesses\(label = "orphan cleanup"\) \{/);
-assert.match(server, /if \(initializing \|\| whatsappRestartInFlight\) \{/);
-assert.match(server, /skipped: client initialization\/restart in flight/);
 assert.match(server, /const protectedPids = new Set\(liveClientBrowserPids\(\)\);/);
 assert.match(server, /const ownedPids = listOwnedChromiumPids\(\)\.filter\(\(pid\) => !protectedPids\.has\(pid\)\);/);
+// Leftover browsers must still be cleared, otherwise a stale Chromium keeps the
+// profile lock and the next initialization times out with no QR at all.
+assert.match(server, /await cleanupOwnedChromiumProcesses\("pre-initialize orphan cleanup"\);/);
+assert.match(server, /clearChromiumProfileLocks\(\);\n    if \(runId !== initializationRunId\) return;\n    currentClient = createClient\(\);/);
+
+// A stale client generation must not report "qr" without a usable code, which
+// made the panel claim a QR was waiting while the live client was healthy.
+assert.match(server, /ignoring QR from a stale client generation/);
+assert.match(server, /if \(generation !== connectionGeneration\) \{\n      \/\/ A previous generation must not report/);
 
 // 2) A hung WhatsApp Web page must be detected before a confirmation card is
 //    sent, instead of waiting for the 20s timeout and leaving the card pending.
