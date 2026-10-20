@@ -3092,7 +3092,7 @@ async function readGroupSnapshot(groupId, timeoutMs = 30000) {
 // snapshot of the configured group (participants + recent messages) in memory, so
 // the read endpoints answer instantly and every page.evaluate happens off the
 // request path. Read-only: it only fills a cache the endpoints already serve.
-const warmGroupSnapshotStore = { participants: null, participantsAt: 0, messages: null, messagesAt: 0, messagesSource: null, groupId: null, inFlight: null, refreshes: 0, errors: 0, lastError: null, lastRefreshAt: null };
+const warmGroupSnapshotStore = { participants: null, participantsAt: 0, participantsSource: null, messages: null, messagesAt: 0, messagesSource: null, groupId: null, inFlight: null, refreshes: 0, errors: 0, lastError: null, lastRefreshAt: null };
 const WARM_GROUP_SNAPSHOT_MS = Math.max(10000, Number(process.env.WARM_GROUP_SNAPSHOT_MS || 20000));
 function warmGroupSnapshotFresh(kind, maxAgeMs) {
   const at = kind === "messages" ? warmGroupSnapshotStore.messagesAt : warmGroupSnapshotStore.participantsAt;
@@ -3113,6 +3113,7 @@ function warmGroupSnapshotStatus() {
     participantCount: Array.isArray(warmGroupSnapshotStore.participants && warmGroupSnapshotStore.participants.participants) ? warmGroupSnapshotStore.participants.participants.length : 0,
     messageCount: Array.isArray(warmGroupSnapshotStore.messages && warmGroupSnapshotStore.messages.messages) ? warmGroupSnapshotStore.messages.messages.length : 0,
     messagesSource: warmGroupSnapshotStore.messagesSource,
+    participantsSource: warmGroupSnapshotStore.participantsSource,
   };
 }
 async function refreshWarmGroupSnapshot(reason = "interval") {
@@ -3122,10 +3123,19 @@ async function refreshWarmGroupSnapshot(reason = "interval") {
   if (warmGroupSnapshotStore.inFlight) return warmGroupSnapshotStore.inFlight;
   warmGroupSnapshotStore.inFlight = (async () => {
     try {
-      const participants = await readGroupSnapshot(groupId, 6000).catch(() => null);
+      // The metadata snapshot can legitimately take 10-25s on this WhatsApp Web
+      // build, so the quick chat read is tried first and the deeper snapshot gets a
+      // generous timeout; a 6s budget silently failed and left the warm data stale.
+      let participants = await readGroupParticipantsQuick(groupId, 9000).catch(() => null);
+      if (!participants || !Array.isArray(participants.participants) || !participants.participants.length) {
+        participants = await readGroupSnapshot(groupId, 25000).catch(() => null);
+      }
       if (participants && Array.isArray(participants.participants) && participants.participants.length) {
         warmGroupSnapshotStore.participants = participants;
         warmGroupSnapshotStore.participantsAt = Date.now();
+        warmGroupSnapshotStore.participantsSource = participants.participantSource || null;
+      } else {
+        warmGroupSnapshotStore.lastError = "participants_unavailable";
       }
       let warmedMessages = null;
       try {

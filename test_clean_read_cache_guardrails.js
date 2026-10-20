@@ -55,6 +55,12 @@ assert.match(server, /const warmMessages = !requestedMessageId && !bodyIncludes 
 // and warming it costs no page work at all.
 assert.match(server, /SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE group_id=\? ORDER BY id DESC LIMIT \?/);
 assert.match(server, /messagesSource: warmGroupSnapshotStore\.messagesSource,/);
+// The participant snapshot needs a real budget: a short timeout silently failed and
+// left the warm data stale, which sent every panel read back to the live page.
+assert.match(server, /let participants = await readGroupParticipantsQuick\(groupId, 9000\)\.catch\(\(\) => null\);/);
+assert.match(server, /participants = await readGroupSnapshot\(groupId, 25000\)\.catch\(\(\) => null\);/);
+assert.match(server, /warmGroupSnapshotStore\.lastError = "participants_unavailable";/);
+assert.match(server, /participantsSource: warmGroupSnapshotStore\.participantsSource,/);
 assert.match(server, /app\.get\("\/api\/admin\/group\/warm-snapshot", requireAdmin/);
 // A warm snapshot must never be served stale forever: freshness is bounded.
 assert.match(server, /if \(Date\.now\(\) - at > \(Number\(maxAgeMs\) \|\| WARM_GROUP_SNAPSHOT_MS \* 3\)\) return null;/);
