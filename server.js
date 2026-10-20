@@ -4539,18 +4539,21 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       return null;
     }
   }
-  // A hung WhatsApp Web page accepts no work and never returns, so the card
-  // used to stay pending forever behind the 20s timeout. Probe the page first
-  // and rebuild the client once instead of hanging silently. No duplicate is
-  // possible: the delivery row is reused and the send is not attempted.
+  // A hung WhatsApp Web page accepts no work and never returns, so the card used
+  // to stay pending behind the 20s timeout. Probe the page first, retry the probe
+  // once, then defer the card. The browser of a live session is never torn down
+  // from here: destroying it is what cost the linked session and forced a new QR.
   if (!(await whatsappPageResponsive())) {
-    console.warn(`[WhatsApp] confirmation send deferred: WhatsApp page is unresponsive (order=${details?.orderNo || orderId || "unknown"})`);
-    if (orderId) {
-      db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("whatsapp_page_unresponsive", now(), orderId);
-      confirmationDeliveryInFlight.delete(orderId);
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    if (!(await whatsappPageResponsive())) {
+      console.warn(`[WhatsApp] confirmation send deferred: WhatsApp page is unresponsive (order=${details?.orderNo || orderId || "unknown"})`);
+      if (orderId) {
+        db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("whatsapp_page_unresponsive", now(), orderId);
+        confirmationDeliveryInFlight.delete(orderId);
+      }
+      // The session watchdog owns recovery; no teardown happens here on purpose.
+      return null;
     }
-    void restartWhatsApp("confirmation send found an unresponsive WhatsApp page").catch((error) => console.error("[WhatsApp] unresponsive-page restart:", error.message));
-    return null;
   }
   try {
     const message = finalBookingConfirmationText(details);
@@ -4573,11 +4576,8 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
       }).finally(() => {
         if (orderId) confirmationDeliveryInFlight.delete(orderId);
       });
-      void whatsappPageResponsive(3000).then((alive) => {
-        if (alive) return;
-        console.warn("[WhatsApp] confirmation send timed out with an unresponsive page; rebuilding the client");
-        return restartWhatsApp("confirmation send timed out with an unresponsive page");
-      }).catch((error) => console.error("[WhatsApp] timeout self-heal failed:", error.message));
+      // No client rebuild here on purpose: the delivery row is already closed as
+      // sent-but-unverified, and tearing down a live browser risks the session.
       return null;
     }
     if (!sent) {
@@ -5364,13 +5364,23 @@ async function disposeClientInstance(instance, label = "client") {
     // whatsapp-web.js may already have closed Chromium after LOGOUT.
     console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
   }
-  if (destroyFailed) await forceTerminateChromiumProcess(browserProcess, label);
+  if (destroyFailed) {
+    const browser = instance?.pupBrowser;
+    if (browser && typeof browser.close === "function") {
+      try {
+        await withTimeout(browser.close(), 10000, null);
+        console.warn(`[WhatsApp] ${label} browser closed gracefully after a destroy timeout`);
+      } catch (_) { /* fall through to the hard cleanup */ }
+    }
+    await forceTerminateChromiumProcess(browserProcess, label);
+  }
   await new Promise((resolve) => setTimeout(resolve, 1000));
   clearChromiumProfileLocks();
 }
 async function destroyClient() {
   stopWhatsAppStorageMonitor();
   const current = client;
+  const wasReady = isReady;
   client = null;
   isReady = false;
   if (!current) {
@@ -5378,6 +5388,9 @@ async function destroyClient() {
     clearChromiumProfileLocks();
     return;
   }
+  // Keep a snapshot of the linked session before any teardown, so an interrupted
+  // destroy can never cost the session.
+  if (wasReady) { try { snapshotWhatsAppSession("before destroy"); } catch (_) { /* snapshot is best effort */ } }
   await disposeClientInstance(current, "destroy");
 }
 
@@ -6326,12 +6339,26 @@ async function initializeWhatsApp() {
       scheduleReconnect();
     }
   } catch (error) {
+    const message = String(error?.message || error);
     whatsappState = "initialize_error";
     whatsappLastEvent = "initialize_error";
-    whatsappLastError = String(error?.message || error);
-    console.error("[WhatsApp] initialize:", error.message);
+    whatsappLastError = message;
+    console.error("[WhatsApp] initialize:", message);
     isReady = false;
     recordOwnerControlCheckpoint("whatsapp.initialize_error", { force: true });
+    // WhatsApp Web reloads its own page, which surfaces here as "Execution context
+    // was destroyed, most likely because of a navigation". whatsapp-web.js re-injects
+    // itself on navigation, so give the page time to come back before any teardown:
+    // destroying a live browser is what cost the linked session and forced a QR.
+    if (runId === initializationRunId && /Execution context was destroyed|most likely because of a navigation|Target closed|Session closed|Navigation failed|Protocol error/i.test(message)) {
+      console.warn("[WhatsApp] page navigated during initialize; waiting for the session to recover before any teardown");
+      const recovered = await waitForWhatsAppReady(90000);
+      if (recovered && client === currentClient) {
+        console.warn("[WhatsApp] session recovered after page navigation without teardown");
+        return;
+      }
+      console.warn("[WhatsApp] page did not recover after navigation; falling back to a controlled reconnect");
+    }
     if (client === currentClient) client = null;
     await withTimeout(disposeClientInstance(currentClient, "initialize_error"), 15000, null);
     scheduleReconnect();

@@ -30,11 +30,27 @@ assert.match(server, /await withTimeoutStrict\(page\.evaluate\(\(\) => 1 \+ 1\),
 assert.match(server, /if \(!\(await whatsappPageResponsive\(\)\)\) \{/);
 assert.match(server, /confirmation send deferred: WhatsApp page is unresponsive/);
 assert.match(server, /"whatsapp_page_unresponsive"/);
-assert.match(server, /void restartWhatsApp\("confirmation send found an unresponsive WhatsApp page"\)/);
 
-// 3) If a send still times out, self-heal the client so the delivery monitor can
-//    resend once the page is healthy again.
-assert.match(server, /confirmation send timed out with an unresponsive page; rebuilding the client/);
+// 3) The send path must never tear down the browser of a live session: doing that
+//    is what cost the linked session and forced a new QR.
+assert.doesNotMatch(server, /void restartWhatsApp\("confirmation send found an unresponsive WhatsApp page"\)/);
+assert.doesNotMatch(server, /confirmation send timed out with an unresponsive page; rebuilding the client/);
+assert.match(server, /The session watchdog owns recovery; no teardown happens here on purpose\./);
+assert.match(server, /No client rebuild here on purpose/);
+
+// 3b) Session continuity: a WhatsApp Web page reload ("Execution context was
+//     destroyed ... because of a navigation") must be survived by waiting for the
+//     library's own re-injection instead of destroying the linked session.
+assert.match(server, /page navigated during initialize; waiting for the session to recover before any teardown/);
+assert.match(server, /const recovered = await waitForWhatsAppReady\(90000\);/);
+assert.match(server, /session recovered after page navigation without teardown/);
+assert.match(server, /Execution context was destroyed\|most likely because of a navigation/);
+// A snapshot is taken before any teardown, and the browser is closed gracefully
+// before a hard kill, so an interrupted restart cannot cost the session.
+assert.match(server, /if \(wasReady\) \{ try \{ snapshotWhatsAppSession\("before destroy"\); \} catch \(_\) \{ \/\* snapshot is best effort \*\/ \} \}/);
+assert.match(server, /browser closed gracefully after a destroy timeout/);
+assert.match(server, /async function restoreLatestArchivedWhatsAppSession\(\) \{/);
+assert.match(server, /restoreSessionSnapshotIfNeeded\(\);/);
 
 // 4) Duplicate protection must stay intact: one delivery row per order, an
 //    in-flight lock, a queue de-duplicator, a group readback before resending,
@@ -64,4 +80,4 @@ assert.match(server, /return await chat\.sendMessage\(message, \{ waitUntilMsgSe
 assert.match(server, /async function sendFinalBookingConfirmationDirect\(groupId, message\) \{/);
 assert.match(server, /if \(!isServer2OutboundTargetAllowed\(groupId\)\) throw new Error\("server2_group_target_not_allowed"\);/);
 
-console.log('Clean bridge liveness guardrails verified: protected live browser, page probe before send, timeout self-heal, duplicate protection, group binding');
+console.log('Clean bridge liveness guardrails verified: protected live browser, page probe before send, session continuity across page navigation and restarts, duplicate protection, group binding');
