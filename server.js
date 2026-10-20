@@ -4421,6 +4421,9 @@ const MAX_CONFIRMATION_DELIVERY_ATTEMPTS = 3;
 const MAX_FINAL_CONFIRMATION_RECOVERY_ATTEMPTS = 2;
 const CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS = Math.max(30000, Number(process.env.CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS || 60000));
 const CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS = Math.max(120000, Number(process.env.CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS || 300000));
+// Bounded background sweep for cards left pending/failed in a long-lived session.
+const CONFIRMATION_RETRY_SWEEP_MS = Math.max(120000, Number(process.env.CONFIRMATION_RETRY_SWEEP_MS || 300000));
+let lastBookingConfirmationRetryAt = 0;
 let confirmationDeliveryMonitorTimer = null;
 let confirmationDeliveryMonitorRunning = false;
 
@@ -4458,7 +4461,7 @@ async function monitorConfirmationDeliveries() {
   try {
     const cutoff = new Date(Date.now() - CONFIRMATION_DELIVERY_ACK_TIMEOUT_MS).toISOString();
     const rows = db.prepare(`
-      SELECT d.order_id,d.status,d.message_id,d.ack_status,d.ack_at,d.last_error,d.updated_at,d.sent_at,
+      SELECT d.order_id,d.group_id,d.status,d.message_id,d.ack_status,d.ack_at,d.last_error,d.updated_at,d.sent_at,
              o.order_no
       FROM order_confirmation_deliveries d
       JOIN orders o ON o.id=d.order_id
@@ -4470,6 +4473,17 @@ async function monitorConfirmationDeliveries() {
     `).all(cutoff, cutoff);
     let alerted = 0;
     for (const row of rows) {
+      if (row.status === "pending") {
+        // The card may already be in the group while the row is still pending (the
+        // send resolved without a message id, or a restart interrupted the write).
+        // Read it back and close the row instead of alarming the owner.
+        const observed = await findFinalBookingConfirmationInGroup(row.group_id || configuredRuntimeGroupId(), row.order_no);
+        if (observed) {
+          db.prepare("UPDATE order_confirmation_deliveries SET status='sent',message_id=COALESCE(?,message_id),ack_status='observed',ack_at=COALESCE(ack_at,?),sent_at=COALESCE(sent_at,?),updated_at=?,last_error=NULL WHERE order_id=? AND status<>'sent'").run(observed.messageId, now(), now(), now(), row.order_id);
+          console.log(`[DeliveryMonitor] pending confirmation observed in group order=${row.order_no}`);
+          continue;
+        }
+      }
       const reason = row.status === "failed"
         ? (row.last_error || "فشل الإرسال")
         : row.status === "pending"
@@ -4494,6 +4508,12 @@ function startConfirmationDeliveryMonitor() {
   confirmationDeliveryMonitorTimer = setInterval(() => {
     if (!isReady) return;
     void monitorConfirmationDeliveries().catch((error) => console.error("[DeliveryMonitor] sweep failed:", error.message));
+    if (Date.now() - lastBookingConfirmationRetryAt >= CONFIRMATION_RETRY_SWEEP_MS) {
+      lastBookingConfirmationRetryAt = Date.now();
+      void retryFailedBookingConfirmations()
+        .then((result) => { if (result.attempted) console.log(`[DeliveryMonitor] confirmation retry: attempted=${result.attempted} sent=${result.sent} suppressed=${result.suppressed}`); })
+        .catch((error) => console.error("[DeliveryMonitor] confirmation retry failed:", error.message));
+    }
   }, CONFIRMATION_DELIVERY_MONITOR_INTERVAL_MS);
   confirmationDeliveryMonitorTimer.unref?.();
 }
@@ -4649,16 +4669,11 @@ async function sendFinalBookingConfirmation(groupId, details, options = {}) {
   // once, then defer the card. The browser of a live session is never torn down
   // from here: destroying it is what cost the linked session and forced a new QR.
   if (!(await whatsappPageResponsive())) {
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    if (!(await whatsappPageResponsive())) {
-      console.warn(`[WhatsApp] confirmation send deferred: WhatsApp page is unresponsive (order=${details?.orderNo || orderId || "unknown"})`);
-      if (orderId) {
-        db.prepare("UPDATE order_confirmation_deliveries SET status='pending',last_error=?,updated_at=? WHERE order_id=? AND status<>'sent'").run("whatsapp_page_unresponsive", now(), orderId);
-        confirmationDeliveryInFlight.delete(orderId);
-      }
-      // The session watchdog owns recovery; no teardown happens here on purpose.
-      return null;
-    }
+    // Skipping the card here is what left delivery rows pending forever and produced
+    // a false "لم يتم تأكيد التسليم" alert even though WhatsApp was able to send. The
+    // send itself is the real test, so it runs with a strict budget either way and the
+    // row always ends in a definite state (sent / sent-unverified / failed).
+    console.warn(`[WhatsApp] page probe slow; sending with a strict budget (order=${details?.orderNo || orderId || "unknown"})`);
   }
   try {
     const message = finalBookingConfirmationText(details);
@@ -4783,16 +4798,60 @@ function observeFinalBookingConfirmationMessage(message) {
   if (updated.changes) console.log(`[WhatsApp] final booking confirmation observed order=${orderNo} message=${messageId}`);
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
-async function sendFinalBookingCancellation(groupId, order = null) {
-  if (!client || !groupId) return null;
+// A card send that reports what actually happened instead of guessing. A resolved
+// call with no message object means WhatsApp accepted the send on this Web build, a
+// timeout means the page may still deliver it (so it must never be resent), and only
+// a thrown or blocked send is a failure.
+async function sendGroupCardAtMostOnce(groupId, text, { timeoutMs = 25000 } = {}) {
+  if (!isServer2OutboundTargetAllowed(groupId)) return { status: "blocked", messageId: null, error: "group_target_not_allowed" };
+  if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", messageId: null, error: "whatsapp_not_ready" };
+  const result = await sendWhatsAppAtMostOnce(groupId, text, { waitUntilMsgSent: true }, timeoutMs);
+  if (!result) return { status: "duplicate_suppressed", messageId: null, error: "group_dedupe_blocked_identical_card" };
+  return {
+    status: result.status,
+    messageId: result.message?.id?._serialized || null,
+    error: result.error || null,
+  };
+}
+async function findFinalBookingCancellationInGroup(groupId, orderNo) {
+  if (!client || !isReady || !groupId || !Number(orderNo)) return null;
   try {
-    const sent = await sendServer2DirectAtMostOnce(groupId, finalBookingCancellationText(order), undefined, 15000);
-    if (!sent) throw new Error("cancellation message was not acknowledged");
-    return sent;
+    const { chat, messages } = await fetchGroupHistory(groupId, 60, { includeOutgoing: true });
+    if (!chat) return null;
+    const match = (Array.isArray(messages) ? messages : []).find((message) => {
+      if (!message?.fromMe) return false;
+      const body = String(message.body || message.caption || message?._data?.body || message?._data?.caption || "").trim();
+      const found = body.match(/تم إلغاء الحجز\s*#(\d+)/);
+      return Number(found?.[1] || 0) === Number(orderNo);
+    });
+    return match ? { messageId: serializedMessageId(match) } : null;
+  } catch (error) {
+    console.warn("[WhatsApp] cancellation readback failed:", error.message);
+    return null;
+  }
+}
+async function sendFinalBookingCancellation(groupId, order = null) {
+  if (!client || !groupId) return { status: "unavailable", messageId: null, error: "whatsapp_not_ready" };
+  const text = finalBookingCancellationText(order);
+  try {
+    const attempt = await sendGroupCardAtMostOnce(groupId, text, { timeoutMs: 25000 });
+    if (attempt.status === "sent") return { status: "sent", messageId: attempt.messageId };
+    if (attempt.status === "uncertain") {
+      // A strict timeout is not proof of failure: the page can still deliver it, so
+      // the card is reported as sent-but-unverified and never sent twice.
+      console.warn(`[WhatsApp] cancellation card outcome unverified (timeout); no resend: order=${order?.order_no || "unknown"}`);
+      audit("order.cancellation_card.unverified", "order", order?.id || null, { orderNo: order?.order_no || null, status: attempt.status, financialMutation: false });
+      return { status: "sent_unverified", messageId: null };
+    }
+    if (attempt.status === "failed" || attempt.status === "duplicate_suppressed") {
+      const observed = await findFinalBookingCancellationInGroup(groupId, order?.order_no);
+      if (observed) return { status: "sent", messageId: observed.messageId, observed: true };
+    }
+    throw new Error(attempt.error || `cancellation card ${attempt.status}`);
   } catch (error) {
     console.error("[WhatsApp] final booking cancellation not sent:", error.message);
     void notifyOperations({ event: `order.cancellation_card.failed.${orderTraceKey(groupId)}`, title: "تعذر إرسال بطاقة إلغاء الطلب", lines: [order?.order_no ? `تم إلغاء الحجز #${order.order_no} وعكس تسويته داخل التطبيق، لكن بطاقة القروب لم تصل.` : "تم تسجيل إلغاء الطلب دون حركة مالية، لكن رسالة الإلغاء لم تصل إلى القروب."], ownersOnly: true });
-    return null;
+    return { status: "failed", messageId: null, error: String(error?.message || error).slice(0, 240) };
   }
 }
 function formatAcceptance(order, captain, producer) {
@@ -13524,8 +13583,9 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
     if (result.state === "already_reversed") {
       return res.json({ success: true, state: result.state, alreadyReversed: true, financialMutation: false, orderId, message: "الحجز ملغى ومعكوس مسبقًا؛ لم تتكرر الحركة" });
     }
-    const message = await sendFinalBookingCancellation(result.order.group_id, result.order);
-    audit("order.cancellation_card.owner_delivery", "order", orderId, { orderNo: result.order.order_no, sent: Boolean(message), messageId: message?.id?._serialized || null, financialMutation: false, synchronizedState: "cancelled_reversed" });
+    const card = await sendFinalBookingCancellation(result.order.group_id, result.order);
+    const cardSent = Boolean(card && (card.status === "sent" || card.status === "sent_unverified"));
+    audit("order.cancellation_card.owner_delivery", "order", orderId, { orderNo: result.order.order_no, sent: cardSent, cardStatus: card?.status || null, sentWithoutId: card?.status === "sent_unverified", messageId: card?.messageId || null, financialMutation: false, synchronizedState: "cancelled_reversed" });
     res.status(201).json({
       success: true,
       state: result.state,
@@ -13535,8 +13595,9 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
       orderId,
       orderNo: result.order.order_no,
       reversal: result.reversal,
-      groupNotification: message ? "sent" : "failed_or_unavailable",
-      messageId: message?.id?._serialized || null,
+      groupNotification: cardSent ? (card.status === "sent_unverified" ? "sent_unverified" : "sent") : "failed_or_unavailable",
+      cardStatus: card?.status || null,
+      messageId: card?.messageId || null,
     });
   } catch (error) {
     console.error("[OwnerCancellation] failed:", error);
@@ -14792,6 +14853,17 @@ app.get("/api/admin/session-persistence", requireAdmin, (req, res) => {
 });
 
 
+app.get("/api/admin/whatsapp/delivery-state", requireAdmin, (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
+  const rows = db.prepare(`
+    SELECT d.order_id,o.order_no,d.status,d.attempts,d.final_recovery_attempts,d.message_id,d.ack_status,
+           d.last_error,d.sent_at,d.updated_at
+    FROM order_confirmation_deliveries d JOIN orders o ON o.id=d.order_id
+    ORDER BY d.updated_at DESC LIMIT ?`).all(limit);
+  const summary = db.prepare("SELECT status, COUNT(*) AS count FROM order_confirmation_deliveries GROUP BY status").all();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", summary, deliveries: rows });
+});
 app.get("/api/admin/whatsapp/client-placement", requireAdmin, (req, res) => {
   res.json({ success: true, mutation: "none", ready: isReady, whatsappState, ...whatsappClientPlacement() });
 });

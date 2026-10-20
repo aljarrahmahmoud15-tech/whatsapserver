@@ -22,20 +22,23 @@ assert.match(server, /clearChromiumProfileLocks\(\);\n    if \(runId !== initial
 assert.match(server, /ignoring QR from a stale client generation/);
 assert.match(server, /if \(generation !== connectionGeneration\) \{\n      \/\/ A previous generation must not report/);
 
-// 2) A hung WhatsApp Web page must be detected before a confirmation card is
-//    sent, instead of waiting for the 20s timeout and leaving the card pending.
+// 2) A slow WhatsApp Web page must be detected, but it must never cause the card to
+//    be skipped: skipping left the delivery row pending forever and produced a false
+//    "not delivered" alert. The send always runs with a strict budget and ends in a
+//    definite state (sent / sent-unverified / failed).
 assert.match(server, /async function whatsappPageResponsive\(timeoutMs = 5000\) \{/);
 assert.match(server, /const page = client && \(client\.pupPage \|\| client\.page\);/);
 assert.match(server, /await withTimeoutStrict\(page\.evaluate\(\(\) => 1 \+ 1\), timeoutMs, probeTimeoutMarker\)/);
 assert.match(server, /if \(!\(await whatsappPageResponsive\(\)\)\) \{/);
-assert.match(server, /confirmation send deferred: WhatsApp page is unresponsive/);
-assert.match(server, /"whatsapp_page_unresponsive"/);
+assert.match(server, /page probe slow; sending with a strict budget/);
+assert.doesNotMatch(server, /confirmation send deferred: WhatsApp page is unresponsive/);
+assert.doesNotMatch(server, /"whatsapp_page_unresponsive"/);
 
 // 3) The send path must never tear down the browser of a live session: doing that
 //    is what cost the linked session and forced a new QR.
 assert.doesNotMatch(server, /void restartWhatsApp\("confirmation send found an unresponsive WhatsApp page"\)/);
 assert.doesNotMatch(server, /confirmation send timed out with an unresponsive page; rebuilding the client/);
-assert.match(server, /The session watchdog owns recovery; no teardown happens here on purpose\./);
+assert.match(server, /row always ends in a definite state \(sent \/ sent-unverified \/ failed\)\./);
 assert.match(server, /No client rebuild here on purpose/);
 
 // 3b) Session continuity: a WhatsApp Web page reload ("Execution context was
