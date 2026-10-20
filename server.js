@@ -729,8 +729,8 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = specialBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,distance_km,duration_min,price_cents,price_source,notes,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.distanceKm, input.durationMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,duration_min,price_cents,price_source,notes,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
   if (policy.ownerNotification) {
@@ -753,8 +753,8 @@ app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res
   const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = customerBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO customer_booking_requests(request_code,customer_name,phone,origin,destination,trip_time,request_type,distance_km,price_cents,price_source,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO customer_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,price_cents,price_source,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("customer_booking.received", "customer_booking", row.id, { requestCode, requestType: input.requestType, quoteStatus: input.quote.status, priceCents, phone: input.phone, financialMutation: false, published: false });
   if (policy.ownerNotification) {
@@ -1135,6 +1135,8 @@ CREATE TABLE IF NOT EXISTS special_booking_requests (
   phone TEXT NOT NULL,
   origin TEXT NOT NULL,
   destination TEXT NOT NULL,
+  origin_coordinates_json TEXT,
+  destination_coordinates_json TEXT,
   trip_time TEXT NOT NULL,
   request_type TEXT NOT NULL DEFAULT 'full_car',
   distance_km REAL,
@@ -1168,6 +1170,8 @@ CREATE TABLE IF NOT EXISTS customer_booking_requests (
   phone TEXT NOT NULL,
   origin TEXT NOT NULL,
   destination TEXT NOT NULL,
+  origin_coordinates_json TEXT,
+  destination_coordinates_json TEXT,
   trip_time TEXT NOT NULL,
   request_type TEXT NOT NULL CHECK(request_type IN ('passenger','order')),
   distance_km REAL,
@@ -1427,6 +1431,11 @@ if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE o
 const existingSpecialBookingColumns = db.prepare("PRAGMA table_info(special_booking_requests)").all().map((column) => column.name);
 if (!existingSpecialBookingColumns.includes("distance_km")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN distance_km REAL");
 if (!existingSpecialBookingColumns.includes("duration_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN duration_min REAL");
+if (!existingSpecialBookingColumns.includes("origin_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN origin_coordinates_json TEXT");
+if (!existingSpecialBookingColumns.includes("destination_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN destination_coordinates_json TEXT");
+const existingCustomerBookingColumns = db.prepare("PRAGMA table_info(customer_booking_requests)").all().map((column) => column.name);
+if (!existingCustomerBookingColumns.includes("origin_coordinates_json")) db.exec("ALTER TABLE customer_booking_requests ADD COLUMN origin_coordinates_json TEXT");
+if (!existingCustomerBookingColumns.includes("destination_coordinates_json")) db.exec("ALTER TABLE customer_booking_requests ADD COLUMN destination_coordinates_json TEXT");
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
@@ -2900,6 +2909,8 @@ function customerBookingRequestResponse(row) {
     phone: row.phone,
     origin: row.origin,
     destination: row.destination,
+    originCoordinates: storedLocationCoordinates(row.origin_coordinates_json),
+    destinationCoordinates: storedLocationCoordinates(row.destination_coordinates_json),
     tripTime: row.trip_time,
     requestType: row.request_type,
     distanceKm: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
@@ -2927,11 +2938,31 @@ function customerBookingOperationalMessage(row) {
     `العميل: ${row.customer_name} · ${row.phone}`,
   ].join("\n");
 }
+function normalizePublicLocationCoordinates(value) {
+  if (value === undefined || value === null || value === "") return null;
+  let coordinates = value;
+  if (typeof value === "string") {
+    try { coordinates = JSON.parse(value); } catch { return null; }
+  }
+  const lat = Number(coordinates?.lat);
+  const lng = Number(coordinates?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { lat: Number(lat.toFixed(7)), lng: Number(lng.toFixed(7)) };
+}
+function locationCoordinatesJson(value) {
+  const coordinates = normalizePublicLocationCoordinates(value);
+  return coordinates ? JSON.stringify(coordinates) : null;
+}
+function storedLocationCoordinates(value) {
+  return normalizePublicLocationCoordinates(value);
+}
 function publicCustomerBookingInput(body = {}) {
   const customerName = String(body.customerName || body.name || "").trim().slice(0, 80);
   const phone = phoneWithCountry(String(body.phone || "").replace(/[^0-9+]/g, ""));
   const origin = String(body.origin || "").trim().slice(0, 160);
   const destination = String(body.destination || "").trim().slice(0, 160);
+  const originCoordinates = normalizePublicLocationCoordinates(body.originCoordinates);
+  const destinationCoordinates = normalizePublicLocationCoordinates(body.destinationCoordinates);
   const tripTime = String(body.departureTime || body.tripTime || "").trim();
   const requestType = String(body.requestType || body.serviceType || "").trim().toLowerCase();
   const originConfirmed = body.originConfirmed === true;
@@ -2941,6 +2972,7 @@ function publicCustomerBookingInput(body = {}) {
   if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
   if (origin.length < 2 || destination.length < 2) return { error: "موقع الإقلاع والوجهة مطلوبان" };
+  if ((body.originCoordinates !== undefined && body.originCoordinates !== null && originCoordinates === null) || (body.destinationCoordinates !== undefined && body.destinationCoordinates !== null && destinationCoordinates === null)) return { error: "إحداثيات الموقع غير صالحة" };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
   if (!["passenger", "order"].includes(requestType)) return { error: "نوع الطلب يجب أن يكون راكبًا أو أوردر" };
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
@@ -2948,7 +2980,7 @@ function publicCustomerBookingInput(body = {}) {
   const isAirport = /مطار|المطار|airport/i.test(`${origin} ${destination}`);
   const quote = calculateFare({ serviceType: requestType, distanceKm, isAirport });
   if (quote.status === "invalid") return { error: "المسافة غير صالحة" };
-  return { customerName, phone, origin, destination, tripTime, requestType, distanceKm, quote };
+  return { customerName, phone, origin, destination, originCoordinatesJson: locationCoordinatesJson(originCoordinates), destinationCoordinatesJson: locationCoordinatesJson(destinationCoordinates), tripTime, requestType, distanceKm, quote };
 }
 function specialBookingRequiresCustomerConfirmation(policy = currentSpecialBookingPolicy()) {
   return ["customer", "owner_and_customer"].includes(policy.approvalMode);
@@ -2987,6 +3019,8 @@ function specialBookingRequestResponse(row, req, { includePrivate = false, confi
     phone: row.phone,
     origin: row.origin,
     destination: row.destination,
+    originCoordinates: storedLocationCoordinates(row.origin_coordinates_json),
+    destinationCoordinates: storedLocationCoordinates(row.destination_coordinates_json),
     tripTime: row.trip_time,
     requestType: row.request_type,
     distanceKm: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
@@ -3018,6 +3052,8 @@ function publicSpecialBookingInput(body = {}) {
   const phone = phoneWithCountry(String(body.phone || "").replace(/[^0-9+]/g, ""));
   const origin = String(body.origin || "").trim().slice(0, 160);
   const destination = String(body.destination || "").trim().slice(0, 160);
+  const originCoordinates = normalizePublicLocationCoordinates(body.originCoordinates);
+  const destinationCoordinates = normalizePublicLocationCoordinates(body.destinationCoordinates);
   const tripTime = String(body.departureTime || body.tripTime || "").trim();
   const requestType = String(body.requestType || "").trim().toLowerCase();
   const originConfirmed = body.originConfirmed === true;
@@ -3030,6 +3066,7 @@ function publicSpecialBookingInput(body = {}) {
   if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
   if (origin.length < 2 || destination.length < 2) return { error: "موقع الإقلاع والوجهة مطلوبان" };
+  if ((body.originCoordinates !== undefined && body.originCoordinates !== null && originCoordinates === null) || (body.destinationCoordinates !== undefined && body.destinationCoordinates !== null && destinationCoordinates === null)) return { error: "إحداثيات الموقع غير صالحة" };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(tripTime)) return { error: "وقت الإقلاع غير صالح" };
   if (requestType !== "full-car") return { error: "هذا المسار مخصص للحجز الخاص فقط" };
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
@@ -3038,7 +3075,7 @@ function publicSpecialBookingInput(body = {}) {
   if ((distanceKm === null) !== (durationMin === null)) return { error: "أدخل المسافة والمدة معًا لاحتساب تعرفة الرحلة الخاصة" };
   const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm, durationMin });
   if (quote.status === "invalid") return { error: "المسافة أو المدة غير صالحة" };
-  return { customerName, phone, origin, destination, tripTime, requestType: "full_car", distanceKm, durationMin, quote, notes };
+  return { customerName, phone, origin, destination, originCoordinatesJson: locationCoordinatesJson(originCoordinates), destinationCoordinatesJson: locationCoordinatesJson(destinationCoordinates), tripTime, requestType: "full_car", distanceKm, durationMin, quote, notes };
 }
 function specialBookingOperationalMessage(row) {
   return [
