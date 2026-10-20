@@ -213,6 +213,13 @@ const WHATSAPP_CHROMIUM_EXIT_WAIT_MS = Math.max(2000, Math.min(30000, Number(pro
 const SESSION_SNAPSHOT_DIR = path.join(DATA_DIR, "session-snapshots");
 const SESSION_SNAPSHOT_KEEP = Math.max(1, Math.min(6, Number(process.env.SESSION_SNAPSHOT_KEEP || 3)));
 const SESSION_SNAPSHOT_RESTORE_ENABLED = String(process.env.SESSION_SNAPSHOT_RESTORE || "true") !== "false";
+// A deploy kills the browser mid-session; the live profile can then be rejected by
+// WhatsApp while the newest snapshot is still valid. Snapshots are therefore taken on
+// every healthy session (throttled) and used once to self-heal instead of asking the
+// owner for a QR after a routine restart.
+const SESSION_SNAPSHOT_MIN_INTERVAL_MS = Math.max(60000, Number(process.env.SESSION_SNAPSHOT_MIN_INTERVAL_MS || 600000));
+let lastSessionSnapshotAt = 0;
+let sessionSelfHealAttempted = false;
 const ADMIN_SEND_OBSERVATION_TIMEOUT_MS = Math.max(10000, Math.min(120000, Number(process.env.ADMIN_SEND_OBSERVATION_TIMEOUT_MS || 30000)));
 const ADMIN_SEND_RESULT_TTL_MS = Math.max(60000, Math.min(6 * 60 * 60 * 1000, Number(process.env.ADMIN_SEND_RESULT_TTL_MS || 2 * 60 * 60 * 1000)));
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
@@ -6341,6 +6348,15 @@ function createClient() {
       console.warn("[WhatsApp] ignoring QR from a stale client generation");
       return;
     }
+    if (!sessionSelfHealAttempted) {
+      sessionSelfHealAttempted = true;
+      if (restoreSessionSnapshotFromScratch("qr_rejected_profile")) {
+        console.warn("[WhatsApp] QR received after a restart; newest session snapshot restored, reinitialising once before asking for a scan");
+        recordOwnerControlCheckpoint("whatsapp.qr_snapshot_self_heal", { force: true });
+        void restartWhatsApp("session snapshot self-heal after QR").catch((error) => console.error("[WhatsApp] snapshot self-heal restart failed:", error.message));
+        return;
+      }
+    }
     whatsappState = "qr";
     whatsappLastEvent = "qr";
     qrCodeData = qr;
@@ -6358,7 +6374,12 @@ function createClient() {
     recordOwnerControlCheckpoint("whatsapp.authenticated", { force: true });
   });
   instance.on("ready", () => {
-    setTimeout(() => { if (process.env.CLEAN_SESSION_SNAPSHOTS === "true") { try { snapshotWhatsAppSession("ready"); } catch (_) {} } }, 15000);
+    sessionSelfHealAttempted = false;
+    setTimeout(() => {
+      if (Date.now() - lastSessionSnapshotAt < SESSION_SNAPSHOT_MIN_INTERVAL_MS) return;
+      lastSessionSnapshotAt = Date.now();
+      try { snapshotWhatsAppSession("ready"); } catch (_) {}
+    }, 15000);
     if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "ready";
     whatsappLastEvent = "ready";
@@ -15046,6 +15067,22 @@ function sessionProfileLooksEmpty() {
     const leveldb = path.join(profile, "Default", "Local Storage", "leveldb");
     return !fs.existsSync(cookies) && !fs.existsSync(leveldb);
   } catch (_) { return true; }
+}
+// Used when WhatsApp rejects a profile that is not empty (the deploy-kill case).
+function restoreSessionSnapshotFromScratch(reason = "self_heal") {
+  const snapshot = latestSessionSnapshot();
+  if (!snapshot) return false;
+  try {
+    fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+    fs.mkdirSync(AUTH_PATH, { recursive: true });
+    fs.cpSync(snapshot, AUTH_PATH, { recursive: true, force: true });
+    console.warn(`[WhatsApp] restored session snapshot after rejection (${reason}) -> ${path.basename(snapshot)}`);
+    audit("whatsapp.session_snapshot_self_heal", "system", "whatsapp", { reason, snapshot: path.basename(snapshot) });
+    return true;
+  } catch (error) {
+    console.warn("[WhatsApp] session snapshot self-heal failed:", error.message);
+    return false;
+  }
 }
 function restoreSessionSnapshotIfNeeded() {
   if (!SESSION_SNAPSHOT_RESTORE_ENABLED) return false;

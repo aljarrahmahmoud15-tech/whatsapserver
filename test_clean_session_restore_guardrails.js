@@ -62,3 +62,14 @@ assert.match(ui, /حذف الجلسة غير المطابقة/);
 assert.match(ui, /wrong_account/);
 
 console.log('Clean archived-session restore route, identity panel, protected main QR, isolation guardrails, and health telemetry verified');
+
+// A deploy can kill the browser mid-session and make WhatsApp reject a profile that is
+// not empty. The service must then try the newest snapshot once before asking for a QR,
+// and must keep a fresh snapshot of every healthy session.
+assert.match(server, /function restoreSessionSnapshotFromScratch\(reason = "self_heal"\) \{/);
+assert.match(server, /if \(!sessionSelfHealAttempted\) \{\n      sessionSelfHealAttempted = true;/);
+assert.match(server, /if \(restoreSessionSnapshotFromScratch\("qr_rejected_profile"\)\) \{/);
+assert.match(server, /void restartWhatsApp\("session snapshot self-heal after QR"\)/);
+assert.match(server, /sessionSelfHealAttempted = false;\n    setTimeout\(\(\) => \{\n      if \(Date\.now\(\) - lastSessionSnapshotAt < SESSION_SNAPSHOT_MIN_INTERVAL_MS\) return;/);
+assert.doesNotMatch(server, /if \(process\.env\.CLEAN_SESSION_SNAPSHOTS === "true"\) \{ try \{ snapshotWhatsAppSession\("ready"\); \}/);
+console.log('session snapshot self-heal guardrails verified');
