@@ -224,7 +224,7 @@ function createDirectRideService({ db, now = () => new Date().toISOString(), aud
     if (customerName.length < 2 || !phone || origin.length < 2 || destination.length < 2) return { ok: false, status: 400, error: "اسم العميل ورقم الهاتف والموقعان مطلوبون" };
     if (!originCoordinates || !destinationCoordinates) return { ok: false, status: 400, error: "إحداثيات الإقلاع والوجهة مطلوبة" };
     if (!route) return { ok: false, status: 400, error: "المسافة أو المدة غير صالحة" };
-    const quote = calculateDirectRideFare(route);
+    const quote = calculateDirectRideFare({ ...route, waitingMin: input.waitingMin, tripTime: input.tripTime, isNight: input.isNight });
     if (quote.status !== "quoted") return { ok: false, status: 400, error: "تعذر احتساب سعر الرحلة" };
     const idempotencyKey = String(input.idempotencyKey || "").trim().slice(0, 180) || null;
     if (idempotencyKey) {

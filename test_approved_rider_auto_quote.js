@@ -11,6 +11,11 @@ test('approved rider page keeps independent rider flow and uses the official sma
   assert.match(html, /data-quick-type="passenger"/);
   assert.match(html, /data-quick-type="order"/);
   assert.match(html, /data-quick-type="full-car"/);
+  assert.match(html, /id="smart-ride-primary"/);
+  assert.match(html, /id="secondary-booking-dialog"/);
+  assert.match(html, /name="requestType" value="full-car" checked/);
+  assert.match(html, /id="confirm-smart-ride"/);
+  assert.match(html, /V27Notifications/);
   assert.match(html, /id="origin" name="origin" type="hidden"/);
   assert.match(html, /id="destination" name="destination" type="hidden"/);
   assert.match(html, /id="details-origin-value"/);
@@ -30,6 +35,9 @@ test('approved rider page keeps independent rider flow and uses the official sma
   assert.match(html, /parseCoordinatePair\(query\)\) void pinMapLocation/);
   assert.match(html, /فتح العداد \+ الكيلومتر \+ الانتظار/);
   assert.match(html, /طلب راكب مستقل؛ لا يُحتسب بالكيلومتر تلقائيًا/);
+  assert.match(html, /fetch\('\/api\/public\/direct-rides'/);
+  const smartSubmit = html.slice(html.indexOf('async function submitSpecialBooking'));
+  assert.doesNotMatch(smartSubmit, /\/api\/public\/special-bookings/);
   assert.doesNotMatch(html, /special-duration/);
   assert.match(server, /app\.get\("\/ride\.html", v27PageLimiter[\s\S]*?res\.redirect\(302, "\/book\.html"\)/);
   assert.doesNotMatch(server, /app\.get\("\/v27\/pilot\/ride"/);

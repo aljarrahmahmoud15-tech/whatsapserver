@@ -665,6 +665,8 @@ app.post("/api/public/direct-rides", publicSpecialBookingLimiter, async (req, re
     distanceKm: route.distanceKm,
     durationMin: route.durationMin,
     routeSource: route.routeSource,
+    waitingMin: req.body?.waitingMin,
+    tripTime: req.body?.tripTime,
     idempotencyKey: req.get("X-Idempotency-Key") || req.body?.idempotencyKey,
   });
   if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.error });

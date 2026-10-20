@@ -241,15 +241,38 @@
     .type-option small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; font-weight: 400; }
     .type-option input:checked + span { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
     .type-option span:hover { border-color: #4b749b; transform: translateY(-1px); }
-    .quick-type-picker { margin: 14px 0 13px; padding: 12px; border: 1px solid rgba(72, 223, 176, .24); border-radius: var(--radius-md); background: rgba(5, 17, 29, .5); }
+    .quick-type-picker { margin: 14px 0 13px; padding: 13px; border: 1px solid rgba(72, 223, 176, .34); border-radius: var(--radius-md); background: linear-gradient(145deg, rgba(10, 47, 53, .72), rgba(5, 17, 29, .7)); }
     .quick-type-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
     .quick-type-head strong { color: var(--text); font-size: 11px; }
     .quick-type-head small { color: var(--muted); font-size: 9px; }
-    .quick-type-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+    .smart-ride-primary { display: grid; gap: 7px; }
+    .quick-type-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
     .quick-type-button { min-height: 55px; padding: 8px 7px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .78); color: var(--text); font-size: 11px; font-weight: 900; cursor: pointer; transition: border-color .18s, background .18s, transform .18s; }
     .quick-type-button small { display: block; margin-top: 4px; color: var(--muted); font-size: 8px; font-weight: 400; }
     .quick-type-button:hover { border-color: #4b749b; transform: translateY(-1px); }
     .quick-type-button.is-selected { border-color: var(--mint); background: linear-gradient(145deg, rgba(22, 73, 66, .96), rgba(9, 34, 42, .95)); box-shadow: 0 0 0 3px rgba(72, 223, 176, .09); }
+    .smart-ride-primary-button { display: block; width: 100%; min-height: 86px; padding: 14px 16px; border: 1px solid rgba(247, 201, 111, .76); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(247, 201, 111, .97), rgba(205, 143, 47, .92)); color: #241a08; text-align: right; box-shadow: 0 15px 28px rgba(247, 201, 111, .15); }
+    .smart-ride-primary-button:hover { border-color: var(--gold); filter: brightness(1.06); transform: translateY(-1px); }
+    .smart-ride-primary-button.is-selected { outline: 3px solid rgba(247, 201, 111, .15); }
+    .smart-ride-primary-title { display: block; font-size: 16px; font-weight: 900; }
+    .smart-ride-primary-button small { display: block; margin-top: 5px; color: #493612; font-size: 10px; font-weight: 700; }
+    .smart-ride-primary-note { color: #d9c58d; font-size: 9px; line-height: 1.7; }
+    .secondary-booking-trigger { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 47px; margin-top: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(5, 17, 29, .72); color: var(--text); font-size: 11px; font-weight: 900; text-align: right; }
+    .secondary-booking-trigger small { color: var(--muted); font-size: 9px; font-weight: 400; }
+    .secondary-booking-trigger:hover { border-color: var(--blue); background: rgba(16, 42, 68, .8); }
+    .secondary-booking-dialog { width: min(460px, calc(100% - 24px)); padding: 0; border: 1px solid rgba(72, 223, 176, .42); border-radius: var(--radius-lg); background: linear-gradient(145deg, #102239, #071522); color: var(--text); box-shadow: 0 28px 90px rgba(0, 0, 0, .5); }
+    .secondary-booking-dialog::backdrop { background: rgba(1, 8, 15, .76); backdrop-filter: blur(5px); }
+    .secondary-booking-dialog[open] { display: grid; }
+    .secondary-booking-dialog-inner { display: grid; gap: 13px; padding: 20px; }
+    .secondary-booking-dialog h3 { margin: 0; font-size: 18px; }
+    .secondary-booking-dialog p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.75; }
+    .secondary-booking-options { display: grid; gap: 8px; }
+    .secondary-booking-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 58px; padding: 10px 12px; border: 1px solid #315273; border-radius: var(--radius-sm); background: rgba(5, 17, 29, .74); color: var(--text); text-align: right; }
+    .secondary-booking-option strong, .secondary-booking-option small { display: block; }
+    .secondary-booking-option small { margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 400; }
+    .secondary-booking-option:hover { border-color: var(--mint); background: rgba(22, 73, 66, .7); }
+    .secondary-booking-dialog-close { min-height: 42px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 11px; font-weight: 900; }
+    .secondary-booking-dialog-close:hover { border-color: var(--blue); color: var(--text); }
     .price-wrap { display: flex; align-items: center; gap: 8px; }
     .price-wrap input { flex: 1; }
     .currency { color: var(--gold); font-size: 11px; font-weight: 900; }
@@ -283,6 +306,26 @@
     .form-status { min-height: 22px; margin: 11px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
     .form-status.ok { color: #a8f8dc; }
     .form-status.error { color: #ffb3bf; }
+    .smart-ride-result { margin-bottom: 18px; padding: clamp(18px, 3vw, 26px); border: 1px solid rgba(247, 201, 111, .4); border-radius: var(--radius-lg); background: linear-gradient(145deg, rgba(61, 48, 24, .72), rgba(8, 22, 37, .96)); box-shadow: var(--shadow); }
+    .smart-ride-result[hidden] { display: none; }
+    .smart-ride-result-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .smart-ride-result-head h2 { margin: 0 0 5px; font-size: 20px; }
+    .smart-ride-result-head p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+    .smart-ride-summary { display: grid; gap: 8px; padding: 12px; border: 1px solid rgba(247, 201, 111, .2); border-radius: var(--radius-md); background: rgba(5, 17, 29, .58); }
+    .smart-ride-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(126, 177, 214, .12); font-size: 11px; }
+    .smart-ride-row:last-child { padding-bottom: 0; border-bottom: 0; }
+    .smart-ride-row span { color: var(--muted); }
+    .smart-ride-row strong { max-width: 70%; text-align: left; overflow-wrap: anywhere; }
+    .smart-ride-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .smart-ride-actions button { flex: 1; }
+    .smart-ride-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 16px; }
+    .smart-ride-step { padding-top: 8px; border-top: 2px solid var(--line); color: #71899a; font-size: 9px; }
+    .smart-ride-step.on { border-color: var(--gold); color: var(--gold); }
+    .smart-ride-step.done { border-color: var(--mint); color: var(--mint); }
+    .smart-ride-notice { min-height: 22px; margin: 11px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+    .smart-ride-notice.ok { color: #a8f8dc; }
+    .smart-ride-notice.warn { color: #f7d996; }
+    .smart-ride-notice.error { color: #ffb3bf; }
 
     .preview-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .82fr); gap: 18px; padding: clamp(19px, 3vw, 28px); }
     .preview-intro { display: flex; flex-direction: column; justify-content: center; }
@@ -387,6 +430,9 @@
       .type-option small { font-size: 8px; }
       .quick-type-options { gap: 5px; }
       .quick-type-button { min-height: 63px; padding: 8px 5px; font-size: 10px; }
+      .smart-ride-primary-button { min-height: 82px; padding: 12px; }
+      .smart-ride-primary-title { font-size: 14px; }
+      .smart-ride-actions { align-items: stretch; flex-direction: column; }
       .special-fare-fields { grid-template-columns: 1fr; }
       .confirmed-route-grid { grid-template-columns: 1fr; gap: 6px; }
       .confirmed-route-arrow { display: none; }
@@ -436,13 +482,28 @@
         <h2 id="map-title">اختر الإقلاع والوجهة بدقة.</h2>
         <p>اعتمد الموقع المسجل من جهازك أو اختره من الخريطة. ستنتقل المواقع المعتمدة تلقائيًا إلى الطلب دون إعادة كتابتها.</p>
         <div class="quick-type-picker" aria-label="اختيار نوع الطلب من البداية">
-          <div class="quick-type-head"><strong>حدد نوع الطلب</strong><small>يمكن تغييره قبل الإرسال</small></div>
-          <div class="quick-type-options" role="group" aria-label="نوع الطلب">
-            <button class="quick-type-button is-selected" type="button" data-quick-type="passenger">راكب<small>رحلة شخصية</small></button>
-            <button class="quick-type-button" type="button" data-quick-type="order">أوردر<small>استلام أو توصيل</small></button>
-            <button class="quick-type-button" type="button" data-quick-type="full-car">طلب رحلة ذكية<small>تعرفة العداد الرسمية</small></button>
+          <div class="quick-type-head"><strong>ابدأ بالمسار الأساسي</strong><small>يمكن تغييره قبل الإرسال</small></div>
+          <div class="smart-ride-primary">
+            <button class="quick-type-button smart-ride-primary-button is-selected" id="smart-ride-primary" type="button" data-quick-type="full-car" aria-pressed="true">
+              <span class="smart-ride-primary-title">احجز رحلة ذكية</span>
+              <small>أقرب كابتن · تعرفة رسمية · تأكيد قبل التوزيع</small>
+            </button>
+            <div class="smart-ride-primary-note">حدد الإقلاع والوجهة، راجع المسافة والتقدير، ثم أكد الرحلة من بطاقة المتابعة.</div>
           </div>
+          <button class="secondary-booking-trigger" id="open-secondary-booking" type="button" aria-haspopup="dialog">
+            <span>خيارات أخرى: حجز راكب أو أوردر</span><small>نافذة فرعية</small>
+          </button>
         </div>
+        <dialog class="secondary-booking-dialog" id="secondary-booking-dialog" aria-labelledby="secondary-booking-title">
+          <div class="secondary-booking-dialog-inner">
+            <div><h3 id="secondary-booking-title">خيارات الطلب الأخرى</h3><p>هذه الطلبات تبقى مستقلة وتنتظر مراجعة المالك؛ لا تُعامل كرحلة ذكية ولا تُوزع تلقائيًا.</p></div>
+            <div class="secondary-booking-options" role="group" aria-label="الطلبات المستقلة">
+              <button class="quick-type-button secondary-booking-option" type="button" data-quick-type="passenger"><span><strong>حجز راكب</strong><small>طلب غير فوري · السعر يحدده المالك</small></span><b>راكب</b></button>
+              <button class="quick-type-button secondary-booking-option" type="button" data-quick-type="order"><span><strong>أوردر</strong><small>استلام أو توصيل · السعر الثابت 5 دنانير</small></span><b>أوردر</b></button>
+            </div>
+            <button class="secondary-booking-dialog-close" id="close-secondary-booking" type="button">إغلاق النافذة</button>
+          </div>
+        </dialog>
         <div class="map-progress" aria-label="مراحل تحديد المسار"><span class="progress-step is-current" id="progress-origin">01 · الإقلاع</span><span class="progress-connector" aria-hidden="true"></span><span class="progress-step" id="progress-destination">02 · الوجهة</span></div>
         <div class="map-targets" role="group" aria-label="اختيار موقع الرحلة">
           <button class="map-target is-active" type="button" data-map-target="origin" aria-pressed="true">
@@ -490,7 +551,7 @@
               <input id="departure-time" name="departureTime" type="time" required>
             </div>
             <div class="confirmed-route-card" aria-live="polite">
-              <div class="confirmed-route-head"><span>المسار ونوع الطلب المعتمدان</span><strong id="details-type-value">راكب</strong></div>
+              <div class="confirmed-route-head"><span>المسار ونوع الطلب المعتمدان</span><strong id="details-type-value">طلب رحلة ذكية</strong></div>
               <div class="confirmed-route-grid">
                 <div class="confirmed-route-stop"><span>الإقلاع</span><strong id="details-origin-value">موقعي الحالي</strong></div>
                 <span class="confirmed-route-arrow" aria-hidden="true">←</span>
@@ -501,9 +562,9 @@
             <input id="origin" name="origin" type="hidden" required>
             <input id="destination" name="destination" type="hidden" required>
             <div class="type-field" hidden aria-hidden="true">
-              <input type="radio" name="requestType" value="passenger" checked>
+              <input type="radio" name="requestType" value="passenger">
               <input type="radio" name="requestType" value="order">
-              <input type="radio" name="requestType" value="full-car">
+              <input type="radio" name="requestType" value="full-car" checked>
             </div>
             <div class="field full">
               <label>الأجرة المعتمدة</label>
@@ -524,6 +585,21 @@
           </div>
           <p class="form-status" id="form-status" role="status" aria-live="polite">أكد الموقعين أولًا، ثم ستظهر هذه الخطوة تلقائيًا.</p>
         </form>
+      </section>
+
+      <section class="smart-ride-result" id="smart-ride-result" aria-labelledby="smart-ride-result-title" hidden>
+        <div class="smart-ride-result-head">
+          <div><h2 id="smart-ride-result-title">متابعة الرحلة الذكية</h2><p>راجع بيانات الرحلة ثم أكدها. لا يتم تغيير المحفظة أو تنفيذ التسوية من هذه الخطوة.</p></div>
+          <span class="pill wait" id="smart-ride-status-pill">بانتظار التأكيد</span>
+        </div>
+        <div class="smart-ride-summary">
+          <div class="smart-ride-row"><span>رقم الرحلة</span><strong id="smart-ride-code">—</strong></div>
+          <div class="smart-ride-row"><span>المسار</span><strong id="smart-ride-route">—</strong></div>
+          <div class="smart-ride-row"><span>السعر المتوقع</span><strong id="smart-ride-price">—</strong></div>
+        </div>
+        <div class="smart-ride-actions"><button class="primary-action" id="confirm-smart-ride" type="button">تأكيد الرحلة والبحث عن أقرب كابتن</button><button class="secondary-action" id="cancel-smart-ride" type="button">إلغاء الطلب</button></div>
+        <div class="smart-ride-progress" aria-label="حالة الرحلة"><span class="smart-ride-step on" data-smart-status-step="priced">السعر</span><span class="smart-ride-step" data-smart-status-step="dispatch">البحث</span><span class="smart-ride-step" data-smart-status-step="assigned">الكابتن</span><span class="smart-ride-step" data-smart-status-step="trip">الرحلة</span></div>
+        <p class="smart-ride-notice" id="smart-ride-notice" role="status" aria-live="polite"></p>
       </section>
 
     <section class="preview-card" aria-labelledby="preview-title">
@@ -550,6 +626,7 @@
     <footer class="page-foot"><span>وصلني الآن · واجهة استقبال العميل</span><strong>طلب الرحلة الذكية يمر بالمراجعة قبل النشر</strong></footer>
   </main>
 
+  <script src="/direct-ride-notifications.js"></script>
   <script>
     (() => {
       const form = document.getElementById('booking-form');
@@ -578,6 +655,12 @@
       const progressDestination = document.getElementById('progress-destination');
       const continueDetailsButton = document.getElementById('continue-details');
       const detailsCard = document.getElementById('booking-card');
+      const secondaryDialog = document.getElementById('secondary-booking-dialog');
+      const smartRideResult = document.getElementById('smart-ride-result');
+      const smartRideStatusPill = document.getElementById('smart-ride-status-pill');
+      const smartRideNotice = document.getElementById('smart-ride-notice');
+      const confirmSmartRideButton = document.getElementById('confirm-smart-ride');
+      const cancelSmartRideButton = document.getElementById('cancel-smart-ride');
       const detailsOriginValue = document.getElementById('details-origin-value');
       const detailsDestinationValue = document.getElementById('details-destination-value');
       const detailsTypeValue = document.getElementById('details-type-value');
@@ -596,6 +679,10 @@
       let deferredInstallPrompt = null;
       let specialRequest = null;
       let customerRequest = null;
+      let smartRide = null;
+      let smartRideCreateKey = null;
+      let smartRidePoll = null;
+      let smartRideStream = null;
       let locationCoordinates = { origin: null, destination: null };
       let automaticRouteQuote = null;
       const confirmedMapTargets = { origin: false, destination: false };
@@ -773,15 +860,168 @@
         setText('preview-time', formatTime(valueOf(fields.time)));
         setText('preview-type', typeLabels[selectedType()]);
         setText('preview-price', fareDisplay.textContent || 'يحدد عند التجهيز');
-        setText('preview-request', specialRequest?.requestCode || customerRequest?.requestCode || '—');
+        setText('preview-request', smartRide?.requestCode || specialRequest?.requestCode || customerRequest?.requestCode || '—');
         previewState.textContent = 'معاينة محدثة';
       }
+      function smartRideStatusStep(statusValue) {
+        if (statusValue === 'priced') return 0;
+        if (['rider_confirmed', 'dispatch_pending', 'offered'].includes(statusValue)) return 1;
+        if (['assigned', 'arrived'].includes(statusValue)) return 2;
+        if (['in_trip', 'completed'].includes(statusValue)) return 3;
+        return 0;
+      }
+      function setSmartRideNotice(message, tone = '') {
+        if (!smartRideNotice) return;
+        smartRideNotice.className = `smart-ride-notice${tone ? ` ${tone}` : ''}`;
+        smartRideNotice.textContent = message || '';
+      }
+      function closeSmartRideStream() {
+        if (smartRideStream) smartRideStream.close();
+        smartRideStream = null;
+      }
+      function clearSmartRideTracking() {
+        clearInterval(smartRidePoll);
+        smartRidePoll = null;
+        closeSmartRideStream();
+        localStorage.removeItem('v27-direct-ride-token');
+        localStorage.removeItem('v27-direct-ride-id');
+      }
+      function connectSmartRideStream() {
+        if (!smartRide || !smartRide.riderToken || smartRideStream || !window.V27Notifications) return;
+        smartRideStream = V27Notifications.connect({
+          url: `/api/public/direct-rides/${smartRide.id}/events?token=${encodeURIComponent(smartRide.riderToken)}`,
+          audience: 'rider',
+          onEvent: payload => {
+            if (payload.ride) {
+              smartRide = { ...smartRide, ...payload.ride, riderToken: smartRide.riderToken };
+              renderSmartRide();
+            }
+            if (['completed', 'cancelled'].includes(payload.status || payload.ride?.status)) {
+              clearInterval(smartRidePoll);
+              smartRidePoll = null;
+              closeSmartRideStream();
+            }
+          },
+          onConnectionChange: connectionStatus => {
+            if (connectionStatus === 'connected' && smartRide?.status !== 'priced') setSmartRideNotice('الإشعارات الفورية مفعلة.', 'ok');
+            if (connectionStatus === 'reconnecting' && smartRide?.status !== 'priced') setSmartRideNotice('جاري إعادة الاتصال بالإشعارات؛ التحديث الاحتياطي يعمل.', 'warn');
+          },
+        });
+      }
+      function startSmartRidePoll() {
+        clearInterval(smartRidePoll);
+        smartRidePoll = setInterval(() => { void refreshSmartRide(); }, 7000);
+      }
+      async function refreshSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken) return;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}?token=${encodeURIComponent(smartRide.riderToken)}`, { credentials: 'same-origin', cache: 'no-store' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) return;
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          if (['completed', 'cancelled'].includes(smartRide.status)) clearSmartRideTracking();
+        } catch {
+          // The next polling cycle or SSE reconnect will retry without changing the ride state.
+        }
+      }
+      function renderSmartRide() {
+        if (!smartRide) {
+          smartRideResult.hidden = true;
+          return;
+        }
+        smartRideResult.hidden = false;
+        setText('smart-ride-code', smartRide.requestCode);
+        setText('smart-ride-route', `${smartRide.origin} ← ${smartRide.destination}`);
+        setText('smart-ride-price', smartRide.finalPrice || smartRide.quotedPrice || '—');
+        const labels = { priced: 'بانتظار التأكيد', rider_confirmed: 'تم التأكيد', dispatch_pending: 'بانتظار التوزيع', offered: 'عرض عند كابتن', assigned: 'كابتن معيّن', arrived: 'وصل الكابتن', in_trip: 'الرحلة بدأت', completed: 'اكتملت الرحلة', cancelled: 'ملغاة' };
+        const label = labels[smartRide.status] || smartRide.status || 'غير معروف';
+        smartRideStatusPill.textContent = label;
+        smartRideStatusPill.className = `pill ${['priced', 'dispatch_pending', 'offered'].includes(smartRide.status) ? 'wait' : smartRide.status === 'cancelled' ? 'red' : ''}`;
+        const currentStep = smartRideStatusStep(smartRide.status);
+        smartRideResult.querySelectorAll('[data-smart-status-step]').forEach((node, index) => { node.classList.toggle('done', index < currentStep); node.classList.toggle('on', index === currentStep); });
+        confirmSmartRideButton.disabled = smartRide.status !== 'priced';
+        cancelSmartRideButton.disabled = ['completed', 'cancelled'].includes(smartRide.status);
+        const messages = {
+          priced: 'راجع السعر والمسار ثم أكد الرحلة لبدء دورة البحث.',
+          rider_confirmed: 'تم تأكيد الرحلة وتجهيزها للتوزيع.',
+          dispatch_pending: smartRide.liveDispatchEnabled ? 'تم تأكيد الرحلة؛ يجري البحث عن أقرب كابتن.' : 'تم تأكيد الرحلة. التشغيل الحي بانتظار اعتماد الإدارة من V27.',
+          offered: 'تم إرسال العرض إلى كابتن مؤهل.',
+          assigned: `تم تعيين الكابتن${smartRide.captain?.name ? ` · ${smartRide.captain.name}` : ''}.`,
+          arrived: 'وصل الكابتن إلى موقع الإقلاع.',
+          in_trip: 'بدأت الرحلة والعداد نشط؛ التحديثات تصل تلقائيًا.',
+          completed: `انتهت الرحلة. السعر النهائي ${smartRide.finalPrice || 'قيد المراجعة'}.`,
+          cancelled: `أُلغيت الرحلة${smartRide.cancelReason ? ` · ${smartRide.cancelReason}` : ''}.`,
+        };
+        setSmartRideNotice(messages[smartRide.status] || 'راجع بيانات الرحلة.', smartRide.status === 'cancelled' ? 'warn' : smartRide.status === 'priced' ? '' : 'ok');
+        updatePreview();
+      }
+      async function confirmSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken || smartRide.status !== 'priced') return;
+        confirmSmartRideButton.disabled = true;
+        confirmSmartRideButton.textContent = 'جارٍ تأكيد الرحلة…';
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': `BOOK-DIRECT-RIDE-${smartRide.id}-CONFIRM` }, credentials: 'same-origin', body: JSON.stringify({ token: smartRide.riderToken }) });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر تأكيد الرحلة');
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          connectSmartRideStream();
+          startSmartRidePoll();
+        } catch (error) {
+          setSmartRideNotice(error.message || 'تعذر تأكيد الرحلة؛ حاول مرة أخرى.', 'error');
+          confirmSmartRideButton.disabled = false;
+        } finally {
+          confirmSmartRideButton.textContent = 'تأكيد الرحلة والبحث عن أقرب كابتن';
+        }
+      }
+      async function cancelSmartRide() {
+        if (!smartRide?.id || !smartRide.riderToken || ['completed', 'cancelled'].includes(smartRide.status)) return;
+        cancelSmartRideButton.disabled = true;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${smartRide.id}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': `BOOK-DIRECT-RIDE-${smartRide.id}-CANCEL` }, credentials: 'same-origin', body: JSON.stringify({ token: smartRide.riderToken, reason: 'إلغاء من واجهة الراكب' }) });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر إلغاء الرحلة');
+          smartRide = { ...smartRide, ...data.ride, riderToken: smartRide.riderToken };
+          renderSmartRide();
+          clearSmartRideTracking();
+        } catch (error) {
+          setSmartRideNotice(error.message || 'تعذر إلغاء الرحلة؛ حاول مرة أخرى.', 'error');
+          cancelSmartRideButton.disabled = false;
+        }
+      }
+      async function restoreSmartRide() {
+        const token = localStorage.getItem('v27-direct-ride-token');
+        const id = Number(localStorage.getItem('v27-direct-ride-id') || 0);
+        if (!token || !Number.isInteger(id) || id < 1) return;
+        try {
+          const response = await fetch(`/api/public/direct-rides/${id}?token=${encodeURIComponent(token)}`, { credentials: 'same-origin', cache: 'no-store' });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ride) throw new Error('stale ride');
+          smartRide = { ...data.ride, riderToken: token };
+          renderSmartRide();
+          connectSmartRideStream();
+          if (!['completed', 'cancelled'].includes(smartRide.status)) startSmartRidePoll();
+        } catch {
+          localStorage.removeItem('v27-direct-ride-token');
+          localStorage.removeItem('v27-direct-ride-id');
+        }
+      }
       function resetState() {
+        if (smartRide && !['completed', 'cancelled'].includes(smartRide.status)) {
+          status.className = 'form-status error';
+          status.textContent = 'لديك رحلة ذكية قيد المتابعة؛ ألغها أو انتظر اكتمالها قبل المسح.';
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        clearSmartRideTracking();
         form.reset();
         status.className = 'form-status';
         status.textContent = 'أكد الإقلاع والوجهة على الخريطة ثم أرسل طلب الراكب أو الأوردر إلى دورة المراجعة.';
         specialRequest = null;
         customerRequest = null;
+        smartRide = null;
+        smartRideCreateKey = null;
         locationCoordinates = { origin: null, destination: null };
         automaticRouteQuote = null;
         fields.origin.dataset.coordinates = '';
@@ -791,6 +1031,7 @@
         confirmedMapTargets.origin = false;
         confirmedMapTargets.destination = false;
         detailsCard.hidden = true;
+        smartRideResult.hidden = true;
         specialDistance.value = '';
         specialWaiting.value = '0';
         mapSearch.value = '';
@@ -1019,6 +1260,10 @@
         }
       }
       async function submitSpecialBooking() {
+        if (smartRide) {
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
         if (!confirmedMapTargets.origin || !confirmedMapTargets.destination) {
           status.className = 'form-status error';
           status.textContent = 'أكد موقع الإقلاع والوجهة من الزرين قبل إرسال طلب الرحلة الذكية.';
@@ -1031,56 +1276,76 @@
           setMapStatus('استخدم «تثبيت الموقع المختار» بعد البحث عن كل موقع.', 'error');
           return;
         }
-        if (!calculateSpecialFare(specialDistance.value, specialWaiting.value, valueOf(fields.time))) {
+        if (!automaticRouteQuote || !isPositiveDistance(automaticRouteQuote.distanceKm) || !calculateSpecialFare(automaticRouteQuote.distanceKm, specialWaiting.value, valueOf(fields.time))) {
           status.className = 'form-status error';
-          status.textContent = 'ثبّت الموقعين لاحتساب مسافة طلب الرحلة الذكية قبل الإرسال.';
-          specialDistance.focus();
+          status.textContent = 'أعد تثبيت الموقعين لاحتساب مسافة فعلية قبل إرسال طلب الرحلة الذكية.';
+          setMapStatus('يجب أن يظهر تقدير لمسافة أكبر من صفر قبل الإرسال.', 'error');
           return;
         }
         submitButton.disabled = true;
-        submitButton.textContent = 'جارٍ استلام الطلب…';
+        submitButton.textContent = 'جارٍ تجهيز الرحلة الذكية…';
         status.className = 'form-status';
-        status.textContent = 'يتم حفظ الطلب وإرساله للمراجعة؛ لم يُنشر في قروب التشغيل بعد.';
+        status.textContent = 'تم تجهيز المسار؛ بعد الاستلام راجع بطاقة الرحلة ثم أكد البحث عن كابتن.';
+        smartRideCreateKey = smartRideCreateKey || `BOOK-DIRECT-RIDE-${Date.now()}-${window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
         try {
-          const response = await fetch('/api/public/special-bookings', {
+          const response = await fetch('/api/public/direct-rides', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': smartRideCreateKey },
             credentials: 'same-origin',
             body: JSON.stringify({
               customerName: valueOf(fields.name),
               phone: valueOf(fields.phone),
-              origin: valueOf(fields.origin),
-              destination: valueOf(fields.destination),
-              originCoordinates: locationCoordinates.origin,
-              destinationCoordinates: locationCoordinates.destination,
-              departureTime: valueOf(fields.time),
-              requestType: selectedType(),
-              distanceKm: valueOf(specialDistance),
+              originLabel: valueOf(fields.origin),
+              destinationLabel: valueOf(fields.destination),
+              origin: locationCoordinates.origin,
+              destination: locationCoordinates.destination,
+              distanceKm: automaticRouteQuote.distanceKm,
+              durationMin: automaticRouteQuote.durationMin,
+              routeSource: automaticRouteQuote.routeSource,
               waitingMin: valueOf(specialWaiting) || 0,
-              originConfirmed: confirmedMapTargets.origin,
-              destinationConfirmed: confirmedMapTargets.destination,
+              tripTime: valueOf(fields.time),
             }),
           });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || 'تعذر استلام طلب الرحلة الذكية');
-          specialRequest = data.request || null;
+          if (!response.ok || !data.ride) throw new Error(data.error || 'تعذر تجهيز طلب الرحلة الذكية');
+          if (!data.ride.riderToken) throw new Error('تم إنشاء الطلب دون رمز متابعة؛ لا تعِد الإرسال وراجع لوحة V27.');
+          smartRide = { ...data.ride, riderToken: data.ride.riderToken };
+          localStorage.setItem('v27-direct-ride-token', smartRide.riderToken);
+          localStorage.setItem('v27-direct-ride-id', String(smartRide.id));
+          renderSmartRide();
           status.className = 'form-status ok';
-          status.textContent = `${data.message || 'تم استلام الطلب.'} رقم الطلب: ${specialRequest?.requestCode || 'غير محدد'}.`;
-          previewState.textContent = 'تم الاستلام';
-          submitButton.textContent = 'تم استلام طلب الرحلة الذكية';
+          status.textContent = `${data.message || 'تم تجهيز الرحلة الذكية.'} راجع البطاقة ثم أكد الرحلة.`;
+          previewState.textContent = 'بانتظار التأكيد';
+          submitButton.textContent = 'تم تجهيز الرحلة الذكية';
+          smartRideResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          if (window.V27Notifications) {
+            V27Notifications.prime();
+            void V27Notifications.requestPermission();
+          }
+          connectSmartRideStream();
           updatePreview();
         } catch (error) {
           status.className = 'form-status error';
-          status.textContent = error.message || 'تعذر إرسال الطلب؛ حاول مرة أخرى.';
+          status.textContent = error.message || 'تعذر تجهيز الرحلة؛ حاول مرة أخرى.';
           submitButton.disabled = false;
-          submitButton.textContent = 'إعادة إرسال طلب الرحلة الذكية';
+          submitButton.textContent = 'إعادة تجهيز الرحلة الذكية';
         }
       }
 
       Object.entries(fields).forEach(([key, field]) => field.addEventListener('input', () => { if (key === 'origin' || key === 'destination') updateFare(); updatePreview(); }));
       [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { syncCoordinatesFromField(target); confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
       form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { syncQuickTypeButtons(); updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination) void refreshAutomaticFare(); }));
-      quickTypeButtons.forEach(button => button.addEventListener('click', () => setRequestType(button.dataset.quickType)));
+      quickTypeButtons.forEach(button => button.addEventListener('click', () => {
+        setRequestType(button.dataset.quickType);
+        if (secondaryDialog?.contains(button)) secondaryDialog.close?.();
+      }));
+      document.getElementById('open-secondary-booking').addEventListener('click', () => {
+        if (typeof secondaryDialog.showModal === 'function') secondaryDialog.showModal();
+        else secondaryDialog.setAttribute('open', '');
+      });
+      document.getElementById('close-secondary-booking').addEventListener('click', () => secondaryDialog.close?.());
+      confirmSmartRideButton.addEventListener('click', confirmSmartRide);
+      cancelSmartRideButton.addEventListener('click', cancelSmartRide);
       [specialDistance, specialWaiting].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
       fields.time.addEventListener('input', () => { updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination && selectedType() === 'full-car') void refreshAutomaticFare(); });
       resetButton.addEventListener('click', resetState);
@@ -1141,6 +1406,7 @@
       syncQuickTypeButtons();
       updateMapTargetStatuses();
       updatePreview();
+      void restoreSmartRide();
     })();
   </script>
 </body>

@@ -85,7 +85,12 @@ function normalizeRouteEstimate({ distanceKm, durationMin, origin, destination }
 function calculateDirectRideFare(route = {}) {
   const normalized = normalizeRouteEstimate(route);
   if (!normalized) return { status: "invalid", reason: "route" };
-  return calculateSpecialTripFare(normalized);
+  return calculateSpecialTripFare({
+    ...normalized,
+    waitingMin: route.waitingMin,
+    tripTime: route.tripTime,
+    isNight: typeof route.isNight === "boolean" ? route.isNight : undefined,
+  });
 }
 
 function isFreshLocation(record, { nowMs = Date.now(), maxAgeMs = DIRECT_RIDE_LOCATION_MAX_AGE_MS } = {}) {
