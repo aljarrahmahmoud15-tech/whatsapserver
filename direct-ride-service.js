@@ -109,7 +109,7 @@ function ensureDirectRideSchema(db) {
   `);
 }
 
-function createDirectRideService({ db, now = () => new Date().toISOString(), audit = () => {}, dispatchEnabled = false } = {}) {
+function createDirectRideService({ db, now = () => new Date().toISOString(), audit = () => {}, emitEvent = () => {}, dispatchEnabled = false } = {}) {
   if (!db) throw new Error("direct ride service requires a database");
 
   const stamp = () => now();
@@ -127,9 +127,15 @@ function createDirectRideService({ db, now = () => new Date().toISOString(), aud
     const key = eventKey(rideId, eventType, idempotencyKey);
     const existing = db.prepare("SELECT id FROM direct_ride_events WHERE idempotency_key=? LIMIT 1").get(key);
     if (existing) return { duplicate: true, id: existing.id };
+    const createdAt = stamp();
     const result = db.prepare("INSERT INTO direct_ride_events(ride_id,event_type,actor_role,actor_user_id,details_json,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)")
-      .run(rideId, eventType, actorRole, actorUserId, JSON.stringify(details || {}), key, stamp());
+      .run(rideId, eventType, actorRole, actorUserId, JSON.stringify(details || {}), key, createdAt);
     audit(`direct_ride.${eventType}`, "direct_ride", rideId, { ...details, actorRole, actorUserId, eventId: result.lastInsertRowid, mutation: "ride_state_only", walletChanged: false });
+    try {
+      emitEvent({ rideId, eventType, actorRole, actorUserId, details: details || {}, createdAt, ride: response(getRide(rideId)) });
+    } catch {
+      // Live notification delivery is deliberately best-effort; the event is already durable.
+    }
     return { duplicate: false, id: result.lastInsertRowid };
   }
 

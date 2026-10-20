@@ -23,6 +23,7 @@ const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { calculateFare, farePolicyResponse } = require("./pricing");
 const { calculateSpecialTripFare, specialTripTariffResponse } = require("./special-trip-pricing");
 const { ensureDirectRideSchema, createDirectRideService } = require("./direct-ride-service");
+const { createDirectRideNotificationHub } = require("./direct-ride-notifications");
 const { haversineDistanceKm, normalizeCoordinatePair, normalizeRouteEstimate } = require("./direct-ride-policy");
 const { DEFAULT_SPECIAL_BOOKING_POLICY, normalizeSpecialBookingPolicy, specialBookingPolicyResponse, isSpecialBookingKind } = require("./special-booking-policy");
 const { DEFAULT_CUSTOMER_BOOKING_POLICY, normalizeCustomerBookingPolicy, customerBookingPolicyResponse } = require("./customer-booking-policy");
@@ -596,6 +597,14 @@ async function directRideGeocode(query) {
     clearTimeout(timeout);
   }
 }
+function prepareDirectRideEventStream(res) {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+}
 app.get("/api/public/pricing", (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   res.json({ success: true, policy: farePolicyResponse(), specialTripTariff: specialTripTariffResponse() });
@@ -664,6 +673,14 @@ app.get("/api/public/direct-rides/:id", publicSpecialBookingLimiter, (req, res) 
   if (!ride) return res.status(404).json({ success: false, error: "الرحلة غير موجودة أو رابط المتابعة غير صالح" });
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, ride });
+});
+app.get("/api/public/direct-rides/:id/events", (req, res) => {
+  const id = Number(req.params.id);
+  const token = String(req.query?.token || "").trim();
+  const ride = directRideService.getPublicRide(id, token);
+  if (!ride) return res.status(404).json({ success: false, error: "الرحلة غير موجودة أو رابط المتابعة غير صالح" });
+  prepareDirectRideEventStream(res);
+  directRideNotificationHub.subscribeRide(id, res, ride);
 });
 app.post("/api/public/direct-rides/:id/confirm", publicSpecialBookingLimiter, (req, res) => {
   const id = Number(req.params.id);
@@ -1476,11 +1493,13 @@ db.exec(`
   WHERE status IN ('accepted','completed') AND EXISTS(SELECT 1 FROM wallet_ledger WHERE wallet_ledger.order_id=orders.id);
 `);
 const now = () => new Date().toISOString();
+const directRideNotificationHub = createDirectRideNotificationHub();
 const directRideService = createDirectRideService({
   db,
   now,
   dispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH,
   audit: (action, entityType, entityId, details, actorUserId = null) => audit(action, entityType, entityId, details, actorUserId),
+  emitEvent: (payload) => directRideNotificationHub.publish(payload),
 });
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
 const phoneWithCountry = (value = "") => {
@@ -9676,6 +9695,10 @@ app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
   res.json({ success: true });
 });
+app.get("/api/captain/direct-rides/events", requireCaptain, (req, res) => {
+  prepareDirectRideEventStream(res);
+  directRideNotificationHub.subscribeCaptain(req.captainSession.userId, res);
+});
 app.get("/api/captain/direct-rides", requireCaptain, captainReadLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, liveDispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH, rides: directRideService.listCaptainRides(req.captainSession.userId) });
@@ -10650,6 +10673,10 @@ function buildV27BootstrapPayload() {
 app.get("/api/admin/direct-rides", requireOwnerAdmin, adminReadLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, liveDispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH, rides: directRideService.listAdmin({ limit: req.query?.limit }) });
+});
+app.get("/api/admin/direct-rides/events", requireOwnerAdmin, (req, res) => {
+  prepareDirectRideEventStream(res);
+  directRideNotificationHub.subscribeAdmin(res);
 });
 app.post("/api/admin/direct-rides/:id/dispatch", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
   const id = Number(req.params.id);
