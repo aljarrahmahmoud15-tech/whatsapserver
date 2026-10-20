@@ -12306,7 +12306,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     let order = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
     // Owner-authorized recovery: reuse the identity already captured on the order row
     // so a confirmed booking is pinned instead of being parked as unlinked.
-    if (!producer || !producerPhone) {
+    if (!producer || !producerPhone || !captainPhone) {
       const rowProducer = order && order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
       if (!producer && rowProducer && rowProducer.active === 1 && rowProducer.account_status === "active") producer = rowProducer;
       if (!producerPhone && order && order.producer_phone_snapshot) producerPhone = order.producer_phone_snapshot;
