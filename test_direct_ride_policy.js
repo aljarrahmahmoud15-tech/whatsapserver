@@ -17,13 +17,13 @@ test("normalizes valid coordinate pairs and rejects invalid coordinates", () => 
   assert.equal(normalizeCoordinatePair({ lat: 31, lng: "x" }), null);
 });
 
-test("calculates a route estimate and applies the distance-only smart tariff", () => {
+test("calculates a route estimate and applies the official meter tariff", () => {
   const quote = calculateDirectRideFare({ distanceKm: 12, durationMin: 20 });
   assert.equal(quote.status, "quoted");
-  assert.equal(quote.fareCents, 299);
-  assert.equal(calculateDirectRideFare({ distanceKm: 12, durationMin: 1000 }).fareCents, 299);
+  assert.equal(quote.fareCents, 450);
+  assert.equal(calculateDirectRideFare({ distanceKm: 12, durationMin: 1000 }).fareCents, 450);
   const minimum = calculateDirectRideFare({ distanceKm: 0, durationMin: 0 });
-  assert.equal(minimum.fareCents, 161);
+  assert.equal(minimum.fareCents, 100);
 });
 
 test("can estimate a route from two coordinates when duration is missing", () => {

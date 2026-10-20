@@ -41,7 +41,7 @@ const PUBLISH_MODE_LABELS = Object.freeze({
 
 const PRICE_MODE_LABELS = Object.freeze({
   manual: "تعديل مالك استثنائي",
-  tariff: "حسب الكيلومتر فقط · التعرفة الذكية",
+  tariff: "التعرفة الرسمية · فتحة + كيلومتر + انتظار",
 });
 
 function booleanValue(value, fallback) {

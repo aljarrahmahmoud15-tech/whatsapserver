@@ -507,10 +507,10 @@
               <label>الأجرة المعتمدة</label>
               <div class="fare-box" role="status" aria-live="polite"><div><strong id="fare-display">5 د.أ</strong><small id="fare-note">تظهر الأجرة حسب نوع الرحلة والمسافة المعتمدة.</small></div></div>
               <div class="special-fare-panel" id="special-fare-panel" hidden>
-                <div class="special-fare-heading"><strong>سعر طلب الرحلة الذكية</strong><span>الحساب بالكيلومتر فقط</span></div>
-                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="تُحتسب من المسار"></label></div>
+                <div class="special-fare-heading"><strong>سعر طلب الرحلة الذكية</strong><span>نهاري / ليلي + انتظار</span></div>
+                <div class="special-fare-fields"><label for="special-distance">المسافة المحتسبة <span>كم</span><input id="special-distance" type="number" inputmode="decimal" min="0" step="0.1" placeholder="تُحتسب من المسار"></label><label for="special-waiting">الانتظار المتوقع <span>دقيقة</span><input id="special-waiting" type="number" inputmode="decimal" min="0" step="1" value="0" placeholder="0"></label></div>
                 <div class="special-fare-result"><span id="special-fare-breakdown">ثبّت الموقعين لإظهار المسافة والتقدير.</span><strong id="special-fare-total">—</strong></div>
-                <small class="field-note">يُعاد احتساب الأجرة في الخادم من المسافة فقط قبل اعتماد الرحلة. رسوم الإلغاء المنفصلة: 1.14 د.أ.</small>
+                <small class="field-note">النهاري 0.468 د.أ فتح العداد، والليلي 0.518 د.أ بين 22:00 و06:00، والكيلومتر 0.336 د.أ، والانتظار 0.0576 د.أ/دقيقة. التقريب لأقرب 0.05 د.أ. رسم الإلغاء: 0.50 د.أ.</small>
               </div>
               <input id="optional-price" name="price" type="hidden" value="">
             </div>
@@ -586,6 +586,7 @@
       const fareNote = document.getElementById('fare-note');
       const specialFarePanel = document.getElementById('special-fare-panel');
       const specialDistance = document.getElementById('special-distance');
+      const specialWaiting = document.getElementById('special-waiting');
       const specialFareBreakdown = document.getElementById('special-fare-breakdown');
       const specialFareTotal = document.getElementById('special-fare-total');
       const submitButton = form.querySelector('button[type="submit"]');
@@ -596,7 +597,7 @@
       let locationCoordinates = { origin: null, destination: null };
       let automaticRouteQuote = null;
       const confirmedMapTargets = { origin: false, destination: false };
-      const specialTariff = { thresholdKm: 25, baseFareUnderThreshold: 0.8455, perKmUnderThreshold: 0.1786, baseFareOverThreshold: 0.9025, perKmOverThreshold: 0.19, minimumFare: 1.6074, cancellationFee: 1.14 };
+      const specialTariff = { dayOpeningFare: 0.468, nightOpeningFare: 0.518, perKm: 0.336, waitingPerMinute: 0.0576, minimumFare: 1, cancellationFee: 0.5, roundingIncrement: 0.05, nightStartHour: 22, nightEndHour: 6 };
 
       function valueOf(field) { return field.value.trim(); }
       function parseCoordinatePair(value) {
@@ -651,33 +652,41 @@
         return `${String(displayHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
       }
       function routeMentionsAirport() { return /مطار|المطار|airport/i.test(`${valueOf(fields.origin)} ${valueOf(fields.destination)}`); }
-      function calculateSpecialFare(distanceKm) {
+      function isNightTime(timeValue) {
+        const match = String(timeValue || '').match(/^(\d{1,2}):([0-5]\d)$/);
+        if (!match) return false;
+        const hour = Number(match[1]);
+        return hour >= specialTariff.nightStartHour || hour < specialTariff.nightEndHour;
+      }
+      function roundFare(value) { return Number((Math.round((Number(value) + Number.EPSILON) / specialTariff.roundingIncrement) * specialTariff.roundingIncrement).toFixed(2)); }
+      function calculateSpecialFare(distanceKm, waitingMin = specialWaiting.value, tripTime = valueOf(fields.time)) {
         const distance = Number(distanceKm);
-        if (!Number.isFinite(distance) || distance < 0) return null;
-        const over = distance >= specialTariff.thresholdKm;
-        const opening = over ? specialTariff.baseFareOverThreshold : specialTariff.baseFareUnderThreshold;
-        const perKm = over ? specialTariff.perKmOverThreshold : specialTariff.perKmUnderThreshold;
-        const distanceCharge = distance * perKm;
-        const fare = Math.max(opening + distanceCharge, specialTariff.minimumFare);
-        return { distance, opening, distanceCharge, timeCharge: 0, fare, over };
+        const waiting = waitingMin === '' || waitingMin === null || waitingMin === undefined ? 0 : Number(waitingMin);
+        if (!Number.isFinite(distance) || distance < 0 || !Number.isFinite(waiting) || waiting < 0) return null;
+        const night = isNightTime(tripTime);
+        const opening = night ? specialTariff.nightOpeningFare : specialTariff.dayOpeningFare;
+        const waitingCharge = waiting * specialTariff.waitingPerMinute;
+        const rawFare = opening + distance * specialTariff.perKm + waitingCharge;
+        const fare = Math.max(roundFare(rawFare), specialTariff.minimumFare);
+        return { distance, waiting, opening, distanceCharge: distance * specialTariff.perKm, waitingCharge, fare, night };
       }
       function updateSpecialFare() {
         const isSpecial = selectedType() === 'full-car';
         specialFarePanel.hidden = !isSpecial;
         if (!isSpecial) return;
-        const quote = calculateSpecialFare(specialDistance.value);
+        const quote = calculateSpecialFare(specialDistance.value, specialWaiting.value, valueOf(fields.time));
         if (!quote) {
           fields.price.value = '';
           fareDisplay.textContent = 'بانتظار المسافة';
-          fareNote.textContent = 'تُحتسب الرحلة الذكية من المسافة بالكيلومتر فقط.';
+          fareNote.textContent = 'تُحتسب من فتحة العداد والمسافة والانتظار، مع تعرفة ليلية بعد 22:00.';
           specialFareBreakdown.textContent = 'ثبّت الموقعين لإظهار المسافة والسعر.';
           specialFareTotal.textContent = '—';
           return;
         }
         fields.price.value = quote.fare.toFixed(2);
         fareDisplay.textContent = `${quote.fare.toFixed(2)} د.أ تقديريًا`;
-        fareNote.textContent = quote.over ? 'تعرفة ما بعد 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.' : 'تعرفة أقل من 25 كم مطبقة؛ القيمة النهائية تعتمد اعتماد المالك.';
-        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(4)} + مسافة ${quote.distanceCharge.toFixed(4)} · حساب بالكيلومتر فقط`;
+        fareNote.textContent = `${quote.night ? 'تعرفة ليلية' : 'تعرفة نهارية'} · التقريب لأقرب 5 قروش؛ القيمة النهائية تعتمد اعتماد المالك.`;
+        specialFareBreakdown.textContent = `فتحة ${quote.opening.toFixed(3)} + مسافة ${quote.distanceCharge.toFixed(3)} + انتظار ${quote.waitingCharge.toFixed(3)} · ${quote.night ? 'ليلي' : 'نهاري'}`;
         specialFareTotal.textContent = `${quote.fare.toFixed(2)} د.أ`;
       }
       function updateFare() {
@@ -697,7 +706,7 @@
         } else {
           fields.price.value = '';
           fareDisplay.textContent = 'بانتظار المسافة';
-          fareNote.textContent = 'طلب رحلة ذكية؛ الحساب بالكيلومتر فقط.';
+          fareNote.textContent = 'طلب رحلة ذكية؛ فتح العداد + الكيلومتر + الانتظار عند القياس.';
         }
         updateSpecialFare();
         applyAutomaticFare();
@@ -718,7 +727,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ origin: locationCoordinates.origin, destination: locationCoordinates.destination }),
+            body: JSON.stringify({ origin: locationCoordinates.origin, destination: locationCoordinates.destination, tripTime: valueOf(fields.time), waitingMin: valueOf(specialWaiting) || 0 }),
           });
           const routeData = await routeResponse.json().catch(() => ({}));
           if (!routeResponse.ok) throw new Error(routeData.error || 'تعذر احتساب المسار');
@@ -768,6 +777,7 @@
         confirmedMapTargets.destination = false;
         detailsCard.hidden = true;
         specialDistance.value = '';
+        specialWaiting.value = '0';
         mapSearch.value = '';
         activateMapTarget('origin');
         updateFare();
@@ -972,7 +982,7 @@
           setMapStatus('أكمل تأكيد موقعي الإقلاع والوجهة أولًا.', 'error');
           return;
         }
-        if (!calculateSpecialFare(specialDistance.value)) {
+        if (!calculateSpecialFare(specialDistance.value, specialWaiting.value, valueOf(fields.time))) {
           status.className = 'form-status error';
           status.textContent = 'ثبّت الموقعين لاحتساب مسافة طلب الرحلة الذكية قبل الإرسال.';
           specialDistance.focus();
@@ -997,6 +1007,7 @@
               departureTime: valueOf(fields.time),
               requestType: selectedType(),
               distanceKm: valueOf(specialDistance),
+              waitingMin: valueOf(specialWaiting) || 0,
               originConfirmed: confirmedMapTargets.origin,
               destinationConfirmed: confirmedMapTargets.destination,
             }),
@@ -1021,7 +1032,8 @@
       [['origin', fields.origin], ['destination', fields.destination]].forEach(([target, field]) => field.addEventListener('input', () => { syncCoordinatesFromField(target); confirmedMapTargets[target] = false; updateFare(); updateMapTargetStatuses(); }));
       form.querySelectorAll('input[name="requestType"]').forEach(input => input.addEventListener('change', () => { syncQuickTypeButtons(); updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination) void refreshAutomaticFare(); }));
       quickTypeButtons.forEach(button => button.addEventListener('click', () => setRequestType(button.dataset.quickType)));
-      [specialDistance].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
+      [specialDistance, specialWaiting].forEach(field => field.addEventListener('input', () => { updateSpecialFare(); updatePreview(); }));
+      fields.time.addEventListener('input', () => { updateFare(); updatePreview(); if (confirmedMapTargets.origin && confirmedMapTargets.destination && selectedType() === 'full-car') void refreshAutomaticFare(); });
       resetButton.addEventListener('click', resetState);
       continueDetailsButton.addEventListener('click', () => {
         if (continueDetailsButton.disabled) return;

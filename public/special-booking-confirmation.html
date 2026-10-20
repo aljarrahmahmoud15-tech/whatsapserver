@@ -16,7 +16,7 @@
     <div class="brand"><span class="mark"><img src="/aljarah-logo-mark-clean.webp" alt="شعار وصلني الآن"></span><span><strong>وصلني الآن · V27</strong><span>تأكيد طلب الرحلة الذكية</span></span></div>
     <span class="eyebrow">CUSTOMER CONFIRMATION</span>
     <h1>راجع السعر وأكد رحلتك.</h1>
-    <p>تم تجهيز طلب الرحلة الذكية من فريق وصلني الآن. السعر محسوب بالكيلومتر فقط. عند التأكيد، ينتقل الطلب إلى المالك للنشر في قروب التشغيل حسب المسار المعتمد.</p>
+    <p>تم تجهيز طلب الرحلة الذكية من فريق وصلني الآن وفق العداد الرسمي: فتحة + كيلومتر + انتظار، مع زيادة ليلية على فتحة العداد. عند التأكيد، ينتقل الطلب إلى المالك للنشر في قروب التشغيل حسب المسار المعتمد.</p>
     <div id="request-code" class="request-code">طلب رحلة ذكية</div>
     <div id="details" class="details hidden"></div>
     <div id="message" class="notice">اضغط الزر لتأكيد السعر والمسار. لا يتم خصم أي مبلغ من هذه الصفحة.</div>
@@ -53,7 +53,7 @@
       message.className = 'notice ok';
       message.textContent = data.message || 'تم تأكيد طلبك بنجاح.';
       details.classList.remove('hidden');
-      details.innerHTML = `<div class="detail"><span>المسار</span><strong>${esc(request.origin || '—')} ← ${esc(request.destination || '—')}</strong></div><div class="detail"><span>وقت الإقلاع</span><strong>${esc(request.tripTime || '—')}</strong></div><div class="detail"><span>السعر</span><strong>${esc(request.price || '—')} JOD</strong></div>`;
+      details.innerHTML = `<div class="detail"><span>المسار</span><strong>${esc(request.origin || '—')} ← ${esc(request.destination || '—')}</strong></div><div class="detail"><span>وقت الإقلاع</span><strong>${esc(request.tripTime || '—')}</strong></div><div class="detail"><span>المسافة</span><strong>${esc(request.distanceKm ?? '—')} كم</strong></div><div class="detail"><span>الانتظار</span><strong>${esc(request.waitingMin ?? 0)} دقيقة</strong></div><div class="detail"><span>السعر</span><strong>${esc(request.price || '—')} JOD</strong></div>`;
       button.textContent = 'تم تأكيد الرحلة';
     } catch (error) {
       message.className = 'notice error';

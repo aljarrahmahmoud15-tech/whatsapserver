@@ -626,8 +626,8 @@ app.post("/api/public/fare-quote", (req, res) => {
   res.json({ success: true, ...result });
 });
 app.post("/api/public/special-trip-fare", publicSpecialBookingLimiter, (req, res) => {
-  const result = calculateSpecialTripFare({ distanceKm: req.body?.distanceKm });
-  if (result.status === "invalid") return res.status(400).json({ success: false, error: "أدخل مسافة صحيحة" });
+  const result = calculateSpecialTripFare({ distanceKm: req.body?.distanceKm, waitingMin: req.body?.waitingMin, tripTime: req.body?.tripTime || req.body?.departureTime, isNight: typeof req.body?.isNight === "boolean" ? req.body.isNight : undefined });
+  if (result.status === "invalid") return res.status(400).json({ success: false, error: result.reason === "waiting" ? "أدخل دقائق انتظار صحيحة" : "أدخل مسافة صحيحة" });
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, ...result });
 });
@@ -636,7 +636,7 @@ app.post("/api/public/direct-rides/quote", publicSpecialBookingLimiter, async (r
   const destination = { lat: req.body?.destinationLat ?? req.body?.destination?.lat, lng: req.body?.destinationLng ?? req.body?.destination?.lng };
   const route = await directRideRouteEstimate({ origin, destination });
   if (!route.ok) return res.status(400).json({ success: false, error: route.error });
-  const quote = calculateSpecialTripFare(route);
+  const quote = calculateSpecialTripFare({ ...route, waitingMin: req.body?.waitingMin, tripTime: req.body?.tripTime, isNight: typeof req.body?.isNight === "boolean" ? req.body.isNight : undefined });
   if (quote.status !== "quoted") return res.status(400).json({ success: false, error: "تعذر احتساب سعر الرحلة" });
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, route: { ...route }, quote });
@@ -729,8 +729,8 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = specialBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,duration_min,price_cents,price_source,notes,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,duration_min,waiting_min,price_cents,price_source,notes,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, input.waitingMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
   if (policy.ownerNotification) {
@@ -1141,6 +1141,7 @@ CREATE TABLE IF NOT EXISTS special_booking_requests (
   request_type TEXT NOT NULL DEFAULT 'full_car',
   distance_km REAL,
   duration_min REAL,
+  waiting_min REAL NOT NULL DEFAULT 0,
   price_cents INTEGER,
   price_source TEXT,
   notes TEXT,
@@ -1431,6 +1432,7 @@ if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE o
 const existingSpecialBookingColumns = db.prepare("PRAGMA table_info(special_booking_requests)").all().map((column) => column.name);
 if (!existingSpecialBookingColumns.includes("distance_km")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN distance_km REAL");
 if (!existingSpecialBookingColumns.includes("duration_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN duration_min REAL");
+if (!existingSpecialBookingColumns.includes("waiting_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN waiting_min REAL NOT NULL DEFAULT 0");
 if (!existingSpecialBookingColumns.includes("origin_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN origin_coordinates_json TEXT");
 if (!existingSpecialBookingColumns.includes("destination_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN destination_coordinates_json TEXT");
 const existingCustomerBookingColumns = db.prepare("PRAGMA table_info(customer_booking_requests)").all().map((column) => column.name);
@@ -3025,6 +3027,7 @@ function specialBookingRequestResponse(row, req, { includePrivate = false, confi
     requestType: row.request_type,
     distanceKm: row.distance_km === null || row.distance_km === undefined ? null : Number(row.distance_km),
     durationMin: row.duration_min === null || row.duration_min === undefined ? null : Number(row.duration_min),
+    waitingMin: row.waiting_min === null || row.waiting_min === undefined ? 0 : Number(row.waiting_min),
     price: row.price_cents === null || row.price_cents === undefined ? null : money(row.price_cents),
     priceCents: row.price_cents === null || row.price_cents === undefined ? null : Number(row.price_cents),
     priceSource: row.price_source || null,
@@ -3043,7 +3046,7 @@ function specialBookingRequestResponse(row, req, { includePrivate = false, confi
     confirmationUrl: specialBookingConfirmationUrl(req, row, confirmationToken),
     confirmationLinkAvailable: Boolean(row.customer_confirmation_token_hash),
   };
-  if (response.distanceKm !== null && response.durationMin !== null) response.meterFare = calculateSpecialTripFare({ distanceKm: response.distanceKm, durationMin: response.durationMin });
+  if (response.distanceKm !== null) response.meterFare = calculateSpecialTripFare({ distanceKm: response.distanceKm, waitingMin: response.waitingMin, durationMin: response.durationMin, tripTime: response.tripTime });
   if (includePrivate) response.customerConfirmationTokenLast4 = row.customer_confirmation_token_last4 || null;
   return response;
 }
@@ -3060,8 +3063,10 @@ function publicSpecialBookingInput(body = {}) {
   const destinationConfirmed = body.destinationConfirmed === true;
   const rawDistance = body.distanceKm;
   const rawDuration = body.durationMin;
+  const rawWaiting = body.waitingMin;
   const distanceKm = rawDistance === undefined || rawDistance === null || String(rawDistance).trim() === "" ? null : Number(String(rawDistance).replace(",", "."));
   const durationMin = rawDuration === undefined || rawDuration === null || String(rawDuration).trim() === "" ? null : Number(String(rawDuration).replace(",", "."));
+  const waitingMin = rawWaiting === undefined || rawWaiting === null || String(rawWaiting).trim() === "" ? 0 : Number(String(rawWaiting).replace(",", "."));
   const notes = String(body.notes || "").trim().slice(0, 500) || null;
   if (customerName.length < 2 || customerName.length > 80) return { error: "اسم العميل مطلوب" };
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { error: "رقم هاتف أردني صالح مطلوب" };
@@ -3072,14 +3077,16 @@ function publicSpecialBookingInput(body = {}) {
   if (!originConfirmed || !destinationConfirmed) return { error: "أكد موقع الإقلاع والوجهة على الخارطة أولًا" };
   if (distanceKm !== null && (!Number.isFinite(distanceKm) || distanceKm < 0 || distanceKm > 10000)) return { error: "المسافة غير صالحة" };
   if (durationMin !== null && (!Number.isFinite(durationMin) || durationMin < 0 || durationMin > 100000)) return { error: "المدة الزمنية غير صالحة" };
-  const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm });
+  if (!Number.isFinite(waitingMin) || waitingMin < 0 || waitingMin > 100000) return { error: "دقائق الانتظار غير صالحة" };
+  const quote = distanceKm === null ? { status: "missing" } : calculateSpecialTripFare({ distanceKm, waitingMin, tripTime });
   if (quote.status === "invalid") return { error: "المسافة غير صالحة" };
-  return { customerName, phone, origin, destination, originCoordinatesJson: locationCoordinatesJson(originCoordinates), destinationCoordinatesJson: locationCoordinatesJson(destinationCoordinates), tripTime, requestType: "full_car", distanceKm, durationMin, quote, notes };
+  return { customerName, phone, origin, destination, originCoordinatesJson: locationCoordinatesJson(originCoordinates), destinationCoordinatesJson: locationCoordinatesJson(destinationCoordinates), tripTime, requestType: "full_car", distanceKm, durationMin, waitingMin, quote, notes };
 }
 function specialBookingOperationalMessage(row) {
   return [
     `السعر ${money(row.price_cents)}`,
     row.distance_km !== null ? `المسافة ${row.distance_km} كم${row.duration_min !== null ? ` · المدة ${row.duration_min} دقيقة` : ""}` : "",
+    Number(row.waiting_min || 0) > 0 ? `الانتظار ${row.waiting_min} دقيقة` : "",
     `من ${row.origin} إلى ${row.destination}`,
     `وقت الإقلاع: ${row.trip_time}`,
     `طلب رحلة ذكية #${row.request_code}`,
