@@ -3,7 +3,9 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const page = fs.readFileSync('./public/admin-v26.html', 'utf8');
-assert.match(page, /<title>وصلني الآن · عمليات V27<\/title>/);
+assert.match(page, /<title>وصلني الآن · عمليات V26<\/title>/);
+assert.doesNotMatch(page, /<title>وصلني الآن · عمليات V27<\/title>/);
+assert.doesNotMatch(page, /WASLNI NOW · V27/);
 assert.match(page, /id="metricCaptains"/);
 assert.match(page, /id="metricOrders"/);
 assert.match(page, /id="groupMemberCount"/);
@@ -56,7 +58,7 @@ assert.doesNotMatch(page, /161/);
 assert.doesNotMatch(page, /243/);
 
 const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-assert.ok(scripts.length > 0, 'V27 page must contain a script');
-new vm.Script(scripts.at(-1));
+assert.ok(scripts.length > 0, 'V26 page must contain a script');
+new vm.Script(scripts.at(-1), { filename: 'public/admin-v26.html#script' });
 
-console.log('admin V27 live read-only UI guard: PASS');
+console.log('admin V26 live read-only UI guard: PASS');
