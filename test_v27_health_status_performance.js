@@ -18,7 +18,15 @@ const statusRoute = source.slice(statusStart, systemHealthStart);
 test('health remains a lightweight liveness route with server timing', () => {
   assert.match(healthRoute, /Cache-Control\", \"no-store\"/);
   assert.match(healthRoute, /Server-Timing/);
+  assert.match(healthRoute, /service: \"whatsapserver\"/);
+  assert.match(healthRoute, /ready: Boolean\(isReady\)/);
+  assert.doesNotMatch(healthRoute, /whatsapp:|runtimeHealth\(\)|phone|groupId|clientId|storage|authPath|qrAvailable/);
   assert.doesNotMatch(healthRoute, /db\.prepare\(|readRedisJson\(|storageInventory\(|fs\.(readdir|stat|access)Sync/);
+});
+
+test('full health details remain behind the authenticated admin route', () => {
+  assert.match(source, /app\.get\("\/api\/admin\/system\/health", requireAdmin/);
+  assert.match(source, /res\.json\(\{ success: true, health: runtimeHealth\(\) \}\)/);
 });
 
 test('status serves a snapshot and does not run SQLite work in the request handler', () => {

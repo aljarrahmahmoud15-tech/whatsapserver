@@ -542,7 +542,7 @@ app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
-  return res.status(200).json({ ok: true, service: "whatsapserver", whatsapp: whatsappState, ready: Boolean(isReady) });
+  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady) });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
