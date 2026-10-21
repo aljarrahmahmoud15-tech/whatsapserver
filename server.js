@@ -9712,7 +9712,7 @@ app.get("/api/admin/diagnostics/last-group-event", requireAdmin, (req, res) => r
   official: { groupId: lastOfficialGroupEventGroupId, telemetry: lastOfficialGroupMessageTelemetry },
   ignored: { groupId: lastIgnoredGroupEventGroupId, telemetry: lastIgnoredGroupMessageTelemetry },
 }));
-app.get("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-summary", 8000), async (req, res) => {
+const groupSummaryReadHandler = async (req, res) => {
   if (openCleanReadCache(req, res, "/api/admin/group/summary")) return;
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) {
@@ -9759,6 +9759,13 @@ app.get("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-s
     note: "بيانات مخزّنة من قاعدة البيانات (العدد = الكباتن النشطون المسجلون)",
     generatedAt: now(),
   });
+};
+app.get("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-summary", 8000), groupSummaryReadHandler);
+// The panel refreshes the official-group summary with POST and a JSON body; without this alias
+// the button answered 404 and the summary never refreshed.
+app.post("/api/admin/group/summary", requireAdmin, adminReadSingleFlight("group-summary", 8000), (req, res) => {
+  req.query = Object.assign({}, req.query, req.body || {});
+  return groupSummaryReadHandler(req, res);
 });
 // V26 group linking: the operator needs exactly three identity fields — the group name,
 // the official group id, and the group's own invite code — with no extra tokens or codes.
@@ -14215,7 +14222,7 @@ app.post("/api/admin/orders/remove-test", requireAdmin, async (req, res) => {
   audit("test_order.removed", "order", "TEST-3001", { deleted: result.changes, backupName });
   res.json({ success: true, deleted: result.changes, backupName });
 });
-app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
+const confirmedOrdersReadHandler = (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   const groupId = String(req.query.groupId || "").trim();
@@ -14243,7 +14250,14 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
     })),
   });
+app.get("/api/admin/orders/confirmed", requireAdmin, confirmedOrdersReadHandler);
+// The panel's confirmed/recovery tab and the group preview button POST their filters
+// (groupId, hours, limit); without this alias the tab answered 404 and stayed empty.
+app.post("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
+  req.query = Object.assign({}, req.query, req.body || {});
+  return confirmedOrdersReadHandler(req, res);
 });
+};
 app.get("/api/admin/company-wallet", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, wallet: companyWalletSummary() });
@@ -14364,6 +14378,32 @@ app.get("/api/admin/wallets", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u ORDER BY u.role,u.id`).all();
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
+});
+let lastPairingCodeRequestedAt = 0;
+app.post("/api/admin/whatsapp/pairing-code", requireBotWalletOwner, async (req, res) => {
+  if (!client) return res.status(503).json({ error: "عميل واتساب غير مهيأ على هذا الخادم", mutation: "none" });
+  if (isReady) return res.status(409).json({ error: "الجلسة متصلة بالفعل؛ لا حاجة لرمز اقتران", mutation: "none" });
+  const phone = String(req.body?.phone || BOT_PHONE_INTL || BOT_PHONE || "").replace(/[^0-9]/g, "");
+  if (phone.length < 10 || phone.length > 15) return res.status(400).json({ error: "رقم البوت غير صالح لرمز الاقتران", mutation: "none" });
+  const elapsed = Date.now() - lastPairingCodeRequestedAt;
+  if (elapsed < 120000) {
+    return res.status(429).json({ error: "رمز الاقتران يُطلب كل دقيقتين على الأكثر", retryAfterSeconds: Math.ceil((120000 - elapsed) / 1000), mutation: "none" });
+  }
+  try {
+    const code = await client.requestPairingCode(phone, true, 180000);
+    lastPairingCodeRequestedAt = Date.now();
+    audit("whatsapp.pairing_code.requested", "session", null, { phoneMasked: `${phone.slice(0, 4)}***${phone.slice(-3)}`, actor: "owner", mutation: "none" });
+    res.json({
+      success: true,
+      code: String(code),
+      phone,
+      expiresInSeconds: 180,
+      steps: "واتساب على الهاتف ← الإعدادات ← الأجهزة المرتبطة ← ربط جهاز ← الربط برقم الهاتف بدلًا من ذلك ← أدخل الرمز",
+      mutation: "none",
+    });
+  } catch (error) {
+    res.status(500).json({ error: `تعذر توليد رمز الاقتران: ${String(error && error.message || error)}`, mutation: "none" });
+  }
 });
 app.get("/api/admin/subscriptions/schedule", requireAdmin, (req, res) => {
   res.json({
