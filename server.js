@@ -148,7 +148,12 @@ const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number.isFinite(configuredUnquote
 const CAPTAIN_SUBSCRIPTION_CENTS = 50; // 0.50 JOD — owner policy for clean
 // Owner policy: recurring captain charges are paused until further notice.
 // Only an applied order settlement may debit a captain wallet.
-const CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false;
+const CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false; // owner policy default: deductions stopped until explicitly resumed
+function subscriptionChargesEnabled() {
+  const raw = getSetting("captain_subscription_charges_enabled", null);
+  if (raw === null || raw === undefined || raw === "") return CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED;
+  return String(raw) === "true" || String(raw) === "1";
+}
 const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
 const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
 const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00.000Z";
@@ -3842,7 +3847,7 @@ function captainDisplayName(name) {
   return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
 }
 function applyCaptainSubscriptionCharges(stamp = now()) {
-  if (!CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
+  if (!subscriptionChargesEnabled()) return { status: "disabled_by_owner", applied: [], skipped: [] };
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [] };
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -3889,14 +3894,19 @@ function applyCaptainSubscriptionCharges(stamp = now()) {
 }
 
 // ===== Clean weekly subscription: every Thursday 22:00 (Asia/Amman), 0.50 JOD =====
+let weeklySubscriptionScheduler = null;
 try {
-  setSetting("captain_weekly_schedule_v1", JSON.stringify({ enabled: true, weekday: 4, hour: 22, minute: 0, timeZone: "Asia/Amman", amountCents: CAPTAIN_SUBSCRIPTION_CENTS }));
-  const weeklySubscriptionScheduler = createWeeklySubscriptionScheduler({
+  // Owner policy: captain deductions are stopped until the owner resumes them explicitly, so the
+  // default schedule is disabled and a stored value is never overwritten on restart.
+  if (getSetting("captain_weekly_schedule_v1", null) === null) {
+    setSetting("captain_weekly_schedule_v1", JSON.stringify({ enabled: false, weekday: 4, hour: 22, minute: 0, timeZone: "Asia/Amman", amountCents: CAPTAIN_SUBSCRIPTION_CENTS }));
+  }
+  weeklySubscriptionScheduler = createWeeklySubscriptionScheduler({
     db, getSetting, setSetting, audit,
     execute: (stamp) => applyCaptainSubscriptionCharges(stamp),
   });
   if (weeklySubscriptionScheduler && typeof weeklySubscriptionScheduler.start === "function") weeklySubscriptionScheduler.start();
-  console.log("[Clean] weekly subscription scheduler armed: Thursday 22:00 Asia/Amman,", CAPTAIN_SUBSCRIPTION_CENTS, "cents");
+  console.log("[Clean] weekly subscription scheduler ready:", JSON.stringify(weeklySubscriptionScheduler.status()), "chargesEnabled=", subscriptionChargesEnabled());
 } catch (error) {
   console.warn("[Clean] weekly subscription scheduler skipped:", String(error && error.message || error));
 }
@@ -3936,7 +3946,7 @@ function applyCaptainDailyCharges(stamp = now()) {
   return { status: "completed", chargeDate, applied, eligibleCount: captains.length };
 }
 function startCaptainSubscriptionScheduler() {
-  if (CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) {
+  if (subscriptionChargesEnabled()) {
     applyCaptainSubscriptionCharges();
     setInterval(() => applyCaptainSubscriptionCharges(), CAPTAIN_SUBSCRIPTION_INTERVAL_MS).unref();
   }
@@ -14354,6 +14364,34 @@ app.get("/api/admin/wallets", requireAdmin, (req, res) => {
     COALESCE((SELECT SUM(s.company_cents) FROM order_settlements s JOIN orders e ON e.id=s.order_id WHERE s.captain_user_id=u.id AND s.status='applied' AND e.status IN ('accepted','completed')),0) AS company_share_cents
     FROM users u ORDER BY u.role,u.id`).all();
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
+});
+app.get("/api/admin/subscriptions/schedule", requireAdmin, (req, res) => {
+  res.json({
+    success: true,
+    schedule: weeklySubscriptionScheduler ? weeklySubscriptionScheduler.status() : null,
+    chargesEnabled: subscriptionChargesEnabled(),
+    policy: "توقف كل الخصومات عن الكباتن حتى إشعار آخر؛ لا يُفعّل الخصم إلا بعبارة تأكيد صريحة",
+  });
+});
+app.post("/api/admin/subscriptions/schedule", requireBotWalletOwner, (req, res) => {
+  if (!weeklySubscriptionScheduler) return res.status(503).json({ error: "مجدول الاشتراك غير مهيأ على هذا الخادم" });
+  const enabled = req.body?.enabled;
+  const confirmation = String(req.body?.confirmation || "").trim();
+  if (typeof enabled !== "boolean") return res.status(400).json({ error: "الحقل enabled مطلوب (true أو false)" });
+  if (enabled && confirmation !== "ENABLE_CAPTAIN_DEDUCTIONS") {
+    return res.status(400).json({ error: "تفعيل الخصومات يتطلب عبارة التأكيد ENABLE_CAPTAIN_DEDUCTIONS", mutation: "none" });
+  }
+  const input = { enabled };
+  if (Number.isInteger(req.body?.hour)) input.hour = req.body.hour;
+  if (Number.isInteger(req.body?.minute)) input.minute = req.body.minute;
+  try {
+    const next = weeklySubscriptionScheduler.configure(input);
+    setSetting("captain_subscription_charges_enabled", enabled ? "true" : "false");
+    audit("captain.subscription.schedule.updated", "setting", null, { enabled, hour: next.hour, minute: next.minute, chargesEnabled: enabled, actor: "owner" });
+    res.json({ success: true, schedule: weeklySubscriptionScheduler.status(), chargesEnabled: subscriptionChargesEnabled() });
+  } catch (error) {
+    res.status(400).json({ error: String(error && error.message || error), mutation: "none" });
+  }
 });
 app.get("/api/admin/subscriptions", requireAdmin, (req, res) => {
   if (openCleanReadCache(req, res, "/api/admin/subscriptions")) return;
