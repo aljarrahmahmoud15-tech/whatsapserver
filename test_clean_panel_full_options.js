@@ -39,4 +39,20 @@ assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/suspend-and-remov
 assert.match(server, /app\.post\("\/api\/admin\/orders\/:id\/cancel-and-reverse"/);
 assert.match(server, /app\.post\("\/api\/admin\/owner-control\/command", requireBotWalletOwner/);
 
+
+// Deduction policy card must be visible and wired in both panels.
+for (const [name, html] of [['v26', v26], ['v27', v27]]) {
+  assert.match(html, /id="deductionPolicyPanel"/, `${name}: deduction policy card`);
+  assert.match(html, /async function loadDeductionPolicy\(\)/, `${name}: policy loader`);
+  assert.match(html, /async function setDeductionPolicy\(enabled\)/, `${name}: policy setter`);
+  assert.match(html, /api\('\/api\/admin\/subscriptions\/schedule'\)/, `${name}: schedule read route`);
+  assert.match(html, /api\('\/api\/admin\/subscriptions\/schedule', \{ method: 'POST'/, `${name}: schedule write route`);
+  assert.match(html, /ENABLE_CAPTAIN_DEDUCTIONS/, `${name}: resume confirmation phrase`);
+  assert.match(html, /id="deductionStopButton"/, `${name}: stop button`);
+  assert.match(html, /id="deductionResumeButton"/, `${name}: resume button`);
+  assert.match(html, /الخصومات موقوفة بالكامل/, `${name}: stopped badge text`);
+}
+assert.match(server, /app\.get\("\/api\/admin\/subscriptions\/schedule", requireAdmin/, 'schedule read route on server');
+assert.match(server, /app\.post\("\/api\/admin\/subscriptions\/schedule", requireBotWalletOwner/, 'schedule write route on server');
+
 console.log('Modern panel options verified: reverse transfer, captain editing (edit/credit/suspend) and owner commands are all wired, and /admin.html serves the modern panel');
