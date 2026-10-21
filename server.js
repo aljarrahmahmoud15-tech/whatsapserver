@@ -10127,6 +10127,25 @@ app.post("/api/admin/qr-temporary-link", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
+app.get("/api/admin/qr-image", requireAdmin, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  const payload = {
+    success: true,
+    ready: !!isReady,
+    whatsappState: typeof whatsappState !== "undefined" ? whatsappState : null,
+    botPhone: BOT_PHONE,
+    groupId: WHATSAPP_GROUP_ID,
+    source: null,
+    dataUrl: null,
+    refreshAfterSeconds: 20,
+  };
+  const raw = qrCodeData || baileysQrCodeData || null;
+  if (raw) {
+    payload.source = qrCodeData ? "main" : "group-receiver";
+    payload.dataUrl = await qrcode.toDataURL(raw);
+  }
+  res.json(payload);
+});
 app.post("/api/admin/qr-main-link", requireAdmin, (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   const grant = issueTemporaryQrGrant(req);
