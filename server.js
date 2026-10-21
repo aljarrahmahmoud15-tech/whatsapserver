@@ -9364,6 +9364,40 @@ function inviteTokenHash(token) {
 function expireCaptainInvites() {
   db.prepare("UPDATE captain_invites SET status='expired',updated_at=? WHERE status IN ('issued','pending') AND expires_at<=?").run(now(), now());
 }
+app.post("/api/captain/register", captainRegistrationLimiter, async (req, res) => {
+  expireCaptainInvites();
+  const name = String(req.body?.name || "").trim();
+  const phone = phoneWithCountry(String(req.body?.phone || "").trim());
+  const pin = String(req.body?.pin || "").trim();
+  const vehicleType = String(req.body?.vehicleType || "").trim().slice(0, 80) || null;
+  const vehicleModel = String(req.body?.vehicleModel || "").trim().slice(0, 80) || null;
+  const authMethod = normalizeCaptainAuthMethod(req.body?.authMethod);
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "اسم الكابتن مطلوب" });
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (isProtectedOwnerIdentity(phone)) return res.status(403).json({ error: "هذا الرقم محمي ولا يمكن تسجيله ككابتن" });
+  if (authMethod === "pin" && !validCaptainPin(pin)) return res.status(400).json({ error: "الرقم السري يجب أن يكون 5 أرقام" });
+  const existing = db.prepare("SELECT id,role,active,account_status FROM users WHERE phone=? LIMIT 1").get(phone) || findCaptainByPhone(phone);
+  if (existing) return res.status(409).json({ error: "هذا الرقم مسجل مسبقًا؛ استخدم تسجيل دخول الكابتن المسجل" });
+  const openForPhone = db.prepare("SELECT id FROM captain_invites WHERE phone=? AND status IN ('issued','pending') LIMIT 1").get(phone);
+  if (openForPhone) return res.status(409).json({ error: "يوجد طلب تسجيل مفتوح لهذا الرقم" });
+  const token = crypto.randomBytes(24).toString("base64url");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const tokenCiphertext = cardEncryptionKey ? encryptCardCode(token) : null;
+  const pinHash = authMethod === "pin" ? bcrypt.hashSync(pin, 10) : null;
+  const created = db.prepare("INSERT INTO captain_invites(token_hash,token_last8,token_ciphertext,status,name,phone,vehicle_type,vehicle_model,pin_hash,pin_ciphertext,auth_method,approved_user_id,decision_note,created_at,updated_at,expires_at,submitted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(inviteTokenHash(token), token.slice(-8), tokenCiphertext, "pending", name, phone, vehicleType, vehicleModel, pinHash, null, authMethod, null, "بانتظار موافقة المالك؛ لم يُنشأ الحساب بعد", stamp, stamp, expiresAt, stamp);
+  audit("captain.join.self_requested", "captain_invite", created.lastInsertRowid, { name, phone, authMethod, status: "pending", accountCreated: false }, null);
+  void sendCaptainStatusText({
+    phone,
+    event: "captain.join.received",
+    title: "استلام طلب الكابتن",
+    text: "تم استلام طلب تسجيلك، وبانتظار موافقة الشركة.",
+    idempotencyKey: `CAPTAIN-SELF-REQUEST-RECEIVED-${created.lastInsertRowid}`,
+  });
+  void notifyOperations({ event: "captain.join.self_requested", title: "طلب تسجيل ذاتي لكابتن جديد بانتظار الموافقة", lines: [`الاسم: ${name}`, `الهاتف: ${phone}`, "لم يُنشأ الحساب ولم يُفعّل الدخول. يجب اعتماد الطلب من زر الموافقة في لوحة المالك."], ownersOnly: true });
+  res.status(202).json({ success: true, status: "pending", activated: false, accountCreated: false, token, message: "تم إرسال طلب التسجيل إلى الشركة. لا يمكن الدخول أو استخدام الحساب قبل موافقة المالك." });
+});
 function captainInviteBaseUrl(req) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
   const protocol = forwardedProto === "https" ? "https" : "http";

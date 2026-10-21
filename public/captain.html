@@ -52,7 +52,7 @@
         <h1>دخول الكابتن</h1>
         <p class="muted">اختر طريقة الدخول إلى شبكة التشغيل.</p>
         <div class="entry-actions">
-          <button class="primary" id="entry-register" type="button">تسجيل الكابتن لأول مرة</button>
+          <button class="primary" id="entry-register" type="button">تسجيل كابتن جديد ذاتيًا</button>
           <button class="primary" id="entry-login" type="button">تسجيل دخول الكابتن المسجل</button>
         </div>
       </div>
@@ -60,9 +60,9 @@
 
     <section id="registration" class="login hidden">
       <form id="registration-form" class="login-card">
-        <div class="eyebrow">CAPTAIN INVITATION</div>
-        <h1>بطاقة دعوة الكابتن</h1>
-        <p class="muted">أدخل اسمك ورقم هاتفك، ثم اختر الدخول برمز سري من 5 أرقام أو برمز تحقق يصل إلى WhatsApp على الرقم نفسه.</p>
+        <div class="eyebrow">CAPTAIN REGISTRATION</div>
+        <h1>تسجيل كابتن جديد</h1>
+        <p class="muted">أدخل معلوماتك بنفسك. سيُرسل الطلب إلى الشركة للمراجعة، ولا يُنشأ الحساب أو يُفعّل الدخول قبل موافقة المالك.</p>
         <label class="label">اسم الكابتن<input class="input" id="reg-name" autocomplete="name" required></label>
         <label class="label">رقم الهاتف<input class="input" id="reg-phone" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required></label>
         <div class="vehicle-grid"><label class="label">نوع المركبة<input class="input" id="reg-vehicle-type" autocomplete="organization-title" placeholder="مثال: سيدان / فان" required></label><label class="label">موديل المركبة<input class="input" id="reg-vehicle-model" autocomplete="off" placeholder="مثال: Toyota Corolla 2022" required></label></div>
@@ -91,7 +91,7 @@
         <label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
-        <div class="hint" id="invite-hint">للتسجيل لأول مرة، افتح بطاقة الدعوة التي أرسلتها الشركة.</div>
+        <div class="hint" id="invite-hint">للتسجيل لأول مرة، ارجع للصفحة السابقة واختر «تسجيل كابتن جديد ذاتيًا».</div>
       </form>
     </section>
 
@@ -203,7 +203,7 @@
       event.preventDefault(); const button = $('#register-btn'); button.disabled = true; $('#register-error').textContent = '';
       const name = $('#reg-name').value.trim(), phone = $('#reg-phone').value.trim(), vehicleType = $('#reg-vehicle-type').value.trim(), vehicleModel = $('#reg-vehicle-model').value.trim(), authMethod = $('#reg-auth-method').value, pin = $('#reg-pin').value.trim(), confirmPin = $('#reg-pin-confirm').value.trim();
       if (authMethod === 'pin' && pin !== confirmPin) { $('#register-error').textContent = 'الرقمان السريان غير متطابقين'; button.disabled = false; return; }
-      try { const applied = await api('/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply', {method:'POST', body:JSON.stringify({name,phone,vehicleType,vehicleModel,authMethod,pin:authMethod==='pin'?pin:''})}); if (applied.token) { inviteToken = applied.token; history.replaceState({}, '', '/captain?invite=' + encodeURIComponent(inviteToken)); } submittedCaptain = {phone,pin,authMethod}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
+      try { const registrationUrl = inviteToken ? '/api/captain/invites/' + encodeURIComponent(inviteToken) + '/apply' : '/api/captain/register'; const applied = await api(registrationUrl, {method:'POST', body:JSON.stringify({name,phone,vehicleType,vehicleModel,authMethod,pin:authMethod==='pin'?pin:''})}); if (applied.token) { inviteToken = applied.token; history.replaceState({}, '', '/captain?invite=' + encodeURIComponent(inviteToken)); } submittedCaptain = {phone,pin,authMethod}; await pollInvite(); if (!invitePoll) invitePoll = setInterval(pollInvite, 10000); } catch (error) { $('#register-error').textContent = error.message; } finally { button.disabled = false; }
     });
     $('#entry-register')?.addEventListener('click', () => showSection('registration'));
     $('#entry-login')?.addEventListener('click', () => showSection('login'));
