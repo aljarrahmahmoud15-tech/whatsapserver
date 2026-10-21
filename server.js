@@ -77,6 +77,13 @@ const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "Aljarah";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Jojo1987@";
+const ADMIN_PANEL_CREDENTIALS = Object.freeze({
+  v27: { username: process.env.ADMIN_V27_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_V27_PASSWORD || ADMIN_PASSWORD },
+  v26: { username: process.env.ADMIN_V26_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_V26_PASSWORD || ADMIN_PASSWORD },
+  v24: { username: process.env.ADMIN_V24_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_V24_PASSWORD || ADMIN_PASSWORD },
+  classic: { username: process.env.ADMIN_CLASSIC_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_CLASSIC_PASSWORD || ADMIN_PASSWORD },
+  readonly: { username: process.env.ADMIN_READONLY_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_READONLY_PASSWORD || ADMIN_PASSWORD },
+});
 const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
 const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
 const OWNER_VAULT_SECRET = process.env.OWNER_VAULT_SECRET || "";
@@ -9825,11 +9832,14 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
 app.post("/api/auth/login", async (req, res) => {
   const username = String(req.body?.username || "").trim();
   const password = String(req.body?.password || "");
+  const panel = String(req.body?.panel || "").trim().toLowerCase();
+  const credentials = ADMIN_PANEL_CREDENTIALS[panel] || { username: ADMIN_USERNAME, password: ADMIN_PASSWORD };
   if (!JWT_SECRET) return res.status(503).json({ error: "مصادقة الإدارة غير مهيأة" });
-  if (username !== ADMIN_USERNAME || !validAdminPassword(password)) return res.status(401).json({ error: "بيانات دخول المالك غير صحيحة" });
-  const token = jwt.sign({ role: "company", username }, JWT_SECRET, { expiresIn: "7d" });
+  const validPassword = credentials.password === ADMIN_PASSWORD ? validAdminPassword(password) : constantTimeEquals(password, credentials.password);
+  if (username !== credentials.username || !validPassword) return res.status(401).json({ error: "بيانات دخول لوحة الإدارة غير صحيحة" });
+  const token = jwt.sign({ role: "company", username, panel: panel || "default" }, JWT_SECRET, { expiresIn: "7d" });
   setSessionCookie(res, token);
-  res.json({ success: true, role: "company", username });
+  res.json({ success: true, role: "company", username, panel: panel || "default" });
 });
 app.post("/api/auth/staff-login", (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
