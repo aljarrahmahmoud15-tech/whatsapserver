@@ -28,4 +28,10 @@ assert.match(server, /await client\.requestPairingCode\(phone, true, 180000\)/, 
 assert.match(server, /if \(elapsed < 120000\)/, 'pairing rate limit');
 assert.match(server, /if \(isReady\) return res\.status\(409\)/, 'no pairing when already linked');
 
+
+// Regression guard: the registrations must sit at top level after the handler closes,
+// never inside the handler body (that silently removed both routes).
+assert.match(server, /\n\};\napp\.get\("\/api\/admin\/orders\/confirmed", requireAdmin, confirmedOrdersReadHandler\);/, 'confirmed handler must close before its registrations');
+assert.match(server, /\n\};\napp\.get\("\/api\/admin\/group\/summary", requireAdmin, adminReadSingleFlight\("group-summary", 8000\), groupSummaryReadHandler\);/, 'group summary handler must close before its registrations');
+
 console.log('Panel route aliases verified: confirmed-orders and group-summary POST aliases exist, and the owner pairing-code route is guarded');

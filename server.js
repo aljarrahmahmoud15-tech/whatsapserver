@@ -14250,6 +14250,7 @@ const confirmedOrdersReadHandler = (req, res) => {
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
     })),
   });
+};
 app.get("/api/admin/orders/confirmed", requireAdmin, confirmedOrdersReadHandler);
 // The panel's confirmed/recovery tab and the group preview button POST their filters
 // (groupId, hours, limit); without this alias the tab answered 404 and stayed empty.
@@ -14257,7 +14258,6 @@ app.post("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
   req.query = Object.assign({}, req.query, req.body || {});
   return confirmedOrdersReadHandler(req, res);
 });
-};
 app.get("/api/admin/company-wallet", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, wallet: companyWalletSummary() });
