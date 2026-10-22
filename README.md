@@ -75,6 +75,10 @@ IF offer_owner REACTS with Like TO request -> BOOKING = CONFIRMED
 5. أثناء الربط الأول افتح `https://YOUR-SERVICE.onrender.com/qr?token=ADMIN_TOKEN`، أو أرسل `Authorization: Bearer ADMIN_TOKEN`؛ يدعم المسار الطريقتين. امسح الرمز من WhatsApp عبر الأجهزة المرتبطة.
 6. بعد نجاح الربط، غيّر `QR_PUBLIC` إلى `false`، وأبقِ `ADMIN_TOKEN` سريًا. لا تشارك رابط QR أو الرمز في قنوات عامة.
 
+### NEXORA Ride OTP relay
+
+يستقبل المسار الداخلي `POST /api/internal/nexora/otp` طلبات OTP من خدمة NEXORA Ride فقط عبر رأس `x-nexora-secret` المطابق للمتغير `NEXORA_SECRET`. يقبل المسار أرقام الأردن الصحيحة ورسائل رمز NEXORA Ride ذات الستة أرقام فقط، ويطبق محدد معدل مستقلًا؛ لا تستخدمه كواجهة إرسال عامة ولا تضع السر في GitHub أو السجلات. يرسل V27 الطلب بصيغة `{phone,text}` إلى `https://whatsapserver-2.onrender.com/api/internal/nexora/otp`.
+
 ### فحص سريع
 
 ```bash

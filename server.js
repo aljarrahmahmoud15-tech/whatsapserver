@@ -256,6 +256,7 @@ const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
 const whatsappAuthRate = new Map();
+const nexoraOtpRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
@@ -2233,6 +2234,18 @@ async function sendBotTextRaw(to, text) {
   } catch (error) {
     console.error("[WhatsApp] raw message fallback:", error.message);
     return false;
+  }
+}
+const NEXORA_OTP_TEXT_PATTERN = /^رمز الدخول إلى NEXORA Ride:\s*\d{6}$/;
+async function sendNexoraOtpText(phone, text) {
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return { status: "invalid" };
+  if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable" };
+  try {
+    const sent = await withTimeoutStrict(client.sendMessage(`${phone}@c.us`, text), 20000, WHATSAPP_SEND_TIMEOUT);
+    if (sent === WHATSAPP_SEND_TIMEOUT) return { status: "uncertain" };
+    return sent ? { status: "sent" } : { status: "failed" };
+  } catch (error) {
+    return { status: "failed", error: String(error?.message || error).slice(0, 160) };
   }
 }
 function isBotOutboundTarget(target) {
@@ -9763,6 +9776,22 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
   }
   audit("captain.whatsapp_code.sent", "user", user.id, { phone: user.phone, expiresAt });
   res.json({ success: true, expiresAt, message: "تم إرسال رمز التحقق إلى رقم WhatsApp المسجل" });
+});
+app.post("/api/internal/nexora/otp", async (req, res) => {
+  const configuredSecret = String(process.env.NEXORA_SECRET || "").trim();
+  const providedSecret = String(req.get("x-nexora-secret") || "");
+  if (!configuredSecret || !constantTimeEquals(providedSecret, configuredSecret)) return res.status(401).json({ error: "غير مصرح" });
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const text = String(req.body?.text || "").trim();
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone) || !NEXORA_OTP_TEXT_PATTERN.test(text)) {
+    return res.status(400).json({ error: "بيانات OTP غير صالحة" });
+  }
+  if (!consumeRateLimit(nexoraOtpRate, `${clientAddress(req)}:${phone}`, 5)) return res.status(429).json({ error: "محاولات OTP كثيرة؛ حاول لاحقًا" });
+  const result = await sendNexoraOtpText(phone, text);
+  audit("nexora.otp.relay", "phone", phone.slice(-4), { status: result.status, error: result.error || null });
+  if (result.status === "sent") return res.json({ ok: true });
+  if (result.status === "uncertain") return res.status(202).json({ ok: true, status: "uncertain" });
+  return res.status(503).json({ error: "تعذر إرسال رمز OTP", status: result.status });
 });
 app.post("/api/captain/whatsapp/verify", (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
