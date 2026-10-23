@@ -238,7 +238,9 @@ const RATE_LIMIT_MAX_KEYS = Math.max(100, Math.min(10000, Number(process.env.RAT
 const RENDER_MEMORY_LIMIT_MB = Math.max(512, Number(process.env.RENDER_MEMORY_LIMIT_MB || 2048));
 const NODE_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - 512, Number(process.env.NODE_HEAP_MB || 768)));
 const CHROMIUM_HEAP_MB = Math.max(256, Math.min(RENDER_MEMORY_LIMIT_MB - NODE_HEAP_MB - 256, Number(process.env.CHROMIUM_HEAP_MB || 512)));
-const MEMORY_RECYCLE_TRIGGER_MB = Math.max(512, Number(process.env.MEMORY_RECYCLE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.8)));
+const MEMORY_RECYCLE_TRIGGER_MB = Math.max(512, Number(process.env.MEMORY_RECYCLE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.9)));
+const MEMORY_RECYCLE_SUSTAINED_SAMPLES = Math.max(2, Math.min(10, Number(process.env.MEMORY_RECYCLE_SUSTAINED_SAMPLES || 3)));
+const MEMORY_RECYCLE_READY_GRACE_MS = Math.max(5 * 60 * 1000, Number(process.env.MEMORY_RECYCLE_READY_GRACE_MS || 10 * 60 * 1000));
 const MEMORY_PRUNE_TRIGGER_MB = Math.max(384, Math.min(MEMORY_RECYCLE_TRIGGER_MB - 128, Number(process.env.MEMORY_PRUNE_TRIGGER_MB || Math.round(RENDER_MEMORY_LIMIT_MB * 0.7))));
 const MEMORY_PRUNE_COOLDOWN_MS = Math.max(60 * 1000, Number(process.env.MEMORY_PRUNE_COOLDOWN_MS || 5 * 60 * 1000));
 const MEMORY_RECYCLE_INTERVAL_MS = Math.max(60000, Number(process.env.MEMORY_RECYCLE_INTERVAL_MS || 120000));
@@ -6306,6 +6308,10 @@ async function restartWhatsApp(reason = "manual restart") {
     initializationRunId += 1;
     reconnectAttempts = 0;
     lastReconnectReason = reason;
+    whatsappState = "restarting";
+    whatsappLastEvent = "restarting";
+    whatsappLastError = null;
+    isReady = false;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -6399,7 +6405,7 @@ function scheduleReconnect() {
 function startWhatsAppWatchdog() {
   if (whatsappWatchdogTimer || WHATSAPP_WATCHDOG_INTERVAL_MS <= 0) return;
   whatsappWatchdogTimer = setInterval(() => {
-    if (isReady || initializing || reconnectTimer) return;
+    if (isReady || initializing || reconnectTimer || whatsappRestartInFlight || runtimeMemoryWatchdogRunning) return;
     if (qrCodeData || whatsappState === "qr" || whatsappState === "wrong_account") {
       console.warn(`[WhatsApp] watchdog waiting for operator action: state=${whatsappState}`);
       return;
@@ -6836,6 +6842,7 @@ let runtimeMemoryWatchdogRunning = false;
 let lastMemoryRecycleAt = null;
 let lastMemoryUsageMb = null;
 let lastMemoryPruneAt = null;
+let memoryRecycleAboveThresholdSamples = 0;
 async function recycleBrowserForMemory(reason) {
   if (runtimeMemoryWatchdogRunning) return;
   runtimeMemoryWatchdogRunning = true;
@@ -6843,6 +6850,7 @@ async function recycleBrowserForMemory(reason) {
     console.warn(`[Runtime] memory watchdog recycling WhatsApp browser: ${reason}`);
     pruneRuntimeMemoryCaches();
     if (global.gc) { try { global.gc(); } catch {} }
+    memoryRecycleAboveThresholdSamples = 0;
     lastMemoryRecycleAt = new Date().toISOString();
     await restartWhatsApp(`memory watchdog: ${reason}`);
   } catch (error) {
@@ -6932,8 +6940,23 @@ function startRuntimeMemoryWatchdog() {
       lastMemoryPruneAt = Date.now();
       if (global.gc) { try { global.gc(); } catch {} }
     }
-    if (rssMb < MEMORY_RECYCLE_TRIGGER_MB) return;
-    if (runtimeMemoryWatchdogRunning || initializing) return;
+    if (rssMb < MEMORY_RECYCLE_TRIGGER_MB) {
+      memoryRecycleAboveThresholdSamples = 0;
+      return;
+    }
+    if (qrCodeData || whatsappState === "qr" || whatsappState === "wrong_account") {
+      memoryRecycleAboveThresholdSamples = 0;
+      return;
+    }
+    const readyAtMs = Date.parse(String(lastReadyAt || ""));
+    if (Number.isFinite(readyAtMs) && Date.now() - readyAtMs < MEMORY_RECYCLE_READY_GRACE_MS) {
+      memoryRecycleAboveThresholdSamples = 0;
+      return;
+    }
+    memoryRecycleAboveThresholdSamples += 1;
+    if (memoryRecycleAboveThresholdSamples < MEMORY_RECYCLE_SUSTAINED_SAMPLES) return;
+    memoryRecycleAboveThresholdSamples = 0;
+    if (runtimeMemoryWatchdogRunning || initializing || whatsappRestartInFlight || reconnectTimer) return;
     void recycleBrowserForMemory(`instance rss ${rssMb}MB >= ${MEMORY_RECYCLE_TRIGGER_MB}MB (node ${nodeRssMb}MB, heap ${heapMb}MB)`);
   }, MEMORY_RECYCLE_INTERVAL_MS);
   runtimeMemoryWatchdogTimer.unref?.();
@@ -6986,6 +7009,7 @@ function createClient() {
       return;
     }
     isReady = true;
+    memoryRecycleAboveThresholdSamples = 0;
     reconnectAttempts = 0;
     lastReadyAt = new Date().toISOString();
     qrCodeData = null;
@@ -7117,6 +7141,9 @@ async function initializeWhatsApp() {
   if (initializing || isReady) return;
   const runId = ++initializationRunId;
   initializing = true;
+  whatsappState = "starting";
+  whatsappLastEvent = "starting";
+  whatsappLastError = null;
   lastInitializationStartedAt = new Date().toISOString();
   let currentClient = null;
   try {
