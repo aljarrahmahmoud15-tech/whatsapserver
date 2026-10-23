@@ -2033,19 +2033,25 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId, downloaderName, executorName }) {
+async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, priceCents, origin, destination, sourceMessageId, downloaderName, executorName }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
-  const title = "إلغاء الرحلة";
+  const title = "إعادة فتح الحجز";
+  const route = origin || destination
+    ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}`
+    : "";
+  const valueLine = Number.isFinite(Number(priceCents))
+    ? `💰 ${money(priceCents)} JOD · 💳 العمولة ${money(requiredCents)} JOD`
+    : `💳 العمولة ${money(requiredCents)} JOD`;
   const message = [
-    "🔴 إلغاء الرحلة",
-    `🏠 المنزل: ${String(downloaderName || "غير محدد")}`,
-    `🚕 المنفذ: ${String(executorName || "غير محدد")}`,
-    `💰 العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    "❌ الرصيد غير كافٍ.",
-  ].join("\n");
+    "⚠️ لم يثبت الحجز لعدم كفاية الرصيد",
+    `🏠 ${String(downloaderName || "غير محدد")} · 🚕 ${String(executorName || "غير محدد")}`,
+    valueLine,
+    route,
+    "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
+  ].filter(Boolean).join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
@@ -2066,11 +2072,14 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
     return { status: "failed", notificationId };
   }
 }
-async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, downloaderName, executorName }) {
+async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, priceCents, origin, destination, downloaderName, executorName }) {
   const correction = await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
     groupId,
     balanceCents,
     requiredCents,
+    priceCents,
+    origin,
+    destination,
     sourceMessageId: messageId,
     downloaderName,
     executorName,
@@ -2120,14 +2129,11 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
     ? `📍 ${candidate.origin || "غير محدد"} ← ${candidate.destination || "غير محدد"}`
     : "";
   const message = [
-    "🔁 إعادة فتح الحجز",
-    `🏠 المنزل: ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")}`,
-    `💰 القيمة: ${money(candidate.price_cents)} JOD`,
+    "⚠️ لم يثبت الحجز لعدم كفاية الرصيد",
+    `🏠 ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")} · 🚕 ${String(rejectedCaptainName || "غير مسجل")}`,
+    `💰 ${money(candidate.price_cents)} JOD · 💳 العمولة ${money(requiredCents)} JOD`,
     route,
-    `💳 العمولة المطلوبة للتنفيذ: ${money(requiredCents)} JOD`,
-    `⚠️ لم يتم تثبيت الحجز لعدم كفاية رصيد الكابتن المنفّذ: ${String(rejectedCaptainName || "غير مسجل")}.`,
-    "🗑️ تم حذف رد الكابتن «تم» من القروب بعد التحقق؛ الحجز متاح من جديد.",
-    "ردّ «تم» جديدًا ثم 👍 من صاحب السعر للتثبيت؛ لا توجد تسوية مالية.",
+    "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
   ].filter(Boolean).join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
@@ -2170,11 +2176,19 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   }
 }
 
-async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus }) {
+async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus, correction = null }) {
   if (deletionStatus !== "deleted") {
     return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
   }
-  const reopened = await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
+  const reopened = correction && ["sent", "already_sent"].includes(correction.status)
+    ? {
+      status: "already_sent",
+      notificationId: correction.notificationId || null,
+      messageId: correction.messageId || null,
+      candidateId: Number(candidate?.id || 0),
+      singleMessage: true,
+    }
+    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
   if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
     updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
       reason: "captain_acceptance_rejected_insufficient_balance",
@@ -6629,6 +6643,9 @@ async function recoverPendingAcceptanceMessages(groupId) {
         candidateId: unquoted.candidate.id,
         balanceCents: unquotedResult.balanceCents,
         requiredCents: unquotedResult.requiredCents,
+        priceCents: unquoted.candidate.price_cents,
+        origin: unquoted.candidate.origin,
+        destination: unquoted.candidate.destination,
         downloaderName: unquoted.candidate.producer_name_snapshot,
         executorName: unquotedResult.captain?.name,
       });
@@ -6648,6 +6665,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         requiredCents: unquotedResult.requiredCents,
         rejectedCaptainName: unquotedResult.captain?.name,
         deletionStatus,
+        correction,
       });
       if (!["sent", "already_sent"].includes(reopened.status)) {
         console.warn(`[Order] recovery insufficient-balance order reopen ${reopened.status} candidate=${unquoted.candidate.id}`);
@@ -7922,6 +7940,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       candidateId: candidate.id,
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
+      priceCents: candidate.price_cents,
+      origin: candidate.origin,
+      destination: candidate.destination,
       downloaderName: candidate.producer_name_snapshot,
       executorName: acceptanceResult.captain?.name,
     });
@@ -7947,6 +7968,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       rejectedCaptainName: acceptanceResult.captain?.name,
       deletionStatus,
+      correction,
     });
     if (!["sent", "already_sent"].includes(reopened.status)) {
       console.warn(`[Order] insufficient-balance order reopen ${reopened.status} candidate=${candidate.id}`);
