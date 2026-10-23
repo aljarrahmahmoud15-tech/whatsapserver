@@ -36,10 +36,8 @@ const { createWeeklySubscriptionScheduler, businessWeekPeriod } = require("./wee
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
-const LEGACY_BOT_PHONE = "0779110123";
-const LEGACY_BOT_PHONE_INTL = "962779110123";
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779039586";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779039586";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0777890596";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962777890596";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
@@ -128,7 +126,7 @@ const CAPTAIN_DAILY_CHARGE_ENABLED = false;
 const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
-// The operational bot 0779110123 is always settled through the internal company wallet.
+// The operational bot is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Settlement policy: the value after "السعر" is external and never credits B.
@@ -1903,9 +1901,9 @@ function createTicketCode() {
   return code;
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
-// 0775969880 was owner-approved as a human captain on 2026-10-01; keep only the unrelated blocked identities here.
+// Keep only explicitly blocked human identities; bot identity is controlled by BOT_PHONE/BOT_PHONE_INTL.
 const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
-const GROUP_SETUP_OWNER_PHONES = new Set(["+962779039586", "+962779110123", ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
+const GROUP_SETUP_OWNER_PHONES = new Set([BOT_PHONE_INTL, ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
@@ -2880,12 +2878,6 @@ function ensureBlockedPhones() {
   const insert = db.prepare("INSERT OR IGNORE INTO blocked_phones(phone,note,created_at) VALUES(?,?,?)");
   for (const value of BLOCKED_PHONES) insert.run(phoneWithCountry(value), "مستبعد نهائيًا من القروب والنظام", now());
 }
-function sanitizeLegacyPhone() {
-  const legacyPhone = phoneWithCountry("0775969880");
-  // This legacy number is no longer a blocked/system identity after explicit owner approval.
-  // Remove only its stale block-row; activation remains an explicit admin action.
-  db.prepare("DELETE FROM blocked_phones WHERE phone=?").run(legacyPhone);
-}
 
 function getSetting(key, fallback = null) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
@@ -3354,17 +3346,6 @@ function runtimeHealth() {
 function ensureSystemUsers() {
   const stamp = now();
   normalizeBotIdentity(stamp);
-  // The former bot number is now an ordinary captain. Preserve its name,
-  // wallet, ledger, and historical orders; only remove the bot classification.
-  const currentBotPhones = new Set([BOT_PHONE, BOT_PHONE_INTL].map(phoneWithCountry).filter(Boolean));
-  const legacyCaptainPhone = phoneWithCountry(LEGACY_BOT_PHONE_INTL || LEGACY_BOT_PHONE);
-  if (legacyCaptainPhone && !currentBotPhones.has(legacyCaptainPhone)) {
-    db.prepare(`UPDATE users
-      SET role='captain', is_bot=0,
-          account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,
-          updated_at=?
-      WHERE phone=?`).run(stamp, legacyCaptainPhone);
-  }
   // Every human subscriber is a captain. Only the internal company and bot
   // identities and the protected owner retain their operational roles.
   const legacyHumanProducers = db.prepare("SELECT id,phone,active FROM users WHERE is_bot=0 AND role='producer'").all();
@@ -3403,25 +3384,40 @@ function normalizeBotIdentity(stamp = now()) {
   const primary = phoneWithCountry(BOT_PHONE_INTL || BOT_PHONE);
   const targets = new Set([BOT_PHONE, BOT_PHONE_INTL, primary].map((value) => cleanPhone(value)).filter((value) => value.length >= 9));
   if (!targets.size) return 0;
-  const rows = db.prepare("SELECT id,phone FROM users").all();
-  const ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
+  let rows = db.prepare("SELECT id,phone FROM users").all();
+  let ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
+  if (!ownerRows.length && primary) {
+    db.prepare("INSERT INTO users(phone,name,role,wallet_cents,active,is_bot,created_at,updated_at) VALUES(?,?,?,0,1,1,?,?)")
+      .run(primary, `${COMPANY_BRAND_NAME} — مالك القروب والبوت`, "producer", stamp, stamp);
+    rows = db.prepare("SELECT id,phone FROM users").all();
+    ownerRows = rows.filter((row) => targets.has(cleanPhone(row.phone)));
+  }
   const update = db.prepare("UPDATE users SET role='producer',is_bot=1,active=1,name=?,captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE id=?");
   for (const row of ownerRows) update.run(`${COMPANY_BRAND_NAME} — مالك القروب والبوت`, stamp, row.id);
   const ownerIds = ownerRows.map((row) => row.id);
-  if (ownerIds.length) db.prepare(`UPDATE users SET is_bot=0 WHERE id NOT IN (${ownerIds.map(() => "?").join(",")}) AND is_bot=1`).run(...ownerIds);
+  // Demote every stale bot identity, regardless of which old number was used.
+  // Keep wallets, ledgers, and historical orders intact; only remove bot privileges.
+  if (ownerIds.length) {
+    db.prepare(`UPDATE users
+      SET role='captain', is_bot=0,
+          account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,
+          updated_at=?
+      WHERE id NOT IN (${ownerIds.map(() => "?").join(",")}) AND is_bot=1`).run(stamp, ...ownerIds);
+  } else {
+    db.prepare(`UPDATE users
+      SET role='captain', is_bot=0,
+          account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END,
+          updated_at=?
+      WHERE is_bot=1`).run(stamp);
+  }
   return ownerRows.length;
 }
 ensureBlockedPhones();
-sanitizeLegacyPhone();
 ensureSystemUsers();
 
 function isBotPhone(phone) {
   const normalized = phoneWithCountry(phone);
   return normalized === phoneWithCountry(BOT_PHONE) || normalized === phoneWithCountry(BOT_PHONE_INTL);
-}
-function isLegacyBotCaptainPhone(phone) {
-  const normalized = phoneWithCountry(phone);
-  return normalized === phoneWithCountry(LEGACY_BOT_PHONE) || normalized === phoneWithCountry(LEGACY_BOT_PHONE_INTL);
 }
 function botEmployeeUser() {
   const existing = db.prepare("SELECT * FROM users WHERE is_bot=1 LIMIT 1").get();
@@ -11357,7 +11353,7 @@ function extractInviteCode(value = "") {
 }
 app.get("/code", async (req, res) => {
     try {
-        const phone = req.query.phone || "962779110123";
+        const phone = req.query.phone || BOT_PHONE_INTL;
         let code = "";
         if (typeof sock !== 'undefined' && sock.requestPairingCode) {
             code = await sock.requestPairingCode(phone);
@@ -13649,7 +13645,7 @@ app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (r
     groupId: WHATSAPP_GROUP_ID,
     sourceMessageId: "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid",
     acceptanceMessageId: "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid",
-    downloaderPhone: "962779110123",
+    downloaderPhone: BOT_PHONE_INTL,
     executorPhone: "962786856851",
     price: 10,
     origin: "اربد",

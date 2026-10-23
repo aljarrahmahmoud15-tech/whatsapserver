@@ -51,7 +51,7 @@ const context = {
     return digits.startsWith("0") ? `962${digits.slice(1)}` : digits;
   },
   isValidJordanPhone: (phone) => /^9627\d{8}$/.test(String(phone)),
-  connectedBotPhone: () => "962779110123",
+  connectedBotPhone: () => "962777890596",
   console,
 };
 
@@ -84,7 +84,7 @@ this.directJordanPhoneFromWhatsappValue = directJordanPhoneFromWhatsappValue;`, 
   });
   assert.equal(sender, "962785344508");
 
-  assert.equal(await context.resolveMessageSenderPhone({ fromMe: true }), "962779110123");
+  assert.equal(await context.resolveMessageSenderPhone({ fromMe: true }), "962777890596");
   console.log("WhatsApp LID sender resolution verified");
 })().catch((error) => {
   console.error(error);
