@@ -10,6 +10,8 @@ assert.match(script, /function bindCaptainActions\(\)/);
 assert.match(script, /v26ActionsBound/);
 assert.match(script, /closest\('\[data-safe-action\]'\)/);
 assert.match(script, /bindCaptainActions\(\)/);
+assert.match(page, /pattern="\[0-9\]\{5\}"/);
+assert.doesNotMatch(page, /pattern="\\d\{5\}"/);
 for (const handler of ['openCaptainAction', 'saveCaptainEdit', 'applyCaptainCredit', 'suspendCaptainAndRemove']) {
   assert.match(script, new RegExp(`function ${handler}\\(`), `${handler} must be implemented`);
 }
