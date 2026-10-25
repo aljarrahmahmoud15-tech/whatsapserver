@@ -11,7 +11,9 @@ assert.match(server, /async function approveBotOwnedAcceptance\(\{ groupId, mess
 assert.match(server, /const result = settlePendingOrder\(candidateId, acceptanceMessageId, connectedBotPhone\(\)\)/);
 assert.match(server, /void approveBotOwnedAcceptance\(\{ groupId, message: msg, candidateId: candidate\.id, acceptanceMessageId \}\)/);
 assert.match(server, /await reactToCaptainAcceptance\(message, acceptanceMessageId\)/);
-assert.match(server, /await withTimeout\(target\.react\(emoji\), 12000, null\)/);
+assert.match(server, /const sent = await withTimeoutStrict\(target\.react\(emoji\), 12000, WHATSAPP_REACTION_SEND_TIMEOUT\)/);
+assert.match(server, /reaction_send_timeout/);
+assert.match(server, /reaction_sent_visibility_unconfirmed/);
 assert.match(server, /const ADMIN_SEND_TIMEOUT_MS = Math\.max\(5000, Math\.min\(60000, Number\(process\.env\.ADMIN_SEND_TIMEOUT_MS \|\| 20000\)\)\);/);
 assert.match(server, /const sendPromise = Promise\.resolve\(\)\.then\(async \(\) =>/);
 assert.match(server, /client\.getChatById\(chatId\)/);

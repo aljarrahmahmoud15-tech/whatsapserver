@@ -3975,38 +3975,76 @@ async function resolveGroupChat(groupId, inviteCode = "") {
 }
 async function readGroupSnapshot(groupId) {
   if (!groupId || !client || !isReady || !client.pupPage) return null;
-  return withTimeout(client.pupPage.evaluate(async (requestedId) => {
+  const result = await withTimeout(client.pupPage.evaluate(async (requestedId) => {
+    const compactError = (error) => String(error?.message || error || "unknown").slice(0, 180);
+    const module = (name) => {
+      try { return window.require(name); } catch (_) { return null; }
+    };
+    const serializeParticipant = (participant, toPn) => {
+      const source = participant?.serialize ? participant.serialize() : participant;
+      const id = source && source.id;
+      let phoneId = id;
+      try { if (id && toPn) phoneId = toPn(id) || id; } catch (_) {}
+      const serialized = phoneId && (phoneId._serialized || (phoneId.server && phoneId.user ? `${phoneId.user}@${phoneId.server}` : null) || String(phoneId));
+      const user = phoneId && phoneId.user ? String(phoneId.user) : String(serialized || "").split("@")[0].split(":")[0];
+      return { id: serialized, user, isAdmin: Boolean(source?.isAdmin || source?.isSuperAdmin) };
+    };
     try {
-      const wid = window.require("WAWebWidFactory").createWid(requestedId);
-      const collections = window.require("WAWebCollections");
-      const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
-      if (!chat || !chat.groupMetadata) return null;
-      const groupMetadata = collections.GroupMetadata || collections.WAWebGroupMetadataCollection;
-      try {
-        await window.require("WAWebGroupQueryJob").queryAndUpdateGroupMetadataById({ id: requestedId });
-      } catch (_) {
-        if (groupMetadata?.update) await groupMetadata.update(wid);
+      const widFactory = module("WAWebWidFactory");
+      const collections = module("WAWebCollections");
+      const wid = widFactory?.createWid ? widFactory.createWid(requestedId) : null;
+      let chat = collections?.Chat?.get && wid ? collections.Chat.get(wid) : null;
+      if ((!chat || !chat.groupMetadata) && window.WWebJS?.getChat) chat = await window.WWebJS.getChat(requestedId, { getAsModel: false }) || chat;
+      if ((!chat || !chat.groupMetadata) && collections?.Chat && module("WAWebFindChatAction")?.findOrCreateLatestChat && wid) {
+        chat = (await module("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat || null;
       }
-      const hydratedChat = collections.Chat.get(wid) || chat;
-      const hydratedMetadata = hydratedChat.groupMetadata || chat.groupMetadata;
+      if (!chat || !chat.groupMetadata) return { ok: false, reason: "group_chat_metadata_unavailable", modules: { widFactory: Boolean(widFactory), collections: Boolean(collections), wwebjs: Boolean(window.WWebJS?.getChat) } };
+      const groupMetadata = collections?.GroupMetadata || collections?.WAWebGroupMetadataCollection;
+      try {
+        const queryJob = module("WAWebGroupQueryJob");
+        if (queryJob?.queryAndUpdateGroupMetadataById) await queryJob.queryAndUpdateGroupMetadataById({ id: requestedId });
+        else if (groupMetadata?.update && wid) await groupMetadata.update(wid);
+      } catch (error) {
+        try { if (groupMetadata?.update && wid) await groupMetadata.update(wid); } catch (_) {}
+        if (!chat.groupMetadata) return { ok: false, reason: "group_metadata_refresh_failed", detail: compactError(error) };
+      }
+      const hydratedChat = collections?.Chat?.get && wid ? (collections.Chat.get(wid) || chat) : (window.WWebJS?.getChat ? await window.WWebJS.getChat(requestedId, { getAsModel: false }) || chat : chat);
+      const hydratedMetadata = hydratedChat?.groupMetadata || chat.groupMetadata;
+      if (!hydratedMetadata) return { ok: false, reason: "group_metadata_missing_after_refresh" };
       const metadata = hydratedMetadata.serialize ? hydratedMetadata.serialize() : hydratedMetadata;
       const participantCollection = hydratedMetadata.participants;
       const serializedParticipants = participantCollection?.serialize ? participantCollection.serialize() : null;
-      const modelParticipants = participantCollection?.getModelsArray ? participantCollection.getModelsArray() : null;
-      const rawParticipants = Array.isArray(serializedParticipants) ? serializedParticipants : (Array.isArray(modelParticipants) ? modelParticipants.map((participant) => participant.serialize ? participant.serialize() : participant) : (Array.isArray(metadata?.participants) ? metadata.participants : []));
-      const { toPn } = window.require("WAWebLidMigrationUtils");
-      const participants = rawParticipants.map((participant) => {
-        const id = participant && participant.id;
-        const phoneId = id && toPn ? (toPn(id) || id) : id;
-        const serialized = phoneId && (phoneId._serialized || (phoneId.server && phoneId.user ? `${phoneId.user}@${phoneId.server}` : null) || String(phoneId));
-        const user = phoneId && phoneId.user ? String(phoneId.user) : String(serialized || "").split("@")[0].split(":")[0];
-        return { id: serialized, user, isAdmin: Boolean(participant.isAdmin || participant.isSuperAdmin) };
-      }).filter((participant) => participant.id || participant.user);
-      return { id: requestedId, name: String(hydratedChat.formattedTitle || hydratedChat.name || ""), isGroup: true, participants, participantSource: Array.isArray(serializedParticipants) && serializedParticipants.length ? "serialize" : (Array.isArray(modelParticipants) && modelParticipants.length ? "models" : (Array.isArray(metadata?.participants) && metadata.participants.length ? "metadata" : "empty")), participantRawCount: rawParticipants.length };
-    } catch (_) {
-      return null;
+      const modelParticipants = participantCollection?.getModelsArray ? participantCollection.getModelsArray() : (Array.isArray(participantCollection?.models) ? participantCollection.models : null);
+      const rawParticipants = Array.isArray(serializedParticipants) && serializedParticipants.length
+        ? serializedParticipants
+        : (Array.isArray(modelParticipants) && modelParticipants.length
+          ? modelParticipants
+          : (Array.isArray(metadata?.participants) ? metadata.participants : []));
+      const lidUtils = module("WAWebLidMigrationUtils");
+      const participants = rawParticipants.map((participant) => serializeParticipant(participant, lidUtils?.toPn)).filter((participant) => participant.id || participant.user);
+      if (!participants.length) return { ok: false, reason: "group_participants_empty", participantSource: "empty", participantRawCount: rawParticipants.length };
+      return {
+        ok: true,
+        snapshot: {
+          id: requestedId,
+          name: String(hydratedChat.formattedTitle || hydratedChat.name || ""),
+          isGroup: true,
+          participants,
+          participantSource: Array.isArray(serializedParticipants) && serializedParticipants.length ? "serialize" : (Array.isArray(modelParticipants) && modelParticipants.length ? "models" : "metadata"),
+          participantRawCount: rawParticipants.length,
+        },
+      };
+    } catch (error) {
+      return { ok: false, reason: "group_snapshot_evaluation_failed", detail: compactError(error) };
     }
-  }, groupId), 30000, null);
+  }, groupId), 40000, { ok: false, reason: "group_snapshot_evaluation_timeout" });
+  if (!result?.ok || !result.snapshot) {
+    lastGroupHydrationDiagnostic = { status: "failed", at: now(), reason: result?.reason || "unknown", participantCount: 0, participantSource: result?.participantSource || null };
+    console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason}`);
+    return null;
+  }
+  lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, participantCount: result.snapshot.participants.length, participantSource: result.snapshot.participantSource || null };
+  return result.snapshot;
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
@@ -5674,6 +5712,13 @@ let lastOfficialGroupEventGroupId = null;
 let lastOfficialGroupMessageTelemetry = null;
 let lastIgnoredGroupEventGroupId = null;
 let lastIgnoredGroupMessageTelemetry = null;
+let lastGroupHydrationDiagnostic = {
+  status: "unknown",
+  at: null,
+  reason: null,
+  participantCount: null,
+  participantSource: null,
+};
 let whatsappSendDiagnostics = {
   installed: false,
   installedAt: null,
@@ -7591,6 +7636,7 @@ async function hasVisibleAcceptanceReaction(messageId, emoji) {
   return reactionRowsContainEmoji(internalRows, emoji);
 }
 
+const WHATSAPP_REACTION_SEND_TIMEOUT = Symbol("whatsapp_reaction_send_timeout");
 async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
   if (!messageId) return false;
   const retryDelays = [0, 350, 900, 1800];
@@ -7606,13 +7652,18 @@ async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
       continue;
     }
     try {
-      await withTimeout(target.react(emoji), 12000, null);
+      const sent = await withTimeoutStrict(target.react(emoji), 12000, WHATSAPP_REACTION_SEND_TIMEOUT);
+      if (sent === WHATSAPP_REACTION_SEND_TIMEOUT) {
+        lastError = new Error("reaction_send_timeout");
+        console.warn(`[WhatsApp] captain acceptance reaction send timeout emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
+        continue;
+      }
       if (await hasVisibleAcceptanceReaction(messageId, emoji)) {
         console.log(`[WhatsApp] captain acceptance reaction confirmed emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
         return true;
       }
-      lastError = new Error("reaction_not_visible_after_send");
-      console.warn(`[WhatsApp] captain acceptance reaction not confirmed emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
+      lastError = new Error("reaction_sent_visibility_unconfirmed");
+      console.warn(`[WhatsApp] captain acceptance reaction sent but visibility was unconfirmed emoji=${emoji} attempt=${attempt + 1} message=${orderTraceKey(messageId)}`);
     } catch (error) {
       lastError = error;
       console.warn(`[WhatsApp] captain acceptance reaction retry emoji=${emoji} attempt=${attempt + 1} error=${String(error?.message || error).slice(0, 180)}`);
@@ -10121,6 +10172,7 @@ function buildPublicStatusPayload() {
     },
     groupReceiverReady,
     groupReceiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
+    groupHydration: { ...lastGroupHydrationDiagnostic },
     lastGroupEventGroupId,
     lastGroupEventAt: lastGroupMessageTelemetry?.at || null,
     lastGroupEventMatched: lastGroupMessageTelemetry ? Boolean(lastGroupMessageTelemetry.configured) : null,
@@ -10782,6 +10834,7 @@ function buildV27BootstrapPayload() {
     groupId,
     groupReceiverReady,
     groupReceiverMode: baileysReady ? 'webjs+baileys' : (isReady ? 'webjs' : 'offline'),
+    groupHydration: { ...lastGroupHydrationDiagnostic },
     groupMemberCount: cachedGroup?.participantCount ?? null,
     whatsappState,
     whatsappLastError,
