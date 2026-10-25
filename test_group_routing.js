@@ -13,17 +13,17 @@ const context = {};
 vm.runInNewContext(`${source.slice(start, end)}\nthis.resolveGroupChatId = resolveGroupChatId;`, context);
 
 assert.strictEqual(
-  context.resolveGroupChatId({ from: "120363000000000000@g.us", to: "962777890596@c.us" }),
+  context.resolveGroupChatId({ from: "120363000000000000@g.us", to: "962775969880@c.us" }),
   "120363000000000000@g.us",
   "تُقرأ رسالة القروب الواردة من from"
 );
 assert.strictEqual(
-  context.resolveGroupChatId({ from: "962777890596@c.us", to: "120363000000000000@g.us" }),
+  context.resolveGroupChatId({ from: "962775969880@c.us", to: "120363000000000000@g.us" }),
   "120363000000000000@g.us",
   "تُقرأ رسالة اعتماد البوت الصادرة من to"
 );
 assert.strictEqual(
-  context.resolveGroupChatId({ from: "962777890596@c.us", to: "962777890596@c.us" }),
+  context.resolveGroupChatId({ from: "962775969880@c.us", to: "962775969880@c.us" }),
   "",
   "المحادثة الفردية لا تُعامل كقروب"
 );

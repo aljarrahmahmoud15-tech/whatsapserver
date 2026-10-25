@@ -36,8 +36,8 @@ const { createWeeklySubscriptionScheduler, businessWeekPeriod } = require("./wee
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0777890596";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962777890596";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0775969880";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962775969880";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
