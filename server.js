@@ -10404,13 +10404,12 @@ app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, 
       return res.status(503).json({ success: false, mutation: "none", executed: false, command, error: "تم إيقاف الإرسال مؤقتًا بسبب ضغط التخزين", audit: auditRow });
     }
     try {
-      const chat = await resolveGroupChat(groupId);
-      if (!chat || !chat.isGroup || typeof chat.sendMessage !== "function") {
-        const auditRow = recordOwnerCommand(command, "rejected", { mutation: "none", executed: false, reason: "configured_chat_not_hydrated" });
-        return res.status(404).json({ success: false, mutation: "none", executed: false, command, error: "تعذر الحصول على القروب الرسمي الجاهز", audit: auditRow });
-      }
+      // The configured chat wrapper can be absent after a reconnect even while
+      // whatsapp-web.js is ready. Use the already-verified direct target path;
+      // the exact official-group and Server 2 allowlist checks above remain
+      // mandatory, so this does not broaden the outbound boundary.
       const timeoutMarker = Symbol("owner_broadcast_timeout");
-      const sendPromise = Promise.resolve().then(() => chat.sendMessage(message));
+      const sendPromise = Promise.resolve().then(() => client.sendMessage(groupId, message));
       const sent = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, timeoutMarker);
       if (sent === timeoutMarker) {
         const auditRow = recordOwnerCommand(command, "accepted", { mutation: "group.broadcast", executed: true, sendState: "pending", groupId, operationId, messageLength: message.length });
