@@ -37,12 +37,12 @@ const context = {
   isBotGeneratedMessage,
   isCaptainAcceptance: (body) => /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(String(body || "").trim()),
   parseOrder: () => ({ isOrder: true, price: 5, origin: "إربد", destination: "عمّان", tripTime: null, orderKind: "normal" }),
-  connectedBotPhone: () => "962779110123",
+  connectedBotPhone: () => "962775969880",
   phoneWithCountry: (value) => String(value).replace(/^0/, "962"),
   isValidJordanPhone: (value) => /^9627\d{8}$/.test(String(value)),
   isBlockedPhone: () => false,
   companyUser: () => ({ id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 }),
-  botEmployeeUser: () => ({ id: 2, phone: "962779110123", name: "منتج موظف — بوت شركة الجراح", role: "producer", wallet_cents: 0, is_bot: 1 }),
+  botEmployeeUser: () => ({ id: 2, phone: "962775969880", name: "منتج موظف — بوت شركة الجراح", role: "producer", wallet_cents: 0, is_bot: 1 }),
   COMPANY_BRAND_NAME: "وصلني الآن",
   BOT_FINANCIAL_MODE: "company",
   cents: (value) => Math.round(Number(value) * 100),
@@ -70,6 +70,6 @@ vm.runInNewContext(`${source.slice(helperStart, end)}\nthis.handleIncomingMessag
   assert.equal(candidateInsert.length, 1, "رسالة السعر تنشئ مرشحًا خاصًا مرة واحدة");
   assert.equal(candidateInsert[0].producer.id, 1, "producer_user_id هو حساب الشركة في المرشح");
   assert.equal(candidateInsert[0].parsed.orderKind, "normal");
-  assert.equal(candidateInsert[0].producer.phone.includes("962779110123"), false, "رقم البوت لا يُخزّن كمنتج مالي");
+  assert.equal(candidateInsert[0].producer.phone.includes("962775969880"), false, "رقم البوت لا يُخزّن كمنتج مالي");
   console.log("bot order handler private candidate assignment verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

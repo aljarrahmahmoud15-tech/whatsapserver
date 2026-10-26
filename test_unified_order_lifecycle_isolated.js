@@ -28,7 +28,7 @@ assert(cancelStart >= 0 && cancelEnd > cancelStart);
 const GROUP = "test-group@g.us";
 const PRODUCER = "962771111111";
 const EXECUTOR = "962772222222";
-const BOT = "962779110123";
+const BOT = "962775969880";
 const users = {
   producer: { id: 2, phone: PRODUCER, name: "المنتج", role: "captain", wallet_cents: 0, active: 1, account_status: "active", is_bot: 0 },
   executor: { id: 3, phone: EXECUTOR, name: "المنفذ", role: "captain", wallet_cents: 5000, active: 1, account_status: "active", is_bot: 0 },

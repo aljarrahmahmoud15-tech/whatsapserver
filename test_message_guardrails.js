@@ -8,8 +8,8 @@ assert.equal(isBotGeneratedMessage({ fromMe: true, body: "تم" }), true);
 assert.equal(isBotGeneratedMessage({ fromMe: false, body: "تم" }), false);
 assert.equal(isBotGeneratedMessage({ body: "السعر 5 من إربد إلى عمّان" }), false);
 
-const BOT_LOCAL = "0779110123";
-const BOT_INTL = "962779110123";
+const BOT_LOCAL = "0775969880";
+const BOT_INTL = "962775969880";
 const UNKNOWN_PHONE = "0799999999";
 assert.equal(isBotReactionSender(BOT_LOCAL, BOT_LOCAL), true);
 assert.equal(isBotReactionSender(BOT_INTL, BOT_LOCAL), true);
@@ -37,7 +37,7 @@ const handlerContext = {
   isQuotedOrderRecoveryCommand: () => false,
   isBotGeneratedMessage,
   parseOrder: () => ({ isOrder: false }),
-  connectedBotPhone: () => "962779110123",
+  connectedBotPhone: () => "962775969880",
   phoneWithCountry: (value) => String(value).replace(/^0/, "962"),
   isValidJordanPhone: (value) => /^9627\\d{8}$/.test(String(value)),
   db: { prepare() { persistedWrites.push("db.prepare"); throw new Error("database must not be touched"); } },
