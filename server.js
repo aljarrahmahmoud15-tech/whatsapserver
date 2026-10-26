@@ -11427,9 +11427,9 @@ app.get("/qr-main", requireQrAccess, async (req, res) => {
   const refreshTarget = req.query.access ? `/qr-main?access=${encodeURIComponent(String(req.query.access))}` : "/qr-main";
   if (qrCodeData) {
     const image = await qrcode.toDataURL(qrCodeData);
-    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط رقم البوت ${BOT_PHONE}</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
+    return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط رقم البوت ${BOT_PHONE_INTL || BOT_PHONE}</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE}</p></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE_INTL || BOT_PHONE}</p></body></html>`);
   res.send(`<html dir="rtl"><meta charset="utf-8"><meta http-equiv="refresh" content="3;url=${refreshTarget}"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>جاري تجهيز QR البوت الرئيسي...</h2><p>لا تعرض هذه الصفحة QR مستقبل المجموعة.</p></body></html>`);
 });
 app.get("/qr", requireQrAccess, async (req, res) => {
@@ -11440,7 +11440,7 @@ app.get("/qr", requireQrAccess, async (req, res) => {
     const image = await qrcode.toDataURL(qrCodeData);
     return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>امسح QR لربط البوت الرئيسي</h2><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>الرمز يتجدد تلقائيًا</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
-  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE}</p></body></html>`);
+  if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE_INTL || BOT_PHONE}</p></body></html>`);
   if (baileysReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>مستقبل رسائل القروب متصل</h2><p>بانتظار QR البوت الرئيسي</p></body></html>`);
   if (!baileysQrCodeData) return res.send('<meta http-equiv="refresh" content="3"><h2 style="font-family:system-ui;text-align:center">جاري تجهيز QR...</h2>');
   const image = await qrcode.toDataURL(baileysQrCodeData);
@@ -15716,7 +15716,7 @@ reconcileConfiguredGroupFromEnvironment();
 
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
-  console.log(`[Config] phone=${BOT_PHONE} data=${DATA_DIR}`);
+  console.log(`[Config] phone=${BOT_PHONE_INTL || BOT_PHONE} data=${DATA_DIR}`);
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
