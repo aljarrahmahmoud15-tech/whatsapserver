@@ -3,8 +3,8 @@ const fs = require('node:fs');
 
 const server = fs.readFileSync('server.js', 'utf8');
 
-assert.match(server, /const BOT_PHONE = process\.env\.BOT_PHONE\?\.trim\(\) \|\| "0775969880"/);
-assert.match(server, /const BOT_PHONE_INTL = process\.env\.BOT_PHONE_INTL\?\.trim\(\) \|\| "962775969880"/);
+assert.match(server, /const BOT_PHONE = process\.env\.BOT_PHONE\?\.trim\(\) \|\| "0779110123"/);
+assert.match(server, /const BOT_PHONE_INTL = process\.env\.BOT_PHONE_INTL\?\.trim\(\) \|\| "962779110123"/);
 assert.match(server, /function isBotPhone\(phone\)/);
 assert.match(server, /normalized === phoneWithCountry\(BOT_PHONE\) \|\| normalized === phoneWithCountry\(BOT_PHONE_INTL\)/);
 assert.match(server, /SET role='captain', is_bot=0/);

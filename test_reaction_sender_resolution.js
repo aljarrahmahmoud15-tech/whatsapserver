@@ -22,7 +22,7 @@ const context = {
     },
   },
   isReady: true,
-  connectedBotPhone: () => "962775969880",
+  connectedBotPhone: () => "962779110123",
   directJordanPhoneFromWhatsappValue(value) {
     const serialized = typeof value === "string" ? value : (value?._serialized || value?.id || "");
     if (/@lid$/i.test(String(serialized))) return "";
@@ -66,8 +66,8 @@ vm.runInNewContext(`${source.slice(resolverStart, resolverEnd)}\n${source.slice(
   assert.equal(await context.resolveReactionSenderPhone({ senderId: "962786856851@c.us" }), "962786856851");
   assert.equal(await context.resolveReactionSenderPhone({ senderUserJid: "987654321098765@lid" }), "962786856851");
   assert.equal(await context.resolveReactionSenderPhone({ sender: { senderUserJid: "246813579024681@lid" } }), "962787847477");
-  assert.equal(await context.resolveReactionSenderPhone({ senderId: "27153336946853@lid" }), "962775969880");
-  assert.equal(await context.resolveReactionSenderPhone({ hasReactionByMe: true }), "962775969880");
+  assert.equal(await context.resolveReactionSenderPhone({ senderId: "27153336946853@lid" }), "962779110123");
+  assert.equal(await context.resolveReactionSenderPhone({ hasReactionByMe: true }), "962779110123");
   console.log("reaction sender identity resolution verified");
 })().catch((error) => {
   console.error(error);
