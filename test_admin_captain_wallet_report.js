@@ -17,7 +17,7 @@ assert.match(html, /u\.balanceBeforeSubscription/);
 assert.match(html, /u\.balanceAfterSubscription/);
 assert.match(html, /u\.currentBalance/);
 assert.match(html, /data\.users/);
-assert.match(server, /displayName: captainDisplayName\(row\.registration_name \|\| row\.name\)/);
+assert.match(server, /displayName: captainDisplayName\(row\.name \|\| row\.registration_name\)/);
 assert.match(server, /registration_name/);
 assert.match(server, /subscription_balance_after_cents/);
 assert.match(server, /currentBalanceCents/);

@@ -11931,7 +11931,7 @@ app.get("/api/admin/captains", requireAdmin, adminReadLimiter, v27AdminReadCache
   res.json({ captains: rows.map((row) => ({
     ...row,
     registrationName: row.registration_name || row.name,
-    displayName: captainDisplayName(row.registration_name || row.name),
+    displayName: captainDisplayName(row.name || row.registration_name),
     authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
     balance: money(row.wallet_cents),
     balanceCents: Number(row.wallet_cents || 0),
@@ -11961,7 +11961,7 @@ app.get("/api/admin/captains/archived", requireAdmin, adminReadLimiter, v27Admin
   res.json({ captains: rows.map((row) => ({
     ...row,
     registrationName: row.registration_name || row.name,
-    displayName: captainDisplayName(row.registration_name || row.name),
+    displayName: captainDisplayName(row.name || row.registration_name),
     authMethod: normalizeCaptainAuthMethod(row.captain_auth_method),
     balance: money(row.wallet_cents),
     balanceCents: Number(row.wallet_cents || 0),
@@ -13948,7 +13948,7 @@ app.get("/api/admin/bulk-topup/preview", requireAdmin, (req, res) => {
     const cardValueCents = Math.abs(balanceCents);
     return {
       captainId: row.id,
-      name: captainDisplayName(row.registration_name || row.name),
+      name: captainDisplayName(row.name || row.registration_name),
       phoneMasked: maskPhone(row.phone),
       currentBalance: money(balanceCents),
       cardValue: money(cardValueCents),
@@ -15315,7 +15315,7 @@ app.get("/api/admin/captain-subscriptions/preview", requireBotWalletOwner, admin
   const charged = new Map(alreadyCharged.map((row) => [Number(row.user_id), row.status]));
   const pending = candidates.filter((captain) => !charged.has(Number(captain.id)));
   res.setHeader("Cache-Control", "no-store");
-  res.json({ success: true, manualOnly: true, automaticDeductions: weeklySubscriptionScheduler.config().enabled, chargeDate: ammanDateKey(stamp), period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.registration_name || captain.name), phone: captain.phone, balance: money(captain.wallet_cents), createdAt: captain.created_at })) });
+  res.json({ success: true, manualOnly: true, automaticDeductions: weeklySubscriptionScheduler.config().enabled, chargeDate: ammanDateKey(stamp), period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, eligibleCount: pending.length, totalCents: pending.length * CAPTAIN_SUBSCRIPTION_CENTS, captains: pending.map((captain) => ({ id: captain.id, name: captainDisplayName(captain.name || captain.registration_name), phone: captain.phone, balance: money(captain.wallet_cents), createdAt: captain.created_at })) });
 });
 app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req, res) => {
   if (String(req.body?.confirmation || "") !== "APPLY_WEEKLY_CAPTAIN_CHARGE") return res.status(400).json({ error: "التأكيد APPLY_WEEKLY_CAPTAIN_CHARGE مطلوب" });
@@ -15364,7 +15364,7 @@ app.get("/api/admin/subscriptions", requireAdmin, adminReadLimiter, v27AdminRead
       name: row.name,
       registrationName: row.registration_name || row.name,
       originalName: row.registration_name || row.name,
-      displayName: captainDisplayName(row.registration_name || row.name),
+      displayName: captainDisplayName(row.name || row.registration_name),
       phone: row.phone,
       active: Boolean(row.active),
       accountStatus: row.account_status,
@@ -15397,7 +15397,7 @@ app.get("/api/admin/subscriptions", requireAdmin, adminReadLimiter, v27AdminRead
       appliedCount: rows.filter((row) => row.status === "applied").length,
       total: money(totalCents),
       users: serializedUsers,
-      charges: rows.map((row) => ({ name: row.registration_name || row.name, displayName: captainDisplayName(row.registration_name || row.name), phone: row.phone, balance: row.balance_after_cents == null ? money(row.wallet_cents) : money(row.balance_after_cents), reference: row.reference })),
+      charges: rows.map((row) => ({ name: row.registration_name || row.name, displayName: captainDisplayName(row.name || row.registration_name), phone: row.phone, balance: row.balance_after_cents == null ? money(row.wallet_cents) : money(row.balance_after_cents), reference: row.reference })),
     });
   }
   res.json({
@@ -15414,7 +15414,7 @@ app.get("/api/admin/subscriptions", requireAdmin, adminReadLimiter, v27AdminRead
       id: row.id,
       captainId: row.user_id,
       name: row.registration_name || row.name,
-      displayName: captainDisplayName(row.registration_name || row.name),
+      displayName: captainDisplayName(row.name || row.registration_name),
       phone: row.phone,
       status: row.status,
       amountCents: row.amount_cents,
@@ -15444,7 +15444,7 @@ app.get("/api/admin/daily-charges", requireAdmin, adminReadLimiter, v27AdminRead
     id: row.id,
     captainId: row.user_id,
     name: row.registration_name || row.name,
-    displayName: captainDisplayName(row.registration_name || row.name),
+    displayName: captainDisplayName(row.name || row.registration_name),
     phone: row.phone,
     active: Boolean(row.active),
     accountStatus: row.account_status,
