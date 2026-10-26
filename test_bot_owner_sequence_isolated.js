@@ -3,7 +3,7 @@ const { isBotGeneratedMessage, isBotReactionSender } = require("./message_guardr
 
 const state = { order: null, pending: false, settlements: 0 };
 const owner = "962785217886";
-const bot = "0775969880";
+const bot = "0779110123";
 const captain = "0790000000";
 
 function receiveMessage({ fromMe, sender, body }) {

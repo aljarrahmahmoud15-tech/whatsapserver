@@ -16,7 +16,7 @@ const context = {
 };
 vm.runInNewContext(`${source.slice(start, end)}\nthis.baileysJidPhone = baileysJidPhone; this.baileysMessageText = baileysMessageText;`, context);
 
-assert.strictEqual(context.baileysJidPhone("962775969880:12@s.whatsapp.net"), "962775969880", "يُستخرج رقم المرسل دون رقم الجهاز");
+assert.strictEqual(context.baileysJidPhone("962779110123:12@s.whatsapp.net"), "962779110123", "يُستخرج رقم المرسل دون رقم الجهاز");
 assert.strictEqual(context.baileysMessageText({ message: { conversation: "السعر 5" } }), "السعر 5", "تُقرأ رسالة نصية عادية");
 assert.strictEqual(context.baileysMessageText({ message: { extendedTextMessage: { text: "راكب من إربد إلى عمّان" } } }), "راكب من إربد إلى عمّان", "تُقرأ رسالة نصية موسعة");
 assert.strictEqual(context.baileysMessageText({ message: {} }), "", "لا تُنشأ رسالة من محتوى فارغ");

@@ -106,7 +106,7 @@ const context = {
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
   isConfiguredGroup: (groupId) => groupId === "test-group@g.us",
   isBlockedPhone: () => false,
-  isProtectedOwnerIdentity: (phone) => String(phone) === "962775969880",
+  isProtectedOwnerIdentity: (phone) => String(phone) === "962779110123",
   phoneWithCountry: (value) => String(value),
   isBotReactionSender,
   serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
@@ -118,7 +118,7 @@ const context = {
   notifyOrderLifecycleBlocker: () => {},
   logOrderTrace: () => {},
   orderTraceKey: (value) => String(value || ""),
-  connectedBotPhone: () => "0775969880",
+  connectedBotPhone: () => "0779110123",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
   getSetting: (_key, fallback) => fallback,
   PRODUCER_RATE_BPS: 1250,
@@ -174,7 +174,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(candidate.status, "finalized", "هوية صاحب التفاعل لا تمنع الطلب بعد اكتمال الشروط");
   assert.strictEqual(ledgers.length, 3, "لا تتكرر التسوية بسبب اختلاف صاحب التفاعل");
 
-  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962775969880" });
+  await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "962779110123" });
   assert.strictEqual(candidate.status, "finalized", "تفاعل المالك المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
   assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
