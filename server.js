@@ -74,7 +74,7 @@ const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "Aljarah";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Jojo1987@";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const ADMIN_PANEL_CREDENTIALS = Object.freeze({
   v27: { username: process.env.ADMIN_V27_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_V27_PASSWORD || ADMIN_PASSWORD },
   v26: { username: process.env.ADMIN_V26_USERNAME || ADMIN_USERNAME, password: process.env.ADMIN_V26_PASSWORD || ADMIN_PASSWORD },
@@ -86,7 +86,7 @@ const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
 const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
 const OWNER_VAULT_SECRET = process.env.OWNER_VAULT_SECRET || "";
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
-const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "9871040319";
+const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
