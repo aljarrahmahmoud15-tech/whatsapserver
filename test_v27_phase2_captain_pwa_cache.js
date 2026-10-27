@@ -22,7 +22,7 @@ assert.match(captain, /beforeinstallprompt/);
 assert.match(captain, /serviceWorker\.register\('\/captain-sw\.js'/);
 assert.match(sw, /url\.pathname\.startsWith\('\/api\/'\)/);
 
-assert.match(admin, /<title>وصلني الآن · Owner Control V27<\/title>/);
+assert.match(admin, /<title>العزوة · Owner Control V27<\/title>/);
 assert.match(admin, /class="v27-signal-mark"[^>]*>V27<\/span>/);
 assert.doesNotMatch(admin, /owner-vault|خزنة المالك/);
 assert.match(admin, /المركبة/);

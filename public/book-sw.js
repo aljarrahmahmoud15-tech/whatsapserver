@@ -1,4 +1,4 @@
-const CACHE_NAME = 'waslni-passenger-v2';
+const CACHE_NAME = 'alezwa-passenger-v2';
 const APP_SHELL = [
   '/book.html',
   '/manifest.webmanifest',

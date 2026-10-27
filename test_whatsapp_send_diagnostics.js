@@ -9,7 +9,7 @@ assert.match(server, /function recordWhatsAppPageDiagnostic\(/);
 assert.match(server, /async function installWhatsAppSendDiagnostics\(instance, generation\)/);
 assert.match(server, /page\.on\("pageerror"/);
 assert.match(server, /page\.on\("console"/);
-assert.match(server, /window\.__waslniSendDiagnostics/);
+assert.match(server, /window\.__alezwaSendDiagnostics/);
 assert.match(server, /api\.sendMessage = hooked/);
 assert.match(server, /looksLikeOrder/);
 assert.match(server, /optionKeys/);

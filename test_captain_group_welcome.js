@@ -30,5 +30,5 @@ test('captain welcome card keeps the explanation inside a green and gold card', 
   assert.match(source, /#34d399/);
   assert.match(source, /#f6c84c/);
   assert.match(source, /ترحيب وتعليمات التشغيل فقط/);
-  assert.match(source, /waslni-captain-welcome-card\.png/);
+  assert.match(source, /alezwa-captain-welcome-card\.png/);
 });

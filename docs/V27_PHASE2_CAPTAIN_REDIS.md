@@ -23,8 +23,8 @@
 - أضيف عميل `redis` طويل العمر، يعمل فقط عند توفر `REDIS_URL`.
 - عند غياب Redis أو تعطل الاتصال، يعود الخادم تلقائيًا إلى كاش الذاكرة ولا يفشل الإقلاع.
 - Redis يخزن طبقة تسريع قابلة لإعادة البناء فقط:
-  - `waslni:v27:prod:bootstrap:<hash>:v1` — TTL مبدئي 5 ثوانٍ.
-  - `waslni:v27:prod:group-summary:<hash>:v1` — TTL مبدئي 5 ثوانٍ.
+  - `alezwa:v27:prod:bootstrap:<hash>:v1` — TTL مبدئي 5 ثوانٍ.
+  - `alezwa:v27:prod:group-summary:<hash>:v1` — TTL مبدئي 5 ثوانٍ.
 - لا تُحفظ جلسة WhatsApp، SQLite، المحافظ، قرارات الشحن، الاشتراكات، رموز QR أو أسرار المالك في Redis.
 - تضاف مؤشرات الاستجابة:
   - `X-V27-Bootstrap-Cache: MEMORY-HIT | REDIS-HIT | MISS`

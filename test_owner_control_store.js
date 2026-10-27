@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./owner-control-store");
 
-const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "waslni-owner-control-"));
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "alezwa-owner-control-"));
 const store = createOwnerControlStore({ dataDir: tempDir, clock: () => "2026-10-02T10:00:00.000Z" });
 
 const checkpoint = store.saveCheckpoint("test", {

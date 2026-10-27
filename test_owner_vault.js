@@ -5,7 +5,7 @@ const path = require("node:path");
 const Database = require("better-sqlite3");
 const { createOwnerVault, ALLOWED_OWNER_VAULT_DECISIONS } = require("./owner-vault");
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "waslni-owner-vault-"));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "alezwa-owner-vault-"));
 const vault = createOwnerVault({ dataDir, secret: "test-only-owner-vault-secret", clock: () => "2026-10-02T00:00:00.000Z" });
 assert.deepEqual(ALLOWED_OWNER_VAULT_DECISIONS, ["owner.decision.note"]);
 assert.equal(vault.status().encrypted, true);

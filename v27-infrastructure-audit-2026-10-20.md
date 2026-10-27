@@ -32,7 +32,7 @@
 | [nexora-v27](https://github.com/aljarrahmahmoud15-tech/nexora-v27) | خاص، آخر تحديث 2026-10-17 | فرع/نسخة تشغيلية أقدم، بلا direct ride الحالي | لا ينقل إليه |
 | [nexora-core](https://github.com/aljarrahmahmoud15-tech/nexora-core) | نشط، آخر تحديث 2026-10-12 | Core/Modules وقاعدة منفصلة، وليس نسخة WhatsApp الإنتاجية الحالية | مسار تطوير مستقبلي، ليس بديلًا فوريًا |
 | [nexora-ride](https://github.com/aljarrahmahmoud15-tech/nexora-ride) | خاص، آخر تحديث 2026-10-14 | هيكل صغير جدًا، بلا اختبارات أو إعداد Render مكتمل | غير مناسب |
-| [waslni-owner-control](https://github.com/aljarrahmahmoud15-tech/waslni-owner-control) | خاص، آخر تحديث 2026-10-09 | تطبيق Owner Control مستقل بواجهة TypeScript/React، وليس بوت WhatsApp الحالي | مكمل محتمل، لا ينقل المشروع إليه |
+| [alezwa-owner-control](https://github.com/aljarrahmahmoud15-tech/alezwa-owner-control) | خاص، آخر تحديث 2026-10-09 | تطبيق Owner Control مستقل بواجهة TypeScript/React، وليس بوت WhatsApp الحالي | مكمل محتمل، لا ينقل المشروع إليه |
 | [wasselni-owner-dashboard](https://github.com/aljarrahmahmoud15-tech/wasselni-owner-dashboard) | خاص، آخر تحديث 2026-10-08 | لوحة/تطبيق منفصل، دون تعريف Render مباشر | لا ينقل إليه |
 | [wasselni-ops](https://github.com/aljarrahmahmoud15-tech/wasselni-ops) | أقدم، آخر تحديث 2026-09-30 | لوحة PostgreSQL بسيطة على الخطة المجانية، بلا جلسة WhatsApp | غير مناسب للإنتاج الحالي |
 | [aljarah-operations](https://github.com/aljarrahmahmoud15-tech/aljarah-operations) | أقدم، آخر تحديث 2026-09-17 | نسخة عمليات مستقلة، لها هوية وتشغيل منفصلان | تبقى معزولة |
@@ -65,7 +65,7 @@
 - `nexora-core`: خدمة Node مستقلة، وفحص `/health` ناجح، لكنها ليست بوت WhatsApp الحالي.
 - `nexora-db`: PostgreSQL 16، قاعدة منفصلة.
 - `nexora-terminal-control`: خدمة Node للتحكم الطرفي.
-- `waslni-owner-control`: تطبيق Owner Control مستقل.
+- `alezwa-owner-control`: تطبيق Owner Control مستقل.
 - `whatsappserver-new-1`: نسخة Docker موازية في Frankfurt.
 - `wasselni-ops`: لوحة Node في Frankfurt.
 - `wasselni-ops-db`: PostgreSQL 18 مرتبط بلوحة العمليات.

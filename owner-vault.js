@@ -7,7 +7,7 @@ const ALLOWED_OWNER_VAULT_DECISIONS = Object.freeze(["owner.decision.note"]);
 const MAX_DECISION_BYTES = 64 * 1024;
 const KEY_FILE_MODE = 0o600;
 const DB_FILE_MODE = 0o600;
-const KDF_SALT = Buffer.from("waslni-v26-owner-vault-key-v1", "utf8");
+const KDF_SALT = Buffer.from("alezwa-v26-owner-vault-key-v1", "utf8");
 
 function isoNow() {
   return new Date().toISOString();
