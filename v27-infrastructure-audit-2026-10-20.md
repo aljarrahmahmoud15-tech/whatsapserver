@@ -7,7 +7,7 @@
 **التوصية:** الإبقاء دون نقل على:
 
 - GitHub: `aljarrahmahmoud15-tech/whatsapserver`، فرع `main`.
-- Render: `whatsapserver-2` المرتبط بالنطاق `https://bot.wasselni-biz.com`.
+- Render: `whatsapserver-2` المرتبط بالنطاق `https://<old-domain-removed>`.
 
 هذا هو الزوج الأنسب حاليًا لأنه الوحيد الذي يجمع نسخة الراكب المعتمدة، V27، دورة الرحلة المباشرة، إشعارات الرحلة، تطبيق الكابتن، اختبارات الحماية، واتصال WhatsApp جاهزًا على النطاق الفعلي.
 
@@ -16,9 +16,9 @@
 - آخر commit قبل هذه الجولة: `78e599a` — توحيد هوية V27 — بتاريخ 2026-10-20.
 - المستودع الحالي يحتوي 276 ملفًا متعقبًا و175 ملف اختبار، ويحتوي وحدات `direct-ride` وواجهات `admin-v27`.
 - فحص الخدمة العامة:
-  - `https://bot.wasselni-biz.com/health` يعيد HTTP 200 و`ready=true` وWhatsApp في حالة جاهز.
+  - `https://<old-domain-removed>/health` يعيد HTTP 200 و`ready=true` وWhatsApp في حالة جاهز.
   - `/status` يعمل ويؤكد أن الخدمة مربوطة بقروبها وبيئتها الحالية، دون نقل أو تغيير أي هوية.
-- خدمة Render الحالية مرتبطة بالمستودع `whatsapserver` والفرع `main`، وبها النطاق `bot.wasselni-biz.com`.
+- خدمة Render الحالية مرتبطة بالمستودع `whatsapserver` والفرع `main`، وبها النطاق `<old-domain-removed>`.
 - الخدمة الحالية تستخدم Docker مع قرص دائم مركّب على `/app/data` بحجم 10 GB، وملف `render.yaml` أصبح يطابق ذلك مع فحص `/health`.
 - تم تفعيل `Auto-Deploy: On Commit` في Render لخدمة `whatsapserver-2`.
 - فحص الصحة لم ينفذ أي طلب كتابة أو تسوية أو إرسال WhatsApp.
@@ -112,6 +112,6 @@
 - [المستودع الإنتاجي](https://github.com/aljarrahmahmoud15-tech/whatsapserver)
 - [لوحة Render](https://dashboard.render.com/)
 - [خدمة whatsapserver-2](https://dashboard.render.com/web/srv-dagbnenqj5pc738f44e0)
-- [الخدمة العامة الحالية](https://bot.wasselni-biz.com/health)
+- [الخدمة العامة الحالية](https://<old-domain-removed>/health)
 - [خدمة clean-instance](https://dashboard.render.com/web/srv-dan9ohqjnfac73ft2rug)
 - [خدمة nexora-core](https://dashboard.render.com/web/srv-db67sfo473hc73dfkt40)

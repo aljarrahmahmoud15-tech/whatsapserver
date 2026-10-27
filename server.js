@@ -13875,10 +13875,10 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
 app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
   const verified = {
     groupId: WHATSAPP_GROUP_ID,
-    sourceMessageId: `true_${WHATSAPP_GROUP_ID}_2A122A1AF1FEF641E079_27153336946853@lid`,
-    acceptanceMessageId: `false_${WHATSAPP_GROUP_ID}_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid`,
+    sourceMessageId: `true_${WHATSAPP_GROUP_ID}_SAMPLE_SOURCE_MSG`,
+    acceptanceMessageId: `false_${WHATSAPP_GROUP_ID}_SAMPLE_ACCEPTANCE_MSG`,
     downloaderPhone: BOT_PHONE_INTL,
-    executorPhone: BOT_PHONE_INTL || "962700000003",
+    executorPhone: BOT_PHONE_INTL || null,
     price: 10,
     origin: "اربد",
     destination: "المنارة",
