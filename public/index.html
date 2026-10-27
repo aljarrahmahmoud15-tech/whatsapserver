@@ -73,7 +73,7 @@
     </main>
   </div>
   <div class="toast" id="toast"></div>
-  <div class="modal" id="login-modal" hidden><form class="modal-card" id="login-form"><h3>دخول إدارة لوحة العزوة</h3><p>الدخول يحمي المحافظ، الطلبات، إصدار البطاقات، وربط القروب. لا تُدخل كلمة المرور إلا على نطاق النظام الرسمي.</p><label for="username">اسم المستخدم</label><input id="username" autocomplete="username" value="admin" required><label for="password">كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required><div class="error-text" id="login-error"></div><div class="modal-actions"><button type="button" class="ghost" id="close-login">إلغاء</button><button type="submit" class="primary">دخول آمن</button></div></form></div>
+  <div class="modal" id="login-modal" hidden><form class="modal-card" id="login-form"><h3>دخول إدارة لوحة العزوة</h3><p>الدخول يحمي المحافظ، الطلبات، إصدار البطاقات، وربط القروب. لا تُدخل كلمة المرور إلا على نطاق النظام الرسمي.</p><label for="username">اسم المستخدم</label><input id="username" autocomplete="username" value="Fadi" required><label for="password">كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required><div class="error-text" id="login-error"></div><div class="modal-actions"><button type="button" class="ghost" id="close-login">إلغاء</button><button type="submit" class="primary">دخول آمن</button></div></form></div>
   <script>
     const heroOperationCopy=document.querySelector('.hero-card p');
     function internationalPhone(value){const phone=String(value||'').replace(/\D/g,'');return phone.startsWith('0')?'962'+phone.slice(1):phone||'غير معروف'}
