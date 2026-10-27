@@ -23,8 +23,12 @@ assert.match(server, /تم إرسال بطاقة دخولك إلى واتساب/
 assert.match(server, /تم تسليم بطاقة الدخول إلى واتسابك/);
 assert.match(server, /مرحبًا بك يا كابتن/);
 assert.match(server, /مرحبًا بك، حسابك جاهز للدخول/);
-assert.match(server, /رابط الدخول: \$\{captainLoginUrl\(baseUrl\)\}/);
-assert.match(server, /اختر WhatsApp واطلب رمز الدخول/);
+assert.match(server, /رابط الدخول التلقائي لمرة واحدة: \$\{accessLink\.url\}/);
+assert.match(server, /الرابط صالح لمدة 10 دقائق ويفتح الحساب تلقائيًا/);
+assert.match(server, /إذا انتهت الصلاحية اختر WhatsApp واطلب رمز الدخول/);
+assert.match(server, /إذا انتهت الصلاحية استخدم الهاتف والرقم السري/);
+assert.match(server, /captain_login_links/);
+assert.match(server, /used_at IS NULL AND revoked_at IS NULL/);
 assert.doesNotMatch(server, /الخطوة 1: افتح رابط الدخول المباشر المرفق/);
 assert.doesNotMatch(server, /لا تستخدم رابطًا آخر ولا تشارك رمز الدخول/);
 assert.match(server, /message\.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH/);

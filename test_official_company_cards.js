@@ -116,9 +116,11 @@ assert(server.includes("role='producer',is_bot=1,active=1"), 'the bot owner phon
 assert(server.includes('captain_pin_hash=NULL,captain_pin_ciphertext=NULL'), 'the bot owner cannot retain captain login credentials');
 assert(/app\.get\("\/api\/admin\/captains", requireAdmin, (?:adminReadLimiter, )?v27AdminReadCache\("captains", 3000\), \(req, res\) => \{\n  normalizeBotIdentity\(\);/.test(server), 'captain list normalizes the owner before returning data');
 assert(server.includes('function captainLoginUrl'), 'captain access card has a direct login URL');
-assert(server.includes('رابط الدخول المباشر'), 'captain card labels the direct login link');
+assert(server.includes('function captainAutoLoginUrl'), 'captain access card has a one-time automatic login URL');
+assert(server.includes('رابط الدخول التلقائي لمرة واحدة'), 'captain card labels the automatic login link');
+assert(server.includes('app.post("/api/captain/login-link/exchange"'), 'captain automatic login link has an exchange endpoint');
 const approvalFlow = server.slice(server.indexOf('app.post("/api/admin/captain-invites/:id/decision"'), server.indexOf('app.post("/api/admin/captains/:id/approval-notification-test"'));
-assert(!approvalFlow.includes('captainAppLink'), 'approval text does not include a login link');
-assert(!approvalFlow.includes('sendCaptainOperationsCard(candidate, "تمت الموافقة"'), 'approval text does not send a branded card');
+assert(approvalFlow.includes('sendCaptainAppLink(captain, captainInviteBaseUrl(req))'), 'captain approval sends the automatic access card');
 assert(fs.readFileSync('./public/captain.html', 'utf8').includes("get('mode') === 'login' ? 'login' : 'registration'"), 'direct login URL opens the captain login screen');
+assert(fs.readFileSync('./public/captain.html', 'utf8').includes("/api/captain/login-link/exchange"), 'captain page exchanges automatic login links');
 console.log('official company card and compact top-up flow guardrails verified');

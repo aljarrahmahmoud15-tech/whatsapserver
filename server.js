@@ -1269,6 +1269,19 @@ CREATE TABLE IF NOT EXISTS captain_invites (
   decided_at TEXT,
   FOREIGN KEY(approved_user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS captain_login_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_last8 TEXT NOT NULL,
+  captain_user_id INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(captain_user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_captain_login_links_captain ON captain_login_links(captain_user_id, used_at, revoked_at, expires_at);
 CREATE TABLE IF NOT EXISTS captain_phone_aliases (
   phone TEXT PRIMARY KEY,
   captain_user_id INTEGER NOT NULL,
@@ -3784,6 +3797,35 @@ function captainLoginUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   return `${normalized || PUBLIC_APP_URL}/captain?mode=login`;
 }
+function captainAutoLoginUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", token = "") {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  const safeToken = String(token || "").trim();
+  return safeToken
+    ? `${normalized || PUBLIC_APP_URL}/captain?access=${encodeURIComponent(safeToken)}`
+    : captainLoginUrl(baseUrl);
+}
+function issueCaptainAutoLoginLink(captain, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+  const captainId = Number(captain?.id);
+  const record = Number.isInteger(captainId) && captainId > 0
+    ? db.prepare("SELECT id,phone,role,active,is_bot,account_status FROM users WHERE id=? LIMIT 1").get(captainId)
+    : null;
+  const candidate = record || captain;
+  const phone = phoneWithCountry(candidate?.phone);
+  if (!Number.isInteger(captainId) || captainId < 1 || !isValidJordanPhone(phone)
+    || candidate?.role !== "captain" || Number(candidate?.is_bot) === 1
+    || Number(candidate?.active) !== 1 || candidate?.account_status !== "active") return null;
+  const token = crypto.randomBytes(32).toString("base64url");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  db.transaction(() => {
+    db.prepare("UPDATE captain_login_links SET revoked_at=?,updated_at=? WHERE captain_user_id=? AND used_at IS NULL AND revoked_at IS NULL")
+      .run(stamp, stamp, captainId);
+    db.prepare("INSERT INTO captain_login_links(token_hash,token_last8,captain_user_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?)")
+      .run(inviteTokenHash(token), token.slice(-8), captainId, expiresAt, stamp, stamp);
+  })();
+  audit("captain.login_link.issued", "user", captainId, { expiresAt, expiresInSeconds: 600 });
+  return { url: captainAutoLoginUrl(baseUrl, token), expiresAt };
+}
 function captainGatewayUrl(baseUrl = process.env.PUBLIC_BASE_URL || "", inviteToken = "") {
   const normalized = String(baseUrl || "").replace(/\/+$/, "");
   if (!inviteToken) return captainAppUrl(baseUrl);
@@ -3807,7 +3849,7 @@ function ensureCaptainAccessCredentials(captain) {
   const phone = phoneWithCountry(captain && captain.phone);
   const current = captain && captain.id
     ? captain
-    : db.prepare("SELECT id,phone,name,role,active,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+    : db.prepare("SELECT id,phone,name,role,active,is_bot,account_status,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (current && captain && captain.temporaryPin) return { ...current, temporaryPin: captain.temporaryPin };
   if (current && normalizeCaptainAuthMethod(current.captain_auth_method) === "whatsapp") return { ...current, temporaryPin: null };
   if (!current || current.captain_pin_hash) return { ...(current || captain), temporaryPin: null };
@@ -3819,12 +3861,15 @@ async function sendCaptainAppLink(captain, baseUrl = process.env.PUBLIC_BASE_URL
   const prepared = ensureCaptainAccessCredentials(captain);
   const phone = phoneWithCountry(prepared && prepared.phone);
   if (!isValidJordanPhone(phone)) return false;
+  const accessLink = issueCaptainAutoLoginLink(prepared, baseUrl);
+  if (!accessLink) return false;
   const whatsappAuth = normalizeCaptainAuthMethod(prepared.captain_auth_method) === "whatsapp";
   const lines = [
     `الكابتن: ${prepared.name || "حساب الكابتن"}`,
     "مرحبًا بك، حسابك جاهز للدخول.",
-    `رابط الدخول: ${captainLoginUrl(baseUrl)}`,
-    whatsappAuth ? "اختر WhatsApp واطلب رمز الدخول." : "أدخل رقم الهاتف والرقم السري.",
+    `رابط الدخول التلقائي لمرة واحدة: ${accessLink.url}`,
+    "الرابط صالح لمدة 10 دقائق ويفتح الحساب تلقائيًا.",
+    whatsappAuth ? "إذا انتهت الصلاحية اختر WhatsApp واطلب رمز الدخول." : "إذا انتهت الصلاحية استخدم الهاتف والرقم السري.",
   ];
   const cardResult = await sendCompanyOperationsCard(`${phone}@c.us`, "مرحبًا بك يا كابتن", lines, { returnMessage: true }).catch(() => ({ sent: false, messageId: null }));
   const sent = Boolean(cardResult && cardResult.sent);
@@ -9789,13 +9834,14 @@ app.post("/api/admin/captain-invites/:id/decision", requireAdmin, adminMutationL
     text: "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.",
     idempotencyKey: `CAPTAIN-APPROVAL-${id}`,
   }) : { status: "skipped" };
-  const notified = approvalNotice.status === "sent";
   const captain = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  const accessCardSent = captain ? await sendCaptainAppLink(captain, captainInviteBaseUrl(req)) : false;
+  const notified = approvalNotice.status === "sent" || accessCardSent;
   const autoTopup = await issueApprovalTopupCard({ captain: { ...captain, role: "captain", active: 1, account_status: "active", is_bot: 0 }, approvalId: id, req });
   const membership = await addCaptainToConfiguredGroup(captain).catch((error) => ({ status: "failed", error: error.message }));
   audit("captain.group_membership.sync", "user", captainId, { membership });
-  void notifyOperations({ event: "captain.join.approved", title: "تأكيد اعتماد كابتن", lines: [`الكابتن: ${invite.name}`, `الهاتف: ${invite.phone}`, "تم اعتماد التسجيل وإرسال بطاقة الدخول.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
-  res.json({ success: true, status: "approved", captainId, notified, membership, autoTopup });
+  void notifyOperations({ event: "captain.join.approved", title: "تأكيد اعتماد كابتن", lines: [`الكابتن: ${invite.name}`, `الهاتف: ${invite.phone}`, accessCardSent ? "تم اعتماد التسجيل وإرسال بطاقة الدخول التلقائي." : "تم اعتماد التسجيل، وتعذر إرسال بطاقة الدخول حاليًا.", `حالة القروب: ${membership.status || "غير محددة"}`], ownersOnly: true });
+  res.json({ success: true, status: "approved", captainId, notified, accessCardSent, membership, autoTopup });
 });
 app.post("/api/admin/captains/:id/approval-notification-test", requireAdmin, async (req, res) => {
   const captainId = Number(req.params.id);
@@ -9894,6 +9940,24 @@ app.post("/api/captain/login", (req, res) => {
   db.prepare("UPDATE users SET captain_last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), user.id);
   setCaptainSessionCookie(res, token);
   res.json({ success: true, authMethod: "pin", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
+});
+app.post("/api/captain/login-link/exchange", (req, res) => {
+  const token = String(req.body?.token || "").trim();
+  if (token.length < 32 || token.length > 160) return res.status(400).json({ error: "رابط الدخول غير صالح" });
+  if (!consumeRateLimit(loginRate, `${clientAddress(req)}:login-link`, 10)) return res.status(429).json({ error: "محاولات كثيرة؛ اطلب رابط دخول جديدًا" });
+  const stamp = now();
+  const link = db.prepare(`SELECT l.id,l.captain_user_id,l.expires_at,l.used_at,l.revoked_at,u.phone,u.name,u.role,u.active,u.is_bot,u.account_status
+    FROM captain_login_links l JOIN users u ON u.id=l.captain_user_id WHERE l.token_hash=? LIMIT 1`).get(inviteTokenHash(token));
+  if (!link) return res.status(401).json({ error: "رابط الدخول غير صالح أو منتهي" });
+  if (link.used_at || link.revoked_at || link.expires_at <= stamp) return res.status(410).json({ error: "انتهت صلاحية رابط الدخول؛ اطلب رابطًا جديدًا" });
+  if (link.role !== "captain" || Number(link.is_bot) === 1 || Number(link.active) !== 1 || link.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
+  const consumed = db.prepare("UPDATE captain_login_links SET used_at=?,updated_at=? WHERE id=? AND used_at IS NULL AND revoked_at IS NULL AND expires_at>? ").run(stamp, stamp, link.id, stamp);
+  if (!consumed.changes) return res.status(409).json({ error: "تم استخدام رابط الدخول أو لم يعد صالحًا" });
+  const sessionToken = jwt.sign({ role: "captain", userId: link.captain_user_id, phone: link.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
+  db.prepare("UPDATE users SET captain_last_login_at=?,updated_at=? WHERE id=?").run(stamp, stamp, link.captain_user_id);
+  audit("captain.login_link.exchanged", "user", link.captain_user_id, { linkId: link.id });
+  setCaptainSessionCookie(res, sessionToken);
+  res.json({ success: true, authMethod: "magic_link", user: { id: link.captain_user_id, phone: link.phone, name: link.name, role: link.role, active: true } });
 });
 app.post("/api/captain/whatsapp/request-code", async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
@@ -12373,7 +12437,7 @@ app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
   const deletePreviousPlain = req.body?.deletePreviousPlain === true;
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم كابتن أردني صحيح مطلوب" });
-  const captain = db.prepare("SELECT id,phone,name,active,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
+  const captain = db.prepare("SELECT id,phone,name,active,is_bot,account_status,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (!captain) return res.status(404).json({ error: "الكابتن غير مسجل في النظام" });
   if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
