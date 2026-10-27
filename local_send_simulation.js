@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const GROUP_ID = '120363426604560611@g.us';
+const GROUP_ID = process.env.SIM_GROUP_ID || 'GROUP_ID_PLACEHOLDER@g.us';
 const ORDER_MESSAGE = 'السعر 12 من إربد إلى عمّان';
 const CONTROL_MESSAGE = '🧪 اختبار اتصال محلي لا يرسل إلى WhatsApp ولا ينشئ حجزًا.';
 const PUPPETEER_ERROR = 'r: r\n    at #evaluate (file:///app/node_modules/puppeteer-core/lib/puppeteer/cdp/ExecutionContext.js:402:19)';

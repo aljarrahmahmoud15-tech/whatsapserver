@@ -36,8 +36,8 @@ const { createWeeklySubscriptionScheduler, businessWeekPeriod } = require("./wee
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
-const BOT_PHONE = process.env.BOT_PHONE?.trim() || "0779110123";
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962779110123";
+const BOT_PHONE = process.env.BOT_PHONE?.trim() || "";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
@@ -1917,8 +1917,9 @@ function createTicketCode() {
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // Keep only explicitly blocked human identities; bot identity is controlled by BOT_PHONE/BOT_PHONE_INTL.
-const BLOCKED_PHONES = new Set(["+962792026321", "+962792026320"]);
-const GROUP_SETUP_OWNER_PHONES = new Set([BOT_PHONE_INTL, ...(process.env.GROUP_SETUP_OWNER_PHONES || "+962785217886").split(",")].map(phoneWithCountry).filter(Boolean));
+// Zero-copy: blocked/owner numbers come from environment (BLOCKED_PHONES / GROUP_SETUP_OWNER_PHONES), never hardcoded.
+const BLOCKED_PHONES = new Set((process.env.BLOCKED_PHONES || "").split(",").map((v) => v.trim()).filter(Boolean));
+const GROUP_SETUP_OWNER_PHONES = new Set([BOT_PHONE_INTL, ...(process.env.GROUP_SETUP_OWNER_PHONES || "").split(",")].map(phoneWithCountry).filter(Boolean));
 const BLOCKED_PHONE_SET = new Set([...BLOCKED_PHONES].map(phoneWithCountry));
 function isBlockedPhone(value) {
   return BLOCKED_PHONE_SET.has(phoneWithCountry(value));
@@ -13871,10 +13872,10 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
 app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
   const verified = {
     groupId: WHATSAPP_GROUP_ID,
-    sourceMessageId: "true_120363426604560611@g.us_2A122A1AF1FEF641E079_27153336946853@lid",
-    acceptanceMessageId: "false_120363426604560611@g.us_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid",
+    sourceMessageId: `true_${WHATSAPP_GROUP_ID}_2A122A1AF1FEF641E079_27153336946853@lid`,
+    acceptanceMessageId: `false_${WHATSAPP_GROUP_ID}_AC4CCC435CEB830CA5404E899A626840_60206985818354@lid`,
     downloaderPhone: BOT_PHONE_INTL,
-    executorPhone: "962786856851",
+    executorPhone: BOT_PHONE_INTL || "962700000003",
     price: 10,
     origin: "اربد",
     destination: "المنارة",

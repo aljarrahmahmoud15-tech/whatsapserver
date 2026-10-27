@@ -42,7 +42,7 @@ const context = {
   },
   isReady: true,
   withTimeout: async (promise) => promise,
-  getSetting: (_key, fallback) => fallback || "120363426604560611@g.us",
+  getSetting: (_key, fallback) => fallback || "120363000000000000@g.us",
   isConfiguredGroup: () => true,
   readGroupSnapshot: async () => ({ isGroup: true }),
   orderTraceKey: (value) => String(value),
@@ -51,7 +51,7 @@ const context = {
     return digits.startsWith("0") ? `962${digits.slice(1)}` : digits;
   },
   isValidJordanPhone: (phone) => /^9627\d{8}$/.test(String(phone)),
-  connectedBotPhone: () => "962779110123",
+  connectedBotPhone: () => "962771111111",
   console,
 };
 
@@ -84,7 +84,7 @@ this.directJordanPhoneFromWhatsappValue = directJordanPhoneFromWhatsappValue;`, 
   });
   assert.equal(sender, "962785344508");
 
-  assert.equal(await context.resolveMessageSenderPhone({ fromMe: true }), "962779110123");
+  assert.equal(await context.resolveMessageSenderPhone({ fromMe: true }), "962771111111");
   console.log("WhatsApp LID sender resolution verified");
 })().catch((error) => {
   console.error(error);

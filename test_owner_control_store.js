@@ -9,7 +9,7 @@ const store = createOwnerControlStore({ dataDir: tempDir, clock: () => "2026-10-
 
 const checkpoint = store.saveCheckpoint("test", {
   whatsapp: { ready: true, qrAvailable: false, sessionPath: "/var/data/.wwebjs_auth" },
-  officialGroup: { groupId: "120363426604560611@g.us", body: "should-not-be-stored" },
+  officialGroup: { groupId: "120363000000000000@g.us", body: "should-not-be-stored" },
   credentials: { token: "raw-secret", password: "raw-password", pin: "12345" },
   accessUrl: "https://example.invalid/qr?access=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP",
 });
@@ -19,7 +19,7 @@ assert.equal(latest.snapshot.whatsapp.ready, true);
 assert.equal(latest.snapshot.credentials, "[redacted]");
 assert.match(latest.snapshot.accessUrl, /access=\[redacted\]/);
 assert.equal(latest.snapshot.officialGroup.body, "[redacted]");
-assert.equal(latest.snapshot.officialGroup.groupId, "120363426604560611@g.us");
+assert.equal(latest.snapshot.officialGroup.groupId, "120363000000000000@g.us");
 
 const accepted = store.recordCommand("official-group.snapshot", "accepted", { mutation: "none" });
 assert.equal(accepted.status, "accepted");

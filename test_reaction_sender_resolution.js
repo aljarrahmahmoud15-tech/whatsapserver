@@ -11,7 +11,7 @@ const context = {
   client: {
     info: { wid: { _serialized: "27153336946853@lid" } },
     async getContactLidAndPhone(ids) {
-      return ids.map((lid) => lid === "987654321098765@lid" ? { lid, pn: "962786856851@c.us" } : null);
+      return ids.map((lid) => lid === "987654321098765@lid" ? { lid, pn: "962711111112@c.us" } : null);
     },
     async getContactById() { return null; },
     pupPage: {
@@ -22,7 +22,7 @@ const context = {
     },
   },
   isReady: true,
-  connectedBotPhone: () => "962779110123",
+  connectedBotPhone: () => "962771111111",
   directJordanPhoneFromWhatsappValue(value) {
     const serialized = typeof value === "string" ? value : (value?._serialized || value?.id || "");
     if (/@lid$/i.test(String(serialized))) return "";
@@ -42,7 +42,7 @@ const context = {
   findPersistedWhatsappPhone: () => "",
   persistWhatsappIdentity: () => null,
   resolveWhatsappLidsFromConfiguredGroup: async () => [],
-  getSetting: (_key, fallback) => fallback || "120363426604560611@g.us",
+  getSetting: (_key, fallback) => fallback || "120363000000000000@g.us",
   isConfiguredGroup: () => true,
   readGroupSnapshot: async () => ({ isGroup: true }),
   withTimeout: async (promise) => promise,
@@ -63,11 +63,11 @@ assert.ok(resolverStart >= 0 && resolverEnd > resolverStart, "LID resolver exist
 vm.runInNewContext(`${source.slice(resolverStart, resolverEnd)}\n${source.slice(start, end)}\nthis.resolveReactionSenderPhone = resolveReactionSenderPhone;`, context);
 
 (async () => {
-  assert.equal(await context.resolveReactionSenderPhone({ senderId: "962786856851@c.us" }), "962786856851");
-  assert.equal(await context.resolveReactionSenderPhone({ senderUserJid: "987654321098765@lid" }), "962786856851");
+  assert.equal(await context.resolveReactionSenderPhone({ senderId: "962711111112@c.us" }), "962711111112");
+  assert.equal(await context.resolveReactionSenderPhone({ senderUserJid: "987654321098765@lid" }), "962711111112");
   assert.equal(await context.resolveReactionSenderPhone({ sender: { senderUserJid: "246813579024681@lid" } }), "962787847477");
-  assert.equal(await context.resolveReactionSenderPhone({ senderId: "27153336946853@lid" }), "962779110123");
-  assert.equal(await context.resolveReactionSenderPhone({ hasReactionByMe: true }), "962779110123");
+  assert.equal(await context.resolveReactionSenderPhone({ senderId: "27153336946853@lid" }), "962771111111");
+  assert.equal(await context.resolveReactionSenderPhone({ hasReactionByMe: true }), "962771111111");
   console.log("reaction sender identity resolution verified");
 })().catch((error) => {
   console.error(error);
