@@ -1535,11 +1535,11 @@ const phoneWithCountry = (value = "") => {
 async function resolveWhatsAppRecipientId(phoneValue) {
   const phone = phoneWithCountry(phoneValue);
   if (!phone || !client || !isReady || typeof client.getNumberId !== "function") return null;
-  const persisted = db.prepare("SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=? AND active=1 ORDER BY last_seen_at DESC LIMIT 1").get(phone);
-  if (persisted?.whatsapp_lid) return String(persisted.whatsapp_lid).trim();
   const resolved = await withTimeout(client.getNumberId(phone), 20000, null);
   const serialized = String(resolved?._serialized || "").trim();
   if (/@(c\.us|lid)$/.test(serialized)) return serialized;
+  const persisted = db.prepare("SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=? AND active=1 ORDER BY last_seen_at DESC LIMIT 1").get(phone);
+  if (persisted?.whatsapp_lid) return String(persisted.whatsapp_lid).trim();
   const contact = await withTimeout(client.getContactById(`${phone}@c.us`), 10000, null);
   const contactId = String(contact?.id?._serialized || contact?.id || "").trim();
   if (/@(c\.us|lid)$/.test(contactId)) return contactId;
@@ -2321,6 +2321,10 @@ const PRIVATE_CAPTAIN_MEDIA_TEST_CONFIRMATION = "SEND-PRIVATE-CAPTAIN-MEDIA-TEST
 // No live test exception remains enabled after the controlled verification attempt.
 const CAPTAIN_STATUS_TEST_ALLOWLIST = new Set();
 const captainStatusNotificationInFlight = new Set();
+const captainStatusRetryAttempts = new Map();
+const CAPTAIN_STATUS_RETRY_INTERVAL_MS = 60 * 1000;
+const CAPTAIN_STATUS_RETRY_MAX_ATTEMPTS = 3;
+let captainStatusRetryTimer = null;
 async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null, testOverride = false, testCaptainId = null }) {
   const recipientPhone = phoneWithCountry(phone);
   const message = String(text || "").trim();
@@ -2353,23 +2357,46 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
   captainStatusNotificationInFlight.add(key);
   let deliveryStatus = "failed";
   let messageId = null;
+  let deliveryError = null;
+  const attemptedRecipientTypes = [];
   try {
     if (client && isReady) {
       const resolved = await resolveWhatsAppRecipientId(recipientPhone);
-      const recipient = resolved || `${recipientPhone}@c.us`;
-      const result = await sendWhatsAppAtMostOnce(recipient, message);
-      if (result.status === "sent") {
-        deliveryStatus = "sent";
-        messageId = result.message?.id?._serialized || null;
-      } else if (result.status === "uncertain") {
-        deliveryStatus = "sent";
-        audit(`notification.${event}.uncertain_ack`, "user", recipientPhone, { idempotencyKey: key, reason: result.error });
+      const candidates = [...new Set([resolved, `${recipientPhone}@c.us`]
+        .map((value) => String(value || "").trim())
+        .filter((value) => /@(c\.us|lid)$/.test(value)))];
+      if (!candidates.length) deliveryError = "recipient_unresolved";
+      for (const recipient of candidates) {
+        attemptedRecipientTypes.push(recipient.endsWith("@lid") ? "lid" : "c.us");
+        const result = await sendWhatsAppAtMostOnce(recipient, message);
+        deliveryError = result.error || null;
+        if (result.status === "sent") {
+          deliveryStatus = "sent";
+          messageId = result.message?.id?._serialized || null;
+          break;
+        }
+        if (result.status === "uncertain") {
+          deliveryStatus = "sent";
+          audit(`notification.${event}.uncertain_ack`, "user", recipientPhone, { idempotencyKey: key, reason: result.error, recipientType: attemptedRecipientTypes.at(-1) });
+          break;
+        }
+        if (!['failed', 'blocked'].includes(result.status)) break;
       }
+    } else {
+      deliveryError = "whatsapp_not_ready";
     }
-  } catch (_) {}
+  } catch (error) {
+    deliveryError = String(error?.message || error).slice(0, 240);
+  }
   captainStatusNotificationInFlight.delete(key);
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-  audit(`notification.${event}`, "user", recipientPhone, { deliveryStatus, idempotencyKey: key, sourceMessageId: sourceMessageId || null });
+  audit(`notification.${event}`, "user", recipientPhone, {
+    deliveryStatus,
+    idempotencyKey: key,
+    sourceMessageId: sourceMessageId || null,
+    deliveryError,
+    attemptedRecipientTypes,
+  });
   return { status: deliveryStatus, notificationId, messageId };
 }
 async function retryCaptainStatusNotifications() {
@@ -2377,10 +2404,27 @@ async function retryCaptainStatusNotifications() {
   const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
   const placeholders = events.map(() => "?").join(",");
   const rows = db.prepare(`SELECT recipient_phone,event,title,message,idempotency_key,source_message_id FROM notifications WHERE recipient_role='captain' AND delivery_status IN ('pending','failed') AND event IN (${placeholders}) ORDER BY id DESC LIMIT 50`).all(...events);
+  let attempted = 0;
   for (const row of rows) {
-    await sendCaptainStatusText({ phone: row.recipient_phone, event: row.event, title: row.title, text: row.message, idempotencyKey: row.idempotency_key, sourceMessageId: row.source_message_id }).catch(() => null);
+    const key = String(row.idempotency_key || "").trim();
+    const attempts = Number(captainStatusRetryAttempts.get(key) || 0);
+    if (!key || attempts >= CAPTAIN_STATUS_RETRY_MAX_ATTEMPTS) continue;
+    captainStatusRetryAttempts.set(key, attempts + 1);
+    attempted += 1;
+    const result = await sendCaptainStatusText({ phone: row.recipient_phone, event: row.event, title: row.title, text: row.message, idempotencyKey: key, sourceMessageId: row.source_message_id }).catch(() => null);
+    if (result && ["sent", "delivered"].includes(result.status)) captainStatusRetryAttempts.delete(key);
   }
-  return { attempted: rows.length };
+  return { attempted, scanned: rows.length };
+}
+function startCaptainStatusNotificationRetryScheduler() {
+  if (captainStatusRetryTimer) return;
+  captainStatusRetryTimer = setInterval(() => {
+    if (!client || !isReady) return;
+    void retryCaptainStatusNotifications()
+      .then((result) => { if (result.attempted) console.log(`[Captains] periodic status notification retry: attempted=${result.attempted}`); })
+      .catch((error) => console.error("[Captains] periodic status notification retry failed:", error.message));
+  }, CAPTAIN_STATUS_RETRY_INTERVAL_MS);
+  captainStatusRetryTimer.unref?.();
 }
 function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
@@ -15722,6 +15766,7 @@ app.listen(PORT, () => {
   startTopupCardArchiveScheduler();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
+  startCaptainStatusNotificationRetryScheduler();
   startConfirmationDeliveryMonitor();
   initializeWhatsApp();
   startWhatsAppWatchdog();
