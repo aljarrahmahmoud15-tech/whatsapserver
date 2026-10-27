@@ -10268,13 +10268,15 @@ function buildPublicStatusPayload() {
     FROM orders`).get();
   return {
     ready: Boolean(isReady),
-    phone: connectedBotPhone(),
+    phone: "",
+    botConnected: Boolean(connectedBotPhone()),
     whatsappIdentityScope: WHATSAPP_IDENTITY_SCOPE,
     whatsappClientId: WHATSAPP_CLIENT_ID,
     groupConfigured: Boolean(configuredGroupId && isConfiguredGroup(configuredGroupId)),
-    groupId: configuredGroupId || null,
+    groupBound: Boolean(configuredGroupId),
+    groupId: null,
     groupIsolation: {
-      environmentGroupId: WHATSAPP_GROUP_ID || null,
+      environmentGroupBound: Boolean(WHATSAPP_GROUP_ID),
       exactMatchRequired: true,
       crossGroupOperations: false,
       unverifiedLidOutbound: false,
@@ -10282,13 +10284,13 @@ function buildPublicStatusPayload() {
     groupReceiverReady,
     groupReceiverMode: baileysReady ? "webjs+baileys" : (isReady ? "webjs" : "offline"),
     groupHydration: { ...lastGroupHydrationDiagnostic },
-    lastGroupEventGroupId,
+    lastGroupEventSeen: Boolean(lastGroupEventGroupId),
     lastGroupEventAt: lastGroupMessageTelemetry?.at || null,
     lastGroupEventMatched: lastGroupMessageTelemetry ? Boolean(lastGroupMessageTelemetry.configured) : null,
-    lastOfficialGroupEventGroupId,
+    lastOfficialGroupEventSeen: Boolean(lastOfficialGroupEventGroupId),
     lastOfficialGroupEventAt: lastOfficialGroupMessageTelemetry?.at || null,
     lastOfficialGroupEventMatched: lastOfficialGroupMessageTelemetry ? Boolean(lastOfficialGroupMessageTelemetry.configured) : null,
-    lastIgnoredGroupEventGroupId,
+    lastIgnoredGroupEventSeen: Boolean(lastIgnoredGroupEventGroupId),
     lastIgnoredGroupEventAt: lastIgnoredGroupMessageTelemetry?.at || null,
     qrAvailable: Boolean(qrCodeData || baileysQrCodeData),
     whatsappState,
@@ -11072,6 +11074,7 @@ app.get("/api/admin/bot/status", requireAdmin, adminReadLimiter, v27AdminReadCac
   res.json({
     success: true,
     status: health.whatsapp?.ready ? "connected" : "offline",
+    group: { groupId: configuredRuntimeGroupId() || null, bound: Boolean(configuredRuntimeGroupId()) },
     bot: {
       phone: botPhone,
       phoneDisplay: botPhoneDisplay,

@@ -64,7 +64,7 @@
           api('/status'),
           api('/api/admin/diagnostics/last-group-event'),
         ]);
-        configured.textContent = status.groupId || 'غير محدد';
+        configured.textContent = status.groupBound ? 'مربوط بالقروب الرسمي ✓' : 'غير مربوط';
         observedGroupId = diagnostic.groupId || '';
         observed.textContent = observedGroupId || 'لا يوجد حدث قروب حديث';
         observedAt.textContent = diagnostic.telemetry?.at || '—';
