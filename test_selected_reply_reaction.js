@@ -4,7 +4,9 @@ const source = fs.readFileSync('./server.js', 'utf8');
 
 assert.match(source, /const quotedReply = sourceMessageIdsEqual\(pending\.acceptance_message_id, messageId\)/);
 assert.match(source, /getQuotedMessageWithFallback\(target\)/);
-assert.match(source, /if \(!isCaptainAcceptance\(target\.body\)\) return;/);
+assert.match(source, /const targetIsCaptainAcceptance = isCaptainAcceptance\(target\.body\)/);
+assert.match(source, /if \(!targetIsCaptainAcceptance && !targetIsOrderSource\) return;/);
+assert.match(source, /if \(targetIsOrderSource && !cancellationReaction\) return;/);
 assert.match(source, /const quotedReplyIsOrder = acceptanceMode === "unquoted"/);
 assert.match(source, /!quotedReply \|\| sourceMessageIdsEqual\(quotedReplyId, pending\.source_message_id\)/);
 assert.match(source, /const storedAcceptanceSourceEvidence = acceptanceMode === "quoted"/);

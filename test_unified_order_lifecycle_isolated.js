@@ -16,14 +16,20 @@ const reactionStart = source.indexOf("async function handleMessageReaction(");
 const reactionEnd = source.indexOf("async function reconcileStoredThumbReaction(", reactionStart);
 const settleStart = source.indexOf("function settlePendingOrder(");
 const settleEnd = source.indexOf("function settleHistoricalConfirmedOrder(", settleStart);
+const reverseStart = source.indexOf("function cancelOrderForReactionRemoval(");
+const reverseEnd = source.indexOf("function cancelPendingOrderForProducerReaction(", reverseStart);
 const cancelStart = source.indexOf("function cancelPendingOrderForProducerReaction(");
 const cancelEnd = source.indexOf("async function hasVisibleThumbReaction(", cancelStart);
+const equivalentStart = source.indexOf("function findEquivalentCandidate(");
+const equivalentEnd = source.indexOf("function orderTraceKey(", equivalentStart);
 assert(helperStart >= 0 && helperEnd > helperStart);
 assert(messageHelperStart >= 0 && messageHelperEnd > messageHelperStart);
 assert(incomingStart >= 0 && incomingEnd > incomingStart);
 assert(reactionStart >= 0 && reactionEnd > reactionStart);
 assert(settleStart >= 0 && settleEnd > settleStart);
+assert(reverseStart >= 0 && reverseEnd > reverseStart);
 assert(cancelStart >= 0 && cancelEnd > cancelStart);
+assert(equivalentStart >= 0 && equivalentEnd > equivalentStart);
 
 const GROUP = "test-group@g.us";
 const PRODUCER = "962771111111";
@@ -93,13 +99,18 @@ const db = {
         if (query.startsWith("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=?")) {
           return state.acceptance && state.acceptance.candidate_id === Number(args[0]) && state.acceptance.acceptance_message_id === args[1] && ["pending", "selected"].includes(state.acceptance.status) ? { ...state.acceptance } : null;
         }
+        if (query.startsWith("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND status='pending'")) {
+          return state.acceptance && state.acceptance.candidate_id === Number(args[0]) && state.acceptance.status === "pending" ? { ...state.acceptance } : null;
+        }
         if (query.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return state.acceptance && state.acceptance.id === Number(args[0]) && ["pending", "selected"].includes(state.acceptance.status) ? { ...state.acceptance } : null;
         if (query.startsWith("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=?")) return state.archivedOrder && state.archivedOrder.source_message_id === args[0] ? { ...state.archivedOrder } : null;
+        if (query.startsWith("SELECT * FROM orders WHERE id=?")) return state.order && state.order.id === Number(args[0]) ? { ...state.order } : null;
         if (query.startsWith("SELECT * FROM users WHERE id=?")) return userById(args[0]) ? { ...userById(args[0]) } : null;
         if (query.startsWith("SELECT whatsapp_lid FROM whatsapp_identities")) return null;
         if (query.startsWith("SELECT COALESCE(MAX(order_no),0)+1")) return { next: state.order ? state.order.order_no + 1 : 1 };
         if (query.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return userById(args[0]) ? { wallet_cents: userById(args[0]).wallet_cents } : null;
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
+        if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 50, producer_cents: 250, captain_fee_cents: 300, details_json: "{}" } : null;
         if (query.startsWith("SELECT id FROM notifications WHERE event=?")) return null;
         if (query.startsWith("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=?")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, group_id: state.candidate.group_id, source_message_id: state.candidate.source_message_id } : null;
         if (query.startsWith("SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, order_kind: state.candidate.order_kind, group_id: state.candidate.group_id, producer_name: users.producer?.name || "المنتج" } : null;
@@ -132,12 +143,14 @@ const db = {
         }
         if (query.startsWith("UPDATE order_candidates SET status='pending'")) { state.candidate.status = "pending"; state.candidate.pending_captain_user_id = args[0]; state.candidate.pending_message_id = args[1]; state.candidate.lifecycle_stage = "acceptance_pending"; state.candidate.lifecycle_blocker = "awaiting_authorized_thumb"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidates SET lifecycle_stage='debt_limit'")) { state.candidate.lifecycle_stage = "debt_limit"; state.candidate.lifecycle_blocker = "debt_limit"; return { changes: 1 }; }
-        if (query.startsWith("INSERT INTO orders")) { state.order = { id: 20, order_no: 1, source_message_id: state.candidate.source_message_id, price_cents: state.candidate.price_cents, status: "accepted", settlement_state: "settled" }; return { changes: 1, lastInsertRowid: 20 }; }
+        if (query.startsWith("INSERT INTO orders")) { state.order = { id: 20, order_no: 1, source_message_id: state.candidate.source_message_id, group_id: GROUP, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, producer_user_id: users.producer.id, captain_user_id: users.executor.id, accepted_message_id: state.acceptance.acceptance_message_id, producer_name_snapshot: users.producer.name, captain_name_snapshot: users.executor.name, status: "accepted", settlement_state: "settled" }; return { changes: 1, lastInsertRowid: 20 }; }
         if (query.startsWith("INSERT OR IGNORE INTO order_settlements")) { if (state.settlement) return { changes: 0 }; state.settlement = { status: "pending" }; return { changes: 1 }; }
         if (query.startsWith("UPDATE users SET wallet_cents=wallet_cents+?")) { userById(args[2]).wallet_cents += Number(args[0]); return { changes: 1 }; }
         if (query.startsWith("UPDATE users SET wallet_cents=wallet_cents-?")) { userById(args[2]).wallet_cents -= Number(args[0]); return { changes: 1 }; }
         if (query.startsWith("INSERT INTO wallet_ledger")) { state.ledgers.push(args); return { changes: 1 }; }
         if (query.startsWith("UPDATE order_settlements SET status='applied'")) { state.settlement.status = "applied"; return { changes: 1 }; }
+        if (query.startsWith("UPDATE order_settlements SET status='reversed'")) { state.settlement.status = "reversed"; return { changes: 1 }; }
+        if (query.startsWith("UPDATE orders SET status='cancelled',settlement_state='reversed'")) { state.order.status = "cancelled"; state.order.settlement_state = "reversed"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { state.candidate.pending_captain_user_id = args[0]; state.candidate.pending_message_id = args[1]; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidate_acceptances SET status='selected'")) { state.acceptance.status = "selected"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidate_acceptances SET status='cancelled'")) { state.acceptance.status = "cancelled"; return { changes: 1 }; }
@@ -201,6 +214,7 @@ const context = {
   now: () => "2026-01-01T00:00:00.000Z",
   audit: () => {},
   notificationEnabled: () => false,
+  settlementPolicyFromDetails: () => ({}),
   logOrderTrace: () => {},
   logSettlementCompleted: () => {},
   orderTraceKey: (value) => `trace:${String(value)}`,
@@ -245,7 +259,7 @@ const context = {
   findPendingAcceptanceByMessage: null,
 };
 
-vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
+vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(equivalentStart, equivalentEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(reverseStart, reverseEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
 
 async function ingestPrice(sourceId = "price-1") {
   const price = message(sourceId, "السعر 20", PRODUCER);
@@ -347,6 +361,33 @@ async function approve(doneId = "done-1") {
   assert.equal(state.candidate.status, "cancelled", "إزالة 👍 من صاحب السعر تلغي الطلب المعلق بالكامل");
   assert.equal(state.ledgers.length, 0, "إزالة 👍 قبل التسوية لا تنشئ حركات مالية");
   assert.equal(state.cancellations.length, 1, "إزالة 👍 ترسل بطاقة إلغاء واحدة");
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-source-cancel");
+  const sourceMessageId = canonicalMessageId("price-1", PRODUCER);
+  state.targets = { [sourceMessageId]: message("price-1", "السعر 20", PRODUCER) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "❌", msgId: sourceMessageId });
+  assert.equal(state.candidate.status, "cancelled", "❌ على رسالة السعر يلغي القبول المعلق المرتبط بها");
+  assert.equal(state.ledgers.length, 0, "إلغاء رسالة السعر قبل التسوية لا ينشئ حركات مالية");
+  assert.equal(state.cancellations.length, 1, "إلغاء رسالة السعر قبل التسوية يرسل بطاقة واحدة");
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-source-reverse");
+  await approve("done-source-reverse");
+  state.targets = { [sourceMessageId]: message("price-1", "السعر 20", PRODUCER) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "❌", msgId: sourceMessageId });
+  assert.equal(state.order.status, "cancelled", "❌ على رسالة السعر يلغي الحجز المثبت المرتبط بها");
+  assert.equal(state.order.settlement_state, "reversed", "إلغاء رسالة السعر يعكس حالة التسوية");
+  assert.equal(state.settlement.status, "reversed", "إلغاء رسالة السعر يعكس سجل التسوية");
+  assert.equal(state.ledgers.length, 6, "العكس المالي يسجل ثلاث حركات إضافية مرة واحدة");
+  assert.equal(users.producer.wallet_cents, 0, "عكس رسالة السعر يعيد حصة المنزل");
+  assert.equal(users.company.wallet_cents, 0, "عكس رسالة السعر يعيد حصة الشركة");
+  assert.equal(users.executor.wallet_cents, 5000, "عكس رسالة السعر يعيد خصم المنفذ");
+  assert.equal(state.cancellations.length, 1, "عكس رسالة السعر يرسل بطاقة إلغاء واحدة");
 
   console.log("unified order lifecycle race, identity, debt, idempotency, and archive guards verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

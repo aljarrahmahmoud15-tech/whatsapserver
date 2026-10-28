@@ -6860,13 +6860,15 @@ async function scanPendingAcceptanceReactions() {
   if (!groupId || !isConfiguredGroup(groupId)) return;
   whatsappReactionScanRunning = true;
   try {
-    const rows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+    const acceptanceRows = db.prepare("SELECT DISTINCT a.acceptance_message_id AS message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.status='pending' AND a.acceptance_message_id IS NOT NULL ORDER BY a.updated_at DESC LIMIT ?").all(groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+    const sourceRows = db.prepare("SELECT source_message_id AS message_id FROM order_candidates WHERE group_id=? AND status IN ('candidate','pending') AND source_message_id IS NOT NULL UNION SELECT source_message_id AS message_id FROM orders WHERE group_id=? AND status='accepted' AND settlement_state='settled' AND source_message_id IS NOT NULL LIMIT ?").all(groupId, groupId, WHATSAPP_REACTION_SCAN_LIMIT);
+    const rows = [...new Map([...acceptanceRows, ...sourceRows].filter((row) => row?.message_id).map((row) => [String(row.message_id), row])).values()].slice(0, WHATSAPP_REACTION_SCAN_LIMIT);
     for (const row of rows) {
       try { await reconcileStoredThumbReaction(row.message_id); } catch (error) { console.warn(`[WhatsApp] reaction scan message failed: ${String(row.message_id).slice(0, 80)} ${String(error?.message || error)}`); }
     }
     await retryFailedBookingConfirmations(groupId);
     startBackgroundOrderRecovery(groupId);
-    if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} pending acceptance message(s)`);
+    if (rows.length) console.log(`[WhatsApp] stored reaction scan checked ${rows.length} approved-group reaction target(s)`);
   } finally {
     whatsappReactionScanRunning = false;
   }
@@ -9105,8 +9107,14 @@ async function handleMessageReaction(reaction) {
   const target = storedAcceptanceTarget || await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
-  if (!isCaptainAcceptance(target.body)) return;
+  const targetIsCaptainAcceptance = isCaptainAcceptance(target.body);
+  const parsedTargetOrder = targetIsCaptainAcceptance ? null : parseOrder(target.body);
+  const targetIsOrderSource = Boolean(parsedTargetOrder?.isOrder);
+  if (!targetIsCaptainAcceptance && !targetIsOrderSource) return;
   if (target.fromMe) return;
+  // A source-order message is cancellable only by ❌. Do not let an ordinary
+  // 👍 or removed reaction on the price message enter the acceptance path.
+  if (targetIsOrderSource && !cancellationReaction) return;
   let approverPhone = await resolveReactionSenderPhone(reaction);
   if (!approverPhone) {
     const visiblePhones = typeof resolveVisibleReactionSenderPhones === "function"
@@ -9154,6 +9162,36 @@ async function handleMessageReaction(reaction) {
       targetHasReaction: Boolean(target.hasReaction || target._data?.hasReaction),
     });
   }
+  if (cancellationReaction && targetIsOrderSource) {
+    const sourceCandidate = findEquivalentCandidate(target.from, messageId, ["candidate", "pending"]);
+    if (sourceCandidate?.status === "pending") {
+      const pendingAcceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND status='pending' ORDER BY CASE WHEN acceptance_message_id=? THEN 0 ELSE 1 END, created_at DESC LIMIT 1").get(sourceCandidate.id, sourceCandidate.pending_message_id || "");
+      if (!pendingAcceptance) return;
+      const producer = sourceCandidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(sourceCandidate.producer_user_id) : null;
+      const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
+      const producerAuthorized = Boolean(ownerAuthorized || (producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company"))));
+      if (!producerAuthorized || isBlockedPhone(approverPhone)) {
+        updateOrderCandidateLifecycle(sourceCandidate.id, "awaiting_authorized_thumb", "producer_authorization", { acceptanceMessageId: pendingAcceptance.acceptance_message_id, reaction: "❌", sourceMessageId: sourceCandidate.source_message_id });
+        return;
+      }
+      const cancelled = cancelPendingOrderForProducerReaction(sourceCandidate.id, pendingAcceptance.acceptance_message_id, approverPhone, ownerAuthorized);
+      if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+      return;
+    }
+    const sourceOrder = findEquivalentOrder(target.from, messageId);
+    if (!sourceOrder || sourceOrder.status !== "accepted" || sourceOrder.settlement_state !== "settled") return;
+    const producer = sourceOrder.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(sourceOrder.producer_user_id) : null;
+    const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
+    if (!producer || !approverPhone || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone))) return;
+    const cancelled = cancelOrderForReactionRemoval(sourceOrder.id, sourceOrder.accepted_message_id, approverPhone, ownerAuthorized);
+    if (cancelled.state === "cancelled" && cancelled.reversed && cancelled.captain) {
+      const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(cancelled.captain.id)?.wallet_cents;
+      void enforceCaptainWalletThresholds({ captainId: cancelled.captain.id, balanceCents: captainBalance, reason: "عكس حصة الطلب بعد إلغاء رسالة السعر", reference: `ORDER-${sourceOrder.order_no}-CANCEL` });
+    }
+    if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from, cancelled.order || sourceOrder).catch(() => null);
+    return;
+  }
+  if (targetIsOrderSource) return;
   if (cancellationReaction) {
     const pendingAcceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (pendingAcceptance) {

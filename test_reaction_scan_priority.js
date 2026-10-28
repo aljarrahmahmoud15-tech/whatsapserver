@@ -17,5 +17,7 @@ assert.match(source, /function startBackgroundOrderRecovery\(groupId\)/);
 assert.match(source, /WHATSAPP_REACTION_WARNING_COOLDOWN_MS/);
 assert.match(source, /const reactionVisibilityWarningAt = new Map\(\);/);
 assert.match(source, /pending acceptance has no confirmed visible thumb/);
+assert.match(source, /const sourceRows = db\.prepare\("SELECT source_message_id AS message_id FROM order_candidates/);
+assert.match(source, /FROM orders WHERE group_id=\? AND status='accepted' AND settlement_state='settled'/);
 assert.doesNotMatch(source, /reaction exists but visible thumb was not confirmed/);
 console.log('reaction scan priority and bounded background recovery guardrails verified');
