@@ -10,7 +10,9 @@ assert.match(source, /function findPersistedWhatsappPhone\(/);
 assert.match(source, /refusing conflicting identity mapping/);
 assert.match(source, /reaction\?\._data\?\.senderUserJid/);
 assert.match(source, /client\.getContactLidAndPhone\(lidIds\)/);
-assert.match(source, /resolveWhatsappLidsFromConfiguredGroup\(lidIds\)/);
+assert.match(source, /async function resolveWhatsappLidsFromConfiguredGroup\(lidIds, \{ hydrateGroup = true \} = \{\}\)/);
+assert.match(source, /if \(hydrateGroup\) await readGroupSnapshot\(groupId\)/);
+assert.match(source, /resolveWhatsappLidsFromConfiguredGroup\(lidIds, \{ hydrateGroup: false \}\)/);
 assert.match(source, /configured_group_toPn/);
 assert.match(source, /app\.get\("\/api\/admin\/group\/resolve-identity", requireAdmin/);
 assert.match(source, /async function auditActiveCaptainLidMappings\(/);
@@ -27,6 +29,7 @@ const end = source.indexOf("function recordGroupMessageTelemetry(", start);
 assert.ok(start >= 0 && end > start, "LID phone resolver exists");
 
 let lookupCalls = 0;
+let hydrationCalls = 0;
 const context = {
   client: {
     async getContactLidAndPhone(ids) {
@@ -44,7 +47,10 @@ const context = {
   withTimeout: async (promise) => promise,
   getSetting: (_key, fallback) => fallback || "120363000000000000@g.us",
   isConfiguredGroup: () => true,
-  readGroupSnapshot: async () => ({ isGroup: true }),
+  readGroupSnapshot: async () => {
+    hydrationCalls += 1;
+    return new Promise(() => {});
+  },
   orderTraceKey: (value) => String(value),
   phoneWithCountry(value = "") {
     const digits = String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -72,8 +78,12 @@ this.directJordanPhoneFromWhatsappValue = directJordanPhoneFromWhatsappValue;`, 
   assert.equal(cached, "962785344508");
   assert.equal(lookupCalls, 1, "resolved LID is cached for later messages and reactions");
 
-  const fromConfiguredGroup = await context.resolveWhatsappUserPhone("264256670928948@lid");
+  const fromConfiguredGroup = await Promise.race([
+    context.resolveWhatsappUserPhone("264256670928948@lid"),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("LID resolution waited for GroupHydration")), 250)),
+  ]);
   assert.equal(fromConfiguredGroup, "962772531964");
+  assert.equal(hydrationCalls, 0, "message sender resolution must not start GroupHydration");
 
   const sender = await context.resolveMessageSenderPhone({
     fromMe: false,

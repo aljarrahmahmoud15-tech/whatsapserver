@@ -7529,11 +7529,11 @@ function directJordanPhoneFromWhatsappValue(value) {
   const normalized = phoneWithCountry(String(raw || "").split("@")[0].split(":")[0]);
   return isValidJordanPhone(normalized) ? normalized : "";
 }
-async function resolveWhatsappLidsFromConfiguredGroup(lidIds) {
+async function resolveWhatsappLidsFromConfiguredGroup(lidIds, { hydrateGroup = true } = {}) {
   if (!client?.pupPage || !isReady || !Array.isArray(lidIds) || !lidIds.length) return [];
   const groupId = configuredRuntimeGroupId();
   if (!groupId || !isConfiguredGroup(groupId)) return [];
-  await readGroupSnapshot(groupId);
+  if (hydrateGroup) await readGroupSnapshot(groupId);
   return withTimeout(client.pupPage.evaluate((requestedLids) => {
     try {
       const widFactory = window.require("WAWebWidFactory");
@@ -7611,7 +7611,7 @@ async function resolveWhatsappUserPhone(...values) {
     console.log(`[WhatsApp] LID resolved directly with toPn: ${orderTraceKey(lid)}`);
     return phone;
   }
-  const groupMappings = await resolveWhatsappLidsFromConfiguredGroup(lidIds);
+  const groupMappings = await resolveWhatsappLidsFromConfiguredGroup(lidIds, { hydrateGroup: false });
   for (const mapping of Array.isArray(groupMappings) ? groupMappings : []) {
     const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
     const lid = serializedWhatsappUserId(mapping?.lid);
