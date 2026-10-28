@@ -1,6 +1,6 @@
-# Alezwa brand spec — customer promotion v0
+# Waslni Now brand spec — customer promotion v0
 
-- **Product:** العزوة · Alezwa
+- **Product:** وصلني الآن · Waslni Now
 - **Use case:** واجهة عامة لتسجيل طلب نقل من الهاتف ومشاركته من لوحة V27.
 - **Brand asset:** `public/aljarah-logo-mark-clean.webp` — الشعار الحقيقي الموجود في المشروع، ويجب استخدامه عبر `<img>` وعدم إعادة رسمه بـ CSS.
 - **Brand cues:** RTL، خلفية كحلية تشغيلية، سماوي/نعناعي للحالة والإجراء، ذهبي للهوية والثقة، حواف مستديرة مضبوطة، كثافة متوسطة.

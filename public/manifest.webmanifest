@@ -1,6 +1,6 @@
 {
-  "name": "العزوة · تطبيق الراكب",
-  "short_name": "العزوة",
+  "name": "وصلني الآن · تطبيق الراكب",
+  "short_name": "وصلني الآن",
   "lang": "ar",
   "dir": "rtl",
   "start_url": "/book.html?source=installed",
@@ -8,7 +8,7 @@
   "display": "standalone",
   "background_color": "#07121f",
   "theme_color": "#07121f",
-  "description": "واجهة الراكب لإرسال تفاصيل الرحلة إلى العزوة.",
+  "description": "واجهة الراكب لإرسال تفاصيل الرحلة إلى وصلني الآن.",
   "icons": [
     {
       "src": "/aljarah-logo-mark-clean.webp",

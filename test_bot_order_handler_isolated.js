@@ -43,7 +43,7 @@ const context = {
   isBlockedPhone: () => false,
   companyUser: () => ({ id: 1, phone: "system-company", name: "شركة الجراح", role: "company", wallet_cents: 0 }),
   botEmployeeUser: () => ({ id: 2, phone: "962771111111", name: "منتج موظف — بوت شركة الجراح", role: "producer", wallet_cents: 0, is_bot: 1 }),
-  COMPANY_BRAND_NAME: "العزوة",
+  COMPANY_BRAND_NAME: "وصلني الآن",
   BOT_FINANCIAL_MODE: "company",
   cents: (value) => Math.round(Number(value) * 100),
   now: () => "2026-08-27T00:00:00.000Z",

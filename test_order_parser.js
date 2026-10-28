@@ -11,7 +11,7 @@ assert(start >= 0 && end > start, "محلل الطلب موجود داخل ال�
 const context = {};
 vm.runInNewContext(`${source.slice(start, end)}\nthis.parseOrder = parseOrder;`, context);
 
-assert.strictEqual(context.parseOrder("العزوة\nالسعر 5\nمن إربد إلى عمّان").isOrder, false, "السعر يجب أن يكون بداية الرسالة");
+assert.strictEqual(context.parseOrder("وصلني الآن\nالسعر 5\nمن إربد إلى عمّان").isOrder, false, "السعر يجب أن يكون بداية الرسالة");
 assert.strictEqual(context.parseOrder("السعر 5\nراكب بنت\nمن إربد إلى عمّان").isOrder, true, "تُسجل الصيغة الطبيعية ذات السعر والمسار");
 assert.strictEqual(context.parseOrder("راكب\nالسعر 5 دنانير").isOrder, false, "السعر يجب أن يكون أول كلمة");
 assert.strictEqual(context.parseOrder("السعر 35\nراكبة\nمن إربد إلى عمّان").isOrder, true, "تُسجل صيغة راكبة مع السعر والمسار");

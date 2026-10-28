@@ -8,7 +8,7 @@ const server = fs.readFileSync('./server.js', 'utf8');
 const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
 const escaped = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-assert.match(page, /<title>العزوة · Owner Control V27<\/title>/);
+assert.match(page, /<title>وصلني الآن · Owner Control V27<\/title>/);
 assert.match(page, /href="\/assets\/v27-command\.css"/);
 assert.doesNotMatch(page, /NEXORA|brand\/nexora/);
 assert.match(page, /class="hero-signal"/);

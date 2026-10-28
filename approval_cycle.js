@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Alezwa — automatic WhatsApp order approval cycle.
+ * Waslni Now — automatic WhatsApp order approval cycle.
  *
  * Flow:
  *   1) Producer sends: السعر <variable numeric price>
