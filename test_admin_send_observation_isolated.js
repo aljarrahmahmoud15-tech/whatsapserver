@@ -41,6 +41,9 @@ const sendRoute = server.slice(server.indexOf('app.post("/api/admin/send"'), ser
 assert.match(sendRoute, /message\.send_waiting_confirmation/);
 assert.match(sendRoute, /void sendPromise\.then\(\(sent\) =>/);
 assert.match(sendRoute, /message\.send_started/);
+assert.match(sendRoute, /isConfiguredGroup\(chatId\) && isUncertainWhatsAppSendError\(directError\)/);
+assert.match(sendRoute, /markAdminSendUncertain\(operationId\)/);
+assert.match(sendRoute, /awaiting: 'message_create'|awaiting: "message_create"/);
 assert.match(sendRoute, /\/api\/admin\/send-status\/:operationId/);
 assert.match(sendRoute, /serializedMessageId\(sent\)/);
 assert.doesNotMatch(sendRoute, /if \(!sent\) \{[\s\S]{0,300}WhatsApp returned no confirmed message/);

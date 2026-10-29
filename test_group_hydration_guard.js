@@ -9,6 +9,14 @@ assert.match(source, /group_participants_empty/, 'empty participant snapshots mu
 assert.match(source, /group_snapshot_evaluation_timeout/, 'snapshot evaluation timeouts must be diagnosed explicitly');
 assert.match(source, /lastGroupHydrationDiagnostic/, 'group hydration state must be exposed to runtime diagnostics');
 assert.match(source, /groupHydration: \{ \.\.\.lastGroupHydrationDiagnostic \}/, 'public/V27 status must expose group hydration state');
+assert.match(source, /const groupSnapshotFlights = new Map\(\)/, 'group hydration must keep a single-flight registry');
+assert.match(source, /const key = `\$\{generationAtStart\}:\$\{groupId\}`/, 'hydration single-flight must be scoped to connection generation and group');
+assert.match(source, /createGroupSnapshotFlight\(key,/, 'snapshot reads must share an in-flight evaluation');
+assert.match(source, /pageAtStart\.evaluate/, 'snapshot evaluation must use the page captured for its connection generation');
+assert.match(source, /groupSnapshotFlights\.delete\(key\)/, 'single-flight entries must be removed only after the underlying evaluation settles');
+assert.match(source, /function scheduleNonCriticalConfiguredGroupMaintenance/, 'non-critical group maintenance must have a deferred path');
+const messageHandler = source.slice(source.indexOf('instance.on("message", async (msg) =>'), source.indexOf('instance.on("message_reaction", async (reaction) =>'));
+assert.ok(messageHandler.indexOf('await handleIncomingMessage') < messageHandler.indexOf('scheduleNonCriticalConfiguredGroupMaintenance'), 'message handling must precede non-critical group maintenance');
 assert.match(source, /WHATSAPP_REACTION_SEND_TIMEOUT/, 'reaction send timeout must be distinguishable from readback failure');
 assert.match(source, /reaction_send_timeout/, 'reaction send timeout must be logged distinctly');
 assert.match(source, /reaction_sent_visibility_unconfirmed/, 'reaction readback failure must be logged distinctly');

@@ -7,6 +7,10 @@ assert.match(source, /const sendPromise = Promise\.resolve\(\)\.then\(async \(\)
 assert.match(source, /chatId\.endsWith\("@g\.us"\) && typeof client\.sendMessage === "function"/);
 assert.match(source, /admin send direct path completed/);
 assert.match(source, /message\.send_direct_failed/);
+assert.match(source, /function isUncertainWhatsAppSendError/);
+assert.match(source, /message\.send_direct_uncertain/);
+assert.match(source, /__uncertainDelivery/);
+assert.match(source, /message\.send_uncertain/);
 assert.match(source, /client\.getChatById\(chatId\)/);
 assert.match(source, /client\.getChats\(\)/);
 assert.match(source, /chat\.sendMessage\(message\)/);

@@ -4033,6 +4033,7 @@ function normalizeExistingHumanUsersAsCaptains({ reactivate = false } = {}) {
 }
 let configuredGroupCaptainSyncTimer = null;
 let configuredGroupCaptainSyncInFlight = false;
+const groupSnapshotFlights = new Map();
 function scheduleConfiguredGroupCaptainSync(trigger = "group_activity") {
   if (!isReady || !client || configuredGroupCaptainSyncInFlight || configuredGroupCaptainSyncTimer) return;
   configuredGroupCaptainSyncTimer = setTimeout(async () => {
@@ -4053,6 +4054,14 @@ function scheduleConfiguredGroupCaptainSync(trigger = "group_activity") {
     }
   }, 1500);
 }
+function scheduleNonCriticalConfiguredGroupMaintenance(message, trigger) {
+  if (!isConfiguredGroup(message?.from)) return;
+  scheduleConfiguredGroupCaptainSync(trigger);
+  setImmediate(() => {
+    if (!isReady || !client) return;
+    void cacheOfficialGroupChatFromMessage(message).finally(() => scheduleOfficialGroupWalletSweep(trigger));
+  });
+}
 async function resolveGroupChat(groupId, inviteCode = "") {
   if (!groupId || !client || !isReady) return null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -4063,9 +4072,36 @@ async function resolveGroupChat(groupId, inviteCode = "") {
   }
   return null;
 }
+function createGroupSnapshotFlight(key, evaluate) {
+  const existing = groupSnapshotFlights.get(key);
+  if (existing) return existing;
+  let timeoutHandle = null;
+  const underlying = Promise.resolve()
+    .then(evaluate)
+    .catch((error) => ({ ok: false, reason: "group_snapshot_evaluation_failed", detail: String(error?.message || error || "unknown").slice(0, 180) }));
+  const timed = new Promise((resolve) => {
+    timeoutHandle = setTimeout(() => resolve({ ok: false, reason: "group_snapshot_evaluation_timeout" }), 40000);
+    underlying.then((result) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      resolve(result);
+    }).catch(() => {});
+  });
+  const flight = { underlying, timed };
+  groupSnapshotFlights.set(key, flight);
+  underlying.then(() => {
+    if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
+  }).catch(() => {
+    if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
+  });
+  return flight;
+}
 async function readGroupSnapshot(groupId) {
-  if (!groupId || !client || !isReady || !client.pupPage) return null;
-  const result = await withTimeout(client.pupPage.evaluate(async (requestedId) => {
+  const clientAtStart = client;
+  const pageAtStart = clientAtStart?.pupPage;
+  const generationAtStart = connectionGeneration;
+  if (!groupId || !clientAtStart || !isReady || !pageAtStart) return null;
+  const key = `${generationAtStart}:${groupId}`;
+  const flight = createGroupSnapshotFlight(key, () => pageAtStart.evaluate(async (requestedId) => {
     const compactError = (error) => String(error?.message || error || "unknown").slice(0, 180);
     const module = (name) => {
       try { return window.require(name); } catch (_) { return null; }
@@ -4127,7 +4163,9 @@ async function readGroupSnapshot(groupId) {
     } catch (error) {
       return { ok: false, reason: "group_snapshot_evaluation_failed", detail: compactError(error) };
     }
-  }, groupId), 40000, { ok: false, reason: "group_snapshot_evaluation_timeout" });
+  }, groupId));
+  const result = await flight.timed;
+  if (generationAtStart !== connectionGeneration || client !== clientAtStart) return null;
   if (!result?.ok || !result.snapshot) {
     lastGroupHydrationDiagnostic = { status: "failed", at: now(), reason: result?.reason || "unknown", participantCount: 0, participantSource: result?.participantSource || null };
     console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason}`);
@@ -4537,6 +4575,10 @@ function adminSendMessageMatches(pending, message, observedAtMs = Date.now()) {
     String(message.body || "").trim() === String(pending.message || "").trim() &&
     elapsedMs >= -5000 && elapsedMs <= Number(pending.observationTimeoutMs || ADMIN_SEND_OBSERVATION_TIMEOUT_MS);
 }
+function isUncertainWhatsAppSendError(error) {
+  const detail = String(error?.stack || error?.message || error || "").toLowerCase();
+  return /protocolerror|runtime\.callfunctionon|timeout|detached frame|target closed|execution context was destroyed|session closed|browser has disconnected|page crashed/.test(detail);
+}
 function adminSendResponse(state) {
   const sendState = String(state?.sendState || "failed");
   return {
@@ -4615,6 +4657,16 @@ function failAdminSend(operationId, error) {
   state.error = String(error?.message || error || "WhatsApp send failed").slice(0, 240);
   state.updatedAt = now();
   pendingAdminSends.delete(operationId);
+  adminSendResults.set(operationId, state);
+  return state;
+}
+function markAdminSendUncertain(operationId) {
+  const state = adminSendResults.get(operationId) || pendingAdminSends.get(operationId);
+  if (!state || state.sendState === "confirmed" || state.sendState === "observed") return state || null;
+  state.sendState = "pending";
+  state.error = "تمت محاولة الإرسال؛ بانتظار تأكيد message_create";
+  state.updatedAt = now();
+  pendingAdminSends.set(operationId, state);
   adminSendResults.set(operationId, state);
   return state;
 }
@@ -7234,11 +7286,8 @@ function createClient() {
     observeAdminSentMessage(msg);
     observeFinalBookingConfirmationMessage(msg);
     recordGroupMessageTelemetry("message_create", msg);
-    if (isConfiguredGroup(msg.from)) {
-      scheduleConfiguredGroupCaptainSync("message_create");
-      void cacheOfficialGroupChatFromMessage(msg).finally(() => scheduleOfficialGroupWalletSweep("message_create"));
-    }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] own message handler:", error); }
+    scheduleNonCriticalConfiguredGroupMaintenance(msg, "message_create");
   });
   instance.on("message_ack", async (msg, ack) => {
     if (generation !== connectionGeneration) return;
@@ -7250,11 +7299,8 @@ function createClient() {
     if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
     if (!shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
-    if (isConfiguredGroup(msg.from)) {
-      scheduleConfiguredGroupCaptainSync("message");
-      void cacheOfficialGroupChatFromMessage(msg).finally(() => scheduleOfficialGroupWalletSweep("message"));
-    }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
+    scheduleNonCriticalConfiguredGroupMaintenance(msg, "message");
   });
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
@@ -15800,6 +15846,10 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
         return directSent;
       } catch (directError) {
         const detail = String(directError?.stack || directError?.message || directError).slice(0, 500);
+        if (isConfiguredGroup(chatId) && isUncertainWhatsAppSendError(directError)) {
+          audit("message.send_direct_uncertain", "chat", chatId, { operationId, error: detail, awaiting: "message_create" });
+          return { __uncertainDelivery: true, diagnostic: detail };
+        }
         console.warn(`[WhatsApp] admin send direct path failed; using configured-chat fallback: chat=${chatId} detail=${detail}`);
         audit("message.send_direct_failed", "chat", chatId, { operationId, error: detail });
       }
@@ -15843,6 +15893,12 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   audit("message.send_pending", "chat", chatId, { operationId, mode: "background", messageLength: message.length });
   audit("message.send_started", "chat", chatId, { operationId, messageLength: message.length });
   void sendPromise.then((sent) => {
+    if (sent?.__uncertainDelivery) {
+      markAdminSendUncertain(operationId);
+      audit("message.send_uncertain", "chat", chatId, { operationId, awaiting: "message_create", observationTimeoutMs: ADMIN_SEND_OBSERVATION_TIMEOUT_MS });
+      console.warn(`[WhatsApp] admin send awaiting message_create confirmation: operation=${operationId}`);
+      return;
+    }
     if (serializedMessageId(sent)) {
       const completed = completeAdminSend({ chatId, message, sent, operationId });
       console.log(`[WhatsApp] admin send completed in background: operation=${operationId} message=${completed?.messageId || "none"}`);
