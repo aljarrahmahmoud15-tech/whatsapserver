@@ -206,6 +206,7 @@ const ADMIN_SEND_RESULT_TTL_MS = Math.max(60000, Math.min(6 * 60 * 60 * 1000, Nu
 const WHATSAPP_RECONNECT_BASE_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_BASE_DELAY_MS || 5000);
 const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MAX_DELAY_MS || 120000);
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
+const GROUP_HYDRATION_READY_DELAY_MS = 30000;
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
 // Render kills an instance that exceeds the plan memory limit (repeated "Ran out of
 // memory (used over 2GB)" events), and every kill restarts the container and loses the
@@ -4167,11 +4168,25 @@ async function readGroupSnapshot(groupId) {
   const result = await flight.timed;
   if (generationAtStart !== connectionGeneration || client !== clientAtStart) return null;
   if (!result?.ok || !result.snapshot) {
-    lastGroupHydrationDiagnostic = { status: "failed", at: now(), reason: result?.reason || "unknown", participantCount: 0, participantSource: result?.participantSource || null };
-    console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason}`);
+    lastGroupHydrationDiagnostic = {
+      status: "failed",
+      at: now(),
+      reason: boundedDiagnosticText(result?.reason || "unknown", 180),
+      detail: boundedDiagnosticText(result?.detail || "no_detail", 1200),
+      participantCount: 0,
+      participantSource: result?.participantSource || null,
+    };
+    console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason} detail=${lastGroupHydrationDiagnostic.detail}`);
     return null;
   }
-  lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, participantCount: result.snapshot.participants.length, participantSource: result.snapshot.participantSource || null };
+  lastGroupHydrationDiagnostic = {
+    status: "ready",
+    at: now(),
+    reason: null,
+    detail: null,
+    participantCount: result.snapshot.participants.length,
+    participantSource: result.snapshot.participantSource || null,
+  };
   return result.snapshot;
 }
 async function resolveReadableGroupChat(groupId) {
@@ -5858,6 +5873,7 @@ let lastGroupHydrationDiagnostic = {
   status: "unknown",
   at: null,
   reason: null,
+  detail: null,
   participantCount: null,
   participantSource: null,
 };
@@ -7236,7 +7252,7 @@ function createClient() {
       void retryFailedBookingConfirmations()
         .then((result) => { if (result.attempted) console.log(`[WhatsApp] retried failed booking confirmations: attempted=${result.attempted} sent=${result.sent} suppressed=${result.suppressed}`); })
         .catch((error) => console.error("[WhatsApp] booking confirmation retry failed:", error.message));
-    }, 3000);
+    }, GROUP_HYDRATION_READY_DELAY_MS);
   });
   instance.on("auth_failure", (message) => {
     whatsappState = "auth_failure";
