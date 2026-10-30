@@ -4073,27 +4073,29 @@ async function resolveGroupChat(groupId, inviteCode = "") {
   }
   return null;
 }
-function createGroupSnapshotFlight(key, evaluate) {
+function createGroupSnapshotFlight(key, evaluate, timeoutMs = 40000) {
   const existing = groupSnapshotFlights.get(key);
   if (existing) return existing;
   let timeoutHandle = null;
+  let flight = null;
   const underlying = Promise.resolve()
     .then(evaluate)
     .catch((error) => ({ ok: false, reason: "group_snapshot_evaluation_failed", detail: String(error?.message || error || "unknown").slice(0, 180) }));
   const timed = new Promise((resolve) => {
-    timeoutHandle = setTimeout(() => resolve({ ok: false, reason: "group_snapshot_evaluation_timeout" }), 40000);
+    timeoutHandle = setTimeout(() => {
+      timeoutHandle = null;
+      if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
+      resolve({ ok: false, reason: "group_snapshot_evaluation_timeout" });
+    }, Math.max(1, Number(timeoutMs) || 40000));
     underlying.then((result) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+      if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
       resolve(result);
     }).catch(() => {});
   });
-  const flight = { underlying, timed };
+  flight = { underlying, timed };
   groupSnapshotFlights.set(key, flight);
-  underlying.then(() => {
-    if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
-  }).catch(() => {
-    if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
-  });
   return flight;
 }
 async function readGroupSnapshot(groupId) {
@@ -6014,6 +6016,20 @@ function recordWhatsAppPageDiagnostic(type, payload = {}) {
   console.warn(`[WhatsApp][PageDiagnostic] ${event.type}: ${event.message || event.text || "event"}`);
 }
 
+function handleWhatsAppBrowserPageError(instance, generation, error) {
+  const name = boundedDiagnosticText(error?.name, 120);
+  const message = boundedDiagnosticText(error?.message || error, 1200);
+  recordWhatsAppPageDiagnostic("browser_page_error", { name, message });
+  if (generation !== connectionGeneration || client !== instance || whatsappRestartInFlight) return;
+  whatsappLastError = "WhatsApp browser page crashed; controlled reconnect scheduled";
+  whatsappLastEvent = "browser_page_error";
+  isReady = false;
+  console.warn("[WhatsApp] active Chromium page crashed; scheduling controlled reconnect");
+  void restartWhatsApp("Chromium page crashed").catch((restartError) => {
+    console.error("[WhatsApp] browser page recovery:", restartError.message);
+  });
+}
+
 async function installWhatsAppSendDiagnostics(instance, generation) {
   const page = instance?.pupPage;
   whatsappSendDiagnostics = {
@@ -6035,10 +6051,7 @@ async function installWhatsAppSendDiagnostics(instance, generation) {
         message: boundedDiagnosticText(error?.message || error, 1200),
         stack: boundedDiagnosticText(error?.stack, 2400),
       }));
-      page.on("error", (error) => pageListener("browser_page_error", {
-        name: boundedDiagnosticText(error?.name, 120),
-        message: boundedDiagnosticText(error?.message || error, 1200),
-      }));
+      page.on("error", (error) => handleWhatsAppBrowserPageError(instance, generation, error));
       page.on("console", (message) => {
         let level = "";
         try { level = typeof message?.type === "function" ? message.type() : ""; } catch (_) { level = ""; }
@@ -7173,6 +7186,7 @@ function stopRuntimeMemoryWatchdog() {
 
 function createClient() {
   const generation = ++connectionGeneration;
+  groupSnapshotFlights.clear();
   const instance = new Client({
     authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
     puppeteer: puppeteerConfig,
