@@ -188,7 +188,7 @@
       function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
       function money(v){if(v===null||v===undefined||v==='')return '—';const s=String(v);return s.includes('JOD')?s:s+' JOD'}
       function numberFromMoney(v){if(typeof v==='number')return v>1000?v/100:v;const n=Number.parseFloat(String(v||'0').replace(/[^0-9.-]/g,''));return Number.isFinite(n)?n:0}
-      function captainName(c){return c?.registrationName||c?.registration_name||c?.displayName||c?.name||'كابتن بدون اسم'}
+      function captainName(c){const values=[c?.displayName,c?.name,c?.registrationName,c?.registration_name].map(v=>String(v||'').trim());const name=values.find(v=>v&&v!=='كابتن بدون اسم'&&!/^[\s+0-9().-]+$/.test(v));return name||'كابتن بدون اسم'}
       function statusReady(){return Boolean(state.status?.ready||state.bot?.bot?.ready)}
       function formatTime(v){if(!v)return 'غير مسجل';const d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString('ar-JO',{dateStyle:'short',timeStyle:'short'})}function ageSeconds(v){const t=Date.parse(v||'');return Number.isFinite(t)?Math.max(0,Math.floor((Date.now()-t)/1000)):null}function ageClock(v){const sec=ageSeconds(v);if(sec===null)return '—';return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0')}function formatAge(v){const sec=ageSeconds(v);if(sec===null)return 'غير مسجل';if(sec<60)return 'منذ '+sec+' ثانية';return 'منذ '+Math.floor(sec/60)+' دقيقة'}
       function showToast(text){const t=$('toast');t.textContent=text;t.classList.add('show');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>t.classList.remove('show'),2600)}

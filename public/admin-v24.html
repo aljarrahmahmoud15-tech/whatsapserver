@@ -55,7 +55,7 @@
       async function publicJson(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
       function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
       function money(value){if(value===null||value===undefined)return '—';if(typeof value==='number'&&Math.abs(value)>1000)return (value/100).toFixed(2)+' JOD';return String(value).includes('JOD')?String(value):String(value)+' JOD'}
-      function nameOf(c){return c?.registration_name||c?.registrationName||c?.name||c?.displayName||'كابتن بدون اسم'}
+      function nameOf(c){const values=[c?.displayName,c?.name,c?.registrationName,c?.registration_name].map(v=>String(v||'').trim());const name=values.find(v=>v&&v!=='كابتن بدون اسم'&&!/^[\s+0-9().-]+$/.test(v));return name||'كابتن بدون اسم'}
       function balanceOf(c){if(c?.balance!==undefined)return Number(c.balance);if(c?.wallet_cents!==undefined)return Number(c.wallet_cents)/100;return 0}
       function setService(id,good,title,sub){const el=$(id);if(!el)return;el.className='service-item '+(good?'good':'bad');const dot=good?'':' off';el.innerHTML='<strong><span class="service-dot'+dot+'"></span>'+esc(title)+'</strong><span>'+esc(sub)+'</span>'}
       function relativeTime(date){if(!date)return 'غير مسجل';const t=new Date(date).getTime();if(!Number.isFinite(t))return String(date);const sec=Math.max(0,Math.round((Date.now()-t)/1000));if(sec<60)return 'منذ '+sec+' ثانية';if(sec<3600)return 'منذ '+Math.round(sec/60)+' دقيقة';return 'منذ '+Math.round(sec/3600)+' ساعة'}
