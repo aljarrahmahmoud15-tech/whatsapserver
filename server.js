@@ -90,6 +90,9 @@ const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSW
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
+// Owner-requested temporary pause: keep enabled until the owner explicitly asks to resume.
+// This only gates low-balance «تم» acceptance deletion; unrelated deletion paths remain unchanged.
+const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = true;
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
 const CAPTAIN_BALANCE_POLICY_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CAPTAIN_BALANCE_POLICY_INTERVAL_MS || 5 * 60 * 1000));
 const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
@@ -544,7 +547,7 @@ app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
-  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady) });
+  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -2024,7 +2027,11 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
   const title = "لم يتم اعتماد كلمة تم";
   const message = [
     `الكابتن ${captain.name || displayPhone(phone)}،`,
-    "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب.",
+    deletionStatus === "deleted"
+      ? "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب."
+      : deletionStatus === "paused"
+        ? "تم رفض قبول «تم» لعدم كفاية الرصيد؛ سيبقى ردك ظاهرًا مؤقتًا ولن يُعتمد الحجز."
+        : "تم رفض قبول «تم» لعدم كفاية الرصيد؛ لم يتم حذف الرسالة.",
     `الرصيد الحالي: ${money(balanceCents)} JOD`,
     `العمولة المطلوبة: ${money(requiredCents)} JOD`,
     "يرجى شحن المحفظة ثم المشاركة في طلب آخر.",
@@ -2090,6 +2097,22 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   }
 }
 async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, priceCents, origin, destination, downloaderName, executorName }) {
+  if (INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED) {
+    const deletionResult = { ok: false, requested: false, revoked: false, paused: true, reason: "insufficient_balance_acceptance_deletion_paused" };
+    audit("order.acceptance.message_deletion_paused_insufficient_balance", "message", String(messageId || ""), {
+      groupId: String(groupId || ""),
+      candidateId: candidateId || null,
+      balanceCents: Number.isFinite(balanceCents) ? balanceCents : null,
+      requiredCents: Number.isFinite(requiredCents) ? requiredCents : null,
+      deletionStatus: "paused",
+      financialMutation: false,
+    });
+    return {
+      correction: { status: "not_needed", reason: "insufficient_balance_acceptance_deletion_paused" },
+      deletionStatus: "paused",
+      deletionResult,
+    };
+  }
   const correction = await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
     groupId,
     balanceCents,
@@ -2134,7 +2157,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     };
   }
 }
-async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null }) {
+async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null, messageDeletionPaused = false }) {
   const targetGroupId = String(groupId || "").trim();
   const candidateId = Number(candidate?.id || 0);
   if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
@@ -2150,7 +2173,9 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
     `🏠 ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")} · 🚕 ${String(rejectedCaptainName || "غير مسجل")}`,
     `💰 ${money(candidate.price_cents)} JOD · 💳 العمولة ${money(requiredCents)} JOD`,
     route,
-    "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
+    messageDeletionPaused
+      ? "⏸️ رد «تم» مرفوض لعدم كفاية الرصيد وسيبقى ظاهرًا مؤقتًا؛ الحجز متاح من جديد، أرسل «تم» ثم 👍 للتثبيت."
+      : "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
   ].filter(Boolean).join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
@@ -2174,6 +2199,7 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
       sourceMessageId: candidate.source_message_id || null,
       requiredCents,
       rejectedCaptainName: rejectedCaptainName || null,
+      messageDeletionPaused: Boolean(messageDeletionPaused),
       financialMutation: false,
       idempotencyKey,
     });
@@ -2192,9 +2218,8 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
     orderReopenNotificationInFlight.delete(idempotencyKey);
   }
 }
-
 async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus, correction = null }) {
-  if (deletionStatus !== "deleted") {
+  if (!["deleted", "paused"].includes(deletionStatus)) {
     return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
   }
   const reopened = correction && ["sent", "already_sent"].includes(correction.status)
@@ -2205,11 +2230,12 @@ async function reopenOrderAfterInsufficientBalance({ groupId, candidate, require
       candidateId: Number(candidate?.id || 0),
       singleMessage: true,
     }
-    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName });
+    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName, messageDeletionPaused: deletionStatus === "paused" });
   if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
     updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
       reason: "captain_acceptance_rejected_insufficient_balance",
       reopenedMessageId: reopened.messageId || null,
+      messageDeletionPaused: deletionStatus === "paused",
       financialMutation: false,
     });
   }
@@ -5226,12 +5252,20 @@ function acceptanceBalanceGuard(candidate, captain) {
   if (!walletOwner) return { allowed: false, state: "stale" };
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
-  // A non-negative balance below the order fee blocks acceptance and revokes «تم».
-  // Negative balances follow the approved debt policy and may continue through settlement.
-  if (balanceCents >= 0 && balanceCents < requiredCents) {
-    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents: balanceCents - requiredCents };
+  const projectedBalanceCents = balanceCents - requiredCents;
+  // Owner-approved order policy: accept even if this fee takes the captain below zero.
+  // Negative balances follow the approved debt policy; manual debit and subscription limits remain separate.
+  if (projectedBalanceCents < 0) {
+    audit("order.acceptance.allowed_with_negative_balance", "order_candidate", candidate.id, {
+      captainId: captain.id,
+      walletOwnerId: walletOwner.id,
+      balanceCents,
+      requiredCents,
+      projectedBalanceCents,
+      financialMutation: false,
+    });
   }
-  return { allowed: true, walletOwner, balanceCents, requiredCents };
+  return { allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents };
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);

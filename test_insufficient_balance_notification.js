@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /async function notifyCaptainInsufficientAcceptanceBalance/);
+assert.match(server, /deletionStatus === "paused"/);
+assert.match(server, /تم رفض قبول «تم» لعدم كفاية الرصيد؛ سيبقى ردك ظاهرًا مؤقتًا ولن يُعتمد الحجز/);
 assert.match(server, /تم حذف\/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب/);
 assert.match(server, /الرصيد الحالي: \$\{money\(balanceCents\)\} JOD/);
 assert.match(server, /العمولة المطلوبة: \$\{money\(requiredCents\)\} JOD/);

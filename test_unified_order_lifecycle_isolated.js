@@ -324,9 +324,14 @@ async function approve(doneId = "done-1") {
   reset({ executorBalance: 239 });
   await ingestPrice();
   await context.handleIncomingMessage(message("done-debt", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)));
-  assert.equal(state.acceptance, null, "لا يُسجل تم عندما لا يغطي الرصيد عمولة الطلب");
-  assert.equal(state.candidate.status, "candidate", "يبقى الطلب بانتظار منفذ يملك رصيدًا كافيًا");
-  assert.equal(state.ledgers.length, 0, "لا تُسجل تسوية عند نقص الرصيد");
+  assert.equal(state.acceptance?.acceptance_message_id, canonicalMessageId("done-debt", EXECUTOR), "يُسجل تم رغم أن رصيد المنفذ أقل من العمولة");
+  assert.equal(state.candidate.status, "pending", "القبول منخفض الرصيد ينتظر 👍 المخوّلة قبل التسوية");
+  assert.equal(state.ledgers.length, 0, "مجرد تسجيل القبول لا ينشئ تسوية قبل 👍");
+  await approve("done-debt");
+  assert.equal(state.candidate.status, "finalized", "تتم التسوية بعد 👍 حتى عندما يصبح الرصيد سالبًا");
+  assert.equal(state.settlement.status, "applied");
+  assert.equal(state.ledgers.length, 3, "التسوية السالبة تسجل الحركات الثلاث مرة واحدة");
+  assert.equal(users.executor.wallet_cents, -61, "يُسجل خصم العمولة ويصبح الرصيد سالبًا");
 
   reset({ archived: true });
   await context.handleIncomingMessage(message("price-archived", "السعر 20", PRODUCER));
