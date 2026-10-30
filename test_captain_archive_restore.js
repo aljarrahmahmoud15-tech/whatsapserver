@@ -8,7 +8,7 @@ const v26 = fs.readFileSync('./public/admin-v26.html', 'utf8');
 
 assert.match(server, /app\.get\("\/api\/admin\/captains\/archived", requireAdmin/);
 assert.match(server, /u\.archived_at IS NOT NULL/);
-assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/restore", requireAdmin/);
+assert.match(server, /app\.post\("\/api\/admin\/captains\/:id\/restore", requireOwnerAdmin/);
 const restoreStart = server.indexOf('app.post("/api/admin/captains/:id/restore"');
 const restoreEnd = server.indexOf('app.get("/api/admin/captains/:id/merge-preview"', restoreStart);
 assert.ok(restoreStart >= 0 && restoreEnd > restoreStart, 'restore route boundaries must exist');

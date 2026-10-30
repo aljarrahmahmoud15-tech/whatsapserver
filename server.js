@@ -91,8 +91,10 @@ const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWOR
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
 // Owner-requested temporary pause: keep enabled until the owner explicitly asks to resume.
-// This only gates low-balance «تم» acceptance deletion; unrelated deletion paths remain unchanged.
+// This flag only gates low-balance «تم» acceptance deletion; captain removal has its own pause below.
 const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = true;
+// Owner-requested temporary pause: block captain removal/archive/merge and group-reset purge until explicitly resumed.
+const CAPTAIN_REMOVAL_PAUSED = true;
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
 const CAPTAIN_BALANCE_POLICY_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CAPTAIN_BALANCE_POLICY_INTERVAL_MS || 5 * 60 * 1000));
 const configuredUnquotedAcceptanceWindowMs = Number(process.env.UNQUOTED_ACCEPTANCE_WINDOW_MS || 10 * 60 * 1000);
@@ -547,7 +549,7 @@ app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
-  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED });
+  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED, captainRemovalPaused: CAPTAIN_REMOVAL_PAUSED });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -4604,6 +4606,30 @@ async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl 
 }
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
+}
+function rejectCaptainRemovalWhilePaused(res, operation, entityId = null) {
+  if (!CAPTAIN_REMOVAL_PAUSED) return false;
+  audit("captain.removal.blocked_by_pause", entityId == null ? "system" : "user", entityId, {
+    operation,
+    paused: true,
+    mutation: "none",
+    financialMutation: false,
+    settlementMutation: false,
+    orderMutation: false,
+    groupMembershipChanged: false,
+  });
+  res.status(423).json({
+    success: false,
+    code: "CAPTAIN_REMOVAL_PAUSED",
+    error: "إزالة أو أرشفة الكباتن متوقفة مؤقتًا بقرار المالك.",
+    paused: true,
+    mutation: "none",
+    financialMutation: false,
+    settlementMutation: false,
+    orderMutation: false,
+    groupMembershipChanged: false,
+  });
+  return true;
 }
 function adminSendMessageMatches(pending, message, observedAtMs = Date.now()) {
   if (!pending || pending.sendState !== "pending" || !message || message.fromMe !== true) return false;
@@ -11894,6 +11920,7 @@ async function finalizeCreatedGroupInBackground({ operationId, groupId, groupNam
 }
 
 function purgeExperimentalCaptains() {
+  if (CAPTAIN_REMOVAL_PAUSED) throw new Error("Captain removal is temporarily paused.");
   normalizeBotIdentity();
   const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL)]);
   const captains = db.prepare("SELECT id,phone FROM users WHERE role='captain'").all().filter((captain) => !botPhones.has(phoneWithCountry(captain.phone)));
@@ -11945,6 +11972,7 @@ async function resetGroupInBackground({ operationId, oldGroupId, groupName, back
 }
 
 app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
+  if (rejectCaptainRemovalWhilePaused(res, "group_reset_recreate")) return;
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
   const oldGroupId = String(getSetting("group_id", "")).trim();
@@ -12184,6 +12212,7 @@ app.delete("/api/admin/users/:id", requireAdmin, (req, res) => {
   if (!Number.isInteger(id) || !user) return res.status(404).json({ error: "المستخدم غير موجود" });
   if (user.is_bot || user.role === "company") return res.status(403).json({ error: "حساب النظام محمي ولا يمكن أرشفته" });
   if (user.role !== "captain") return res.status(400).json({ error: "الأرشفة متاحة لحسابات الكباتن فقط" });
+  if (rejectCaptainRemovalWhilePaused(res, "user_archive", id)) return;
   if (user.archived_at || user.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف مسبقًا", archived: true });
   const reason = String(req.body?.reason || "حذف من واجهة المالك").trim().slice(0, 240) || "حذف من واجهة المالك";
   const stamp = now();
@@ -12453,6 +12482,7 @@ app.patch("/api/admin/captains/:id/pin", requireCompanyOwner, (req, res) => {
 });
 app.post("/api/admin/captains/:id/suspend-and-remove", requireOwnerAdmin, async (req, res) => {
   const id = Number(req.params.id);
+  if (rejectCaptainRemovalWhilePaused(res, "suspend_and_remove_from_group", id)) return;
   const confirmation = String(req.body?.confirmation || "").trim();
   const reason = String(req.body?.reason || "").trim().slice(0, 240);
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
@@ -12505,6 +12535,7 @@ app.delete("/api/admin/captains/:id", requireOwnerAdmin, (req, res) => {
   if (!captain) return res.status(404).json({ error: "Captain not found" });
   if (captain.is_bot) return res.status(403).json({ error: "حساب البوت محمي ولا يمكن أرشفته" });
   if (captain.archived_at || captain.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف مسبقًا", archived: true });
+  if (rejectCaptainRemovalWhilePaused(res, "captain_archive", id)) return;
   const reason = String(req.body?.reason || "حذف من واجهة المالك").trim().slice(0, 240) || "حذف من واجهة المالك";
   const stamp = now();
   const result = db.prepare("UPDATE users SET active=0,account_status='suspended',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND archived_at IS NULL").run(stamp, reason, stamp, id);
@@ -12563,6 +12594,7 @@ app.get("/api/admin/captains/:id/merge-preview", requireAdmin, (req, res) => {
   res.json({ source: { ...source, balance: money(source.wallet_cents) }, target: { ...target, balance: money(target.wallet_cents) }, references, resultingBalance: money(Number(source.wallet_cents || 0) + Number(target.wallet_cents || 0)), confirmation: `MERGE ${sourceId} INTO ${targetId}` });
 });
 app.post("/api/admin/captains/:id/merge", requireAdmin, async (req, res) => {
+  if (rejectCaptainRemovalWhilePaused(res, "captain_merge", Number(req.params.id))) return;
   const sourceId = Number(req.params.id);
   const targetId = Number(req.body?.targetId);
   const reason = String(req.body?.reason || "").trim().slice(0, 240);
@@ -13164,6 +13196,7 @@ app.get("/api/admin/captains/cleanup-preview", requireAdmin, async (req, res) =>
   res.type("text/plain").send(Buffer.from(JSON.stringify(payload), "utf8").toString("base64"));
 });
 app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) => {
+  if (rejectCaptainRemovalWhilePaused(res, "captain_cleanup_execute")) return;
   const confirmation = String(req.body?.confirmation || "");
   const expectedConfirmation = "DELETE_EMPTY_OUTSIDE_GROUP_AND_SUSPEND_LINKED";
   if (confirmation !== expectedConfirmation) return res.status(400).json({ error: "Explicit cleanup confirmation is required" });
