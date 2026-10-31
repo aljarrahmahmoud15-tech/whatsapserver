@@ -14636,6 +14636,7 @@ app.get("/api/admin/captains/reset-pin-selective/:runKey", requireAdmin, (req, r
 app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req, res) => {
   const confirmation = String(req.body?.confirmation || "");
   const runKey = String(req.body?.runKey || "").trim();
+  const expectedMatchedCount = Number(req.body?.expectedMatchedCount);
   if (confirmation !== "RESET_ACTIVE_GROUP_CAPTAIN_PINS_TO_00000" || !/^PIN5-[A-Z0-9-]{12,80}$/.test(runKey)) return res.status(400).json({ error: "تأكيد العملية ومفتاحها مطلوبان" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   if (bulkPinRuns.has(runKey)) return res.json({ success: true, started: true, ...bulkPinRuns.get(runKey) });
@@ -14645,7 +14646,7 @@ app.post("/api/admin/group/reset-active-captain-pins", requireAdmin, async (req,
   const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
   const entries = (chat.participants || []).map((participant) => ({ phone: normalize(groupParticipantPhone(participant)), recipientId: participant?.id?._serialized || String(participant?.id || "") })).filter((entry) => entry.phone && !isBotPhone(entry.phone));
   const recipients = db.prepare("SELECT id,phone,name FROM users WHERE role='captain' AND account_status='active' AND active=1 AND is_bot=0").all().map((captain) => ({ ...captain, recipientId: entries.find((entry) => entry.phone === normalize(captain.phone))?.recipientId || null })).filter((captain) => captain.recipientId);
-  if (recipients.length !== 173) return res.status(409).json({ error: "تغير عدد الكباتن المفعّلين أو أعضاء القروب؛ أعد المعاينة", matchedCount: recipients.length, expectedCount: 173 });
+  if (!Number.isInteger(expectedMatchedCount) || expectedMatchedCount !== recipients.length) return res.status(409).json({ error: "تغير عدد الكباتن المفعّلين أو أعضاء القروب؛ أعد المعاينة", matchedCount: recipients.length, expectedCount: Number.isInteger(expectedMatchedCount) ? expectedMatchedCount : null, mutation: "none" });
   const appUrl = captainLoginUrl(captainInviteBaseUrl(req));
   const run = { runKey, status: "running", total: recipients.length, updated: 0, sent: 0, failed: 0, skipped: 0, startedAt: now(), completedAt: null };
   bulkPinRuns.set(runKey, run);

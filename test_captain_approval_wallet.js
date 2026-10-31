@@ -46,6 +46,8 @@ assert.match(server, /topup_card\.sent/);
 assert.match(server, /يُضاف الرصيد عند استرداد البطاقة/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/reset-active-captain-pins", requireAdmin/);
 assert.match(server, /RESET_ACTIVE_GROUP_CAPTAIN_PINS_TO_00000/);
+assert.match(server, /const expectedMatchedCount = Number\(req\.body\?\.expectedMatchedCount\)/);
+assert.match(server, /expectedMatchedCount !== recipients\.length/);
 assert.match(server, /bcrypt\.hashSync\("00000", 10\)/);
 assert.match(server, /captain\.pin_reset\.bulk/);
 assert.match(server, /captainLoginUrl\(captainInviteBaseUrl\(req\)\)/);
