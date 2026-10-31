@@ -92,7 +92,7 @@ const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(3
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
 // Owner-requested temporary pause: keep enabled until the owner explicitly asks to resume.
 // This flag only gates low-balance «تم» acceptance deletion; captain removal has its own pause below.
-const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = true;
+const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = false;
 // Owner-requested temporary pause: block captain removal/archive/merge and group-reset purge until explicitly resumed.
 const CAPTAIN_REMOVAL_PAUSED = true;
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
