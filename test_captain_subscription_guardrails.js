@@ -13,6 +13,13 @@ assert.match(source, /role='captain' AND active=1 AND is_bot=0 AND account_statu
 assert.match(source, /function manualWeeklyChargeEligibleCaptains\(stamp = now\(\)\)/);
 assert.match(source, /wallet_cents>=\?/);
 assert.match(source, /ammanDateKey\(captain\.created_at\) < today/);
+assert.match(source, /function updateOfficialGroupAdminSnapshot\(groupId, snapshot\)/);
+assert.match(source, /function officialGroupAdminSnapshotReady\(\)/);
+assert.match(source, /function isOfficialGroupAdminPhone\(phone\)/);
+assert.match(source, /!isOfficialGroupAdminPhone\(captain\.phone\)/);
+assert.match(source, /o\.captain_user_id=u\.id OR o\.producer_user_id=u\.id/);
+assert.match(source, /status='completed' AND o\.settlement_state='settled'/);
+assert.match(source, /deferred_group_admin_snapshot/);
 assert.match(source, /"skipped_debt_limit"/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);

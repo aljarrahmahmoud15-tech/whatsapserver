@@ -50,7 +50,8 @@ function fixture(options = {}) {
       role TEXT DEFAULT 'captain',wallet_cents INTEGER DEFAULT 500,active INTEGER DEFAULT 1,
       is_bot INTEGER DEFAULT 0,account_status TEXT DEFAULT 'active',archived_at TEXT,
       created_at TEXT DEFAULT '2026-10-01T00:00:00.000Z',updated_at TEXT);
-    CREATE TABLE orders(id INTEGER PRIMARY KEY);`);
+    CREATE TABLE orders(id INTEGER PRIMARY KEY,producer_user_id INTEGER,captain_user_id INTEGER,status TEXT,settlement_state TEXT,updated_at TEXT,created_at TEXT);
+    CREATE TABLE order_settlements(id INTEGER PRIMARY KEY,order_id INTEGER,status TEXT);`);
   for (const table of ['wallet_ledger', 'captain_subscription_charges']) {
     const sql = source.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     assert.ok(sql, `production ${table} schema exists`);
@@ -61,7 +62,7 @@ function fixture(options = {}) {
   const audit = (event, _type, id) => {
     if (event === 'captain.subscription.charged' && Number(id) === auditFailUser) throw new Error('simulated ledger audit failure');
   };
-  const context = vm.createContext({ db, businessWeekPeriod, audit, console: { error() {} },
+  const context = vm.createContext({ db, businessWeekPeriod, audit, isOfficialGroupAdminPhone: () => false, WHATSAPP_GROUP_ID: "", console: { error() {} },
     Intl, Date, CAPTAIN_SUBSCRIPTION_START: '2026-09-18T00:00:00.000Z',
     CAPTAIN_SUBSCRIPTION_PERIOD_DAYS: 7, CAPTAIN_SUBSCRIPTION_CENTS: 100, now: () => current });
   for (const name of ['currentCaptainSubscriptionPeriod', 'ammanDateKey',
@@ -75,9 +76,16 @@ function fixture(options = {}) {
     clock: () => current, logger: { info() {}, error() {} }, ...options };
   const scheduler = createWeeklySubscriptionScheduler(dependencies);
   function seed(id, patch = {}) {
-    const row = { id, phone: `9627${String(id).padStart(8, '0')}`, name: `Captain ${id}`, ...patch };
+    const { activity = true, ...userPatch } = patch;
+    const row = { id, phone: `9627${String(id).padStart(8, '0')}`, name: `Captain ${id}`, ...userPatch };
     const keys = Object.keys(row);
     db.prepare(`INSERT INTO users(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`).run(...Object.values(row));
+    if (activity) {
+      const orderId = 10000 + id;
+      db.prepare(`INSERT INTO orders(id,producer_user_id,captain_user_id,status,settlement_state,updated_at,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(orderId, id, null, 'completed', 'settled', row.updated_at || NOW, row.created_at || NOW);
+      db.prepare(`INSERT INTO order_settlements(order_id,status) VALUES(?, 'applied')`).run(orderId);
+    }
   }
   const balance = (id) => db.prepare('SELECT wallet_cents FROM users WHERE id=?').get(id).wallet_cents;
   return { db, scheduler, dependencies, context, seed, balance,

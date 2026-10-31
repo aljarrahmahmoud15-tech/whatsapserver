@@ -4136,6 +4136,28 @@ function createGroupSnapshotFlight(key, evaluate, timeoutMs = 40000) {
   groupSnapshotFlights.set(key, flight);
   return flight;
 }
+function updateOfficialGroupAdminSnapshot(groupId, snapshot) {
+  if (!groupId || groupId !== configuredRuntimeGroupId() || !snapshot || !Array.isArray(snapshot.participants)) return;
+  const admins = new Set();
+  for (const participant of snapshot.participants) {
+    if (!participant?.isAdmin) continue;
+    const phone = phoneWithCountry(participant.user || participant.id || "");
+    if (phone) admins.add(phone);
+  }
+  officialGroupAdminPhones = admins;
+  officialGroupAdminSnapshotGroupId = groupId;
+  officialGroupAdminSnapshotGeneration = connectionGeneration;
+  officialGroupAdminSnapshotAt = now();
+}
+function officialGroupAdminSnapshotReady() {
+  return officialGroupAdminSnapshotGroupId === configuredRuntimeGroupId()
+    && officialGroupAdminSnapshotGeneration === connectionGeneration
+    && officialGroupAdminSnapshotAt
+    && officialGroupAdminPhones instanceof Set;
+}
+function isOfficialGroupAdminPhone(phone) {
+  return officialGroupAdminSnapshotReady() && officialGroupAdminPhones.has(phoneWithCountry(phone));
+}
 async function readGroupSnapshot(groupId) {
   const clientAtStart = client;
   const pageAtStart = clientAtStart?.pupPage;
@@ -4227,6 +4249,7 @@ async function readGroupSnapshot(groupId) {
     participantCount: result.snapshot.participants.length,
     participantSource: result.snapshot.participantSource || null,
   };
+  updateOfficialGroupAdminSnapshot(groupId, result.snapshot);
   return result.snapshot;
 }
 async function resolveReadableGroupChat(groupId) {
@@ -4809,12 +4832,12 @@ function captainDisplayName(name) {
 function weeklyChargeEligibleCaptains(stamp = now()) {
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
   return db.prepare(`SELECT DISTINCT u.id,u.phone,u.name,u.wallet_cents
-    FROM users u JOIN orders o ON o.captain_user_id=u.id
+    FROM users u JOIN orders o ON (o.captain_user_id=u.id OR o.producer_user_id=u.id)
     JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
     WHERE u.role='captain' AND u.active=1 AND u.is_bot=0 AND u.account_status='active'
       AND o.status='completed' AND o.settlement_state='settled'
       AND COALESCE(o.updated_at,o.created_at)>=? AND COALESCE(o.updated_at,o.created_at)<=?
-    ORDER BY u.id`).all(cutoff, stamp);
+    ORDER BY u.id`).all(cutoff, stamp).filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
 }
 function ammanDateKey(stamp = now()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Amman", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(stamp));
@@ -4826,17 +4849,32 @@ function manualWeeklyChargeEligibleCaptains(stamp = now()) {
   return db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
     FROM users
     WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM orders o
+        JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+        WHERE (o.captain_user_id=users.id OR o.producer_user_id=users.id)
+          AND o.status='completed' AND o.settlement_state='settled'
+      )
       AND wallet_cents>=?
-    ORDER BY id`).all(CAPTAIN_SUBSCRIPTION_CENTS).filter((captain) => Number.isFinite(Date.parse(captain.created_at)) && ammanDateKey(captain.created_at) < today);
+    ORDER BY id`).all(CAPTAIN_SUBSCRIPTION_CENTS)
+    .filter((captain) => Number.isFinite(Date.parse(captain.created_at)) && ammanDateKey(captain.created_at) < today)
+    .filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
 }
 function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, scheduleKey = null } = {}) {
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [], eligibleCount: 0 };
+  if (typeof WHATSAPP_GROUP_ID !== "undefined" && WHATSAPP_GROUP_ID && !officialGroupAdminSnapshotReady()) return { status: "deferred_group_admin_snapshot", applied: [], skipped: [], eligibleCount: 0, totalCents: 0 };
   const today = ammanDateKey(stamp);
   const businessWeek = businessWeekPeriod(stamp);
   const candidates = db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
     FROM users
     WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND archived_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM orders o
+        JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+        WHERE (o.captain_user_id=users.id OR o.producer_user_id=users.id)
+          AND o.status='completed' AND o.settlement_state='settled'
+      )
     ORDER BY id`).all();
   const applied = [];
   const skipped = [];
@@ -4876,6 +4914,7 @@ function applyCaptainSubscriptionCharges(stamp = now(), { manual = false } = {})
   if (!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
   const period = currentCaptainSubscriptionPeriod(stamp);
   if (!period) return { status: "before_start", applied: [], skipped: [] };
+  if (typeof WHATSAPP_GROUP_ID !== "undefined" && WHATSAPP_GROUP_ID && !officialGroupAdminSnapshotReady()) return { status: "deferred_group_admin_snapshot", applied: [], skipped: [], eligibleCount: 0, totalCents: 0 };
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const captains = weeklyChargeEligibleCaptains(stamp);
   const applied = [];
@@ -5938,6 +5977,10 @@ let lastGroupMessageTelemetry = null;
 let lastGuideVideoTelemetry = null;
 let lastGroupEventGroupId = null;
 let lastOfficialGroupEventGroupId = null;
+let officialGroupAdminPhones = new Set();
+let officialGroupAdminSnapshotGroupId = null;
+let officialGroupAdminSnapshotGeneration = null;
+let officialGroupAdminSnapshotAt = null;
 let lastOfficialGroupMessageTelemetry = null;
 let lastIgnoredGroupEventGroupId = null;
 let lastIgnoredGroupMessageTelemetry = null;
