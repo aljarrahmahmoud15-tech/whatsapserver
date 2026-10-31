@@ -5,6 +5,9 @@ const server = fs.readFileSync("./server.js", "utf8");
 const admin = fs.readFileSync("./admin.html", "utf8");
 
 assert.match(server, /const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number\(process\.env\.CAPTAIN_LOW_BALANCE_WARNING_CENTS \|\| 100\)/);
+assert.match(server, /const CAPTAIN_DEBT_POLICY_ENABLED = String\(process\.env\.CAPTAIN_DEBT_POLICY_ENABLED \|\| "false"\)/);
+assert.match(server, /policy: "debt_enforcement_disabled"/);
+assert.match(server, /groupMutation: false/);
 assert.match(server, /async function notifyCaptainLowBalance\(/);
 assert.match(server, /event='captain\.wallet\.low_balance'/);
 assert.match(server, /async function enforceCaptainWalletThresholds\(/);
@@ -56,6 +59,7 @@ assert.match(server, /negativeWalletCount/);
 assert.match(server, /failureStatuses/);
 assert.match(server, /firstFailure/);
 assert.match(server, /app\.get\("\/api\/admin\/captains\/enforce-wallet-policy\/:runKey"/);
+assert.match(server, /تم إيقاف سياسة المديونية؛ لا توجد إزالة أو تحذيرات تلقائية/);
 assert.match(server, /member\.suspended_for_negative_balance/);
 assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied to all order types"/);
 assert.match(server, /skipped_negative_balance/);

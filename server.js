@@ -126,9 +126,13 @@ const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_start
 // Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
 // Keep this hard-off until a future code change explicitly re-enables the policy.
 const CAPTAIN_DAILY_CHARGE_ENABLED = false;
+// Owner policy: debt enforcement is disabled. Normal order settlement accounting
+// remains unchanged; this gate only disables debt warnings, isolation/removal,
+// subscription/manual debit paths, and threshold sweeps.
+const CAPTAIN_DEBT_POLICY_ENABLED = String(process.env.CAPTAIN_DEBT_POLICY_ENABLED || "false").trim().toLowerCase() === "true";
 // Owner policy: manual wallet changes are available only through
 // owner-authenticated routes. Staff and dashboard-token callers are blocked.
-const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = true;
+const CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED = CAPTAIN_DEBT_POLICY_ENABLED && String(process.env.CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED || "false").trim().toLowerCase() === "true";
 const COMPANY_BRAND_NAME = "وصلني الآن";
 const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot is always settled through the internal company wallet.
@@ -2793,6 +2797,7 @@ async function notifyCaptainLowBalance({ captainId, balanceCents, reason, refere
   return { status: deliveryStatus, notificationId: row.lastInsertRowid };
 }
 async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason, reference, removalContext = null }) {
+  if (!CAPTAIN_DEBT_POLICY_ENABLED) return { status: "disabled", policy: "debt_enforcement_disabled", financialMutation: false, groupMutation: false };
   const balance = Number(balanceCents);
   if (!Number.isFinite(balance)) return { status: "invalid_balance" };
   if (balance < 0) {
@@ -2809,6 +2814,7 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   return { status: "not_required" };
 }
 async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false, allowUnconfirmedRemoval = false } = {}) {
+  if (!CAPTAIN_DEBT_POLICY_ENABLED) return { status: "disabled", policy: "debt_enforcement_disabled", scanned: 0, negative: 0, warned: 0, removed: 0, financialMutation: false, groupMutation: false };
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
   const captains = negativeOnly
@@ -3300,6 +3306,10 @@ function settlementPolicyResponse() {
     totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
     appliesTo: "all_order_types",
     currency: "JOD",
+    debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED,
+    manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
+    automaticDebtWarningsEnabled: CAPTAIN_DEBT_POLICY_ENABLED && notificationEnabled("balanceAlerts"),
+    automaticDebtIsolationEnabled: CAPTAIN_DEBT_POLICY_ENABLED,
   };
 }
 function calculateConfiguredSettlement(input = {}) {
@@ -10422,7 +10432,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12.5% all order types", companyWalletRate: "2.5% all order types", confirmingCaptainWalletRate: "-15% all order types", captainCashRate: "100%", debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied to all order types", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "send due-balance message and remove from configured group", idempotent: true },
+    policy: { producerWalletRate: "12.5% all order types", companyWalletRate: "2.5% all order types", confirmingCaptainWalletRate: "-15% all order types", captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied to all order types", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
   });
 });
 
@@ -14754,6 +14764,7 @@ app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmi
   res.json({ success: true, ...run });
 });
 app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, res) => {
+  if (!CAPTAIN_DEBT_POLICY_ENABLED) return res.status(409).json({ error: "تم إيقاف سياسة المديونية؛ لا توجد إزالة أو تحذيرات تلقائية", policy: "debt_enforcement_disabled", mutation: "none", financialMutation: false, groupMutation: false });
   if (String(req.body?.confirmation || "") !== "REMOVE_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_NEGATIVE_CAPTAINS_NOW مطلوب" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
   const runKey = String(req.body?.runKey || `NEG-REMOVE-${Date.now().toString(36).toUpperCase()}`).trim();
@@ -14941,7 +14952,7 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت جميع أنواع الطلبات وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت جميع أنواع الطلبات وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
