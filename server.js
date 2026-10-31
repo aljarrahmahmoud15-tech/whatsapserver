@@ -1383,6 +1383,25 @@ CREATE TABLE IF NOT EXISTS captain_daily_charges (
   FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)
 );
 CREATE INDEX IF NOT EXISTS idx_captain_daily_charges_date ON captain_daily_charges(charge_date);
+CREATE TABLE IF NOT EXISTS captain_withdrawal_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_code TEXT NOT NULL UNIQUE,
+  captain_user_id INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+  balance_snapshot_cents INTEGER NOT NULL,
+  note TEXT,
+  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')) DEFAULT 'pending',
+  owner_note TEXT,
+  approved_ledger_id INTEGER,
+  approval_idempotency_key TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  decided_at TEXT,
+  FOREIGN KEY(captain_user_id) REFERENCES users(id),
+  FOREIGN KEY(approved_ledger_id) REFERENCES wallet_ledger(id)
+);
+CREATE INDEX IF NOT EXISTS idx_captain_withdrawal_requests_status_updated ON captain_withdrawal_requests(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_captain_withdrawal_requests_captain_updated ON captain_withdrawal_requests(captain_user_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS captain_wallet_pool_operations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   operation_key TEXT NOT NULL UNIQUE,
@@ -10323,6 +10342,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN 1 ELSE 0 END),0) AS executed_orders
     FROM order_settlements s JOIN orders o ON o.id=s.order_id`).get(user.id, user.id, user.id, user.id);
   const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
+  const withdrawalRequests = captainWithdrawalRequestRows("", 50, user.id);
   res.setHeader("Cache-Control", "no-store");
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
@@ -10331,6 +10351,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     entries,
     trips,
     topupCards,
+    withdrawalRequests,
   });
 });
 app.post("/api/auth/login", async (req, res) => {
@@ -11174,6 +11195,39 @@ app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
     res.status(500).json({ error: "Unable to persist ADMIN_TOKEN" });
   }
 });
+function captainWithdrawalRequestRows(status = "pending", limit = 100, captainUserId = null) {
+  const normalizedStatus = ["pending", "approved", "rejected", "cancelled"].includes(status) ? status : null;
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+  const conditions = ["r.captain_user_id = u.id", "u.role='captain'", "u.is_bot=0"];
+  const params = [];
+  if (normalizedStatus) { conditions.push("r.status=?"); params.push(normalizedStatus); }
+  if (captainUserId !== null) { conditions.push("r.captain_user_id=?"); params.push(Number(captainUserId)); }
+  params.push(safeLimit);
+  return db.prepare(`SELECT r.id,r.request_code,r.captain_user_id,r.amount_cents,r.balance_snapshot_cents,r.note,r.status,r.owner_note,r.approved_ledger_id,r.created_at,r.updated_at,r.decided_at,
+      u.name AS captain_name,u.phone AS captain_phone,u.wallet_cents AS current_balance_cents
+    FROM captain_withdrawal_requests r JOIN users u ON u.id=r.captain_user_id
+    WHERE ${conditions.join(" AND ")} ORDER BY r.id DESC LIMIT ?`).all(...params).map((row) => ({
+      id: row.id,
+      requestCode: row.request_code,
+      captainUserId: row.captain_user_id,
+      captainName: row.captain_name,
+      captainPhone: row.captain_phone,
+      amount: money(row.amount_cents),
+      amountCents: Number(row.amount_cents),
+      balanceSnapshot: money(row.balance_snapshot_cents),
+      balanceSnapshotCents: Number(row.balance_snapshot_cents),
+      currentBalance: money(row.current_balance_cents),
+      currentBalanceCents: Number(row.current_balance_cents),
+      note: row.note || "",
+      status: row.status,
+      ownerNote: row.owner_note || "",
+      approvedLedgerId: row.approved_ledger_id || null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      decidedAt: row.decided_at || null,
+    }));
+}
+
 function buildV27BootstrapPayload() {
   const generatedAt = now();
   const groupId = configuredRuntimeGroupId() || null;
@@ -11194,6 +11248,7 @@ function buildV27BootstrapPayload() {
   const todayOrders = db.prepare(`SELECT COUNT(*) AS count FROM orders
     WHERE status IN ('accepted','completed') AND substr(COALESCE(accepted_at,created_at),1,10)=?`).get(todayKey);
   const company = companyUser();
+  const pendingWithdrawalRequests = captainWithdrawalRequestRows("pending", 50);
   const cachedGroup = adminGroupSummaryCache.groupId === groupId && adminGroupSummaryCache.payload && adminGroupSummaryCache.expiresAt > Date.now()
     ? adminGroupSummaryCache.payload
     : null;
@@ -11224,6 +11279,7 @@ function buildV27BootstrapPayload() {
     },
     captains: { activeRegistered, negativeWalletCount },
     orders,
+    pendingWithdrawalRequests: pendingWithdrawalRequests.length,
   };
   return {
     success: true,
@@ -11263,6 +11319,7 @@ function buildV27BootstrapPayload() {
       cachedAt: cachedGroup?.generatedAt || null,
       source: cachedGroup ? 'group-summary-cache' : 'not-loaded',
     },
+    captainWithdrawalRequests: pendingWithdrawalRequests,
     companyWallet: company ? {
       balance: money(company.wallet_cents),
       balanceCents: Number(company.wallet_cents || 0),
@@ -12976,6 +13033,62 @@ app.post("/api/admin/captains/:id/commission-withdrawal", requireOwnerAdmin, adm
   } catch (error) {
     const statusCode = Number(error?.statusCode) || 409;
     res.status(statusCode).json({ error: error?.message || "تعذر تسجيل سحب العمولة", mutation: "none" });
+  }
+});
+
+app.get("/api/admin/captain-withdrawal-requests", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  const status = String(req.query?.status || "pending").trim();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({ success: true, status, requests: captainWithdrawalRequestRows(status, 100) });
+});
+
+app.post("/api/admin/captain-withdrawal-requests/:id/decision", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const id = Number(req.params.id);
+  const decision = String(req.body?.decision || "").trim();
+  const ownerNote = String(req.body?.reason || req.body?.ownerNote || "").trim().slice(0, 240);
+  const confirmation = String(req.body?.confirmation || "").trim();
+  const approvalKey = String(req.get("X-Idempotency-Key") || req.body?.idempotencyKey || `CAPTAIN-WITHDRAWAL-APPROVAL-${id}`).trim();
+  if (!Number.isInteger(id) || id < 1 || !["approve", "reject"].includes(decision) || ownerNote.length < 3 || approvalKey.length < 16 || approvalKey.length > 140 || (decision === "approve" && confirmation !== "OWNER_CAPTAIN_WITHDRAWAL_APPROVAL")) {
+    return res.status(400).json({ error: "رقم الطلب والقرار والسبب والتأكيد مطلوبة" });
+  }
+  try {
+    const result = db.transaction(() => {
+      const request = db.prepare("SELECT * FROM captain_withdrawal_requests WHERE id=? LIMIT 1").get(id);
+      if (!request) { const error = new Error("طلب السحب غير موجود"); error.statusCode = 404; throw error; }
+      if (request.status === "approved" || request.status === "rejected") return { alreadyDecided: true, request };
+      if (request.status !== "pending") { const error = new Error("طلب السحب ليس قيد المراجعة"); error.statusCode = 409; throw error; }
+      const stamp = now();
+      if (decision === "reject") {
+        db.prepare("UPDATE captain_withdrawal_requests SET status='rejected',owner_note=?,updated_at=?,decided_at=? WHERE id=? AND status='pending'").run(ownerNote, stamp, stamp, id);
+        audit("captain.withdrawal_request.rejected", "captain_withdrawal_request", request.request_code, { requestId: id, captainId: request.captain_user_id, ownerNote, financialMutation: false });
+        return { alreadyDecided: false, decision, requestCode: request.request_code };
+      }
+      const current = db.prepare("SELECT id,phone,name,wallet_cents,role,is_bot,active,account_status FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged' LIMIT 1").get(request.captain_user_id);
+      if (!current || !current.active || current.account_status !== "active") { const error = new Error("حساب الكابتن غير نشط أو غير مؤهل"); error.statusCode = 409; throw error; }
+      const currentBalanceCents = Number(current.wallet_cents || 0);
+      const amountCents = Number(request.amount_cents || 0);
+      if (amountCents > Math.max(0, currentBalanceCents)) { const error = new Error(`الرصيد الحالي لا يكفي للسحب (${money(Math.max(0, currentBalanceCents))})`); error.statusCode = 409; throw error; }
+      const nextBalanceCents = currentBalanceCents - amountCents;
+      const ledgerKey = approvalKey;
+      const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(ledgerKey);
+      if (existing) {
+        if (Number(existing.amount_cents) !== -amountCents || Number(request.approved_ledger_id || 0) !== Number(existing.id)) { const error = new Error("مفتاح الموافقة مستخدم لحركة مختلفة"); error.statusCode = 409; throw error; }
+        return { alreadyDecided: true, decision: "approve", requestCode: request.request_code, ledgerId: existing.id, balanceCents: Number(existing.balance_after_cents) };
+      }
+      const updated = db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND wallet_cents=?").run(nextBalanceCents, stamp, current.id, currentBalanceCents);
+      if (!updated.changes) { const error = new Error("تغير رصيد الكابتن أثناء الموافقة؛ لم يُسجل السحب"); error.statusCode = 409; throw error; }
+      const reference = `CAPTAIN-WITHDRAWAL-${request.id}`;
+      const details = JSON.stringify({ approvalKey: ledgerKey, requestId: request.id, requestCode: request.request_code, previousBalanceCents: currentBalanceCents, amountCents, nextBalanceCents, ownerNote, actor: "owner", source: "captain_withdrawal_request", delivery: "wallet_only", whatsappSent: false });
+      const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(current.id, "captain_withdrawal", -amountCents, nextBalanceCents, reference, ownerNote, stamp, details, ledgerKey);
+      const changed = db.prepare("UPDATE captain_withdrawal_requests SET status='approved',owner_note=?,approved_ledger_id=?,approval_idempotency_key=?,updated_at=?,decided_at=? WHERE id=? AND status='pending'").run(ownerNote, ledger.lastInsertRowid, ledgerKey, stamp, stamp, id);
+      if (!changed.changes) { const error = new Error("تغيرت حالة طلب السحب أثناء الموافقة"); error.statusCode = 409; throw error; }
+      audit("captain.withdrawal_request.approved", "captain_withdrawal_request", request.request_code, { requestId: id, captainId: current.id, amountCents, previousBalanceCents: currentBalanceCents, balanceAfterCents: nextBalanceCents, ledgerId: ledger.lastInsertRowid, delivery: "wallet_only", whatsappSent: false });
+      return { alreadyDecided: false, decision, requestCode: request.request_code, ledgerId: ledger.lastInsertRowid, balanceCents: nextBalanceCents };
+    })();
+    if (result.alreadyDecided) return res.json({ success: true, alreadyDecided: true, decision: result.decision || result.request?.status, requestCode: result.requestCode || result.request?.request_code, ledgerId: result.ledgerId || result.request?.approved_ledger_id || null, financialMutation: false, message: "تمت معالجة طلب السحب مسبقًا ولم تتكرر الحركة" });
+    return res.status(decision === "approve" ? 201 : 200).json({ success: true, decision, requestCode: result.requestCode, ledgerId: result.ledgerId || null, balance: result.balanceCents === undefined ? null : money(result.balanceCents), financialMutation: decision === "approve", delivery: "wallet_only", whatsappSent: false, message: decision === "approve" ? "تمت الموافقة وتسجيل الخصم الداخلي" : "تم رفض طلب السحب دون حركة مالية" });
+  } catch (error) {
+    res.status(Number(error?.statusCode) || 409).json({ error: error?.message || "تعذر معالجة طلب السحب", financialMutation: false });
   }
 });
 
@@ -14877,6 +14990,28 @@ app.post("/api/redeem", (req, res) => {
     void notifyOperations({ event: "topup_card.redeemed", title: "تأكيد إضافة الرصيد", captainPhone: captain?.phone, lines: [`الكابتن: ${captain?.name || "حساب الكابتن"}`, `القيمة المضافة: ${money(result.valueCents)} JOD`, `الرصيد الحالي: ${money(result.balanceCents)} JOD`, "تم تسجيل العملية في دفتر الشركة وإضافة الرصيد مباشرة." ] });
     res.json({ success: true, balance: money(result.balanceCents), credited: money(result.valueCents), currency: "JOD" });
   } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.get("/api/captain/withdrawal-requests", requireCaptain, captainReadLimiter, (req, res) => {
+  const captain = db.prepare("SELECT id,active,account_status FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+  if (!captain || !captain.active || captain.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, requests: captainWithdrawalRequestRows("", 50, captain.id) });
+});
+app.post("/api/captain/withdrawal-requests", requireCaptain, adminMutationLimiter, (req, res) => {
+  const captain = db.prepare("SELECT id,name,phone,wallet_cents,active,account_status FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
+  if (!captain || !captain.active || captain.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
+  const amount = Number(req.body?.amount);
+  const amountCents = Math.round(amount * 100);
+  const note = String(req.body?.note || "").trim().slice(0, 240);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !Number.isInteger(amountCents) || amountCents < 1) return res.status(400).json({ error: "أدخل مبلغ سحب صحيحًا" });
+  if (amountCents > Math.max(0, Number(captain.wallet_cents || 0))) return res.status(409).json({ error: "المبلغ يتجاوز الرصيد القابل للسحب" });
+  const open = db.prepare("SELECT request_code FROM captain_withdrawal_requests WHERE captain_user_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(captain.id);
+  if (open) return res.status(409).json({ error: `لديك طلب سحب مفتوح بالفعل: ${open.request_code}` });
+  const stamp = now();
+  const requestCode = `CAPTAIN-WITHDRAWAL-${captain.id}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const result = db.prepare("INSERT INTO captain_withdrawal_requests(request_code,captain_user_id,amount_cents,balance_snapshot_cents,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)").run(requestCode, captain.id, amountCents, Number(captain.wallet_cents || 0), note || null, stamp, stamp);
+  audit("captain.withdrawal_request.created", "captain_withdrawal_request", requestCode, { captainId: captain.id, amountCents, balanceSnapshotCents: Number(captain.wallet_cents || 0) }, captain.id);
+  res.status(201).json({ success: true, requestId: result.lastInsertRowid, requestCode, status: "pending", message: "تم إرسال طلب السحب إلى المالك دون خصم من الرصيد" });
 });
 app.post("/api/captain/redeem-card", requireCaptain, (req, res) => {
   return res.status(403).json({ error: "إضافة الرصيد تتم من المالك فقط؛ لا يمكن للكابتن تفعيل بطاقة أو إضافة رصيد من البوابة" });
