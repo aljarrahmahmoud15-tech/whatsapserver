@@ -2,14 +2,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
-assert.match(server, /const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = false/);
-assert.match(server, /insufficientBalanceAcceptanceDeletionPaused: INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED/);
+assert.match(server, /const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY = "insufficient_balance_acceptance_deletion_enabled"/);
+assert.match(server, /insufficientBalanceAcceptanceDeletionPaused: !insufficientBalanceAcceptanceDeletionEnabled\(\)/);
+assert.match(server, /function insufficientBalanceAcceptanceDeletionEnabled\(\)/);
+assert.match(server, /app\.patch\("\/api\/admin\/settings\/acceptance-deletion", requireOwnerAdmin/);
 
 const helperStart = server.indexOf('async function deleteAcceptanceOnlyAfterGroupAlert(');
 const helperEnd = server.indexOf('\nasync function notifyOfficialGroupOrderReopened', helperStart);
 assert.ok(helperStart >= 0 && helperEnd > helperStart, 'the low-balance deletion helper must exist');
 const helper = server.slice(helperStart, helperEnd);
-const pauseIndex = helper.indexOf('if (INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED)');
+const pauseIndex = helper.indexOf('if (!insufficientBalanceAcceptanceDeletionEnabled())');
 const correctionIndex = helper.indexOf('notifyOfficialGroupInsufficientAcceptanceDeletionFailure({');
 const deleteIndex = helper.indexOf('deleteWhatsAppMessageForEveryone(messageId, {');
 assert.ok(pauseIndex >= 0 && correctionIndex > pauseIndex && deleteIndex > correctionIndex, 'the deletion gate and group-alert-before-delete order must remain explicit');

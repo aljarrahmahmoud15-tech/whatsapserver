@@ -91,8 +91,8 @@ const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWOR
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
 const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
 // Owner-requested temporary pause: keep enabled until the owner explicitly asks to resume.
-// This flag only gates low-balance «تم» acceptance deletion; captain removal has its own pause below.
-const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED = false;
+// Owner setting gates low-balance «تم» acceptance deletion; captain removal has its own pause below.
+const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY = "insufficient_balance_acceptance_deletion_enabled";
 // Owner-requested temporary pause: block captain removal/archive/merge and group-reset purge until explicitly resumed.
 const CAPTAIN_REMOVAL_PAUSED = true;
 const CAPTAIN_LOW_BALANCE_WARNING_CENTS = Number(process.env.CAPTAIN_LOW_BALANCE_WARNING_CENTS || 100);
@@ -553,7 +553,7 @@ app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
-  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED, captainRemovalPaused: CAPTAIN_REMOVAL_PAUSED });
+  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: !insufficientBalanceAcceptanceDeletionEnabled(), captainRemovalPaused: CAPTAIN_REMOVAL_PAUSED });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
@@ -2103,7 +2103,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   }
 }
 async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, priceCents, origin, destination, downloaderName, executorName }) {
-  if (INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_PAUSED) {
+  if (!insufficientBalanceAcceptanceDeletionEnabled()) {
     const deletionResult = { ok: false, requested: false, revoked: false, paused: true, reason: "insufficient_balance_acceptance_deletion_paused" };
     audit("order.acceptance.message_deletion_paused_insufficient_balance", "message", String(messageId || ""), {
       groupId: String(groupId || ""),
@@ -2994,6 +2994,15 @@ function getSetting(key, fallback = null) {
 }
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
+}
+function insufficientBalanceAcceptanceDeletionEnabled() {
+  const raw = getSetting(INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY, null);
+  if (raw === null) return true;
+  return ["1", "true", "on", "yes"].includes(String(raw).trim().toLowerCase());
+}
+function insufficientBalanceAcceptanceDeletionResponse() {
+  const enabled = insufficientBalanceAcceptanceDeletionEnabled();
+  return { enabled, paused: !enabled, ownerOnly: true, financialMutation: false };
 }
 const SPECIAL_BOOKING_POLICY_SETTING_KEY = "special_booking_policy_v1";
 function currentSpecialBookingPolicy() {
@@ -11031,7 +11040,7 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, 
 });
 app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
-  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
 app.get("/api/admin/settings/customer-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("customer-booking-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
@@ -11107,6 +11116,21 @@ app.patch("/api/admin/settings/notifications", requireOwnerAdmin, (req, res) => 
   } catch (error) {
     console.error("[Settings] notification policy update failed:", error.message);
     res.status(500).json({ error: "تعذر حفظ إعدادات الإشعارات" });
+  }
+});
+app.patch("/api/admin/settings/acceptance-deletion", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ error: "إعداد حذف رسالة تم يجب أن يكون true أو false" });
+  const before = insufficientBalanceAcceptanceDeletionResponse();
+  try {
+    db.transaction(() => {
+      setSetting(INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY, req.body.enabled ? "1" : "0");
+      audit("admin.acceptance_deletion_policy.changed", "system", "acceptance_deletion_policy", { before, after: insufficientBalanceAcceptanceDeletionResponse(), financialMutation: false, settlementMutation: false });
+    })();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ success: true, acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), message: req.body.enabled ? "تم تفعيل حذف رسالة «تم» عند رفض القبول بسبب عدم كفاية الرصيد." : "تم تعطيل حذف رسالة «تم»؛ ستبقى الرسالة ظاهرة عند رفض القبول بسبب الرصيد." });
+  } catch (error) {
+    console.error("[Settings] acceptance deletion policy update failed:", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعداد حذف رسالة تم" });
   }
 });
 app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
