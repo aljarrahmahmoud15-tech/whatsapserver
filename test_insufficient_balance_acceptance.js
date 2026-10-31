@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /function acceptanceBalanceGuard\(candidate, captain\)/);
-assert.match(server, /Negative balances follow the approved debt policy/);
+assert.match(server, /state: "insufficient_balance"/);
+assert.doesNotMatch(server, /order\.acceptance\.allowed_with_negative_balance/);
 assert.match(server, /acceptanceBalanceGuard\(candidate, captain\)/);
 const registerAcceptanceStart = server.indexOf('function registerAcceptance');
 const registerGuardIndex = server.indexOf('const balanceGuard = acceptanceBalanceGuard(candidate, captain)', registerAcceptanceStart);

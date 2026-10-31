@@ -7,54 +7,53 @@ const guardStart = server.indexOf('function acceptanceBalanceGuard');
 const guardEnd = server.indexOf('\nfunction latestOpenOrder', guardStart);
 assert.ok(guardStart >= 0 && guardEnd > guardStart, 'acceptance balance policy must exist');
 const guardSource = server.slice(guardStart, guardEnd);
-assert.doesNotMatch(guardSource, /state: "insufficient_balance"/);
-assert.doesNotMatch(guardSource, /balanceCents >= 0 && balanceCents < requiredCents/);
-assert.match(guardSource, /order\.acceptance\.allowed_with_negative_balance/);
-assert.match(guardSource, /financialMutation: false/);
+assert.match(guardSource, /state: "insufficient_balance"/);
+assert.doesNotMatch(guardSource, /allowed_with_negative_balance/);
+assert.match(guardSource, /return \{ allowed: false, state: "insufficient_balance"/);
 assert.match(guardSource, /return \{ allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents \}/);
 
-const auditEvents = [];
 const context = {
   BOT_FINANCIAL_MODE: 'captain',
   calculateConfiguredSettlement: () => ({ confirmingCaptainFeeCents: 125 }),
   companyUser: () => ({ id: 1, role: 'company' }),
-  audit: (...args) => auditEvents.push(args),
 };
 vm.runInNewContext(`${guardSource}\nthis.acceptanceBalanceGuard = acceptanceBalanceGuard;`, context);
 const candidate = { id: 55, price_cents: 1000, order_kind: 'regular' };
 const lowPositive = context.acceptanceBalanceGuard(candidate, { id: 17, is_bot: 0, wallet_cents: 25 });
-assert.equal(lowPositive.allowed, true);
+assert.equal(lowPositive.allowed, false);
+assert.equal(lowPositive.state, 'insufficient_balance');
 assert.equal(lowPositive.projectedBalanceCents, -100);
-assert.equal(auditEvents[0][0], 'order.acceptance.allowed_with_negative_balance');
-assert.equal(auditEvents[0][3].financialMutation, false);
 const alreadyNegative = context.acceptanceBalanceGuard(candidate, { id: 18, is_bot: 0, wallet_cents: -50 });
-assert.equal(alreadyNegative.allowed, true);
-assert.equal(alreadyNegative.projectedBalanceCents, -175);
-assert.equal(auditEvents.length, 2);
+assert.equal(alreadyNegative.allowed, false);
+assert.equal(alreadyNegative.state, 'insufficient_balance');
 const sufficient = context.acceptanceBalanceGuard(candidate, { id: 19, is_bot: 0, wallet_cents: 500 });
 assert.equal(sufficient.allowed, true);
 assert.equal(sufficient.projectedBalanceCents, 375);
-assert.equal(auditEvents.length, 2, 'non-negative projected balance does not create a debt audit');
 
 const registerStart = server.indexOf('function registerAcceptance');
 const identityIndex = server.indexOf('persistWhatsappIdentity(identityValue, senderPhone, "accepted_message_sender")', registerStart);
 const guardCallIndex = server.indexOf('const balanceGuard = acceptanceBalanceGuard(candidate, captain)', registerStart);
 const acceptanceInsertIndex = server.indexOf('INSERT INTO order_candidate_acceptances', registerStart);
-assert.ok(identityIndex >= 0 && guardCallIndex > identityIndex && acceptanceInsertIndex > guardCallIndex, 'acceptance follows identity and eligibility checks');
+assert.ok(identityIndex >= 0 && guardCallIndex > identityIndex && acceptanceInsertIndex > guardCallIndex, 'acceptance follows identity and balance checks');
 
 const settlementStart = server.indexOf('function settlePendingOrder(');
 const settlementEnd = server.indexOf('\nfunction settleHistoricalConfirmedOrder', settlementStart);
 assert.ok(settlementStart >= 0 && settlementEnd > settlementStart, 'live order settlement must exist');
 const settlement = server.slice(settlementStart, settlementEnd);
-const debtLimitAuditIndex = settlement.indexOf('audit("order.candidate_debt_limit_bypassed"');
-const debtRecordedAuditIndex = settlement.indexOf('audit("order.candidate_debt_recorded"');
+const settlementGuardIndex = settlement.indexOf('return { state: "insufficient_balance"');
 const orderInsertIndex = settlement.indexOf('const orderInsert = db.prepare("INSERT INTO orders');
 const captainDebitIndex = settlement.indexOf('UPDATE users SET wallet_cents=wallet_cents-?');
-assert.ok(debtLimitAuditIndex >= 0 && debtRecordedAuditIndex > debtLimitAuditIndex && orderInsertIndex > debtRecordedAuditIndex && captainDebitIndex > orderInsertIndex, 'negative debt is audited while the existing atomic settlement still completes');
+assert.ok(settlementGuardIndex >= 0 && settlementGuardIndex < orderInsertIndex, 'settlement rejects negative projected balance before order mutation');
+assert.ok(captainDebitIndex > orderInsertIndex, 'captain debit remains after atomic order creation');
 assert.match(settlement, /INSERT OR IGNORE INTO order_settlements/);
 assert.match(settlement, /UPDATE order_settlements SET status='applied'/);
 
+const historyStart = server.indexOf('function settleHistoricalConfirmedOrder');
+const historyEnd = server.indexOf('\nfunction ', historyStart + 10);
+const history = server.slice(historyStart, historyEnd > historyStart ? historyEnd : undefined);
+assert.match(history, /return \{ state: "insufficient_balance"/);
 assert.match(server, /if \(direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS\)/, 'manual wallet debits retain their existing debt limit');
-assert.match(server, /orderSettlementDebtPolicy: "يسمح بتثبيت جميع أنواع الطلبات وخصم 15% حتى مع الرصيد السالب"/);
+assert.match(server, /negative projected balances rejected; 15% debit remains applied to all order types/);
+assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ ويُخصم 15% فقط عند كفاية الرصيد/);
 
-console.log('negative-balance acceptance and settlement policy: ok; manual debit limit remains');
+console.log('negative-balance settlement is rejected before mutation; manual debit limit remains');

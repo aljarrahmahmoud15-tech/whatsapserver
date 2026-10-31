@@ -61,7 +61,7 @@ assert.match(server, /firstFailure/);
 assert.match(server, /app\.get\("\/api\/admin\/captains\/enforce-wallet-policy\/:runKey"/);
 assert.match(server, /تم إيقاف سياسة المديونية؛ لا توجد إزالة أو تحذيرات تلقائية/);
 assert.match(server, /member\.suspended_for_negative_balance/);
-assert.match(server, /orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied to all order types"/);
+assert.match(server, /orderSettlementDebtPolicy: "negative projected balances rejected; 15% debit remains applied to all order types"/);
 assert.match(server, /skipped_negative_balance/);
 assert.match(server, /sendWhatsAppAtMostOnce\(recipient, message/);
 assert.match(server, /⚠️ تنبيه رصيد/);

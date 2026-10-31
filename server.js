@@ -5356,17 +5356,8 @@ function acceptanceBalanceGuard(candidate, captain) {
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
   const projectedBalanceCents = balanceCents - requiredCents;
-  // Owner-approved order policy: accept even if this fee takes the captain below zero.
-  // Negative balances follow the approved debt policy; manual debit and subscription limits remain separate.
   if (projectedBalanceCents < 0) {
-    audit("order.acceptance.allowed_with_negative_balance", "order_candidate", candidate.id, {
-      captainId: captain.id,
-      walletOwnerId: walletOwner.id,
-      balanceCents,
-      requiredCents,
-      projectedBalanceCents,
-      financialMutation: false,
-    });
+    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents };
   }
   return { allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents };
 }
@@ -8849,10 +8840,10 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     if (!walletOwner) return { state: "stale" };
     const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.candidate_debt_limit_bypassed", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_allows_negative_balance" });
+      audit("order.candidate_debt_limit_blocked", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
     }
     if (projectedCaptainBalance < 0) {
-      audit("order.candidate_debt_recorded", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
+      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
     }
     const stamp = now();
     const companyWalletCharge = walletOwner.role === "company";
@@ -8930,10 +8921,10 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     if (!walletOwner) return { state: "unlinked" };
     const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.history.debt_limit_bypassed", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_allows_negative_balance" });
+      audit("order.history.debt_limit_blocked", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
     }
     if (projectedCaptainBalance < 0) {
-      audit("order.history.debt_recorded", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance });
+      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
     }
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind, producerRateBps: policy.producerRateBps, companyRateBps: policy.companyRateBps });
@@ -10505,7 +10496,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12.5% all order types", companyWalletRate: "2.5% all order types", confirmingCaptainWalletRate: "-15% all order types", captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative balances allowed; 15% debit remains applied to all order types", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
+    policy: { producerWalletRate: "12.5% all order types", companyWalletRate: "2.5% all order types", confirmingCaptainWalletRate: "-15% all order types", captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative projected balances rejected; 15% debit remains applied to all order types", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
   });
 });
 
@@ -15155,7 +15146,7 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يسمح بتثبيت جميع أنواع الطلبات وخصم 15% حتى مع الرصيد السالب", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ ويُخصم 15% فقط عند كفاية الرصيد", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
