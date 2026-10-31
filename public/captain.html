@@ -118,16 +118,16 @@
       <section class="topup-cards panel owner-credit-notice" aria-label="سياسة إضافة الرصيد"><div class="panel-head"><div><h2>إضافة الرصيد من المالك فقط</h2><p>لا توجد بطاقات شحن أو تفعيل ذاتي من بوابة الكابتن.</p></div><span class="count">OWNER ONLY</span></div><div class="empty"><strong>بعد مراجعة التحويل</strong>يقوم المالك بإضافة الرصيد مباشرة إلى محفظتك، ثم يظهر الرصيد الجديد في هذه الصفحة. لا ترسل بطاقة ولا تدخل رمز بطاقة من هنا.</div></section>
       <section class="metrics" aria-label="الملخص المالي">
         <div class="metric balance"><span>الرصيد الحالي</span><strong id="balance">—</strong><small>دينار أردني <span class="currency">JOD</span></small></div>
-        <div class="metric net"><span>صافي الأرباح</span><strong id="net-earnings">—</strong><small>من الطلبات المثبتة</small></div>
-        <div class="metric fees"><span>إجمالي الخصومات</span><strong id="fees">—</strong><small>رسوم المحفظة المسجلة</small></div>
+        <div class="metric net" hidden aria-hidden="true"><span>صافي الأرباح</span><strong id="net-earnings">—</strong><small>من الطلبات المثبتة</small></div>
+        <div class="metric fees" hidden aria-hidden="true"><span>إجمالي الخصومات</span><strong id="fees">—</strong><small>رسوم المحفظة المسجلة</small></div>
       </section>
 
       <div class="grid">
-        <section class="panel">
+        <section class="panel" hidden aria-hidden="true">
           <div class="panel-head"><div><h2>تفاصيل الأرباح والرحلات</h2><p>لا تظهر هنا إلا الطلبات المسجلة فعليًا لهذا الحساب.</p></div><span id="trip-count" class="count">0 رحلة</span></div>
           <div id="trips" class="rows"><div class="loading">جاري تحميل البيانات الحقيقية…</div></div>
         </section>
-        <section class="panel">
+        <section class="panel" hidden aria-hidden="true">
           <div class="panel-head"><div><h2>حركات الرصيد</h2><p>سجل المحفظة الفعلي بالتاريخ والمرجع.</p></div><span id="ledger-count" class="count">0 حركة</span></div>
           <div id="ledger" class="rows ledger"><div class="loading">جاري تحميل السجل…</div></div>
         </section>
