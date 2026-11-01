@@ -8628,19 +8628,20 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     const captain = current.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.captain_user_id) : null;
     const company = companyUser();
     if (!settlement || !captain || !company) return { state: "stale" };
+    const reversalOperationKey = `ORDER-${current.order_no}-REACTION-REMOVAL`;
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
     const ledgerNotes = settlementLedgerNotes(current.order_kind, settlementPolicyFromDetails(settlement.details_json));
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCompany, stamp, settlement.details_json);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?)").run(company.id, orderId, "reversal_company", -settlement.company_cents, companyBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCompany, stamp, settlement.details_json, `${reversalOperationKey}-COMPANY`);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.producer_cents, stamp, producer.id);
     const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(producer.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalProducer, stamp, settlement.details_json);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?)").run(producer.id, orderId, "reversal_producer", -settlement.producer_cents, producerBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalProducer, stamp, settlement.details_json, `${reversalOperationKey}-PRODUCER`);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.captain_fee_cents, stamp, captain.id);
     const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(captain.id).wallet_cents;
-    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json) VALUES(?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "reversal_captain_fee", settlement.captain_fee_cents, captainBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCaptain, stamp, settlement.details_json);
+    db.prepare("INSERT INTO wallet_ledger(user_id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?)").run(captain.id, orderId, "reversal_captain_fee", settlement.captain_fee_cents, captainBalance, `ORDER-${current.order_no}-CANCEL`, ledgerNotes.reversalCaptain, stamp, settlement.details_json, `${reversalOperationKey}-CAPTAIN`);
     db.prepare("UPDATE order_settlements SET status='reversed' WHERE order_id=? AND status='applied'").run(orderId);
     db.prepare("UPDATE orders SET status='cancelled',settlement_state='reversed',updated_at=? WHERE id=? AND status='accepted' AND accepted_message_id=?").run(stamp, orderId, expectedMessageId);
-    audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, captainId: captain.id, reversed: true, messageId: expectedMessageId });
+    audit("order.cancelled_downloader_removed_thumb", "order", orderId, { producerId: producer.id, captainId: captain.id, reversed: true, messageId: expectedMessageId, reversalOperationKey });
     return { state: "cancelled", order: current, producer, captain, reversed: true };
   })();
 }

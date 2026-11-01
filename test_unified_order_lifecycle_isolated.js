@@ -294,6 +294,24 @@ async function approve(doneId = "done-1") {
 
   reset();
   await ingestPrice();
+  await ingestAcceptance("done-remove-after-settlement");
+  await approve("done-remove-after-settlement");
+  assert.equal(state.candidate.status, "finalized");
+  state.targets = { [canonicalMessageId("done-remove-after-settlement", EXECUTOR)]: message("done-remove-after-settlement", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
+  assert.equal(state.order.status, "cancelled", "إزالة 👍 من المنزّل بعد التسوية تلغي الرحلة");
+  assert.equal(state.order.settlement_state, "reversed", "إزالة 👍 بعد التسوية تعكس حالة التسوية");
+  assert.equal(state.settlement.status, "reversed", "إزالة 👍 بعد التسوية تعكس سجل التسوية");
+  assert.equal(state.ledgers.length, 6, "العكس بعد إزالة 👍 يسجل ثلاث حركات إضافية");
+  assert.equal(users.producer.wallet_cents, 0);
+  assert.equal(users.company.wallet_cents, 0);
+  assert.equal(users.executor.wallet_cents, 5000);
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
+  assert.equal(state.ledgers.length, 6, "الإزالة المكررة لا تكرر العكس المالي");
+
+  reset();
+  await ingestPrice();
   await approve("done-race");
   assert.equal(state.candidate.status, "finalized", "التفاعل قبل وصول حدث تم يعيد بناء القبول من الاقتباس");
   assert.equal(state.ledgers.length, 3);
