@@ -52,6 +52,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
 const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "https://whatsapserver-2.onrender.com").replace(/\/$/, "");
+const BUILD_COMMIT = String(process.env.RENDER_GIT_COMMIT || process.env.RENDER_GIT_COMMIT_SHA || process.env.GIT_COMMIT || "unknown").trim().slice(0, 80);
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 const expectedRenderDataDir = path.resolve(process.env.RENDER_DATA_DIR || "/var/data");
 if (runningOnRender && path.resolve(DATA_DIR) !== expectedRenderDataDir) {
@@ -553,7 +554,11 @@ app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Server-Timing", `app;dur=${publicStatusTimingMs(startedAt)}`);
   // Liveness must remain independent of SQLite, Redis, filesystem scans, and WhatsApp calls.
-  return res.status(200).json({ ok: true, service: "whatsapserver", ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: !insufficientBalanceAcceptanceDeletionEnabled(), captainRemovalPaused: CAPTAIN_REMOVAL_PAUSED });
+  return res.status(200).json({ ok: true, service: "whatsapserver", buildCommit: BUILD_COMMIT, ready: Boolean(isReady), insufficientBalanceAcceptanceDeletionPaused: !insufficientBalanceAcceptanceDeletionEnabled(), captainRemovalPaused: CAPTAIN_REMOVAL_PAUSED });
+});
+app.get("/api/meta/build", (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  return res.json({ success: true, mutation: "none", buildCommit: BUILD_COMMIT, routeFlags: { captainWelcomeDirectTest: true, officialGroupInvite: true }, generatedAt: now() });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
