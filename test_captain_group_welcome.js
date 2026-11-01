@@ -15,7 +15,7 @@ test('captain welcome is idempotent by normalized phone and does not target owne
   assert.match(source, /CAPTAIN-GROUP-WELCOME-\$\{phone\}/);
   assert.match(source, /isProtectedOwnerIdentity\(phone\) \|\| isBotPhone\(phone\)/);
   assert.match(source, /\["sent", "delivered", "pending", "uncertain"\]/);
-  assert.match(source, /renderCaptainWelcomeCardMedia\(name, process\.env\.PUBLIC_BASE_URL \|\| "", phone\)/);
+  assert.match(source, /renderCaptainWelcomeCardMedia\(name, process\.env\.PUBLIC_BASE_URL \|\| "", phone, groupInviteUrl\)/);
   assert.match(source, /sendWhatsAppAtMostOnce\(recipient, media, \{ caption: message \}/);
   assert.match(source, /رقم هاتف الكابتن للنسخ/);
 });
@@ -42,5 +42,15 @@ test('direct welcome test is owner-confirmed, idempotent, allowlisted, and walle
   assert.match(source, /isServer2OutboundTargetAllowed\(chatId\)/);
   assert.match(source, /registerAdminSend\(\{ operationId, chatId, message \}\)/);
   assert.match(source, /mutation: "none", walletChanged: false/);
-  assert.match(source, /renderCaptainWelcomeCardMedia\(displayName, PUBLIC_APP_URL, phone\)/);
+  assert.match(source, /renderCaptainWelcomeCardMedia\(displayName, PUBLIC_APP_URL, phone, groupInviteUrl\)/);
+});
+
+test('official group invite support is separate from group identity and validated before storage', () => {
+  assert.match(source, /OFFICIAL_GROUP_INVITE_SETTING_KEY = "official_group_invite_url"/);
+  assert.match(source, /hostname !== "chat\.whatsapp\.com"/);
+  assert.match(source, /app\.get\("\/api\/group-invite"/);
+  assert.match(source, /app\.patch\("\/api\/admin\/group\/invite-link", requireOwnerAdmin/);
+  assert.match(source, /inviteGroupId !== groupId/);
+  assert.match(source, /setSetting\(OFFICIAL_GROUP_INVITE_SETTING_KEY, inviteUrl\)/);
+  assert.match(source, /رابط القروب الرسمي/);
 });

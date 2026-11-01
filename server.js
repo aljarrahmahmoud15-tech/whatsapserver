@@ -4024,7 +4024,30 @@ async function resolveGroupParticipantPhone(participant) {
 }
 const CAPTAIN_GROUP_WELCOME_EVENT = "captain.group.welcome";
 const captainGroupWelcomeInFlight = new Set();
-function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "") {
+const OFFICIAL_GROUP_INVITE_SETTING_KEY = "official_group_invite_url";
+function normalizeOfficialGroupInviteUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chat.whatsapp.com") return "";
+    const code = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/")[0];
+    if (!/^[A-Za-z0-9]{10,}$/.test(code)) return "";
+    return `https://chat.whatsapp.com/${code}`;
+  } catch (_) { return ""; }
+}
+async function getOfficialGroupInviteUrl() {
+  const stored = normalizeOfficialGroupInviteUrl(getSetting(OFFICIAL_GROUP_INVITE_SETTING_KEY, ""));
+  if (stored) return stored;
+  const groupId = configuredRuntimeGroupId();
+  if (!client || !isReady || !groupId) return "";
+  try {
+    const chat = await withTimeout(resolveGroupChat(groupId), 20000, null);
+    const code = chat && typeof chat.getInviteCode === "function" ? await withTimeout(chat.getInviteCode(), 20000, null) : "";
+    return normalizeOfficialGroupInviteUrl(code ? `https://chat.whatsapp.com/${String(code).trim()}` : "");
+  } catch (_) { return ""; }
+}
+function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
     "━━━━━━━━━━━━━━━━━━",
@@ -4035,6 +4058,7 @@ function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL 
     "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة «تم»، باقتباس أو بدونه.",
     "بعد وضع 👍 من كابتن تحميل الطلب يتم التثبيت والتسوية مرة واحدة فقط.",
     "رابط دخول الكابتن: " + captainLoginUrl(baseUrl),
+    ...(groupInviteUrl ? ["رابط القروب الرسمي: " + groupInviteUrl] : []),
     "رقم هاتف الكابتن للنسخ: " + String(phone || "").trim(),
     "نتمنى لك بداية موفقة ورزقًا طيبًا.",
     "━━━━━━━━━━━━━━━━━━"
@@ -4059,7 +4083,8 @@ async function sendCaptainGroupWelcome(participant, groupId) {
     ? await withTimeout(client.getContactById(serialized), 8000, null).catch(() => null)
     : null;
   const name = String(contact?.pushname || contact?.name || contact?.shortName || "كابتن").trim();
-  const message = captainGroupWelcomeMessage(name, process.env.PUBLIC_BASE_URL || "", phone);
+  const groupInviteUrl = await getOfficialGroupInviteUrl();
+  const message = captainGroupWelcomeMessage(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl);
   let row = existing;
   if (row) {
     db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(phone, "ترحيب الكابتن الجديد", message, row.id);
@@ -4078,7 +4103,7 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   let messageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
-    const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone), 30000, null);
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
     const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: message }, 30000);
     if (result.status === "sent" || result.status === "uncertain") {
@@ -5555,13 +5580,14 @@ async function renderOperationsMessageMedia(title, lines = []) {
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
-async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "") {
+async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "") {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(name || "كابتن");
   const safeUrl = escapeXml(captainLoginUrl(baseUrl));
   const safePhone = escapeXml(String(phone || "").trim());
+  const safeGroupInviteUrl = escapeXml(normalizeOfficialGroupInviteUrl(groupInviteUrl));
   const logo = logoData
     ? `<image href="data:image/png;base64,${logoData}" x="487" y="82" width="106" height="106" preserveAspectRatio="xMidYMid meet" opacity=".86"/>`
     : `<text x="540" y="151" text-anchor="middle" fill="#fff1a8" font-size="58" font-weight="700">و</text>`;
@@ -5585,7 +5611,8 @@ async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_
     <text x="540" y="618" text-anchor="middle" fill="#f6c84c" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">02 · التنفيذ</text><text x="540" y="648" text-anchor="middle" fill="#effff9" font-size="16" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">الرد «تم»</text>
     <text x="701" y="618" text-anchor="middle" fill="#f6c84c" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">03 · التثبيت</text><text x="701" y="648" text-anchor="middle" fill="#effff9" font-size="16" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ضع 👍</text>
     <rect x="314" y="704" width="452" height="88" rx="20" fill="url(#glass)" stroke="#eafff6" stroke-opacity=".78" stroke-width="2"/><path d="M332 722 H748" stroke="#ffffff" stroke-opacity=".42" stroke-width="2"/><text x="540" y="751" text-anchor="middle" fill="#ffffff" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">↗ رابط دخول الكابتن</text><text x="540" y="778" text-anchor="middle" fill="#d7fff0" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">الرابط الحقيقي يرسل كنص قابل للنقر أسفل الصورة</text>
-    <text x="540" y="845" text-anchor="middle" fill="#f6c84c" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نتمنى لك بداية موفقة ورزقًا طيبًا</text><text x="540" y="878" text-anchor="middle" fill="#a7f3d0" font-size="15" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ترحيب وتعليمات التشغيل فقط · رسمي</text>
+    <rect x="314" y="806" width="452" height="58" rx="17" fill="url(#glass)" stroke="#eafff6" stroke-opacity=".62" stroke-width="2"/><text x="540" y="830" text-anchor="middle" fill="#ffffff" font-size="18" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">↗ رابط القروب الرسمي</text><text x="540" y="852" text-anchor="middle" fill="#d7fff0" font-size="11" font-family="Arial, sans-serif">${safeGroupInviteUrl || "يظهر بعد اتصال القروب الرسمي"}</text>
+    <text x="540" y="900" text-anchor="middle" fill="#f6c84c" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نتمنى لك بداية موفقة ورزقًا طيبًا</text><text x="540" y="928" text-anchor="middle" fill="#a7f3d0" font-size="15" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ترحيب وتعليمات التشغيل فقط · رسمي</text>
     <rect x="82" y="952" width="916" height="104" rx="20" fill="#06141c" stroke="#397074" stroke-width="2"/><text x="940" y="985" text-anchor="end" fill="#f6c84c" font-size="17" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">رابط الدخول والرقم للنسخ</text><text x="940" y="1022" text-anchor="end" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safeUrl}</text><text x="140" y="1022" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safePhone}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
@@ -10683,18 +10710,14 @@ app.get("/status", (req, res) => {
 });
 startPublicStatusCacheRefresh();
 
-// Public, rate-limited endpoint that exposes the CURRENT official group invite link.
+// Public, rate-limited endpoint that exposes the current official group invite link.
 // The link is never hardcoded in any panel; panels fetch it from here.
 app.get("/api/group-invite", publicSpecialBookingLimiter, async (req, res) => {
   try {
-    const configuredGroupId = getSetting("group_id", WHATSAPP_GROUP_ID || null);
-    if (!configuredGroupId) return res.status(404).json({ success: false, error: "group_not_configured" });
-    const chat = await readGroupSnapshot(configuredGroupId);
-    let inviteCode = null;
-    if (chat && typeof chat.getInviteCode === "function") inviteCode = await withTimeout(chat.getInviteCode(), 20000, null);
-    if (!inviteCode) return res.status(404).json({ success: false, error: "invite_unavailable" });
+    const inviteUrl = await getOfficialGroupInviteUrl();
+    if (!inviteUrl) return res.status(404).json({ success: false, error: "invite_unavailable" });
     res.setHeader("Cache-Control", "public, max-age=300");
-    return res.json({ success: true, inviteUrl: `https://chat.whatsapp.com/${String(inviteCode).trim()}` });
+    return res.json({ success: true, mutation: "none", inviteUrl, configuredGroup: Boolean(configuredRuntimeGroupId()) });
   } catch (error) {
     return res.status(503).json({ success: false, error: "invite_unavailable" });
   }
@@ -11602,6 +11625,23 @@ app.get("/api/admin/group/link-state", requireAdmin, async (req, res) => {
     ready,
     generatedAt: now(),
   });
+});
+app.patch("/api/admin/group/invite-link", requireOwnerAdmin, async (req, res) => {
+  const inviteUrl = normalizeOfficialGroupInviteUrl(req.body?.inviteUrl || req.body?.groupInviteUrl);
+  if (!inviteUrl) return res.status(400).json({ success: false, error: "A valid https://chat.whatsapp.com invite URL is required" });
+  const groupId = String(WHATSAPP_GROUP_ID || configuredRuntimeGroupId() || "").trim();
+  if (!groupId) return res.status(409).json({ success: false, error: "Server 2 official group is not configured" });
+  if (!client || !isReady) return res.status(503).json({ success: false, error: "Bot not ready" });
+  const inviteCode = inviteUrl.split("/").pop();
+  const inviteInfo = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
+  const inviteGroupId = String(inviteInfo?.id?._serialized || inviteInfo?.id || "").trim();
+  if (!inviteInfo || inviteGroupId !== groupId) {
+    audit("group.invite_link.update_blocked", "group", groupId, { reason: "invite_identity_mismatch", inviteGroupId: inviteGroupId || null, mutation: "none" });
+    return res.status(409).json({ success: false, error: "Invite URL does not belong to the configured Server 2 group" });
+  }
+  setSetting(OFFICIAL_GROUP_INVITE_SETTING_KEY, inviteUrl);
+  audit("group.invite_link.updated", "group", groupId, { mutation: "setting_only", inviteUrlHost: "chat.whatsapp.com", inviteCodeLength: inviteCode.length });
+  return res.json({ success: true, mutation: "setting_only", groupId, inviteUrl, walletChanged: false });
 });
 app.get("/api/admin/diagnostics/last-guide-video-send", requireAdmin, (req, res) => res.json({ telemetry: lastGuideVideoTelemetry }));
 app.get("/api/admin/group-messages", requireAdmin, adminReadLimiter, v27AdminReadCache("group-messages", 2000), (req, res) => {
@@ -16198,11 +16238,12 @@ app.post("/api/admin/send-captain-welcome-direct-test", requireAdmin, async (req
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });
   const displayName = String(req.body?.name || "كابتن تجريبي").trim().slice(0, 80) || "كابتن تجريبي";
-  const message = captainGroupWelcomeMessage(displayName, PUBLIC_APP_URL, phone);
+  const groupInviteUrl = await getOfficialGroupInviteUrl();
+  const message = captainGroupWelcomeMessage(displayName, PUBLIC_APP_URL, phone, groupInviteUrl);
   const registration = registerAdminSend({ operationId, chatId, message });
   if (!registration.created) return res.status(registration.state.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(registration.state), mutation: "none", walletChanged: false });
   const sendPromise = Promise.resolve().then(async () => {
-    const media = await withTimeout(renderCaptainWelcomeCardMedia(displayName, PUBLIC_APP_URL, phone), 30000, null);
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(displayName, PUBLIC_APP_URL, phone, groupInviteUrl), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
     return sendWhatsAppAtMostOnce(chatId, media, { caption: message }, 30000);
   });
