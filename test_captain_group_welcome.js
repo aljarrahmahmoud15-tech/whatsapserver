@@ -35,3 +35,12 @@ test('captain welcome card keeps the explanation inside a green and gold card', 
   assert.match(source, /ترحيب وتعليمات التشغيل فقط/);
   assert.match(source, /alezwa-captain-welcome-card\.png/);
 });
+
+test('direct welcome test is owner-confirmed, idempotent, allowlisted, and wallet-neutral', () => {
+  assert.match(source, /app\.post\("\/api\/admin\/send-captain-welcome-direct-test", requireAdmin/);
+  assert.match(source, /req\.body\?\.confirm !== true/);
+  assert.match(source, /isServer2OutboundTargetAllowed\(chatId\)/);
+  assert.match(source, /registerAdminSend\(\{ operationId, chatId, message \}\)/);
+  assert.match(source, /mutation: "none", walletChanged: false/);
+  assert.match(source, /renderCaptainWelcomeCardMedia\(displayName, PUBLIC_APP_URL, phone\)/);
+});

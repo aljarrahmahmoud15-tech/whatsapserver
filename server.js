@@ -16185,6 +16185,44 @@ app.post("/api/admin/group/send-captain-welcome-test", requireAdmin, async (req,
     return res.status(502).json({ success: false, operationId, sendState: "failed", error: String(error?.message || error).slice(0, 240), mutation: "none", walletChanged: false });
   }
 });
+app.post("/api/admin/send-captain-welcome-direct-test", requireAdmin, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 10)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
+  const phone = phoneWithCountry(String(req.body?.phone || "").trim());
+  const chatId = phone ? `${phone}@c.us` : "";
+  const operationId = String(req.body?.operationId || req.get("X-Idempotency-Key") || "").trim().slice(0, 120);
+  if (req.body?.confirm !== true || operationId.length < 16) return res.status(400).json({ error: "Owner confirmation and operation id are required" });
+  if (!isValidJordanPhone(phone) || !isServer2OutboundTargetAllowed(chatId)) {
+    audit("message.captain_welcome_direct_test_blocked", "chat", chatId || "invalid", { reason: "invalid_or_unallowlisted_phone", mutation: "none", walletChanged: false });
+    return res.status(403).json({ error: "The phone must be a valid, active, Server 2 allowlisted contact" });
+  }
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (isWhatsAppStorageSendBlocked()) return res.status(503).json({ error: "WhatsApp sending paused بسبب ضغط IndexedDB", code: "WHATSAPP_INDEXEDDB_SEND_PAUSED", storagePressure: { ...whatsappStoragePressure } });
+  const displayName = String(req.body?.name || "كابتن تجريبي").trim().slice(0, 80) || "كابتن تجريبي";
+  const message = captainGroupWelcomeMessage(displayName, PUBLIC_APP_URL, phone);
+  const registration = registerAdminSend({ operationId, chatId, message });
+  if (!registration.created) return res.status(registration.state.sendState === "pending" ? 202 : 200).json({ ...adminSendResponse(registration.state), mutation: "none", walletChanged: false });
+  const sendPromise = Promise.resolve().then(async () => {
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(displayName, PUBLIC_APP_URL, phone), 30000, null);
+    if (!media) throw new Error("captain welcome card render returned no media");
+    return sendWhatsAppAtMostOnce(chatId, media, { caption: message }, 30000);
+  });
+  try {
+    const result = await withTimeoutStrict(sendPromise, ADMIN_SEND_TIMEOUT_MS, null);
+    if (result?.status === "sent" || result?.status === "uncertain") {
+      const completed = result.status === "uncertain"
+        ? markAdminSendUncertain(operationId)
+        : completeAdminSend({ operationId, chatId, message, sent: result.message, confirmationSource: "captain_welcome_direct_test" });
+      audit("message.captain_welcome_direct_test.sent", "chat", chatId, { operationId, deliveryStatus: result.status, messageId: serializedMessageId(result.message), mutation: "none", walletChanged: false });
+      return res.status(result.status === "uncertain" ? 202 : 200).json({ ...adminSendResponse(completed || adminSendResults.get(operationId)), mutation: "none", walletChanged: false });
+    }
+    failAdminSend(operationId, new Error(result?.error || `delivery_${result?.status || "unknown"}`));
+    return res.status(502).json({ success: false, operationId, sendState: "failed", error: result?.error || result?.status || "unknown", mutation: "none", walletChanged: false });
+  } catch (error) {
+    failAdminSend(operationId, error);
+    audit("message.captain_welcome_direct_test.failed", "chat", chatId, { operationId, error: String(error?.message || error).slice(0, 240), mutation: "none", walletChanged: false });
+    return res.status(502).json({ success: false, operationId, sendState: "failed", error: String(error?.message || error).slice(0, 240), mutation: "none", walletChanged: false });
+  }
+});
 app.post("/api/admin/send", requireAdmin, async (req, res) => {
   if (!consumeRateLimit(adminActionRate, clientAddress(req), 30)) return res.status(429).json({ error: "Too many administrative actions; try again later" });
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
