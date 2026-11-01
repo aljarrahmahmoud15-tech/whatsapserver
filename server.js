@@ -4024,16 +4024,20 @@ async function resolveGroupParticipantPhone(participant) {
 }
 const CAPTAIN_GROUP_WELCOME_EVENT = "captain.group.welcome";
 const captainGroupWelcomeInFlight = new Set();
-function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
   return [
-    `أهلًا بك يا كابتن ${displayName} في قروب «وصلني الآن».`,
-    "تم انضمامك إلى شبكة التشغيل.",
-    "لتنزيل طلب اكتب: السعر ثم القيمة، مثل: السعر 10",
-    "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة تم، باقتباس أو بدونه.",
-    "بعد وضع 👍 من كابتن تنزيل الطلب يتم التثبيت والتسوية مرة واحدة.",
-    "للدخول إلى بوابة الكابتن: " + captainLoginUrl(baseUrl),
-    "نتمنى لك التوفيق والرزق الطيب."
+    "━━━━━━━━━━━━━━━━━━",
+    "بطاقة ترحيب الكابتن",
+    `أهلًا بك يا كابتن ${displayName} في «وصلني الآن».`,
+    "تم اعتماد انضمامك إلى شبكة التشغيل الرسمية.",
+    "لتحميل طلب: اكتب السعر ثم القيمة، مثال: السعر 10.",
+    "كابتن التنفيذ يرد على رسالة الطلب نفسها بكلمة «تم»، باقتباس أو بدونه.",
+    "بعد وضع 👍 من كابتن تحميل الطلب يتم التثبيت والتسوية مرة واحدة فقط.",
+    "رابط دخول الكابتن: " + captainLoginUrl(baseUrl),
+    "رقم هاتف الكابتن للنسخ: " + String(phone || "").trim(),
+    "نتمنى لك بداية موفقة ورزقًا طيبًا.",
+    "━━━━━━━━━━━━━━━━━━"
   ].join("\n");
 }
 async function sendCaptainGroupWelcome(participant, groupId) {
@@ -4055,7 +4059,7 @@ async function sendCaptainGroupWelcome(participant, groupId) {
     ? await withTimeout(client.getContactById(serialized), 8000, null).catch(() => null)
     : null;
   const name = String(contact?.pushname || contact?.name || contact?.shortName || "كابتن").trim();
-  const message = captainGroupWelcomeMessage(name);
+  const message = captainGroupWelcomeMessage(name, process.env.PUBLIC_BASE_URL || "", phone);
   let row = existing;
   if (row) {
     db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(phone, "ترحيب الكابتن الجديد", message, row.id);
@@ -4074,9 +4078,9 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   let messageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
-    const media = await withTimeout(renderCaptainWelcomeCardMedia(name), 30000, null);
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
-    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: "" }, 30000);
+    const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: message }, 30000);
     if (result.status === "sent" || result.status === "uncertain") {
       deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
       messageId = result.message?.id?._serialized || null;
@@ -5551,34 +5555,38 @@ async function renderOperationsMessageMedia(title, lines = []) {
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
-async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "") {
+async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "") {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(name || "كابتن");
   const safeUrl = escapeXml(captainLoginUrl(baseUrl));
-  const welcomeLines = [
-    `أهلًا بك يا كابتن ${safeName} في وصلني الآن`,
-    "تم انضمامك إلى شبكة التشغيل الرسمية.",
-    "لتنزيل طلب: اكتب السعر ثم القيمة، مثل: السعر 10",
-    "يرد كابتن التنفيذ على الطلب نفسه بكلمة «تم».",
-    "بعد 👍 من كابتن الطلب يتم التثبيت والتسوية مرة واحدة.",
-    `رابط دخول الكابتن: ${safeUrl}`,
-  ];
+  const safePhone = escapeXml(String(phone || "").trim());
   const logo = logoData
-    ? `<image href="data:image/png;base64,${logoData}" x="454" y="72" width="172" height="172" preserveAspectRatio="xMidYMid meet" opacity=".82"/>`
-    : `<text x="540" y="190" text-anchor="middle" fill="#a7f3d0" font-size="64" font-weight="700">ج</text>`;
-  const lineMarkup = welcomeLines.map((line, index) => `<text x="92" y="${330 + index * 42}" fill="${index === 0 ? "#a7f3d0" : "#e4f7f2"}" font-size="${index === 0 ? 26 : 22}" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="${index === 0 ? 700 : 500}">${escapeXml(line).slice(0, 105)}</text>`).join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760">
-    <defs><linearGradient id="welcome-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071b2a"/><stop offset=".55" stop-color="#0d3b46"/><stop offset="1" stop-color="#06231f"/></linearGradient><linearGradient id="welcome-border" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a7f3d0"/><stop offset=".5" stop-color="#34d399"/><stop offset="1" stop-color="#f6c84c"/></linearGradient><radialGradient id="welcome-glow"><stop offset="0" stop-color="#34d399" stop-opacity=".34"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/></radialGradient></defs>
-    <rect width="1080" height="760" fill="#04121c"/><rect x="18" y="18" width="1044" height="724" rx="42" fill="url(#welcome-bg)" stroke="url(#welcome-border)" stroke-width="6"/>
-    <circle cx="540" cy="156" r="190" fill="url(#welcome-glow)" opacity=".72"/><circle cx="540" cy="156" r="122" fill="none" stroke="#a7f3d0" stroke-opacity=".48" stroke-width="3"/><circle cx="540" cy="156" r="104" fill="#06252b" stroke="#f6c84c" stroke-opacity=".72" stroke-width="3"/>
-    ${logo}<circle cx="540" cy="38" r="9" fill="#34d399"/><circle cx="540" cy="38" r="22" fill="none" stroke="#34d399" stroke-opacity=".45" stroke-width="3"/>
-    <text x="540" y="274" text-anchor="middle" fill="#f6c84c" font-size="27" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">WASLNI NOW • CAPTAIN WELCOME</text>
-    <rect x="62" y="300" width="956" height="330" rx="28" fill="#041822" fill-opacity=".72" stroke="#a7f3d0" stroke-opacity=".34" stroke-width="2"/>
-    ${lineMarkup}
-    <text x="92" y="610" fill="#f6c84c" font-size="19" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">ترحيب وتعليمات التشغيل فقط</text>
-    <text x="988" y="696" text-anchor="end" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">وصلني الآن | WASLNI NOW</text>
+    ? `<image href="data:image/png;base64,${logoData}" x="487" y="82" width="106" height="106" preserveAspectRatio="xMidYMid meet" opacity=".86"/>`
+    : `<text x="540" y="151" text-anchor="middle" fill="#fff1a8" font-size="58" font-weight="700">و</text>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1120" viewBox="0 0 1080 1120">
+    <defs><linearGradient id="welcome-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#071b2a"/><stop offset=".55" stop-color="#0d3b46"/><stop offset="1" stop-color="#06231f"/></linearGradient><linearGradient id="shield-border" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#effff9"/><stop offset=".28" stop-color="#58e2b0"/><stop offset=".65" stop-color="#159477"/><stop offset="1" stop-color="#f6c84c"/></linearGradient><linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".42"/><stop offset=".45" stop-color="#a7f3d0" stop-opacity=".13"/><stop offset="1" stop-color="#34d399" stop-opacity=".06"/></linearGradient><radialGradient id="glow"><stop offset="0" stop-color="#34d399" stop-opacity=".42"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/></radialGradient></defs>
+    <rect width="1080" height="1120" fill="#04121c"/><rect x="18" y="18" width="1044" height="1084" rx="42" fill="url(#welcome-bg)" stroke="url(#shield-border)" stroke-width="6"/>
+    <text x="540" y="70" text-anchor="middle" fill="#f6c84c" font-size="25" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">WASLNI NOW • OFFICIAL CAPTAIN CARD</text>
+    <text x="540" y="116" text-anchor="middle" fill="#a7f3d0" font-size="31" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">درع ترحيب الكابتن</text>
+    <path d="M540 146 L862 246 L842 688 Q820 850 540 1012 Q260 850 238 688 L218 246 Z" fill="url(#shield-border)" filter="url(#shield-shadow)"/>
+    <path d="M540 168 L832 258 L812 678 Q790 823 540 972 Q290 823 268 678 L248 258 Z" fill="#071c26" stroke="#0a806d" stroke-width="7"/>
+    <circle cx="540" cy="255" r="86" fill="url(#glow)"/><circle cx="540" cy="255" r="67" fill="#072b32" stroke="#f6c84c" stroke-width="3"/><circle cx="540" cy="255" r="80" fill="none" stroke="#34d399" stroke-opacity=".38" stroke-width="3"/>
+    ${logo}
+    <text x="540" y="366" text-anchor="middle" fill="#f6c84c" font-size="19" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">بطاقة اعتماد وترحيب</text>
+    <text x="540" y="415" text-anchor="middle" fill="#a7f3d0" font-size="30" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">أهلًا بك يا كابتن ${safeName}</text>
+    <text x="540" y="457" text-anchor="middle" fill="#effff9" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">في شبكة «وصلني الآن» الرسمية</text>
+    <text x="540" y="502" text-anchor="middle" fill="#b8d7d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">تم اعتماد انضمامك إلى شبكة التشغيل</text>
+    <text x="540" y="538" text-anchor="middle" fill="#a7f3d0" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">معًا لتنظيم أسرع وتشغيل أوضح</text>
+    <path d="M352 566 H728" stroke="#f6c84c" stroke-opacity=".55" stroke-width="2"/>
+    <rect x="304" y="590" width="150" height="82" rx="16" fill="#06151f" stroke="#62d9bd" stroke-opacity=".5"/><rect x="465" y="590" width="150" height="82" rx="16" fill="#06151f" stroke="#62d9bd" stroke-opacity=".5"/><rect x="626" y="590" width="150" height="82" rx="16" fill="#06151f" stroke="#62d9bd" stroke-opacity=".5"/>
+    <text x="379" y="618" text-anchor="middle" fill="#f6c84c" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">01 · الطلب</text><text x="379" y="648" text-anchor="middle" fill="#effff9" font-size="16" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">السعر 10</text>
+    <text x="540" y="618" text-anchor="middle" fill="#f6c84c" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">02 · التنفيذ</text><text x="540" y="648" text-anchor="middle" fill="#effff9" font-size="16" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">الرد «تم»</text>
+    <text x="701" y="618" text-anchor="middle" fill="#f6c84c" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">03 · التثبيت</text><text x="701" y="648" text-anchor="middle" fill="#effff9" font-size="16" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ضع 👍</text>
+    <rect x="314" y="704" width="452" height="88" rx="20" fill="url(#glass)" stroke="#eafff6" stroke-opacity=".78" stroke-width="2"/><path d="M332 722 H748" stroke="#ffffff" stroke-opacity=".42" stroke-width="2"/><text x="540" y="751" text-anchor="middle" fill="#ffffff" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">↗ رابط دخول الكابتن</text><text x="540" y="778" text-anchor="middle" fill="#d7fff0" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">الرابط الحقيقي يرسل كنص قابل للنقر أسفل الصورة</text>
+    <text x="540" y="845" text-anchor="middle" fill="#f6c84c" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نتمنى لك بداية موفقة ورزقًا طيبًا</text><text x="540" y="878" text-anchor="middle" fill="#a7f3d0" font-size="15" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ترحيب وتعليمات التشغيل فقط · رسمي</text>
+    <rect x="82" y="952" width="916" height="104" rx="20" fill="#06141c" stroke="#397074" stroke-width="2"/><text x="940" y="985" text-anchor="end" fill="#f6c84c" font-size="17" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">رابط الدخول والرقم للنسخ</text><text x="940" y="1022" text-anchor="end" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safeUrl}</text><text x="140" y="1022" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safePhone}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "alezwa-captain-welcome-card.png");
