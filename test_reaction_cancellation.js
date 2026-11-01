@@ -24,6 +24,14 @@ assert.match(server, /const reversalOperationKey = `ORDER-\$\{current\.order_no\
 assert.match(server, /\$\{reversalOperationKey\}-COMPANY/);
 assert.match(server, /\$\{reversalOperationKey\}-PRODUCER/);
 assert.match(server, /\$\{reversalOperationKey\}-CAPTAIN/);
+assert.match(server, /async function notifyOrderCancellationParty\(/);
+assert.match(server, /ORDER-CANCEL-NOTICE-\$\{orderId\}-\$\{normalizedRole\}/);
+assert.match(server, /const cancellationPartyNotificationInFlight = new Set\(\)/);
+assert.match(server, /status: "already_in_flight", idempotencyKey/);
+assert.match(server, /تم إلغاء الرحلة رقم #\$\{orderNo\} \$\{reasonText\}، وتمت إعادة العمولة إلى رصيدك/);
+assert.match(server, /تم إلغاء الرحلة رقم #\$\{orderNo\} \$\{reasonText\}، وتم عكس التسوية المالية وإعادة العملية إلى ما قبل التثبيت/);
+assert.match(server, /async function notifyOrderCancellationParties\(/);
+assert.match(server, /notifyOrderCancellationParties\(\{ order: result\.order \|\| order, producer: result\.producer, captain: result\.captain/);
 assert.match(server, /const confirmationDetails = \{\s*orderNo: result\.order\?\.order_no/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم تثبيت الطلب:/);
 assert.doesNotMatch(server, /client\.sendMessage\(target\.from, `تم إلغاء الطلب:/);

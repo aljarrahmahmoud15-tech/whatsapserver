@@ -51,6 +51,7 @@ const state = {
   messages: new Set(),
   confirmations: [],
   cancellations: [],
+  partyNotifications: [],
   reactionSender: PRODUCER,
   lifecycle: [],
 };
@@ -65,6 +66,7 @@ function reset({ archived = false, executorBalance = 5000 } = {}) {
   state.messages = new Set();
   state.confirmations = [];
   state.cancellations = [];
+  state.partyNotifications = [];
   state.reactionSender = PRODUCER;
   state.lifecycle = [];
   users.producer.wallet_cents = 0;
@@ -256,6 +258,7 @@ const context = {
   enforceCaptainWalletThresholds: async () => {},
   sendFinalBookingConfirmation: async (_groupId, details) => { state.confirmations.push(details); return { id: { _serialized: `confirmation-${details.orderNo}` } }; },
   sendFinalBookingCancellation: async () => { state.cancellations.push(true); return { id: { _serialized: "cancellation-1" } }; },
+  notifyOrderCancellationParties: async ({ reason }) => { state.partyNotifications.push(reason); return { producer: { status: "sent" }, executor: { status: "sent" } }; },
   findPendingAcceptanceByMessage: null,
 };
 
@@ -407,6 +410,7 @@ async function approve(doneId = "done-1") {
   assert.equal(users.company.wallet_cents, 0, "عكس رسالة السعر يعيد حصة الشركة");
   assert.equal(users.executor.wallet_cents, 5000, "عكس رسالة السعر يعيد خصم المنفذ");
   assert.equal(state.cancellations.length, 1, "عكس رسالة السعر يرسل بطاقة إلغاء واحدة");
+  assert.equal(state.partyNotifications.length, 1, "عكس رسالة السعر يرسل إشعارَي الأطراف مرة واحدة");
 
   console.log("unified order lifecycle race, identity, debt, idempotency, and archive guards verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

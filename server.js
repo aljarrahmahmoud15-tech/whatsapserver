@@ -2121,6 +2121,53 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
     return { status: "failed", notificationId };
   }
 }
+const cancellationPartyNotificationInFlight = new Set();
+async function notifyOrderCancellationParty({ order, recipient, role, reason = "producer_thumb_removed" }) {
+  const phone = phoneWithCountry(recipient?.phone);
+  const orderId = Number(order?.id || 0);
+  const orderNo = Number(order?.order_no || 0);
+  if (!orderId || !orderNo || !recipient?.id || !isValidJordanPhone(phone)) return { status: "invalid" };
+  const normalizedRole = role === "executor" ? "executor" : "producer";
+  const idempotencyKey = `ORDER-CANCEL-NOTICE-${orderId}-${normalizedRole}`;
+  if (cancellationPartyNotificationInFlight.has(idempotencyKey)) return { status: "already_in_flight", idempotencyKey };
+  const title = "إلغاء الرحلة وعكس التسوية";
+  const reasonText = reason === "producer_thumb_removed"
+    ? "بسبب إزالة علامة الإعجاب من الكابتن المنزّل"
+    : "بناءً على إلغاء الرحلة من المالك";
+  const message = normalizedRole === "executor"
+    ? `تم إلغاء الرحلة رقم #${orderNo} ${reasonText}، وتمت إعادة العمولة إلى رصيدك.`
+    : `تم إلغاء الرحلة رقم #${orderNo} ${reasonText}، وتم عكس التسوية المالية وإعادة العملية إلى ما قبل التثبيت.`;
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?,?)").run(phone, `order.cancellation.reversal.${normalizedRole}`, title, message, order.accepted_message_id || null, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  cancellationPartyNotificationInFlight.add(idempotencyKey);
+  try {
+    const recipientId = await resolveWhatsAppRecipientId(phone);
+    const result = recipientId ? await sendWhatsAppAtMostOnce(recipientId, message, undefined, 30000) : { status: "failed" };
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = serializedMessageId(result?.message) || result?.message?.id?._serialized || result?.message?.id?.id || result?.messageId || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit(`order.cancellation.reversal_notification.${normalizedRole}`, "user", recipient.id, { orderId, orderNo, reason, deliveryStatus, idempotencyKey });
+    return { status: deliveryStatus, notificationId, messageId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit(`order.cancellation.reversal_notification_failed.${normalizedRole}`, "user", recipient.id, { orderId, orderNo, reason, error: String(error?.message || error).slice(0, 180), idempotencyKey });
+    return { status: "failed", notificationId };
+  } finally {
+    cancellationPartyNotificationInFlight.delete(idempotencyKey);
+  }
+}
+async function notifyOrderCancellationParties({ order, producer, captain, reason = "producer_thumb_removed" }) {
+  const [producerNotice, executorNotice] = await Promise.all([
+    notifyOrderCancellationParty({ order, recipient: producer, role: "producer", reason }),
+    notifyOrderCancellationParty({ order, recipient: captain, role: "executor", reason }),
+  ]);
+  return { producer: producerNotice, executor: executorNotice };
+}
 async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, priceCents, origin, destination, downloaderName, executorName }) {
   if (!insufficientBalanceAcceptanceDeletionEnabled()) {
     const deletionResult = { ok: false, requested: false, revoked: false, paused: true, reason: "insufficient_balance_acceptance_deletion_paused" };
@@ -9396,6 +9443,7 @@ async function handleMessageReaction(reaction) {
     if (cancelled.state === "cancelled" && cancelled.reversed && cancelled.captain) {
       const captainBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(cancelled.captain.id)?.wallet_cents;
       void enforceCaptainWalletThresholds({ captainId: cancelled.captain.id, balanceCents: captainBalance, reason: "عكس حصة الطلب بعد إلغاء رسالة السعر", reference: `ORDER-${sourceOrder.order_no}-CANCEL` });
+      void notifyOrderCancellationParties({ order: cancelled.order || sourceOrder, producer: cancelled.producer, captain: cancelled.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
     }
     if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from, cancelled.order || sourceOrder).catch(() => null);
     return;
@@ -9421,6 +9469,9 @@ async function handleMessageReaction(reaction) {
     const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
     if (!producer || !approverPhone || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone))) return;
     const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, messageId, approverPhone, ownerAuthorized);
+    if (cancelled.state === "cancelled" && cancelled.reversed) {
+      void notifyOrderCancellationParties({ order: cancelled.order || acceptedOrder, producer: cancelled.producer, captain: cancelled.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
+    }
     if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
     return;
   }
@@ -9442,6 +9493,7 @@ async function handleMessageReaction(reaction) {
     if (result.state === "cancelled" && result.reversed && result.producer) {
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
       void enforceCaptainWalletThresholds({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
+      void notifyOrderCancellationParties({ order: result.order || order, producer: result.producer, captain: result.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
     }
     if (result.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
     return;
@@ -15170,6 +15222,9 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
     if (result.state === "already_reversed") {
       return res.json({ success: true, state: result.state, alreadyReversed: true, financialMutation: false, orderId, message: "الحجز ملغى ومعكوس مسبقًا؛ لم تتكرر الحركة" });
     }
+    const producer = result.order?.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(result.order.producer_user_id) : null;
+    const captain = result.order?.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=? LIMIT 1").get(result.order.captain_user_id) : null;
+    const partyNotifications = await notifyOrderCancellationParties({ order: result.order, producer, captain, reason: "owner_cancelled" });
     const message = await sendFinalBookingCancellation(result.order.group_id, result.order);
     audit("order.cancellation_card.owner_delivery", "order", orderId, { orderNo: result.order.order_no, sent: Boolean(message), messageId: message?.id?._serialized || null, financialMutation: false, synchronizedState: "cancelled_reversed" });
     res.status(201).json({
@@ -15181,6 +15236,7 @@ app.post("/api/admin/orders/:id/cancel-and-reverse", requireBotWalletOwner, asyn
       orderId,
       orderNo: result.order.order_no,
       reversal: result.reversal,
+      partyNotifications,
       groupNotification: message ? "sent" : "failed_or_unavailable",
       messageId: message?.id?._serialized || null,
     });
