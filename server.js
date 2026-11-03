@@ -6320,6 +6320,8 @@ let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
 let groupInviteInFlight = false;
 let groupInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, inviteUrl: null, participants: [] };
+let groupMemberImportInFlight = false;
+let groupMemberImportState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [], preview: null };
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
@@ -12648,6 +12650,74 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     groupInviteInFlight = false;
   }
 }
+
+async function runGroupMemberImport({ operationId, groupId, phones }) {
+  try {
+    const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+    if (!chat || typeof chat.addParticipants !== "function") throw new Error("Official group is unavailable for participant addition");
+    const snapshot = await readGroupSnapshot(groupId);
+    const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
+    const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending", error: null }));
+    groupMemberImportState = { status: "running", operationId, startedAt: groupMemberImportState.startedAt, finishedAt: null, error: null, groupId, participants: participantResults, preview: null };
+    for (const result of participantResults) {
+      if (result.status === "already_present") continue;
+      if (!isReady) {
+        result.status = "failed";
+        result.error = "WhatsApp session disconnected";
+        break;
+      }
+      try {
+        const added = await withTimeout(chat.addParticipants([`${result.phone}@c.us`]), 60000, null);
+        result.status = added && typeof added !== "string" ? "added_or_already_member" : "failed";
+        result.error = result.status === "failed" ? (typeof added === "string" ? added : "participant addition timed out") : null;
+      } catch (error) {
+        result.status = "failed";
+        result.error = String(error?.message || error).slice(0, 240);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    const failedCount = participantResults.filter((participant) => participant.status === "failed").length;
+    groupMemberImportState = { ...groupMemberImportState, status: failedCount ? "partial" : "succeeded", finishedAt: now(), error: failedCount ? `${failedCount} participant(s) failed` : null, participants: participantResults };
+    audit("group.members.imported", "group", groupId, { operationId, requested: phones.length, added: participantResults.filter((item) => item.status === "added_or_already_member").length, alreadyPresent: participantResults.filter((item) => item.status === "already_present").length, failed: failedCount });
+  } catch (error) {
+    groupMemberImportState = { ...groupMemberImportState, status: "failed", finishedAt: now(), error: String(error?.message || error).slice(0, 240) };
+    console.error("[GroupMemberImport] failed:", error.message);
+  } finally {
+    groupMemberImportInFlight = false;
+  }
+}
+
+app.get("/api/admin/group/member-import-status", requireAdmin, adminReadLimiter, (req, res) => {
+  res.json({ success: true, ...groupMemberImportState });
+});
+
+app.post("/api/admin/group/import-members", requireAdmin, adminMutationLimiter, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupMemberImportInFlight) return res.status(409).json({ error: "Group member import is already in progress", operationId: groupMemberImportState.operationId });
+  const groupId = String(req.body?.groupId || WHATSAPP_GROUP_ID).trim();
+  if (!groupId || groupId !== WHATSAPP_GROUP_ID || !isConfiguredGroup(groupId)) return res.status(403).json({ error: "Only the configured official group may be used" });
+  const rawPhones = Array.isArray(req.body?.phones) ? req.body.phones : [];
+  if (rawPhones.length < 1 || rawPhones.length > 1000) return res.status(400).json({ error: "Provide between 1 and 1000 phone numbers" });
+  const normalized = rawPhones.map((phone) => phoneWithCountry(String(phone || "").trim()));
+  const invalidPhones = normalized.filter((phone) => !isValidJordanPhone(phone) || isBlockedPhone(phone));
+  const phones = [...new Set(normalized.filter((phone) => isValidJordanPhone(phone) && !isBlockedPhone(phone)))];
+  if (!phones.length) return res.status(400).json({ error: "No valid eligible Jordan phone numbers were provided", invalidCount: invalidPhones.length });
+  const snapshot = await readGroupSnapshot(groupId);
+  const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
+  const candidates = phones.filter((phone) => !existingPhones.has(phone));
+  const preview = { groupId, submitted: rawPhones.length, validUnique: phones.length, invalidOrBlocked: invalidPhones.length, alreadyPresent: phones.length - candidates.length, candidates: candidates.length, mutation: "group membership only" };
+  const execute = req.body?.execute === true;
+  if (!execute) {
+    audit("group.members.import_preview", "group", groupId, preview);
+    return res.json({ success: true, dryRun: true, preview, invalidPhones, candidatePhones: candidates });
+  }
+  if (String(req.body?.confirmation || "") !== "ADD_GROUP_MEMBERS") return res.status(400).json({ error: "Explicit confirmation ADD_GROUP_MEMBERS is required" });
+  const operationId = "GROUP-IMPORT-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupMemberImportInFlight = true;
+  groupMemberImportState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: candidates.map((phone) => ({ phone, status: "pending", error: null })), preview };
+  void runGroupMemberImport({ operationId, groupId, phones: candidates });
+  res.status(202).json({ success: true, accepted: true, dryRun: false, operationId, preview, invalidPhones });
+});
 
 app.get("/api/admin/group/invite-status", requireAdmin, adminReadLimiter, v27AdminReadCache("group-invite-status", 1500), (req, res) => {
   res.json({ success: true, ...groupInviteState, inviteUrl: groupInviteState.inviteUrl || null });
