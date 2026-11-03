@@ -4367,6 +4367,9 @@ function createGroupSnapshotFlight(key, evaluate, timeoutMs = 40000) {
 }
 function updateOfficialGroupAdminSnapshot(groupId, snapshot) {
   if (!groupId || groupId !== configuredRuntimeGroupId() || !snapshot || !Array.isArray(snapshot.participants)) return;
+  officialGroupSnapshot = snapshot;
+  officialGroupSnapshotGroupId = groupId;
+  officialGroupSnapshotGeneration = connectionGeneration;
   const admins = new Set();
   for (const participant of snapshot.participants) {
     if (!participant?.isAdmin) continue;
@@ -4383,6 +4386,12 @@ function officialGroupAdminSnapshotReady() {
     && officialGroupAdminSnapshotGeneration === connectionGeneration
     && officialGroupAdminSnapshotAt
     && officialGroupAdminPhones instanceof Set;
+}
+function officialGroupSnapshotReady() {
+  return officialGroupSnapshotGroupId === configuredRuntimeGroupId()
+    && officialGroupSnapshotGeneration === connectionGeneration
+    && officialGroupSnapshot
+    && Array.isArray(officialGroupSnapshot.participants);
 }
 function isOfficialGroupAdminPhone(phone) {
   return officialGroupAdminSnapshotReady() && officialGroupAdminPhones.has(phoneWithCountry(phone));
@@ -6333,6 +6342,9 @@ let officialGroupAdminPhones = new Set();
 let officialGroupAdminSnapshotGroupId = null;
 let officialGroupAdminSnapshotGeneration = null;
 let officialGroupAdminSnapshotAt = null;
+let officialGroupSnapshot = null;
+let officialGroupSnapshotGroupId = null;
+let officialGroupSnapshotGeneration = null;
 let lastOfficialGroupMessageTelemetry = null;
 let lastIgnoredGroupEventGroupId = null;
 let lastIgnoredGroupMessageTelemetry = null;
@@ -11918,7 +11930,7 @@ app.get("/api/admin/group/permissions", requireAdmin, adminReadLimiter, v27Admin
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
   if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
   try {
-    const snapshot = await readGroupSnapshot(groupId);
+    const snapshot = officialGroupSnapshotReady() ? officialGroupSnapshot : await readGroupSnapshot(groupId);
     const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
     const botUsers = new Set([String(botWid || "").split("@")[0].split(":")[0], String(client.info?.wid?.user || "")].filter(Boolean));
     const botParticipants = (snapshot?.participants || []).filter((participant) => botUsers.has(String(participant.user || String(participant.id || "").split("@")[0].split(":")[0])));

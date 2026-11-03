@@ -13,6 +13,7 @@ assert(source.includes('isBlockedPhone(phone)'), 'blocked-phone guard is missing
 assert(source.includes('alreadyPresent'), 'existing-member preview is missing');
 assert(source.includes('group.members.import_preview'), 'preview audit is missing');
 assert(source.includes('group.members.imported'), 'execution audit is missing');
+assert(source.includes('officialGroupSnapshotReady() ? officialGroupSnapshot'), 'permissions must prefer the cached official-group snapshot');
 assert(!source.includes('app.post("/api/admin/group/import-members"') || source.includes('if (!execute)'));
 
 console.log('group member import route guardrails: OK');
