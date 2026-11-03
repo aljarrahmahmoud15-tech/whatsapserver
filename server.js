@@ -139,12 +139,13 @@ const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 // The operational bot is always settled through the internal company wallet.
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
-// Settlement policy: the value after "السعر" is external and never credits B.
-// All order types use 12.5% downloader + 2.5% company = 15% executor debit.
+// Settlement policy: the value after the fare marker is external and never credits the executor.
+// Normal orders use 12.5% downloader + 2.5% company = 15% executor debit.
+// «أوردر» uses 15% downloader + 5% company = 20% executor debit.
 const COMPANY_RATE_BPS = 250;
 const PRODUCER_RATE_BPS = 1250;
-const SPECIAL_ORDER_RATE_BPS = 1250;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 250;
+const SPECIAL_ORDER_RATE_BPS = 1500;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 500;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
 const DIRECT_RIDE_LIVE_DISPATCH = process.env.DIRECT_RIDE_LIVE_DISPATCH === "true";
 const DIRECT_RIDE_ROUTE_TIMEOUT_MS = Math.max(3000, Math.min(15000, Number(process.env.DIRECT_RIDE_ROUTE_TIMEOUT_MS || 8000)));
@@ -1752,7 +1753,8 @@ function logSettlementCompleted({ mode, orderId, orderNo, priceCents, producer, 
   console.log(`[Settlement] COMPLETED mode=${mode} order=#${orderNo} id=${orderId} key=${settlementKey} external_order_value=${price} JOD executor_wallet_credit=0.00 JOD`);
   const producerRate = ratePercentFromBps(settlement.producerRateBps);
   const companyRate = ratePercentFromBps(settlement.companyRateBps || currentSettlementPolicy().companyRateBps);
-  console.log(`[Settlement] CONFIRMED order_policy=${producerRate}%/${companyRate}% for all order types | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
+  const policyLabel = settlement.orderKind === "order" ? "order_only" : "normal";
+  console.log(`[Settlement] CONFIRMED order_policy=${policyLabel} ${producerRate}%/${companyRate}% | downloader=${producerShare} JOD phone=${maskSettlementPhone(producer?.phone)} | company=${companyShare} JOD | executor_debit=${executorDebit} JOD phone=${maskSettlementPhone(chargedWallet?.phone)} | external_value_not_credited=true`);
 }
 
 function serializeSettlement(row, includeLedger = true) {
@@ -3406,14 +3408,18 @@ function currentSettlementPolicy() {
   };
   const producerRateBps = readRate("producer_rate_bps", PRODUCER_RATE_BPS);
   const companyRateBps = readRate("company_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS);
+  const specialOrderProducerRateBps = readRate("order_producer_rate_bps", SPECIAL_ORDER_RATE_BPS);
+  const specialOrderCompanyRateBps = readRate("order_company_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS);
   return {
     producerRateBps,
     companyRateBps,
+    specialOrderProducerRateBps,
+    specialOrderCompanyRateBps,
     totalRateBps: producerRateBps + companyRateBps,
+    specialOrderTotalRateBps: specialOrderProducerRateBps + specialOrderCompanyRateBps,
     regularProducerRateBps: producerRateBps,
-    specialOrderProducerRateBps: producerRateBps,
     companyFromProducerRateBps: companyRateBps,
-    specialOrderCompanyFromProducerRateBps: companyRateBps,
+    specialOrderCompanyFromProducerRateBps: specialOrderCompanyRateBps,
   };
 }
 function ratePercentFromBps(value) {
@@ -3429,7 +3435,10 @@ function settlementPolicyResponse() {
     producerRatePercent: Number(ratePercentFromBps(policy.producerRateBps)),
     companyRatePercent: Number(ratePercentFromBps(policy.companyRateBps)),
     totalRatePercent: Number(ratePercentFromBps(policy.totalRateBps)),
-    appliesTo: "all_order_types",
+    specialOrderProducerRatePercent: Number(ratePercentFromBps(policy.specialOrderProducerRateBps)),
+    specialOrderCompanyRatePercent: Number(ratePercentFromBps(policy.specialOrderCompanyRateBps)),
+    specialOrderTotalRatePercent: Number(ratePercentFromBps(policy.specialOrderTotalRateBps)),
+    appliesTo: "normal_and_order_specific",
     currency: "JOD",
     debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED,
     manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
@@ -3608,6 +3617,8 @@ function ensureSystemUsers() {
     ["special_order_rate_bps", SPECIAL_ORDER_RATE_BPS],
     ["company_from_producer_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS],
     ["special_order_company_from_producer_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
+    ["order_producer_rate_bps", SPECIAL_ORDER_RATE_BPS],
+    ["order_company_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
   ];
   for (const [key, value] of settlementDefaults) {
     if (getSetting(key) === null) setSetting(key, value);
@@ -6159,7 +6170,7 @@ function formatAcceptance(order, captain, producer) {
     `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 15% (12.5% للمنزل + 2.5% للشركة)" : "طلب عادي · خصم 15% (12.5% للمنزّل + 2.5% للشركة)"}`,
+    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 20% (15% للمنزل + 5% للشركة)" : "طلب عادي · خصم 15% (12.5% للمنزّل + 2.5% للشركة)"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 حصة المنزل: ${money(order.producer_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
     "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
@@ -10573,7 +10584,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
-    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12.5%', companyRate: '2.5%', executorDebit: '15%' }, order: { postedRate: '12.5%', companyRate: '2.5%', executorDebit: '15%' } } },
+    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12.5%', companyRate: '2.5%', executorDebit: '15%' }, order: { postedRate: '15%', companyRate: '5%', executorDebit: '20%' } } },
     entries,
     trips,
     topupCards,
@@ -10731,7 +10742,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { producerWalletRate: "12.5% all order types", companyWalletRate: "2.5% all order types", confirmingCaptainWalletRate: "-15% all order types", captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative projected balances rejected; 15% debit remains applied to all order types", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
+    policy: { normalOrder: { producerWalletRate: "12.5%", companyWalletRate: "2.5%", confirmingCaptainWalletRate: "-15%" }, order: { producerWalletRate: "15%", companyWalletRate: "5%", confirmingCaptainWalletRate: "-20%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative projected balances rejected; normal debit 15%, order debit 20%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
   });
 });
 
@@ -11435,10 +11446,7 @@ app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
     db.transaction(() => {
       setSetting("producer_rate_bps", next.producerRateBps);
       setSetting("company_rate_bps", next.companyRateBps);
-      setSetting("special_order_rate_bps", next.producerRateBps);
-      setSetting("company_from_producer_rate_bps", next.companyRateBps);
-      setSetting("special_order_company_from_producer_rate_bps", next.companyRateBps);
-      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps }, after: next, appliesTo: "all_order_types" });
+      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps }, after: next, appliesTo: "normal_orders_only", orderPolicy: { producerRateBps: before.specialOrderProducerRateBps, companyRateBps: before.specialOrderCompanyRateBps } });
     })();
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية للطلبات الجديدة فقط؛ السجلات السابقة لا تتغير." });
@@ -15442,7 +15450,7 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { allOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5% لجميع أنواع الطلبات", confirmingCaptainWalletDebit: "15% لجميع أنواع الطلبات", companyWalletCredit: "2.5% لجميع أنواع الطلبات" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ ويُخصم 15% فقط عند كفاية الرصيد", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "2.5%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "15%", confirmingCaptainWalletDebit: "20%", companyWalletCredit: "5%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ الطلب العادي يخصم 15% والأوردر يخصم 20% عند كفاية الرصيد", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();

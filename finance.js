@@ -3,12 +3,12 @@
 // - It is never credited to the executor wallet.
 // - Normal orders: 12.5% to the captain who posted the order, 2.5% to the company,
 //   and a 15% total debit from the confirming executor wallet.
-// - "order" / "اوردر" orders use the same 12.5% captain + 2.5% company split,
-//   with a 15% total debit from the confirming executor.
+// - "order" / "اوردر" orders use 15% to the captain who posted the order and 5% to the company,
+//   with a 20% total debit from the confirming executor.
 const REGULAR_PRODUCER_RATE_BPS = 1250;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 250;
-const ORDER_PRODUCER_RATE_BPS = 1250;
-const ORDER_COMPANY_RATE_BPS = 250;
+const ORDER_PRODUCER_RATE_BPS = 1500;
+const ORDER_COMPANY_RATE_BPS = 500;
 // Legacy exports retained for callers that still pass the former percentage knobs.
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = ORDER_PRODUCER_RATE_BPS;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = ORDER_COMPANY_RATE_BPS;

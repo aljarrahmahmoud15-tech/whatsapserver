@@ -53,7 +53,7 @@ const historyEnd = server.indexOf('\nfunction ', historyStart + 10);
 const history = server.slice(historyStart, historyEnd > historyStart ? historyEnd : undefined);
 assert.match(history, /return \{ state: "insufficient_balance"/);
 assert.match(server, /if \(direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS\)/, 'manual wallet debits retain their existing debt limit');
-assert.match(server, /negative projected balances rejected; 15% debit remains applied to all order types/);
-assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ ويُخصم 15% فقط عند كفاية الرصيد/);
+assert.match(server, /negative projected balances rejected; normal debit 15%, order debit 20%/);
+assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ الطلب العادي يخصم 15% والأوردر يخصم 20% عند كفاية الرصيد/);
 
 console.log('negative-balance settlement is rejected before mutation; manual debit limit remains');

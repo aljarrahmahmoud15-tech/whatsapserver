@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const {
   REGULAR_PRODUCER_RATE_BPS,
   COMPANY_FROM_PRODUCER_RATE_BPS,
+  ORDER_PRODUCER_RATE_BPS,
+  ORDER_COMPANY_RATE_BPS,
   calculateSettlement,
 } = require('./finance');
 
@@ -20,5 +22,7 @@ assert.equal(settlement.producerFeeCents, 63);
 assert.equal(settlement.companyCents, 13);
 assert.equal(settlement.confirmingCaptainFeeCents, 76);
 assert.equal(settlement.executorWalletCreditCents, 0);
+assert.equal(ORDER_PRODUCER_RATE_BPS, 1500);
+assert.equal(ORDER_COMPANY_RATE_BPS, 500);
 
-console.log('admin financial policy text guard passed: 12.5% + 2.5% = 15% for all order types');
+console.log('admin financial policy text guard passed: normal 12.5% + 2.5%, order 15% + 5%');
