@@ -3366,7 +3366,7 @@ function generalMessageDeletionPolicyResponse() {
     effective: enabled && !emergencyStopped,
     scope: "official_group_only",
     appliesTo: "new_incoming_text_and_captioned_image_messages_without_approved_marker",
-    preserves: ["تم", "links", "explicit_prices", "owner", "group_admin", "bot_outgoing_messages"],
+    preserves: ["تم", "راكب", "أوردر", "links", "explicit_prices", "owner", "group_admin", "bot_outgoing_messages"],
     imagePriceDetection: "caption_or_message_text_only;_images_without_text_are_preserved",
     financialMutation: false,
     orderMutation: false,
@@ -4345,6 +4345,7 @@ function messageHasApprovedGeneralMarker(message) {
   const text = messageTextForPolicy(message);
   if (!text) return false;
   if (/(?:^|[\s\n\r،,.;:!?()[\]{}\-])تم(?=$|[\s\n\r،,.;:!?()[\]{}\-])/u.test(text)) return true;
+  if (/(?:^|[\s\n\r،,.;:!?()[\]{}\-])(?:ال)?راكب(?:ة)?(?=$|[\s\n\r،,.;:!?()[\]{}\-])|(?:^|[\s\n\r،,.;:!?()[\]{}\-])(?:ال)?(?:أوردر|اوردر|order)(?=$|[\s\n\r،,.;:!?()[\]{}\-])/iu.test(text)) return true;
   if (/(?:https?:\/\/|www\.|chat\.whatsapp\.com\/)[^\s]+/i.test(text)) return true;
   if (/(?:السعر|المبلغ|القيمة|قيمة|عمولة|دينار|د\.\s*أ|JOD)\s*[:：-]?\s*\d{1,3}(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{1,2})?\s*(?:د\.\s*أ|دينار|JOD)/iu.test(text)) return true;
   return /(?:^|\s)\d{1,3}(?:[.,]\d{1,2})?(?=$|\s)/u.test(text);

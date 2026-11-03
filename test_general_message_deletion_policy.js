@@ -21,6 +21,8 @@ const policyEnd = source.indexOf('function isCaptionedImageMessage');
 assert.ok(policyStart >= 0 && policyEnd > policyStart);
 const markerSource = source.slice(policyStart, policyEnd);
 assert.match(markerSource, /تم/);
+assert.match(markerSource, /راكب/);
+assert.match(markerSource, /أوردر/);
 assert.match(markerSource, /https\?:/);
 assert.match(markerSource, /دينار/);
 
