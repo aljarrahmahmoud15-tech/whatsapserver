@@ -4469,11 +4469,29 @@ async function handleIncomingGeneralMessageDeletionPolicy(message, { groupId, se
   audit("general_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
+function snapshotFromGroupChat(groupId, chat) {
+  if (!groupId || !chat?.isGroup || !Array.isArray(chat.participants) || !chat.participants.length) return null;
+  const participants = chat.participants.map((participant) => {
+    const id = participant?.id;
+    const serialized = id?._serialized || (id?.server && id?.user ? `${id.user}@${id.server}` : String(id || ""));
+    const user = id?.user ? String(id.user) : String(serialized || "").split("@")[0].split(":")[0];
+    return { id: serialized, user, isAdmin: Boolean(participant?.isAdmin || participant?.isSuperAdmin) };
+  }).filter((participant) => participant.id || participant.user);
+  if (!participants.length) return null;
+  return { id: groupId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants, participantSource: "chat", participantRawCount: chat.participants.length };
+}
 async function readGroupSnapshot(groupId) {
   const clientAtStart = client;
   const pageAtStart = clientAtStart?.pupPage;
   const generationAtStart = connectionGeneration;
   if (!groupId || !clientAtStart || !isReady || !pageAtStart) return null;
+  const directChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
+  const directSnapshot = snapshotFromGroupChat(groupId, directChat);
+  if (directSnapshot) {
+    lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, detail: null, participantCount: directSnapshot.participants.length, participantSource: "chat" };
+    updateOfficialGroupAdminSnapshot(groupId, directSnapshot);
+    return directSnapshot;
+  }
   const key = `${generationAtStart}:${groupId}`;
   const flight = createGroupSnapshotFlight(key, () => pageAtStart.evaluate(async (requestedId) => {
     const compactError = (error) => String(error?.message || error || "unknown").slice(0, 180);
@@ -4541,6 +4559,13 @@ async function readGroupSnapshot(groupId) {
   const result = await flight.timed;
   if (generationAtStart !== connectionGeneration || client !== clientAtStart) return null;
   if (!result?.ok || !result.snapshot) {
+    const fallbackChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
+    const fallbackSnapshot = snapshotFromGroupChat(groupId, fallbackChat);
+    if (fallbackSnapshot) {
+      lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, detail: null, participantCount: fallbackSnapshot.participants.length, participantSource: "chat" };
+      updateOfficialGroupAdminSnapshot(groupId, fallbackSnapshot);
+      return fallbackSnapshot;
+    }
     lastGroupHydrationDiagnostic = {
       status: "failed",
       at: now(),
