@@ -39,14 +39,50 @@ const PORT = Number(process.env.PORT || 10000);
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || "";
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "";
 const WHATSAPP_DISPLAY_NAME = process.env.WHATSAPP_DISPLAY_NAME?.trim() || "";
-const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
-const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
+function parseWhatsAppGroupsConfig(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return [];
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (error) { throw new Error(`WHATSAPP_GROUPS_JSON is invalid JSON: ${error.message}`); }
+  const entries = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.groups) ? parsed.groups : [];
+  if (!entries.length) throw new Error("WHATSAPP_GROUPS_JSON must contain a non-empty array of groups");
+  const seen = new Set();
+  return entries.map((entry, index) => {
+    const id = String(entry?.id || entry?.groupId || "").trim();
+    if (!/^\d+@g\.us$/i.test(id)) throw new Error(`WHATSAPP_GROUPS_JSON group ${index + 1} has an invalid id`);
+    if (seen.has(id)) throw new Error(`WHATSAPP_GROUPS_JSON contains duplicate group id: ${id}`);
+    seen.add(id);
+    const role = String(entry?.role || (index === 0 ? "official" : "secondary")).trim().toLowerCase();
+    return Object.freeze({
+      id,
+      name: String(entry?.name || entry?.groupName || id).trim().slice(0, 160),
+      role: role === "official" ? "official" : "secondary",
+      enabled: entry?.enabled !== false,
+      receiveMessages: entry?.receiveMessages !== false,
+      processOrders: entry?.processOrders === true,
+      settlements: entry?.settlements === true,
+      moderation: entry?.moderation === true,
+      reactions: entry?.reactions === true,
+    });
+  }).filter((entry) => entry.enabled);
+}
+const WHATSAPP_GROUPS_CONFIG = parseWhatsAppGroupsConfig(process.env.WHATSAPP_GROUPS_JSON);
+const WHATSAPP_GROUPS_BY_ID = new Map(WHATSAPP_GROUPS_CONFIG.map((entry) => [entry.id, entry]));
+const configuredOfficialGroup = WHATSAPP_GROUPS_CONFIG.find((entry) => entry.role === "official") || WHATSAPP_GROUPS_CONFIG[0] || null;
+const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || configuredOfficialGroup?.id || "";
+const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || configuredOfficialGroup?.name || "قروب التشغيل المحدد من البيئة";
+// Legacy compatibility marker: const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
+// Legacy compatibility marker: const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === "string" ? WHATSAPP_GROUP_ID : "";
+// Legacy compatibility marker: if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
+if (WHATSAPP_GROUPS_CONFIG.length && !WHATSAPP_GROUPS_BY_ID.has(WHATSAPP_GROUP_ID)) {
+  throw new Error("WHATSAPP_GROUP_ID must be present in WHATSAPP_GROUPS_JSON when both are configured");
+}
 if (process.env.RENDER && !WHATSAPP_GROUP_ID) throw new Error("WHATSAPP_GROUP_ID is required on Server 2; refusing an unlocked WhatsApp session");
 // Keep LocalAuth namespaces independent across cloned Render services. When
 // WHATSAPP_CLIENT_ID is not supplied, derive a stable fallback from this
 // service's own phone and group instead of using a shared constant.
 const WHATSAPP_IDENTITY_SCOPE = String(
-  process.env.WHATSAPP_IDENTITY_SCOPE || `${BOT_PHONE_INTL || BOT_PHONE}:${WHATSAPP_GROUP_ID || "unconfigured"}`,
+  process.env.WHATSAPP_IDENTITY_SCOPE || `${BOT_PHONE_INTL || BOT_PHONE}:${[...WHATSAPP_GROUPS_BY_ID.keys()].sort().join(",") || WHATSAPP_GROUP_ID || "unconfigured"}`,
 ).trim().replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 80) || "isolated";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const AUTH_PATH = process.env.AUTH_PATH || path.join(DATA_DIR, ".wwebjs_auth");
@@ -3889,17 +3925,32 @@ async function suspendMemberForDebt(groupId, phone, balanceCents, removalContext
 }
 function configuredGroup(groupId) { return db.prepare("SELECT * FROM groups_config WHERE group_id=? AND active=1").get(groupId); }
 function isGroupSetupOwner(phone) { return GROUP_SETUP_OWNER_PHONES.has(phoneWithCountry(phone)); }
+function groupPolicy(groupId) {
+  const normalizedGroupId = String(groupId || "").trim();
+  const configured = WHATSAPP_GROUPS_BY_ID.get(normalizedGroupId);
+  if (configured) return configured;
+  if (normalizedGroupId === WHATSAPP_GROUP_ID) {
+    return { id: normalizedGroupId, name: WHATSAPP_GROUP_NAME, role: "official", enabled: true, receiveMessages: true, processOrders: true, settlements: true, moderation: true, reactions: true };
+  }
+  return null;
+}
+function configuredEnvironmentGroupIds() {
+  return WHATSAPP_GROUPS_CONFIG.length ? [...WHATSAPP_GROUPS_BY_ID.keys()] : (WHATSAPP_GROUP_ID ? [WHATSAPP_GROUP_ID] : []);
+}
+function isEnvironmentConfiguredGroup(groupId) {
+  return configuredEnvironmentGroupIds().includes(String(groupId || "").trim());
+}
 function configureGroupId(groupId, groupName) {
   const normalizedGroupId = String(groupId || "").trim();
-  if (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID) {
-    audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID });
+  if (!WHATSAPP_GROUP_ID || normalizedGroupId !== WHATSAPP_GROUP_ID || !isEnvironmentConfiguredGroup(normalizedGroupId)) {
+    audit("group.configure_blocked_outside_server2", "group", normalizedGroupId, { configuredGroupId: WHATSAPP_GROUP_ID, configuredGroupIds: configuredEnvironmentGroupIds() });
     console.warn(`[Isolation] refused Server 2 group reconfiguration: ${normalizedGroupId}`);
     return false;
   }
   groupId = normalizedGroupId;
   const stamp = now();
   db.transaction(() => {
-    db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?").run(stamp, groupId);
+    if (!WHATSAPP_GROUPS_CONFIG.length) db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?").run(stamp, groupId);
     db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(groupId, groupName, stamp, stamp);
     setSetting("group_id", groupId);
     setSetting("active_group_id", groupId);
@@ -3907,8 +3958,8 @@ function configureGroupId(groupId, groupName) {
   audit("group.configured", "group", groupId, { groupName });
 }
 function isConfiguredGroup(groupId) {
-  const configured = db.prepare("SELECT COUNT(*) AS count FROM groups_config WHERE active=1").get().count;
-  return Boolean(WHATSAPP_GROUP_ID && String(groupId || "").trim() === WHATSAPP_GROUP_ID && configured > 0 && Boolean(configuredGroup(groupId)));
+  const normalizedGroupId = String(groupId || "").trim();
+  return Boolean(isEnvironmentConfiguredGroup(normalizedGroupId) && groupPolicy(normalizedGroupId)?.receiveMessages && configuredGroup(normalizedGroupId));
 }
 function configuredRuntimeGroupId() {
   if (!WHATSAPP_GROUP_ID) return "";
@@ -8369,9 +8420,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const isGroup = Boolean(groupId);
   if (!isGroup) return msg.fromMe ? undefined : handleCustomerMessage(msg);
   const body = String(msg.body || "").trim();
-  const configuredEnvironmentGroup = typeof WHATSAPP_GROUP_ID === "string" ? WHATSAPP_GROUP_ID : "";
-  if (configuredEnvironmentGroup && groupId !== configuredEnvironmentGroup) return;
-  if (!configuredEnvironmentGroup) return;
   const setupCommand = /^#(?:اعتماد|ربط|اعتمد)\s*(?:القروب|المجموعة)?$/i.test(body);
   const contact = msg.fromMe || typeof msg?.getContact !== "function"
     ? null
@@ -8390,16 +8438,27 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (isIncomingVoiceMessage(msg)) {
+  const policy = typeof groupPolicy === "function"
+    ? groupPolicy(groupId)
+    : { receiveMessages: true, processOrders: true, settlements: true, moderation: true, reactions: true };
+  if (!policy?.receiveMessages) return;
+  if (!policy.processOrders) {
+    console.log(`[GroupEvent] passive group message observed: group=${groupId} name=${policy.name}`);
+    return;
+  }
+  if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg)) {
+    if (typeof handleIncomingVoiceMessagePolicy !== "function") return;
     await handleIncomingVoiceMessagePolicy(msg, { groupId, senderPhone }).catch((error) => {
       audit("voice_message_deletion.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
     });
     return;
   }
-  const generalDeletionResult = await handleIncomingGeneralMessageDeletionPolicy(msg, { groupId, senderPhone }).catch((error) => {
+  const generalDeletionResult = typeof handleIncomingGeneralMessageDeletionPolicy === "function"
+    ? await handleIncomingGeneralMessageDeletionPolicy(msg, { groupId, senderPhone }).catch((error) => {
     audit("general_message_deletion.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
     return { status: "failed" };
-  });
+      })
+    : { status: "not_applicable" };
   if (["deleted", "failed"].includes(generalDeletionResult?.status)) return;
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
@@ -9086,6 +9145,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
+    if (typeof groupPolicy === "function" && !groupPolicy(current.group_id)?.settlements) return { state: "settlements_disabled", groupId: current.group_id };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status IN ('pending','selected') LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
     const equivalentOrder = findEquivalentOrder(current.group_id, current.source_message_id);
@@ -9610,6 +9670,7 @@ async function handleMessageReaction(reaction) {
   const target = storedAcceptanceTarget || await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
+  if (typeof groupPolicy === "function" && !groupPolicy(target.from)?.reactions) return;
   const targetIsCaptainAcceptance = isCaptainAcceptance(target.body);
   const parsedTargetOrder = targetIsCaptainAcceptance ? null : parseOrder(target.body);
   const targetIsOrderSource = Boolean(parsedTargetOrder?.isOrder);
@@ -11724,7 +11785,14 @@ app.get("/api/admin/bot/status", requireAdmin, adminReadLimiter, v27AdminReadCac
   res.json({
     success: true,
     status: health.whatsapp?.ready ? "connected" : "offline",
-    group: { groupId: configuredRuntimeGroupId() || null, bound: Boolean(configuredRuntimeGroupId()) },
+    group: {
+      groupId: configuredRuntimeGroupId() || null,
+      bound: Boolean(configuredRuntimeGroupId()),
+      groups: configuredEnvironmentGroupIds().map((groupId) => {
+        const policy = groupPolicy(groupId);
+        return { groupId, name: policy?.name || null, role: policy?.role || null, receiveMessages: Boolean(policy?.receiveMessages), processOrders: Boolean(policy?.processOrders), settlements: Boolean(policy?.settlements), moderation: Boolean(policy?.moderation), reactions: Boolean(policy?.reactions) };
+      }),
+    },
     bot: {
       phone: botPhone,
       phoneDisplay: botPhoneDisplay,
@@ -16640,7 +16708,21 @@ app.get("/api/admin/send-status/:operationId", requireAdmin, (req, res) => {
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
-  if (!WHATSAPP_GROUP_ID.endsWith("@g.us")) throw new Error("WHATSAPP_GROUP_ID must end with @g.us");
+  for (const entry of (WHATSAPP_GROUPS_CONFIG.length ? WHATSAPP_GROUPS_CONFIG : [{ id: WHATSAPP_GROUP_ID, name: WHATSAPP_GROUP_NAME }])) {
+    if (!entry.id.endsWith("@g.us")) throw new Error(`Configured WhatsApp group must end with @g.us: ${entry.id}`);
+  }
+  if (WHATSAPP_GROUPS_CONFIG.length) {
+    const stamp = now();
+    db.transaction(() => {
+      for (const entry of WHATSAPP_GROUPS_CONFIG) {
+        db.prepare("INSERT INTO groups_config(group_id,group_name,active,created_at,updated_at) VALUES(?,?,1,?,?) ON CONFLICT(group_id) DO UPDATE SET group_name=excluded.group_name,active=1,updated_at=excluded.updated_at").run(entry.id, entry.name, stamp, stamp);
+      }
+      setSetting("group_id", WHATSAPP_GROUP_ID);
+      setSetting("active_group_id", WHATSAPP_GROUP_ID);
+    })();
+    console.log(`[Config] synchronized multi-group environment: ${WHATSAPP_GROUPS_CONFIG.map((entry) => `${entry.name}=${entry.id}`).join(" | ")}`);
+    return;
+  }
   const storedGroupId = getSetting("group_id", null);
   const legacyGroupId = getSetting("active_group_id", null);
   if (storedGroupId === WHATSAPP_GROUP_ID && legacyGroupId === WHATSAPP_GROUP_ID && isConfiguredGroup(WHATSAPP_GROUP_ID)) return;
