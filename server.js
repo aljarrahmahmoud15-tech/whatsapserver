@@ -954,6 +954,19 @@ CREATE TABLE IF NOT EXISTS groups_config (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS whatsapp_group_discovery_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL UNIQUE,
+  group_name TEXT,
+  discovered_by TEXT,
+  discovery_message_id TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending','approved','rejected'))
+);
+CREATE INDEX IF NOT EXISTS idx_group_discovery_candidates_status
+  ON whatsapp_group_discovery_candidates(status, last_seen_at DESC);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -4873,6 +4886,44 @@ async function syncActiveCaptainsToConfiguredGroup({ sendLinks = false, baseUrl 
 function audit(action, entityType, entityId, details, actorUserId = null) {
   db.prepare("INSERT INTO audit_logs(actor_user_id,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)").run(actorUserId, action, entityType, entityId == null ? null : String(entityId), details ? JSON.stringify(details) : null, now());
 }
+const GROUP_DISCOVERY_COMMAND = "#SERVER2-GROUP-ID";
+const saveGroupDiscoveryCandidate = db.prepare(`
+  INSERT INTO whatsapp_group_discovery_candidates
+    (group_id,group_name,discovered_by,discovery_message_id,first_seen_at,last_seen_at,status)
+  VALUES(?,?,?,?,?,?, 'pending')
+  ON CONFLICT(group_id) DO UPDATE SET
+    group_name=excluded.group_name,
+    discovered_by=excluded.discovered_by,
+    discovery_message_id=excluded.discovery_message_id,
+    last_seen_at=excluded.last_seen_at
+`);
+async function captureGroupDiscoveryCandidate(message) {
+  const body = String(message?.body || message?.text || "").trim();
+  if (body !== GROUP_DISCOVERY_COMMAND) return { status: "ignored", reason: "command_mismatch" };
+  const groupId = String(message?.from || message?._data?.from || "").trim();
+  if (!/^\d+@g\.us$/i.test(groupId)) return { status: "ignored", reason: "not_group" };
+  if (WHATSAPP_GROUP_ID && groupId === WHATSAPP_GROUP_ID) return { status: "ignored", reason: "official_group" };
+  let groupName = null;
+  if (typeof message?.getChat === "function") {
+    const chat = await withTimeout(message.getChat(), 5000, null).catch(() => null);
+    groupName = String(chat?.name || "").trim() || null;
+  }
+  const discoveredBy = String(message?.author || message?._data?.author || "").trim() || null;
+  const messageId = String(message?.id?._serialized || message?.id?.id || "").trim() || null;
+  const timestamp = now();
+  saveGroupDiscoveryCandidate.run(groupId, groupName, discoveredBy, messageId, timestamp, timestamp);
+  audit("whatsapp.group.discovery_candidate_saved", "group", groupId, {
+    groupName,
+    discoveredBy,
+    discoveryMessageId: messageId,
+    status: "pending",
+    activation: "none",
+    financialMutation: false,
+    outboundMessage: false,
+  });
+  console.log(`[GroupDiscovery] pending candidate saved: ${groupId}`);
+  return { status: "saved", groupId, groupName };
+}
 function rejectCaptainRemovalWhilePaused(res, operation, entityId = null) {
   if (!CAPTAIN_REMOVAL_PAUSED) return false;
   audit("captain.removal.blocked_by_pause", entityId == null ? "system" : "user", entityId, {
@@ -7671,7 +7722,9 @@ function createClient() {
     console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
   });
   instance.on("message_create", async (msg) => {
-    if (generation !== connectionGeneration || !msg || !msg.fromMe) return;
+    if (generation !== connectionGeneration || !msg) return;
+    void captureGroupDiscoveryCandidate(msg).catch((error) => console.warn(`[GroupDiscovery] capture failed: ${String(error?.message || error).slice(0, 180)}`));
+    if (!msg.fromMe) return;
     if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
     if (!shouldHandleMessageEvent(msg, "message_create")) return;
     observeAdminSentMessage(msg);
@@ -7687,6 +7740,7 @@ function createClient() {
   });
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration || !msg) return;
+    void captureGroupDiscoveryCandidate(msg).catch((error) => console.warn(`[GroupDiscovery] capture failed: ${String(error?.message || error).slice(0, 180)}`));
     if (isConfiguredGroup(resolveGroupChatId(msg) || msg.from)) cacheIncomingWhatsAppMessage(msg);
     if (!shouldHandleMessageEvent(msg, "message")) return;
     recordGroupMessageTelemetry("message", msg);
