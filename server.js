@@ -5294,39 +5294,57 @@ function scheduleOfficialGroupWalletSweep(trigger = "official_group_message") {
 }
 function parseOrder(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
-  const startsWithPriceKeyword = /^السعر(?=\s|[:：]|$|[0-9٠-٩۰-۹])/u.test(normalized);
   const digitPattern = "[0-9٠-٩۰-۹]";
   const normalizeDigits = (value) => String(value || "").replace(/[٠-٩]/g, (digit) => String(digit.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0));
   const numberPattern = digitPattern + "+(?:[.,٫]" + digitPattern + "{1,2})?";
   const numberValue = (value) => Number(normalizeDigits(value).replace(/[٫,]/g, "."));
-  const rangeMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(?:من\\s*)?(" + numberPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + numberPattern + ")", "i")) : null;
-  const singleMatch = startsWithPriceKeyword ? normalized.match(new RegExp("^السعر\\s*[:：]?\\s*(" + numberPattern + ")", "i")) : null;
+  const wordValues = Object.freeze({
+    واحد: 1, واحدة: 1, اثنان: 2, اثنين: 2, اثنتان: 2, اثنتين: 2,
+    ثلاث: 3, ثلاثة: 3, اربع: 4, أربعة: 4, اربعـة: 4,
+    خمس: 5, خمسة: 5, ست: 6, ستة: 6, سبع: 7, سبعة: 7,
+    ثمان: 8, ثمانية: 8, تسع: 9, تسعة: 9, عشر: 10, عشرة: 10,
+  });
+  const wordPattern = Object.keys(wordValues).join("|");
+  const amountPattern = "(?:" + numberPattern + "|" + wordPattern + ")";
+  const amountValue = (value) => {
+    const raw = String(value || "").trim();
+    const numeric = numberValue(raw);
+    if (Number.isFinite(numeric)) return numeric;
+    return wordValues[raw] || null;
+  };
   let priceMin = null;
   let priceMax = null;
   let price = null;
-  if (rangeMatch) {
-    const minimum = numberValue(rangeMatch[1]);
-    const maximum = numberValue(rangeMatch[2]);
+  const setPrice = (minimum, maximum = minimum) => {
     if (Number.isFinite(minimum) && Number.isFinite(maximum) && minimum > 0 && maximum >= minimum) {
       priceMin = minimum;
       priceMax = maximum;
       price = (minimum + maximum) / 2;
     }
+  };
+  const priceKeyword = "(?:السعر|سعر|price)";
+  const rangeMatch = normalized.match(new RegExp(priceKeyword + "\\s*[:：]?\\s*(?:من\\s*)?(" + amountPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + amountPattern + ")", "i"));
+  const singleMatch = normalized.match(new RegExp(priceKeyword + "\\s*[:：]?\\s*(" + amountPattern + ")", "i"));
+  const currencyMatch = normalized.match(new RegExp("(" + amountPattern + ")\\s*(?:دينار|دنانير|jod)", "i"));
+  const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|ركاب|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|أ?وردر|order)/i);
+  const requestAmountMatch = requestKindMatch
+    ? normalized.slice(requestKindMatch.index + requestKindMatch[0].length).match(new RegExp("^\\s*[:：-]?\\s*(" + amountPattern + ")", "i"))
+    : null;
+  if (rangeMatch) {
+    setPrice(amountValue(rangeMatch[1]), amountValue(rangeMatch[2]));
   } else if (singleMatch) {
-    const single = numberValue(singleMatch[1]);
-    if (Number.isFinite(single) && single > 0) {
-      priceMin = single;
-      priceMax = single;
-      price = single;
-    }
+    setPrice(amountValue(singleMatch[1]));
+  } else if (currencyMatch) {
+    setPrice(amountValue(currencyMatch[1]));
+  } else if (requestAmountMatch) {
+    setPrice(amountValue(requestAmountMatch[1]));
   }
   const lines = normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean);
   const routeLine = lines.find((line) => /من\s+.+\s+(?:إلى|الى)\s+|من\s+.+\s+ل(?:ـ)?\s*/i.test(line)) || "";
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+ل(?:ـ)?\s*(.+)/i);
-  const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|ركاب|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|اوردر|order)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
-    // الصيغة التشغيلية المعتمدة: كلمة «السعر» يتبعها الرقم فقط؛ المسار/نوع الرحلة اختياري وغير معتمد للتمييز.
+    // الصيغة التشغيلية المعتمدة: السعر قد يظهر في أي موضع، بصيغة رقمية أو لفظية؛ النوع اختياري للعرض فقط.
     isOrder: price !== null,
     price,
     priceMin,
@@ -5335,7 +5353,7 @@ function parseOrder(text) {
     origin: route ? route[1].trim() : null,
     destination: route ? route[2].trim() : null,
     tripTime: null,
-    orderKind: /(?:^|\s)(?:اوردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
+    orderKind: /(?:^|\s)(?:أ?وردر|order)(?:$|\s)/i.test(normalized) ? "order" : "normal",
   };
 }
 function createOrderRecord({ messageId, groupId, body, producer, parsed }) {

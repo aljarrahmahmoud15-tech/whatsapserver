@@ -8,7 +8,7 @@ const confirmationEnd = server.indexOf("function finalBookingCancellationText", 
 const confirmationBody = server.slice(confirmationStart, confirmationEnd);
 assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidates/);
 assert.match(server, /function createOrderCandidate\(/);
-assert.match(server, /startsWithPriceKeyword = \/\^السعر/);
+assert.match(server, /const priceKeyword = "\(\?:السعر\|سعر\|price\)"/);
 assert.match(server, /function isCaptainAcceptance\(text\)/);
 assert.match(server, /const cancellationReaction = reactionValue === "❌"/);
 assert.match(server, /function cancelPendingOrderForProducerReaction\(/);

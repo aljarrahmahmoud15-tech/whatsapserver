@@ -13,8 +13,9 @@ vm.runInNewContext(`${source.slice(parseStart, parseEnd)}\nthis.parseOrder = par
 assert.equal(context.parseOrder("السعر 7").isOrder, true, "السعر مع رقم متغير يكفي لإنشاء الطلب");
 assert.equal(context.parseOrder("السعر 12.5").price, 12.5, "السعر العشري مدعوم");
 assert.equal(context.parseOrder("السعر 35 دينار").price, 35, "وحدة الدينار اختيارية");
-assert.equal(context.parseOrder("تم السعر 35").isOrder, false, "السعر لا يُقبل إذا لم يكن بداية الرسالة");
-assert.equal(context.parseOrder("من إربد إلى عمّان السعر 35").isOrder, false, "السعر داخل النص لا ينشئ طلبًا");
+assert.equal(context.parseOrder("تم السعر 35").isOrder, true, "السعر يُقبل في أي موضع");
+assert.equal(context.parseOrder("من إربد إلى عمّان السعر 35").isOrder, true, "السعر داخل النص ينشئ طلبًا");
+assert.equal(context.parseOrder("راكب من إربد إلى عمّان السعر خمس دنانير").price, 5, "السعر اللفظي مدعوم");
 assert.equal(context.parseOrder("تم").isOrder, false, "تم ليست طلب سعر");
 
 const acceptanceStart = source.indexOf("function isCaptainAcceptance(");
