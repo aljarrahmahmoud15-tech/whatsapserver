@@ -4381,6 +4381,11 @@ function updateOfficialGroupAdminSnapshot(groupId, snapshot) {
   officialGroupAdminSnapshotGeneration = connectionGeneration;
   officialGroupAdminSnapshotAt = now();
 }
+function connectedBotInGroupSnapshot(snapshot) {
+  const connectedPhone = connectedBotPhone();
+  if (!connectedPhone || !snapshot || !Array.isArray(snapshot.participants)) return false;
+  return snapshot.participants.some((participant) => groupParticipantPhone(participant) === connectedPhone);
+}
 function officialGroupAdminSnapshotReady() {
   return officialGroupAdminSnapshotGroupId === configuredRuntimeGroupId()
     && officialGroupAdminSnapshotGeneration === connectionGeneration
@@ -7664,6 +7669,11 @@ function stopRuntimeMemoryWatchdog() {
 function createClient() {
   const generation = ++connectionGeneration;
   groupSnapshotFlights.clear();
+  officialGroupSnapshot = null;
+  officialGroupSnapshotGroupId = null;
+  officialGroupAdminPhones = new Set();
+  officialGroupAdminSnapshotGroupId = null;
+  officialGroupAdminSnapshotAt = null;
   const instance = new Client({
     authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
     puppeteer: puppeteerConfig,
@@ -11930,7 +11940,7 @@ app.get("/api/admin/group/permissions", requireAdmin, adminReadLimiter, v27Admin
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
   if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
   try {
-    const snapshot = officialGroupSnapshotReady() ? officialGroupSnapshot : await readGroupSnapshot(groupId);
+    const snapshot = await readGroupSnapshot(groupId);
     const botWid = client.info?.wid?._serialized || client.info?.wid?.user || null;
     const botUsers = new Set([String(botWid || "").split("@")[0].split(":")[0], String(client.info?.wid?.user || "")].filter(Boolean));
     const botParticipants = (snapshot?.participants || []).filter((participant) => botUsers.has(String(participant.user || String(participant.id || "").split("@")[0].split(":")[0])));
@@ -12663,20 +12673,18 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
   }
 }
 
-async function runGroupMemberImport({ operationId, groupId, phones }) {
+async function runGroupMemberImport({ operationId, groupId, phones, snapshot, snapshotGeneration }) {
   try {
     const chat = await openCreatedGroupForAdmin(groupId);
     if (!chat || typeof chat.addParticipants !== "function") throw new Error("Official group is unavailable for participant addition");
-    const snapshot = await readGroupSnapshot(groupId);
-    const connectedPhone = connectedBotPhone();
-    const botPresent = Boolean(connectedPhone && (snapshot?.participants || []).some((participant) => groupParticipantPhone(participant) === connectedPhone));
-    if (!botPresent) throw new Error("Connected bot identity is not a member of the configured official group");
+    if (snapshotGeneration !== connectionGeneration || !isReady) throw new Error("WhatsApp connection changed before participant addition started");
+    if (!connectedBotInGroupSnapshot(snapshot)) throw new Error("Connected bot identity is not a member of the configured official group");
     const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
     const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending", error: null }));
     groupMemberImportState = { status: "running", operationId, startedAt: groupMemberImportState.startedAt, finishedAt: null, error: null, groupId, participants: participantResults, preview: null };
     for (const result of participantResults) {
       if (result.status === "already_present") continue;
-      if (!isReady) {
+      if (!isReady || snapshotGeneration !== connectionGeneration) {
         result.status = "failed";
         result.error = "WhatsApp session disconnected";
         break;
@@ -12718,6 +12726,8 @@ app.post("/api/admin/group/import-members", requireAdmin, adminMutationLimiter, 
   const phones = [...new Set(normalized.filter((phone) => isValidJordanPhone(phone) && !isBlockedPhone(phone)))];
   if (!phones.length) return res.status(400).json({ error: "No valid eligible Jordan phone numbers were provided", invalidCount: invalidPhones.length });
   const snapshot = await readGroupSnapshot(groupId);
+  if (!snapshot || !Array.isArray(snapshot.participants)) return res.status(502).json({ error: "Official group participant snapshot unavailable" });
+  const snapshotGeneration = connectionGeneration;
   const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
   const candidates = phones.filter((phone) => !existingPhones.has(phone));
   const preview = { groupId, submitted: rawPhones.length, validUnique: phones.length, invalidOrBlocked: invalidPhones.length, alreadyPresent: phones.length - candidates.length, candidates: candidates.length, mutation: "group membership only" };
@@ -12727,10 +12737,11 @@ app.post("/api/admin/group/import-members", requireAdmin, adminMutationLimiter, 
     return res.json({ success: true, dryRun: true, preview, invalidPhones, candidatePhones: candidates });
   }
   if (String(req.body?.confirmation || "") !== "ADD_GROUP_MEMBERS") return res.status(400).json({ error: "Explicit confirmation ADD_GROUP_MEMBERS is required" });
+  if (!connectedBotInGroupSnapshot(snapshot)) return res.status(409).json({ error: "Connected bot identity is not a member of the configured official group", mutation: "none", groupId });
   const operationId = "GROUP-IMPORT-" + crypto.randomBytes(5).toString("hex").toUpperCase();
   groupMemberImportInFlight = true;
   groupMemberImportState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, participants: candidates.map((phone) => ({ phone, status: "pending", error: null })), preview };
-  void runGroupMemberImport({ operationId, groupId, phones: candidates });
+  void runGroupMemberImport({ operationId, groupId, phones: candidates, snapshot, snapshotGeneration });
   res.status(202).json({ success: true, accepted: true, dryRun: false, operationId, preview, invalidPhones });
 });
 
