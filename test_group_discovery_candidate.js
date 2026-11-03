@@ -9,6 +9,8 @@ assert.match(source, /const GROUP_DISCOVERY_COMMAND = "#SERVER2-GROUP-ID"/);
 assert.ok(source.includes('if (!/^\\d+@g\\.us$/i.test(groupId))'), "group id must be validated as a WhatsApp group");
 assert.ok(source.includes('if (WHATSAPP_GROUP_ID && groupId === WHATSAPP_GROUP_ID) return { status: "ignored", reason: "official_group" }'), "official group must not become a candidate");
 assert.match(source, /saveGroupDiscoveryCandidate\.run\(groupId, groupName, discoveredBy, messageId, timestamp, timestamp\)/);
+assert.match(source, /app\.get\("\/api\/admin\/group-discovery-candidates", requireOwnerAdmin, adminReadLimiter/);
+assert.match(source, /mutation: "none", candidates, ownerOnly: true/);
 assert.match(source, /activation: "none"/);
 assert.match(source, /financialMutation: false/);
 assert.match(source, /void captureGroupDiscoveryCandidate\(msg\)/);

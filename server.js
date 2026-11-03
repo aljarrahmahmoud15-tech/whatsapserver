@@ -11350,6 +11350,16 @@ app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminRead
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
   res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), voiceMessageDeletion: voiceMessageDeletionPolicyResponse(), generalMessageDeletion: generalMessageDeletionPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
+app.get("/api/admin/group-discovery-candidates", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  const candidates = db.prepare(`
+    SELECT id,group_id,group_name,discovered_by,discovery_message_id,first_seen_at,last_seen_at,status
+    FROM whatsapp_group_discovery_candidates
+    ORDER BY last_seen_at DESC
+    LIMIT 50
+  `).all();
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  return res.json({ success: true, mutation: "none", candidates, ownerOnly: true });
+});
 app.get("/api/admin/settings/customer-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("customer-booking-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
   res.json({ success: true, policy: customerBookingPolicyResponse(currentCustomerBookingPolicy()), ownerOnly: true });
