@@ -12653,7 +12653,7 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
 
 async function runGroupMemberImport({ operationId, groupId, phones }) {
   try {
-    const chat = await withTimeout(client.getChatById(groupId), 20000, null);
+    const chat = await openCreatedGroupForAdmin(groupId);
     if (!chat || typeof chat.addParticipants !== "function") throw new Error("Official group is unavailable for participant addition");
     const snapshot = await readGroupSnapshot(groupId);
     const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
