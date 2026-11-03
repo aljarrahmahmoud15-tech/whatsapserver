@@ -12656,6 +12656,9 @@ async function runGroupMemberImport({ operationId, groupId, phones }) {
     const chat = await openCreatedGroupForAdmin(groupId);
     if (!chat || typeof chat.addParticipants !== "function") throw new Error("Official group is unavailable for participant addition");
     const snapshot = await readGroupSnapshot(groupId);
+    const connectedPhone = connectedBotPhone();
+    const botPresent = Boolean(connectedPhone && (snapshot?.participants || []).some((participant) => groupParticipantPhone(participant) === connectedPhone));
+    if (!botPresent) throw new Error("Connected bot identity is not a member of the configured official group");
     const existingPhones = new Set((snapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
     const participantResults = phones.map((phone) => ({ phone, status: existingPhones.has(phone) ? "already_present" : "pending", error: null }));
     groupMemberImportState = { status: "running", operationId, startedAt: groupMemberImportState.startedAt, finishedAt: null, error: null, groupId, participants: participantResults, preview: null };
