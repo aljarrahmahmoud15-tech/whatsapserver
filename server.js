@@ -3329,6 +3329,8 @@ const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
 });
 const VOICE_MESSAGE_DELETION_SETTING_KEY = "official_group_voice_message_deletion_enabled";
 const VOICE_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_voice_message_deletion_emergency_stop";
+const GENERAL_MESSAGE_DELETION_SETTING_KEY = "official_group_unapproved_message_deletion_enabled";
+const GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_unapproved_message_deletion_emergency_stop";
 function voiceMessageDeletionEnabled() {
   return readBooleanSetting(VOICE_MESSAGE_DELETION_SETTING_KEY, false);
 }
@@ -3345,6 +3347,27 @@ function voiceMessageDeletionPolicyResponse() {
     scope: "official_group_only",
     appliesTo: "new_incoming_audio_and_ptt_messages",
     excludes: ["owner", "group_admin", "bot_outgoing_messages"],
+    financialMutation: false,
+    orderMutation: false,
+  };
+}
+function generalMessageDeletionEnabled() {
+  return readBooleanSetting(GENERAL_MESSAGE_DELETION_SETTING_KEY, false);
+}
+function generalMessageDeletionEmergencyStopped() {
+  return readBooleanSetting(GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY, false);
+}
+function generalMessageDeletionPolicyResponse() {
+  const enabled = generalMessageDeletionEnabled();
+  const emergencyStopped = generalMessageDeletionEmergencyStopped();
+  return {
+    enabled,
+    emergencyStopped,
+    effective: enabled && !emergencyStopped,
+    scope: "official_group_only",
+    appliesTo: "new_incoming_text_and_captioned_image_messages_without_approved_marker",
+    preserves: ["تم", "links", "explicit_prices", "owner", "group_admin", "bot_outgoing_messages"],
+    imagePriceDetection: "caption_or_message_text_only;_images_without_text_are_preserved",
     financialMutation: false,
     orderMutation: false,
   };
@@ -4313,6 +4336,47 @@ async function handleIncomingVoiceMessagePolicy(message, { groupId, senderPhone 
   if (!messageId) return { status: "skipped", reason: "missing_message_id" };
   const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_audio_message", groupId });
   audit("voice_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
+  return { status: deletion?.ok ? "deleted" : "failed", deletion };
+}
+function messageTextForPolicy(message) {
+  return String(message?.body || message?.caption || "").replace(/\u200f|\u200e/g, " ").trim();
+}
+function messageHasApprovedGeneralMarker(message) {
+  const text = messageTextForPolicy(message);
+  if (!text) return false;
+  if (/(?:^|[\s\n\r،,.;:!?()[\]{}\-])تم(?=$|[\s\n\r،,.;:!?()[\]{}\-])/u.test(text)) return true;
+  if (/(?:https?:\/\/|www\.|chat\.whatsapp\.com\/)[^\s]+/i.test(text)) return true;
+  if (/(?:السعر|المبلغ|القيمة|قيمة|عمولة|دينار|د\.\s*أ|JOD)\s*[:：-]?\s*\d{1,3}(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{1,2})?\s*(?:د\.\s*أ|دينار|JOD)/iu.test(text)) return true;
+  return /(?:^|\s)\d{1,3}(?:[.,]\d{1,2})?(?=$|\s)/u.test(text);
+}
+function isCaptionedImageMessage(message) {
+  return String(message?.type || "").trim().toLowerCase() === "image";
+}
+async function handleIncomingGeneralMessageDeletionPolicy(message, { groupId, senderPhone }) {
+  if (!message || message.fromMe || !groupId || groupId !== configuredRuntimeGroupId() || isIncomingVoiceMessage(message)) return { status: "not_applicable" };
+  if (!generalMessageDeletionEnabled()) return { status: "disabled" };
+  if (generalMessageDeletionEmergencyStopped()) {
+    audit("general_message_deletion.emergency_stopped", "message", serializedMessageId(message) || "unknown", { groupId, financialMutation: false, orderMutation: false });
+    return { status: "paused", reason: "owner_emergency_stop" };
+  }
+  const normalizedPhone = phoneWithCountry(senderPhone);
+  if (!normalizedPhone || isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) {
+    audit("general_message_deletion.skipped_protected_sender", "message", serializedMessageId(message) || "unknown", { groupId, protectedSender: true, financialMutation: false, orderMutation: false });
+    return { status: "skipped", reason: "protected_sender" };
+  }
+  if (!officialGroupAdminSnapshotReady()) {
+    audit("general_message_deletion.skipped_admin_snapshot_unavailable", "message", serializedMessageId(message) || "unknown", { groupId, financialMutation: false, orderMutation: false });
+    return { status: "skipped", reason: "admin_snapshot_unavailable" };
+  }
+  const messageId = serializedMessageId(message);
+  if (!messageId) return { status: "skipped", reason: "missing_message_id" };
+  if (messageHasApprovedGeneralMarker(message)) return { status: "preserved", reason: "approved_marker" };
+  if (isCaptionedImageMessage(message) && !messageTextForPolicy(message)) {
+    audit("general_message_deletion.skipped_image_visual_price_unverified", "message", messageId, { groupId, financialMutation: false, orderMutation: false });
+    return { status: "skipped", reason: "image_visual_price_unverified" };
+  }
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_general_message", groupId });
+  audit("general_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
 async function readGroupSnapshot(groupId) {
@@ -8248,6 +8312,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     });
     return;
   }
+  const generalDeletionResult = await handleIncomingGeneralMessageDeletionPolicy(msg, { groupId, senderPhone }).catch((error) => {
+    audit("general_message_deletion.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+    return { status: "failed" };
+  });
+  if (["deleted", "failed"].includes(generalDeletionResult?.status)) return;
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
   if (botGenerated && !parseOrder(body).isOrder) return;
@@ -11195,7 +11264,7 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, 
 });
 app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
-  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), voiceMessageDeletion: voiceMessageDeletionPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), voiceMessageDeletion: voiceMessageDeletionPolicyResponse(), generalMessageDeletion: generalMessageDeletionPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
 app.get("/api/admin/settings/customer-booking", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("customer-booking-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
@@ -11223,6 +11292,30 @@ app.patch("/api/admin/settings/voice-message-deletion", requireOwnerAdmin, admin
     return res.json({ success: true, message: emergencyStopped ? "تم تفعيل الإيقاف الطارئ؛ لن تُحذف أي مقاطع صوتية." : (enabled ? "تم تفعيل حذف المقاطع الصوتية من القروب الرسمي مع استثناء المالك والمشرفين." : "تم تعطيل حذف المقاطع الصوتية."), policy: voiceMessageDeletionPolicyResponse() });
   } catch (error) {
     return res.status(500).json({ error: "تعذر حفظ سياسة حذف المقاطع الصوتية", detail: String(error?.message || error).slice(0, 180) });
+  }
+});
+app.get("/api/admin/settings/general-message-deletion", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ success: true, policy: generalMessageDeletionPolicyResponse(), ownerOnly: true, mutation: "none" });
+});
+app.patch("/api/admin/settings/general-message-deletion", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled يجب أن يكون true أو false" });
+  if (body.emergencyStopped !== undefined && typeof body.emergencyStopped !== "boolean") return res.status(400).json({ error: "emergencyStopped يجب أن يكون true أو false" });
+  const before = generalMessageDeletionPolicyResponse();
+  const enabled = body.enabled === undefined ? before.enabled : body.enabled;
+  const emergencyStopped = body.emergencyStopped === undefined ? before.emergencyStopped : body.emergencyStopped;
+  try {
+    db.transaction(() => {
+      setSetting(GENERAL_MESSAGE_DELETION_SETTING_KEY, enabled ? "1" : "0");
+      setSetting(GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY, emergencyStopped ? "1" : "0");
+      audit("admin.general_message_deletion_policy.changed", "system", "general_message_deletion", { before, after: { ...generalMessageDeletionPolicyResponse(), enabled, emergencyStopped, effective: enabled && !emergencyStopped }, financialMutation: false, orderMutation: false });
+    })();
+    invalidateV27AdminReadCache();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({ success: true, message: emergencyStopped ? "تم تفعيل الإيقاف الطارئ؛ لن تُحذف رسائل عامة." : (enabled ? "تم تفعيل حذف الرسائل غير المعتمدة مع استثناء تم والروابط والأسعار." : "تم تعطيل حذف الرسائل غير المعتمدة."), policy: generalMessageDeletionPolicyResponse() });
+  } catch (error) {
+    return res.status(500).json({ error: "تعذر حفظ سياسة حذف الرسائل غير المعتمدة", detail: String(error?.message || error).slice(0, 180) });
   }
 });
 app.patch("/api/admin/settings/customer-booking", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
