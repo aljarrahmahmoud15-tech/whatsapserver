@@ -6363,6 +6363,8 @@ let groupDirectInviteInFlight = false;
 let groupDirectInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, inviteUrl: null, participants: [] };
 let groupMemberImportInFlight = false;
 let groupMemberImportState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [], preview: null };
+let directGroupCopyInFlight = false;
+let directGroupCopyState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, sourceGroupId: null, groupId: null, sourceMemberCount: 0, eligibleMemberCount: 0, alreadyPresent: 0, added: 0, failed: 0, excluded: 0 };
 let groupJoinInFlight = false;
 let connectionGeneration = 0;
 let lastGroupSetupProbe = null;
@@ -13785,6 +13787,79 @@ app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => 
   db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE group_id=?").run(now(), groupId);
   audit("group.unapproved.deleted", "group", groupId, { participantCount, botLeft: true, chatDeleted: Boolean(deleted), originalGroupId });
   res.json({ success: true, groupId, groupName: expectedName, participantCount, botLeft: true, chatDeleted: Boolean(deleted), originalGroupUntouched: true, note: "The bot left and deleted its chat; WhatsApp may retain the group for remaining members." });
+});
+
+async function copyGroupMembersDirectInBackground({ operationId, sourceGroupId, groupId, inviteCode, expectedSourceCount }) {
+  try {
+    const sourceChat = await readGroupSnapshot(sourceGroupId) || await resolveGroupChat(sourceGroupId);
+    const source = sourceChat && Array.isArray(sourceChat.participants) ? sourceChat : null;
+    if (!source && inviteCode) {
+      const joinedId = await withTimeout(client.acceptInvite(inviteCode), 60000, null);
+      if (String(joinedId || "") !== sourceGroupId) throw new Error("source_invite_group_mismatch");
+    }
+    const hydratedSource = source || await readGroupSnapshot(sourceGroupId) || await resolveGroupChat(sourceGroupId);
+    if (!hydratedSource || !Array.isArray(hydratedSource.participants)) throw new Error("source_group_unavailable");
+    if (expectedSourceCount && hydratedSource.participants.length !== expectedSourceCount) throw new Error("source_member_count_changed");
+    const targetChat = await openCreatedGroupForAdmin(groupId);
+    if (!targetChat || typeof targetChat.addParticipants !== "function") throw new Error("official_group_unavailable_for_add");
+    const targetSnapshot = await readGroupSnapshot(groupId);
+    const existingPhones = new Set((targetSnapshot?.participants || []).map(groupParticipantPhone).filter(Boolean));
+    const protectedPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL), connectedBotPhone(), ...GROUP_SETUP_OWNER_PHONES].filter(Boolean));
+    const sourcePhones = new Set();
+    for (const participant of hydratedSource.participants) {
+      const phone = await resolveGroupParticipantPhone(participant).catch(() => "");
+      if (phone) sourcePhones.add(phoneWithCountry(phone));
+    }
+    const eligible = [...sourcePhones].filter((phone) => isValidJordanPhone(phone) && !protectedPhones.has(phone) && !isBlockedPhone(phone));
+    const excluded = sourcePhones.size - eligible.length;
+    directGroupCopyState = { ...directGroupCopyState, status: "running", sourceMemberCount: hydratedSource.participants.length, eligibleMemberCount: eligible.length, excluded };
+    for (const phone of eligible) {
+      if (existingPhones.has(phone)) { directGroupCopyState.alreadyPresent += 1; continue; }
+      try {
+        const result = await withTimeout(targetChat.addParticipants([`${phone}@c.us`]), 60000, null);
+        if (!result || typeof result === "string") throw new Error(typeof result === "string" ? result : "participant_add_timeout");
+        existingPhones.add(phone);
+        directGroupCopyState.added += 1;
+      } catch (error) {
+        directGroupCopyState.failed += 1;
+        console.warn(`[GroupCopy] participant addition failed: ${String(error?.message || error).slice(0, 160)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    directGroupCopyState.status = directGroupCopyState.failed ? "partial" : "succeeded";
+    directGroupCopyState.finishedAt = now();
+    audit("group.members.copied_direct", "group", groupId, { operationId, sourceGroupId, sourceMemberCount: hydratedSource.participants.length, eligibleMemberCount: eligible.length, alreadyPresent: directGroupCopyState.alreadyPresent, added: directGroupCopyState.added, failed: directGroupCopyState.failed, excluded, financialMutation: false, orderMutation: false });
+  } catch (error) {
+    directGroupCopyState = { ...directGroupCopyState, status: "failed", finishedAt: now(), error: String(error?.message || error).slice(0, 180) };
+    console.error(`[GroupCopy] failed operation=${operationId}:`, error.message);
+  } finally {
+    directGroupCopyInFlight = false;
+  }
+}
+
+app.get("/api/admin/group/copy-members-direct/status", requireAdmin, adminReadLimiter, (req, res) => {
+  res.json({ success: true, mutation: "none", ...directGroupCopyState, inFlight: directGroupCopyInFlight });
+});
+
+app.post("/api/admin/group/copy-members-direct", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  const inviteLink = String(req.body?.inviteLink || "").trim();
+  const expectedSourceId = String(req.body?.expectedSourceId || "").trim();
+  const expectedTargetId = String(req.body?.expectedTargetId || "").trim();
+  const expectedSourceCount = Number(req.body?.expectedSourceCount || 0);
+  const targetGroupId = String(getSetting("group_id", "")).trim();
+  if (confirmation !== "COPY_GROUP_MEMBERS_DIRECT_V1" || !inviteLink || !expectedSourceId.endsWith("@g.us") || expectedTargetId !== targetGroupId || !Number.isInteger(expectedSourceCount) || expectedSourceCount < 1) return res.status(400).json({ error: "تأكيد العملية ومعرّفا القروب والعدد المتوقع مطلوبة" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز" });
+  if (directGroupCopyInFlight) return res.status(409).json({ error: "عملية النسخ المباشر قيد التنفيذ", operationId: directGroupCopyState.operationId });
+  const inviteCode = extractInviteCode(inviteLink);
+  const info = await withTimeout(client.getInviteInfo(inviteCode), 20000, null);
+  const inviteGroupId = info?.id && (info.id._serialized || String(info.id));
+  if (!inviteCode || inviteGroupId !== expectedSourceId || inviteGroupId === targetGroupId) return res.status(409).json({ error: "رابط المصدر أو القروب المستهدف تغيّر" });
+  const operationId = "COPY-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  directGroupCopyInFlight = true;
+  directGroupCopyState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, sourceGroupId: expectedSourceId, groupId: targetGroupId, sourceMemberCount: 0, eligibleMemberCount: 0, alreadyPresent: 0, added: 0, failed: 0, excluded: 0 };
+  void copyGroupMembersDirectInBackground({ operationId, sourceGroupId: expectedSourceId, groupId: targetGroupId, inviteCode, expectedSourceCount });
+  res.status(202).json({ success: true, accepted: true, operationId, sourceGroupId: expectedSourceId, groupId: targetGroupId, expectedSourceCount, mutation: "whatsapp_group_membership_only", financialMutation: false, orderMutation: false });
 });
 
 app.post("/api/admin/group/invite-info", requireAdmin, async (req, res) => {

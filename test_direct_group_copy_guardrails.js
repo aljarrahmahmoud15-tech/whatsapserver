@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('server.js', 'utf8');
+assert.match(source, /app\.post\("\/api\/admin\/group\/copy-members-direct", requireOwnerAdmin/);
+assert.match(source, /COPY_GROUP_MEMBERS_DIRECT_V1/);
+assert.match(source, /expectedSourceCount/);
+assert.match(source, /financialMutation: false, orderMutation: false/);
+assert.match(source, /directGroupCopyState\.alreadyPresent/);
+assert.match(source, /targetChat\.addParticipants/);
+const start = source.indexOf('async function copyGroupMembersDirectInBackground');
+const end = source.indexOf('app.post("/api/admin/group/invite-info"', start);
+assert.ok(start >= 0 && end > start);
+const block = source.slice(start, end);
+assert.doesNotMatch(block, /configureGroupId\(/);
+console.log('direct group copy guardrails: ok');
