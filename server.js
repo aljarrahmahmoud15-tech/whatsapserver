@@ -6359,6 +6359,8 @@ let groupCreateInFlight = false;
 let groupCreateState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [] };
 let groupInviteInFlight = false;
 let groupInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, inviteUrl: null, participants: [] };
+let groupDirectInviteInFlight = false;
+let groupDirectInviteState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, inviteUrl: null, participants: [] };
 let groupMemberImportInFlight = false;
 let groupMemberImportState = { status: "idle", operationId: null, startedAt: null, finishedAt: null, error: null, groupId: null, participants: [], preview: null };
 let groupJoinInFlight = false;
@@ -12697,6 +12699,39 @@ async function sendGroupMemberInvitesInBackground({ operationId, sourceGroupId, 
     groupInviteInFlight = false;
   }
 }
+async function runDirectGroupInviteMessages({ operationId, groupId, phones, inviteUrl }) {
+  const title = "دعوة القروب الرسمي";
+  const message = `مرحباً بك، هذا رابط الانضمام إلى القروب الرسمي: ${inviteUrl}\nبعد الانضمام ستصلك بطاقة دخول النظام.`;
+  const results = phones.map((phone) => ({ phone, status: "pending", error: null }));
+  groupDirectInviteState = { ...groupDirectInviteState, status: "sending", participants: results };
+  try {
+    for (const result of results) {
+      if (!isReady) { result.status = "failed"; result.error = "WhatsApp session disconnected"; break; }
+      const previous = db.prepare("SELECT id FROM notifications WHERE recipient_phone=? AND event='group.member.invite_text' AND delivery_status='sent' ORDER BY id DESC LIMIT 1").get(result.phone);
+      if (previous) { result.status = "already_sent"; continue; }
+      const notification = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,created_at) VALUES(?,?,? ,?,?, 'pending',?)").run(result.phone, "captain", "group.member.invite_text", title, message, now());
+      try {
+        const sent = await sendBotText(`${result.phone}@c.us`, message);
+        result.status = sent ? "sent" : "failed";
+        result.error = sent ? null : "invite message was not sent";
+        db.prepare("UPDATE notifications SET delivery_status=? WHERE id=?").run(sent ? "sent" : "failed", notification.lastInsertRowid);
+      } catch (error) {
+        result.status = "failed";
+        result.error = String(error?.message || error).slice(0, 240);
+        db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notification.lastInsertRowid);
+      }
+      if (!isReady) { result.error = result.error || "WhatsApp session disconnected"; break; }
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    const failedCount = results.filter((item) => item.status === "failed").length;
+    groupDirectInviteState = { ...groupDirectInviteState, status: failedCount ? "partial" : "succeeded", finishedAt: now(), error: failedCount ? `${failedCount} invite message(s) require retry` : null, participants: results };
+    audit("group.member_invite_messages.sent", "group", groupId, { operationId, requested: phones.length, sent: results.filter((item) => item.status === "sent").length, alreadySent: results.filter((item) => item.status === "already_sent").length, failed: failedCount, inviteUrlHost: "chat.whatsapp.com" });
+  } catch (error) {
+    groupDirectInviteState = { ...groupDirectInviteState, status: "failed", finishedAt: now(), error: String(error?.message || error).slice(0, 240), participants: results };
+  } finally {
+    groupDirectInviteInFlight = false;
+  }
+}
 
 async function runGroupMemberImport({ operationId, groupId, phones, snapshot, snapshotGeneration }) {
   try {
@@ -12772,6 +12807,32 @@ app.post("/api/admin/group/import-members", requireAdmin, adminMutationLimiter, 
 
 app.get("/api/admin/group/invite-status", requireAdmin, adminReadLimiter, v27AdminReadCache("group-invite-status", 1500), (req, res) => {
   res.json({ success: true, ...groupInviteState, inviteUrl: groupInviteState.inviteUrl || null });
+});
+app.get("/api/admin/group/direct-invite-status", requireAdmin, adminReadLimiter, (req, res) => {
+  res.json({ success: true, ...groupDirectInviteState });
+});
+app.post("/api/admin/group/send-direct-invites", requireAdmin, adminMutationLimiter, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  if (groupDirectInviteInFlight) return res.status(409).json({ error: "Direct invite delivery is already in progress", operationId: groupDirectInviteState.operationId });
+  const groupId = String(req.body?.groupId || WHATSAPP_GROUP_ID).trim();
+  if (!groupId || groupId !== WHATSAPP_GROUP_ID || !isConfiguredGroup(groupId)) return res.status(403).json({ error: "Only the configured official group may be used" });
+  const rawPhones = Array.isArray(req.body?.phones) ? req.body.phones : [];
+  if (rawPhones.length < 1 || rawPhones.length > 1000) return res.status(400).json({ error: "Provide between 1 and 1000 phone numbers" });
+  const invalidPhones = rawPhones.map((phone) => phoneWithCountry(String(phone || "").trim())).filter((phone) => !isValidJordanPhone(phone) || isBlockedPhone(phone));
+  const phones = [...new Set(rawPhones.map((phone) => phoneWithCountry(String(phone || "").trim())).filter((phone) => isValidJordanPhone(phone) && !isBlockedPhone(phone)))];
+  if (!phones.length) return res.status(400).json({ error: "No valid eligible Jordan phone numbers were provided", invalidCount: invalidPhones.length });
+  const inviteUrl = normalizeOfficialGroupInviteUrl(req.body?.inviteUrl) || await getOfficialGroupInviteUrl();
+  if (!inviteUrl) return res.status(502).json({ error: "Official group invite URL unavailable" });
+  const alreadySent = phones.filter((phone) => db.prepare("SELECT 1 FROM notifications WHERE recipient_phone=? AND event='group.member.invite_text' AND delivery_status='sent' LIMIT 1").get(phone)).length;
+  const candidates = phones.filter((phone) => !db.prepare("SELECT 1 FROM notifications WHERE recipient_phone=? AND event='group.member.invite_text' AND delivery_status='sent' LIMIT 1").get(phone));
+  const preview = { groupId, submitted: rawPhones.length, validUnique: phones.length, invalidOrBlocked: invalidPhones.length, alreadySent, candidates: candidates.length, inviteUrlHost: "chat.whatsapp.com", mutation: "individual invite messages only" };
+  if (req.body?.execute !== true) return res.json({ success: true, dryRun: true, preview, invalidPhones, candidatePhones: candidates });
+  if (String(req.body?.confirmation || "") !== "SEND_GROUP_INVITES") return res.status(400).json({ error: "Explicit confirmation SEND_GROUP_INVITES is required" });
+  const operationId = "DIRECT-INVITE-" + crypto.randomBytes(5).toString("hex").toUpperCase();
+  groupDirectInviteInFlight = true;
+  groupDirectInviteState = { status: "queued", operationId, startedAt: now(), finishedAt: null, error: null, groupId, inviteUrl, participants: candidates.map((phone) => ({ phone, status: "pending", error: null })) };
+  void runDirectGroupInviteMessages({ operationId, groupId, phones: candidates, inviteUrl });
+  res.status(202).json({ success: true, accepted: true, dryRun: false, operationId, preview });
 });
 
 app.get("/api/admin/group/send-member-invites", requireAdmin, (req, res) => {
