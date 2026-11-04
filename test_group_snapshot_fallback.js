@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('server.js', 'utf8');
+const start = source.indexOf('function snapshotFromGroupChat');
+const end = source.indexOf('async function readGroupSnapshot', start);
+assert.ok(start >= 0 && end > start);
+const block = source.slice(start, end);
+assert.match(block, /chat\.groupMetadata\?\.participants/);
+assert.match(block, /group_metadata/);
+assert.match(block, /getModelsArray/);
+assert.match(block, /participantSource/);
+console.log('group snapshot local metadata fallback guardrails: ok');

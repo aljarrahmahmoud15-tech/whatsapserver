@@ -4470,15 +4470,34 @@ async function handleIncomingGeneralMessageDeletionPolicy(message, { groupId, se
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
 function snapshotFromGroupChat(groupId, chat) {
-  if (!groupId || !chat?.isGroup || !Array.isArray(chat.participants) || !chat.participants.length) return null;
-  const participants = chat.participants.map((participant) => {
+  if (!groupId || !chat?.isGroup) return null;
+  const participantSources = [
+    { value: chat.participants, source: "chat" },
+    { value: chat.groupMetadata?.participants, source: "group_metadata" },
+    { value: chat.groupMetadata?.participants?.models, source: "group_metadata_models" },
+  ];
+  let rawParticipants = null;
+  let participantSource = "chat";
+  for (const candidate of participantSources) {
+    const value = candidate.value;
+    const serialized = value && typeof value.serialize === "function" ? value.serialize() : null;
+    const models = value && typeof value.getModelsArray === "function" ? value.getModelsArray() : null;
+    const array = Array.isArray(value) ? value : (Array.isArray(serialized) ? serialized : (Array.isArray(models) ? models : null));
+    if (Array.isArray(array) && array.length) {
+      rawParticipants = array;
+      participantSource = candidate.source;
+      break;
+    }
+  }
+  if (!rawParticipants?.length) return null;
+  const participants = rawParticipants.map((participant) => {
     const id = participant?.id;
     const serialized = id?._serialized || (id?.server && id?.user ? `${id.user}@${id.server}` : String(id || ""));
     const user = id?.user ? String(id.user) : String(serialized || "").split("@")[0].split(":")[0];
     return { id: serialized, user, isAdmin: Boolean(participant?.isAdmin || participant?.isSuperAdmin) };
   }).filter((participant) => participant.id || participant.user);
   if (!participants.length) return null;
-  return { id: groupId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants, participantSource: "chat", participantRawCount: chat.participants.length };
+  return { id: groupId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants, participantSource, participantRawCount: rawParticipants.length };
 }
 async function readGroupSnapshot(groupId) {
   const clientAtStart = client;
