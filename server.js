@@ -3374,6 +3374,7 @@ const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
   captainStatus: { key: "notification_captain_status", label: "رسائل حالة الكابتن", defaultValue: false },
   balanceAlerts: { key: "notification_balance_alerts", label: "تنبيهات الرصيد للكابتن", defaultValue: true },
   bookingCards: { key: "notification_booking_cards", label: "بطاقات تثبيت وإلغاء الحجز في القروب الرسمي", defaultValue: true },
+  cancellationCards: { key: "notification_cancellation_cards", label: "بطاقات إلغاء الحجز في القروب الرسمي", defaultValue: true },
   captainWelcome: { key: "notification_captain_welcome", label: "ترحيب الكابتن الجديد داخل القروب", defaultValue: true },
   captainAnnouncements: { key: "notification_captain_announcements", label: "إعلانات التشغيل العامة للكباتن", defaultValue: true },
   pendingBookingApproval: { key: "notification_pending_booking_approval", label: "تنبيه الحجز المعلّق للمالك", defaultValue: false },
@@ -6306,7 +6307,7 @@ function observeFinalBookingConfirmationMessage(message) {
   return { orderId: order.id, orderNo, messageId, updated: Boolean(updated.changes) };
 }
 async function sendFinalBookingCancellation(groupId, order = null) {
-  if (!notificationEnabled("bookingCards")) {
+  if (!notificationEnabled("cancellationCards")) {
     audit("notification.order.cancellation_card.suppressed", "order", order?.id || null, { deliveryStatus: "suppressed", reason: "owner_notification_setting_disabled", category: "bookingCards", financialMutation: false });
     return null;
   }
