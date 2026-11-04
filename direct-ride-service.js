@@ -35,6 +35,7 @@ function ensureDirectRideSchema(db) {
       customer_token_hash TEXT NOT NULL UNIQUE,
       customer_token_last4 TEXT NOT NULL,
       idempotency_key TEXT UNIQUE,
+      customer_account_id INTEGER,
       captain_user_id INTEGER,
       captain_name_snapshot TEXT,
       captain_phone_snapshot TEXT,
@@ -107,6 +108,9 @@ function ensureDirectRideSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_direct_ride_events_ride_created ON direct_ride_events(ride_id, created_at ASC, id ASC);
   `);
+  const columns = db.prepare("PRAGMA table_info(direct_ride_requests)").all().map((column) => column.name);
+  if (!columns.includes("customer_account_id")) db.exec("ALTER TABLE direct_ride_requests ADD COLUMN customer_account_id INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_direct_ride_requests_customer_created ON direct_ride_requests(customer_account_id, created_at DESC)");
 }
 
 function createDirectRideService({ db, now = () => new Date().toISOString(), audit = () => {}, emitEvent = () => {}, dispatchEnabled = false } = {}) {
@@ -235,12 +239,12 @@ function createDirectRideService({ db, now = () => new Date().toISOString(), aud
     const stampValue = stamp();
     const requestCodeValue = requestCode();
     const inserted = db.prepare(`INSERT INTO direct_ride_requests(
-      request_code,customer_name,phone,origin,destination,origin_lat,origin_lng,destination_lat,destination_lng,route_source,distance_km,duration_min,quoted_price_cents,status,customer_token_hash,customer_token_last4,idempotency_key,requested_at,created_at,updated_at
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'priced',?,?,?,?,?,?)`).run(
+      request_code,customer_name,phone,origin,destination,origin_lat,origin_lng,destination_lat,destination_lng,route_source,distance_km,duration_min,quoted_price_cents,status,customer_token_hash,customer_token_last4,idempotency_key,customer_account_id,requested_at,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'priced',?,?,?,?,?,?,?)`).run(
       requestCodeValue, customerName, phone, origin, destination,
       originCoordinates.lat, originCoordinates.lng, destinationCoordinates.lat, destinationCoordinates.lng,
       String(input.routeSource || "coordinate_estimate").slice(0, 40), route.distanceKm, route.durationMin, quote.fareCents,
-      tokenHash(customerToken), customerToken.slice(-4), idempotencyKey, stampValue, stampValue, stampValue,
+      tokenHash(customerToken), customerToken.slice(-4), idempotencyKey, Number.isInteger(Number(input.customerAccountId)) ? Number(input.customerAccountId) : null, stampValue, stampValue, stampValue,
     );
     const rideId = Number(inserted.lastInsertRowid);
     insertEvent({ rideId, eventType: "priced", actorRole: "rider", details: { routeSource: input.routeSource || "coordinate_estimate", distanceKm: route.distanceKm, durationMin: route.durationMin, fareCents: quote.fareCents }, idempotencyKey: `DIRECT-RIDE-${rideId}-PRICED` });

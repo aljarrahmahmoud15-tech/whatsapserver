@@ -730,6 +730,7 @@ app.post("/api/public/direct-rides", publicSpecialBookingLimiter, async (req, re
     waitingMin: req.body?.waitingMin,
     tripTime: req.body?.tripTime,
     idempotencyKey: req.get("X-Idempotency-Key") || req.body?.idempotencyKey,
+    customerAccountId: getCustomerSession(req)?.customerId || null,
   });
   if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.error });
   res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: Boolean(result.duplicate), ride: directRideService.response(result.row, { includeToken: true, token: result.token }), message: result.duplicate ? "تم العثور على طلب الرحلة السابق" : "تم تجهيز السعر؛ أكد الرحلة للبحث عن أقرب كابتن" });
@@ -793,8 +794,8 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
   const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = specialBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,duration_min,waiting_min,price_cents,price_source,notes,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, input.waitingMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO special_booking_requests(request_code,customer_name,phone,customer_account_id,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,duration_min,waiting_min,price_cents,price_source,notes,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, getCustomerSession(req)?.customerId || null, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, input.waitingMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
   if (policy.ownerNotification) {
@@ -817,8 +818,8 @@ app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res
   const status = priceCents === null ? "new" : "owner_review";
   const stamp = now();
   const requestCode = customerBookingRequestCode();
-  const result = db.transaction(() => db.prepare(`INSERT INTO customer_booking_requests(request_code,customer_name,phone,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,price_cents,price_source,status,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
+  const result = db.transaction(() => db.prepare(`INSERT INTO customer_booking_requests(request_code,customer_name,phone,customer_account_id,origin,destination,origin_coordinates_json,destination_coordinates_json,trip_time,request_type,distance_km,price_cents,price_source,status,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, getCustomerSession(req)?.customerId || null, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("customer_booking.received", "customer_booking", row.id, { requestCode, requestType: input.requestType, quoteStatus: input.quote.status, priceCents, phone: input.phone, financialMutation: false, published: false });
   if (policy.ownerNotification) {
@@ -1233,6 +1234,7 @@ CREATE TABLE IF NOT EXISTS special_booking_requests (
   request_code TEXT NOT NULL UNIQUE,
   customer_name TEXT NOT NULL,
   phone TEXT NOT NULL,
+  customer_account_id INTEGER,
   origin TEXT NOT NULL,
   destination TEXT NOT NULL,
   origin_coordinates_json TEXT,
@@ -1269,6 +1271,7 @@ CREATE TABLE IF NOT EXISTS customer_booking_requests (
   request_code TEXT NOT NULL UNIQUE,
   customer_name TEXT NOT NULL,
   phone TEXT NOT NULL,
+  customer_account_id INTEGER,
   origin TEXT NOT NULL,
   destination TEXT NOT NULL,
   origin_coordinates_json TEXT,
@@ -1563,14 +1566,18 @@ if (!existingCandidateColumns.includes("archive_state")) db.exec("ALTER TABLE or
 if (!existingCandidateColumns.includes("archived_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN archived_at TEXT");
 if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_reason TEXT");
 const existingSpecialBookingColumns = db.prepare("PRAGMA table_info(special_booking_requests)").all().map((column) => column.name);
+if (!existingSpecialBookingColumns.includes("customer_account_id")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN customer_account_id INTEGER");
 if (!existingSpecialBookingColumns.includes("distance_km")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN distance_km REAL");
 if (!existingSpecialBookingColumns.includes("duration_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN duration_min REAL");
 if (!existingSpecialBookingColumns.includes("waiting_min")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN waiting_min REAL NOT NULL DEFAULT 0");
 if (!existingSpecialBookingColumns.includes("origin_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN origin_coordinates_json TEXT");
 if (!existingSpecialBookingColumns.includes("destination_coordinates_json")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN destination_coordinates_json TEXT");
 const existingCustomerBookingColumns = db.prepare("PRAGMA table_info(customer_booking_requests)").all().map((column) => column.name);
+if (!existingCustomerBookingColumns.includes("customer_account_id")) db.exec("ALTER TABLE customer_booking_requests ADD COLUMN customer_account_id INTEGER");
 if (!existingCustomerBookingColumns.includes("origin_coordinates_json")) db.exec("ALTER TABLE customer_booking_requests ADD COLUMN origin_coordinates_json TEXT");
 if (!existingCustomerBookingColumns.includes("destination_coordinates_json")) db.exec("ALTER TABLE customer_booking_requests ADD COLUMN destination_coordinates_json TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS idx_special_booking_customer_created ON special_booking_requests(customer_account_id,created_at DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_customer_booking_customer_created ON customer_booking_requests(customer_account_id,created_at DESC)");
 const existingAcceptanceColumns = db.prepare("PRAGMA table_info(order_candidate_acceptances)").all().map((column) => column.name);
 if (!existingAcceptanceColumns.includes("acceptance_mode")) db.exec("ALTER TABLE order_candidate_acceptances ADD COLUMN acceptance_mode TEXT NOT NULL DEFAULT 'quoted' CHECK(acceptance_mode IN ('quoted','unquoted'))");
 const existingConfirmationDeliveryColumns = db.prepare("PRAGMA table_info(order_confirmation_deliveries)").all().map((column) => column.name);
@@ -10743,6 +10750,21 @@ app.post("/api/customer/pin-recovery/reset", (req, res) => {
   res.json({ success: true, message: "تم استرجاع رمز العميل بنجاح. يمكنك الدخول بالرمز الجديد." });
 });
 app.post("/api/customer/logout", (req, res) => { clearCustomerSessionCookie(res); res.json({ success: true }); });
+app.get("/api/customer/bookings", requireCustomer, (req, res) => {
+  if (!consumeRateLimit(customerAuthRate, `${clientAddress(req)}:${req.customerSession.customerId}:bookings`, 60)) return res.status(429).json({ error: "طلبات كثيرة؛ حاول لاحقًا" });
+  const limit = Math.min(50, Math.max(1, Number(req.query?.limit || 20) || 20));
+  const offset = Math.min(10000, Math.max(0, Number(req.query?.offset || 0) || 0));
+  const customerId = req.customerSession.customerId;
+  const rows = [
+    ...db.prepare("SELECT id,request_code,request_type,customer_name,origin,destination,trip_time,price_cents,status,created_at,updated_at FROM customer_booking_requests WHERE customer_account_id=? ORDER BY created_at DESC,id DESC LIMIT 1000").all(customerId).map((row) => ({ id: row.id, bookingCode: row.request_code, type: row.request_type === "order" ? "أوردر" : "راكب", origin: row.origin, destination: row.destination, tripTime: row.trip_time, priceCents: row.price_cents, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at })),
+    ...db.prepare("SELECT id,request_code,request_type,customer_name,origin,destination,trip_time,price_cents,status,created_at,updated_at FROM special_booking_requests WHERE customer_account_id=? ORDER BY created_at DESC,id DESC LIMIT 1000").all(customerId).map((row) => ({ id: row.id, bookingCode: row.request_code, type: "رحلة ذكية", origin: row.origin, destination: row.destination, tripTime: row.trip_time, priceCents: row.price_cents, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at })),
+    ...db.prepare("SELECT id,request_code,origin,destination,quoted_price_cents,final_price_cents,status,requested_at AS trip_time,created_at,updated_at FROM direct_ride_requests WHERE customer_account_id=? ORDER BY created_at DESC,id DESC LIMIT 1000").all(customerId).map((row) => ({ id: row.id, bookingCode: row.request_code, type: "رحلة مباشرة", origin: row.origin, destination: row.destination, tripTime: row.trip_time, priceCents: row.final_price_cents ?? row.quoted_price_cents, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }))
+  ].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || Number(b.id) - Number(a.id));
+  const total = rows.length;
+  const bookings = rows.slice(offset, offset + limit).map((row) => ({ ...row, price: row.priceCents === null || row.priceCents === undefined ? null : money(row.priceCents) }));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, bookings, pagination: { limit, offset, total, hasMore: offset + bookings.length < total } });
+});
 app.post("/api/captain/login", (req, res) => {
   const pin = String(req.body?.pin || "").trim();
   const rawPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "");
