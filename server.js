@@ -798,6 +798,7 @@ app.post("/api/public/special-bookings", publicSpecialBookingLimiter, (req, res)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, getCustomerSession(req)?.customerId || null, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, input.durationMin, input.waitingMin, priceCents, priceSource, input.notes, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("special_booking.received", "special_booking", row.id, { requestCode, phone: input.phone, origin: input.origin, destination: input.destination, financialMutation: false, published: false });
+  notifyCustomerBookingStatus(row, "received", "تم استلام الحجز وسيُراجع من الإدارة");
   if (policy.ownerNotification) {
     void notifyOperations({
       event: `special_booking.received.${row.id}`,
@@ -822,6 +823,7 @@ app.post("/api/public/customer-bookings", publicSpecialBookingLimiter, (req, res
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestCode, input.customerName, input.phone, getCustomerSession(req)?.customerId || null, input.origin, input.destination, input.originCoordinatesJson, input.destinationCoordinatesJson, input.tripTime, input.requestType, input.distanceKm, priceCents, priceSource, status, stamp, stamp))();
   const row = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(result.lastInsertRowid);
   audit("customer_booking.received", "customer_booking", row.id, { requestCode, requestType: input.requestType, quoteStatus: input.quote.status, priceCents, phone: input.phone, financialMutation: false, published: false });
+  notifyCustomerBookingStatus(row, "received", "تم استلام الحجز وسيُراجع من الإدارة");
   if (policy.ownerNotification) {
     void notifyOperations({
       event: `customer_booking.received.${row.id}`,
@@ -1656,7 +1658,12 @@ const directRideService = createDirectRideService({
   now,
   dispatchEnabled: DIRECT_RIDE_LIVE_DISPATCH,
   audit: (action, entityType, entityId, details, actorUserId = null) => audit(action, entityType, entityId, details, actorUserId),
-  emitEvent: (payload) => directRideNotificationHub.publish(payload),
+  emitEvent: (payload) => {
+    directRideNotificationHub.publish(payload);
+    const row = payload?.rideId ? db.prepare("SELECT customer_account_id,phone,request_code,origin,destination FROM direct_ride_requests WHERE id=? LIMIT 1").get(payload.rideId) : null;
+    const customerEvent = { priced: "received", rider_confirmed: "confirmed", assigned: "assigned", arrived: "arrived", in_trip: "started", completed: "completed", cancelled: "cancelled" }[payload?.eventType];
+    if (row?.customer_account_id && customerEvent) void sendCustomerStatusText({ phone: row.phone, event: `customer.booking.${customerEvent}`, title: "تحديث حجزك", text: `الحجز ${row.request_code}\nالحالة: ${customerEvent === "received" ? "تم استلام الحجز" : customerEvent === "confirmed" ? "تم تأكيد الحجز" : customerEvent === "assigned" ? "تم تعيين الكابتن" : customerEvent === "arrived" ? "وصل الكابتن" : customerEvent === "started" ? "بدأت الرحلة" : customerEvent === "completed" ? "اكتملت الرحلة" : "تم إلغاء الحجز"}\n${row.origin} ← ${row.destination}`, idempotencyKey: `CUSTOMER-DIRECT-RIDE-${row.id}-${customerEvent}` }).catch(() => null);
+  },
 });
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
 const phoneWithCountry = (value = "") => {
@@ -2605,6 +2612,43 @@ async function sendCaptainStatusText({ phone, event, title, text, idempotencyKey
     attemptedRecipientTypes,
   });
   return { status: deliveryStatus, notificationId, messageId };
+}
+const customerStatusNotificationInFlight = new Set();
+async function sendCustomerStatusText({ phone, event, title, text, idempotencyKey, sourceMessageId = null }) {
+  const recipientPhone = phoneWithCountry(phone);
+  const message = String(text || "").trim();
+  const key = String(idempotencyKey || "").trim();
+  if (!isValidJordanPhone(recipientPhone) || !event || !title || !message || message.length > CAPTAIN_STATUS_NOTICE_MAX_LENGTH || !key) return { status: "invalid" };
+  if (customerStatusNotificationInFlight.has(key)) return { status: "pending", duplicate: true };
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(key);
+  if (existing && ["sent", "delivered", "uncertain", "pending"].includes(existing.delivery_status)) return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null };
+  let row = existing;
+  if (row) db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='customer',event=?,title=?,message=?,delivery_status='pending',source_message_id=? WHERE id=?").run(recipientPhone, event, title, message, sourceMessageId, row.id);
+  else row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'customer',?,?,?,'pending',?,?,?)").run(recipientPhone, event, title, message, sourceMessageId, key, now());
+  const notificationId = row.lastInsertRowid || row.id;
+  customerStatusNotificationInFlight.add(key);
+  let deliveryStatus = "failed"; let messageId = null; let deliveryError = null;
+  try {
+    if (client && isReady) {
+      const resolved = await resolveWhatsAppRecipientId(recipientPhone);
+      const candidates = [...new Set([resolved, `${recipientPhone}@c.us`].map((value) => String(value || "").trim()).filter((value) => /@(c\.us|lid)$/.test(value)))];
+      for (const recipient of candidates) {
+        const result = await sendWhatsAppAtMostOnce(recipient, message);
+        deliveryError = result.error || null;
+        if (result.status === "sent" || result.status === "uncertain") { deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent"; messageId = result.message?.id?._serialized || null; break; }
+      }
+      if (!candidates.length) deliveryError = "recipient_unresolved";
+    } else deliveryError = "whatsapp_not_ready";
+  } catch (error) { deliveryError = String(error?.message || error).slice(0, 240); }
+  customerStatusNotificationInFlight.delete(key);
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit(`notification.${event}`, "customer", recipientPhone, { deliveryStatus, idempotencyKey: key, sourceMessageId: sourceMessageId || null, deliveryError });
+  return { status: deliveryStatus, notificationId, messageId };
+}
+function notifyCustomerBookingStatus(row, eventName, statusText) {
+  if (!row?.customer_account_id || !row.phone || !row.request_code) return;
+  const label = row.request_type === "order" ? "الأوردر" : row.request_type === "passenger" ? "حجز الراكب" : "الرحلة الذكية";
+  void sendCustomerStatusText({ phone: row.phone, event: `customer.booking.${eventName}`, title: "تحديث حجزك", text: `الحجز ${row.request_code}\n${label}\nالحالة: ${statusText}\n${row.origin} ← ${row.destination}`, idempotencyKey: `CUSTOMER-BOOKING-${row.request_code}-${eventName}` }).catch(() => null);
 }
 async function retryCaptainStatusNotifications() {
   if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") };
@@ -11520,6 +11564,7 @@ app.post("/api/admin/special-bookings/:id/approve", requireOwnerAdmin, adminMuta
   db.prepare("UPDATE special_booking_requests SET status=?,owner_decision='approved',owner_note=?,updated_at=? WHERE id=?").run(status, ownerNote, stamp, id);
   const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
   audit("special_booking.owner_approved", "special_booking", id, { requestCode: next.request_code, status, requiresCustomerConfirmation: needsCustomer, financialMutation: false });
+  notifyCustomerBookingStatus(next, "approved", status === "awaiting_customer_confirmation" ? "بانتظار تأكيد السعر" : "تم اعتماد الحجز");
   res.json({ success: true, request: specialBookingRequestResponse(next, req, { includePrivate: true, confirmationToken }), confirmationUrl: specialBookingConfirmationUrl(req, next, confirmationToken), message: status === "awaiting_customer_confirmation" ? "تم اعتماد المالك مبدئيًا؛ أرسل رابط تأكيد السعر للعميل قبل النشر." : "تم اعتماد طلب الرحلة الذكية وهو جاهز للنشر اليدوي." });
 });
 app.post("/api/admin/special-bookings/:id/reject", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
@@ -11533,6 +11578,7 @@ app.post("/api/admin/special-bookings/:id/reject", requireOwnerAdmin, adminMutat
   db.prepare("UPDATE special_booking_requests SET status='rejected',owner_decision='rejected',owner_note=?,updated_at=? WHERE id=?").run(reason, stamp, id);
   const next = db.prepare("SELECT * FROM special_booking_requests WHERE id=?").get(id);
   audit("special_booking.owner_rejected", "special_booking", id, { requestCode: next.request_code, reason, financialMutation: false });
+  notifyCustomerBookingStatus(next, "rejected", "تم رفض الحجز");
   res.json({ success: true, request: specialBookingRequestResponse(next, req), message: "تم رفض طلب الرحلة الذكية وتسجيل السبب." });
 });
 app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
@@ -11575,6 +11621,7 @@ app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMuta
     })();
     if (result.state === "missing") return res.status(404).json({ error: "طلب الرحلة الذكية غير موجود" });
     if (result.state === "stale") return res.status(409).json({ error: "تغيرت حالة الطلب قبل اكتمال النشر", state: result.row?.status });
+    if (result.state === "published") notifyCustomerBookingStatus(result.row, "published", "تم نشر الحجز للتنفيذ");
     return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: specialBookingRequestResponse(result.row, req), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر طلب الرحلة الذكية في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
   } catch (error) {
     audit("special_booking.publish_failed", "special_booking", id, { error: String(error?.message || error).slice(0, 240), financialMutation: false });
@@ -11637,6 +11684,7 @@ app.post("/api/admin/customer-bookings/:id/approve", requireOwnerAdmin, adminMut
   db.prepare("UPDATE customer_booking_requests SET status='owner_approved',owner_decision='approved',owner_note=?,updated_at=? WHERE id=?").run(ownerNote, stamp, id);
   const next = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id);
   audit("customer_booking.owner_approved", "customer_booking", id, { requestCode: next.request_code, requestType: next.request_type, financialMutation: false });
+  notifyCustomerBookingStatus(next, "approved", "تم اعتماد الحجز");
   res.json({ success: true, request: customerBookingRequestResponse(next), message: "تم اعتماد الطلب وهو جاهز للنشر اليدوي من V27." });
 });
 app.post("/api/admin/customer-bookings/:id/reject", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
@@ -11650,6 +11698,7 @@ app.post("/api/admin/customer-bookings/:id/reject", requireOwnerAdmin, adminMuta
   db.prepare("UPDATE customer_booking_requests SET status='rejected',owner_decision='rejected',owner_note=?,updated_at=? WHERE id=?").run(reason || "رفض الطلب بعد المراجعة", stamp, id);
   const next = db.prepare("SELECT * FROM customer_booking_requests WHERE id=?").get(id);
   audit("customer_booking.owner_rejected", "customer_booking", id, { requestCode: next.request_code, requestType: next.request_type, reason, financialMutation: false });
+  notifyCustomerBookingStatus(next, "rejected", "تم رفض الحجز");
   res.json({ success: true, request: customerBookingRequestResponse(next), message: "تم رفض الطلب وتسجيل السبب دون حركة مالية." });
 });
 app.post("/api/admin/customer-bookings/:id/publish", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
@@ -11690,6 +11739,7 @@ app.post("/api/admin/customer-bookings/:id/publish", requireOwnerAdmin, adminMut
     })();
     if (result.state === "missing") return res.status(404).json({ error: "طلب الراكب أو الأوردر غير موجود" });
     if (result.state === "stale") return res.status(409).json({ error: "تغيرت حالة الطلب قبل اكتمال النشر", state: result.row?.status });
+    if (result.state === "published") notifyCustomerBookingStatus(result.row, "published", "تم نشر الحجز للتنفيذ");
     return res.status(result.state === "already_published" ? 200 : 201).json({ success: true, alreadyPublished: result.state === "already_published", request: customerBookingRequestResponse(result.row), candidateId: result.candidateId || result.row?.order_candidate_id || null, message: result.state === "already_published" ? "الطلب منشور مسبقًا ولم يُكرر." : "تم نشر الطلب في قروب التشغيل وإنشاء candidate لمسار الكابتن." });
   } catch (error) {
     audit("customer_booking.publish_failed", "customer_booking", id, { error: String(error?.message || error).slice(0, 240), financialMutation: false });

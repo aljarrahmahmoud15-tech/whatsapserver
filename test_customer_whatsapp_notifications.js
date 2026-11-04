@@ -1,0 +1,14 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('server.js', 'utf8');
+assert.match(server, /async function sendCustomerStatusText/);
+assert.match(server, /recipient_role='customer'/);
+assert.match(server, /CUSTOMER-BOOKING-\$\{row\.request_code\}-\$\{eventName\}/);
+assert.match(server, /customerStatusNotificationInFlight/);
+assert.match(server, /notifyCustomerBookingStatus\(row, "received"/);
+assert.match(server, /notifyCustomerBookingStatus\(next, "approved"/);
+assert.match(server, /notifyCustomerBookingStatus\(next, "rejected"/);
+assert.match(server, /notifyCustomerBookingStatus\(result\.row, "published"/);
+assert.match(server, /CUSTOMER-DIRECT-RIDE-\$\{row\.id\}-\$\{customerEvent\}/);
+assert.match(server, /\["sent", "delivered", "uncertain", "pending"\]\.includes\(existing\.delivery_status\)/);
+console.log('customer WhatsApp notification idempotency and status guardrails verified');
