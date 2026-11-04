@@ -10622,6 +10622,25 @@ app.post("/api/captain/login", (req, res) => {
   setCaptainSessionCookie(res, token);
   res.json({ success: true, authMethod: "pin", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
 });
+app.post("/api/captain/change-pin", requireCaptain, adminMutationLimiter, (req, res) => {
+  const currentPin = String(req.body?.currentPin || "").trim();
+  const newPin = String(req.body?.newPin || "").trim();
+  const confirmPin = String(req.body?.confirmPin || "").trim();
+  if (!validCaptainPin(currentPin) || !validCaptainPin(newPin) || newPin !== confirmPin) {
+    return res.status(400).json({ error: "أدخل الرمز الحالي ورمزًا جديدًا من 5 أرقام متطابقًا" });
+  }
+  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
+  const captain = db.prepare("SELECT id,phone,name,active,account_status,captain_pin_hash,captain_auth_method FROM users WHERE id=? AND role='captain' AND is_bot=0 LIMIT 1").get(req.captainSession.userId);
+  if (!captain || !captain.active || captain.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
+  if (normalizeCaptainAuthMethod(captain.captain_auth_method) !== "pin" || !captain.captain_pin_hash || !bcrypt.compareSync(currentPin, captain.captain_pin_hash)) {
+    return res.status(401).json({ error: "الرمز الحالي غير صحيح" });
+  }
+  if (bcrypt.compareSync(newPin, captain.captain_pin_hash)) return res.status(400).json({ error: "استخدم رمزًا جديدًا مختلفًا عن الحالي" });
+  const stamp = now();
+  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync(newPin, 10), stamp, captain.id);
+  audit("captain.pin.self_updated", "user", captain.id, { phone: captain.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
+  res.json({ success: true, message: "تم تغيير رمز الكابتن بنجاح دون تغيير الرصيد أو الطلبات." });
+});
 app.post("/api/captain/login-link/exchange", (req, res) => {
   const token = String(req.body?.token || "").trim();
   if (token.length < 32 || token.length > 160) return res.status(400).json({ error: "رابط الدخول غير صالح" });
