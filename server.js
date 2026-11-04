@@ -2720,7 +2720,7 @@ async function handleCustomerRatingReply(msg, phone) {
   if (!changed.changes) return true;
   db.prepare("UPDATE rating_message_events SET ride_rating_id=?,event_type='rating_submitted' WHERE message_id=?").run(pending.id, messageId);
   audit("customer.ride_rating.submitted", "ride_rating", pending.id, { rideId: pending.ride_id, rating: Number(normalized), messageId, financialMutation: false });
-  void sendCustomerStatusText({ phone, event: "customer.ride_rating.submitted", title: "تأكيد التقييم", text: `شكرًا لك. تم تسجيل تقييمك للرحلة، وكانت الدرجة ${normalized} من 5.`, idempotencyKey: `CUSTOMER-RATING-${pending.id}-SUBMITTED`, sourceMessageId: messageId }).catch(() => null);
+  void sendCustomerStatusText({ phone, event: "customer.ride_rating.submitted", title: "تأكيد التقييم", text: `شكرًا لك. تم تسجيل تقييمك للرحلة، وكانت الدرجة ${normalized} من 5.\nلرحلتك القادمة احجز من هنا:\n${PUBLIC_APP_URL}/book.html`, idempotencyKey: `CUSTOMER-RATING-${pending.id}-SUBMITTED`, sourceMessageId: messageId }).catch(() => null);
   return true;
 }
 async function retryCaptainStatusNotifications() {

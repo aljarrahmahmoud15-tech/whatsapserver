@@ -9,6 +9,8 @@ assert.match(server, /status='pending' AND expires_at>\?/);
 assert.match(server, /status='submitted'/);
 assert.match(server, /UPDATE rating_message_events SET ride_rating_id=.*rating_submitted/);
 assert.match(server, /CUSTOMER-RATING-\$\{pending\.id\}-SUBMITTED/);
+assert.match(server, /PUBLIC_APP_URL\}\/book\.html/);
+assert.match(server, /شكرًا لك\. تم تسجيل تقييمك للرحلة/);
 assert.match(server, /function ensureRideRatingRequest/);
 assert.match(server, /CUSTOMER-RATING-\$\{row\.id\}-REQUESTED/);
 assert.match(server, /handleCustomerRatingReply\(msg, phone\)/);
