@@ -14,5 +14,10 @@ assert.match(server, /شكرًا لك\. تم تسجيل تقييمك للرحل�
 assert.match(server, /function ensureRideRatingRequest/);
 assert.match(server, /CUSTOMER-RATING-\$\{row\.id\}-REQUESTED/);
 assert.match(server, /handleCustomerRatingReply\(msg, phone\)/);
+assert.match(server, /CUSTOMER_RATING_REMINDER_AFTER_MS = 60 \* 60 \* 1000/);
+assert.match(server, /reminder_sent_at IS NULL/);
+assert.match(server, /CUSTOMER-RATING-\$\{row\.id\}-REMINDER-1H/);
+assert.match(server, /function startCustomerRatingReminderScheduler/);
+assert.match(server, /startCustomerRatingReminderScheduler\(\)/);
 assert.doesNotMatch(server, /handleCustomerRatingReply\(msg, phone\)[\s\S]{0,300}wallet/);
 console.log('ride rating WhatsApp reply handler guardrails verified');

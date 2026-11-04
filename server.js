@@ -159,6 +159,8 @@ const CAPTAIN_DAILY_CHARGE_CENTS = 10;
 const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.TOPUP_CARD_ARCHIVE_INTERVAL_MS || 5 * 60 * 1000));
+const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
+const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
 // Daily 0.10 JOD captain debit is disabled by owner policy for all accounts.
 // Keep this hard-off until a future code change explicitly re-enables the policy.
@@ -1012,6 +1014,7 @@ CREATE TABLE IF NOT EXISTS ride_ratings (
   submitted_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  reminder_sent_at TEXT,
   UNIQUE(ride_id, customer_phone)
 );
 CREATE INDEX IF NOT EXISTS idx_ride_ratings_customer ON ride_ratings(customer_account_id, created_at DESC);
@@ -1639,6 +1642,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
 const existingCaptainAuthChallengeColumns = db.prepare("PRAGMA table_info(captain_auth_challenges)").all().map((column) => column.name);
 if (!existingCaptainAuthChallengeColumns.includes("purpose")) db.exec("ALTER TABLE captain_auth_challenges ADD COLUMN purpose TEXT NOT NULL DEFAULT 'login'");
+const existingRideRatingColumns = db.prepare("PRAGMA table_info(ride_ratings)").all().map((column) => column.name);
+if (!existingRideRatingColumns.includes("reminder_sent_at")) db.exec("ALTER TABLE ride_ratings ADD COLUMN reminder_sent_at TEXT");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
 if (!existingCardColumns.includes("assigned_captain_id")) db.exec("ALTER TABLE topup_cards ADD COLUMN assigned_captain_id INTEGER");
 if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN sent_at TEXT");
@@ -5583,6 +5588,39 @@ function startTopupCardArchiveScheduler() {
   const timer = setInterval(() => {
     try { archiveExpiredTopupCards(); } catch (error) { console.error("[TopupArchive] sweep failed:", error.message); }
   }, TOPUP_CARD_ARCHIVE_INTERVAL_MS);
+  timer.unref?.();
+}
+const customerRatingReminderInFlight = new Set();
+async function sendPendingCustomerRatingReminders() {
+  if (!client || !isReady) return { attempted: 0, reason: "whatsapp_not_ready" };
+  const cutoff = new Date(Date.now() - CUSTOMER_RATING_REMINDER_AFTER_MS).toISOString();
+  const stamp = now();
+  const rows = db.prepare("SELECT * FROM ride_ratings WHERE status='pending' AND reminder_sent_at IS NULL AND created_at<=? AND expires_at>? ORDER BY id ASC LIMIT 50").all(cutoff, stamp);
+  let attempted = 0;
+  for (const row of rows) {
+    const key = `CUSTOMER-RATING-${row.id}-REMINDER-1H`;
+    if (customerRatingReminderInFlight.has(key)) continue;
+    customerRatingReminderInFlight.add(key);
+    attempted += 1;
+    try {
+      const result = await sendCustomerStatusText({ phone: row.customer_phone, event: "customer.ride_rating.reminder", title: "تذكير بتقييم الرحلة", text: `تذكير: لم نستلم تقييمك للرحلة ${row.ride_id} بعد.\nأرسل رقمًا من 1 إلى 5 لتقييمها.\nلرحلتك القادمة احجز من هنا:\n${PUBLIC_APP_URL}/book.html`, idempotencyKey: key });
+      if (["sent", "uncertain"].includes(result.status)) {
+        db.prepare("UPDATE ride_ratings SET reminder_sent_at=?,updated_at=? WHERE id=? AND status='pending' AND reminder_sent_at IS NULL").run(now(), now(), row.id);
+        audit("customer.ride_rating.reminder_sent", "ride_rating", row.id, { rideId: row.ride_id, deliveryStatus: result.status, financialMutation: false });
+      }
+    } catch (error) {
+      console.error("[CustomerRating] reminder failed:", error.message);
+    } finally {
+      customerRatingReminderInFlight.delete(key);
+    }
+  }
+  return { attempted };
+}
+function startCustomerRatingReminderScheduler() {
+  void sendPendingCustomerRatingReminders().catch((error) => console.error("[CustomerRating] initial reminder sweep failed:", error.message));
+  const timer = setInterval(() => {
+    void sendPendingCustomerRatingReminders().catch((error) => console.error("[CustomerRating] reminder sweep failed:", error.message));
+  }, CUSTOMER_RATING_REMINDER_INTERVAL_MS);
   timer.unref?.();
 }
 function startCaptainSubscriptionScheduler() {
@@ -17409,6 +17447,7 @@ app.listen(PORT, () => {
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
+  startCustomerRatingReminderScheduler();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
   startCaptainStatusNotificationRetryScheduler();
