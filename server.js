@@ -13072,6 +13072,44 @@ app.post("/api/admin/group/register-members", requireAdmin, async (req, res) => 
   void notifyOperations({ event: "group.members.registered_as_captains", title: "تأكيد تسجيل أعضاء القروب", lines: [`إجمالي الأعضاء: ${result.totalMembers || 0}`, `الحسابات المسجلة: ${(result.results || []).filter((item) => item.status === "registered").length}`, `إرسال بطاقات الدخول: ${sendLinks ? "مفعّل" : "متوقف"}`], ownersOnly: true });
   res.json({ success: true, ...result, sendLinks });
 });
+app.post("/api/admin/captains/import-system-only", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const expectedRows = Number(req.body?.expectedRows || 0);
+  const confirmation = String(req.body?.confirmation || "");
+  if (confirmation !== "IMPORT_CAPTAINS_SYSTEM_ONLY_V1" || !rows.length || rows.length > 1000 || expectedRows !== rows.length) return res.status(400).json({ error: "تأكيد الاستيراد وعدد السجلات مطلوبان" });
+  const summary = { submitted: rows.length, created: 0, existingCaptain: 0, existingUpdated: 0, skippedProtected: 0, skippedRoleConflict: 0, skippedInvalid: 0, walletMutation: false, whatsappMutation: false, orderMutation: false };
+  const results = [];
+  try {
+    db.transaction(() => {
+      const stamp = now();
+      for (const raw of rows) {
+        const phone = phoneWithCountry(String(raw?.phone || "").trim());
+        const importedName = String(raw?.name || "").trim().slice(0, 100);
+        if (!isValidJordanPhone(phone) || isBlockedPhone(phone) || !importedName) { summary.skippedInvalid += 1; continue; }
+        const existing = db.prepare("SELECT id,role,is_bot,account_status,name FROM users WHERE phone=? LIMIT 1").get(phone);
+        if (existing && (existing.is_bot === 1 || existing.role === "company" || isProtectedOwnerIdentity(phone))) { summary.skippedProtected += 1; continue; }
+        if (existing && existing.role !== "captain") { summary.skippedRoleConflict += 1; continue; }
+        if (existing) {
+          summary.existingCaptain += 1;
+          if (!existing.name || existing.name === phone || existing.name.startsWith("كابتن ")) {
+            db.prepare("UPDATE users SET name=?,registration_name=?,updated_at=? WHERE id=? AND role='captain'").run(importedName, importedName, stamp, existing.id);
+            summary.existingUpdated += 1;
+          }
+          results.push({ phone: displayPhone(phone), status: "existing_captain", id: existing.id });
+          continue;
+        }
+        const inserted = db.prepare("INSERT INTO users(phone,name,registration_name,role,wallet_cents,active,is_bot,account_status,created_at,updated_at) VALUES(?,?,?,'captain',0,1,0,'active',?,?)").run(phone, importedName, importedName, stamp, stamp);
+        summary.created += 1;
+        results.push({ phone: displayPhone(phone), status: "created", id: inserted.lastInsertRowid });
+      }
+      audit("captains.imported_system_only", "system", "captain_file", { submitted: summary.submitted, created: summary.created, existingCaptain: summary.existingCaptain, existingUpdated: summary.existingUpdated, skippedProtected: summary.skippedProtected, skippedRoleConflict: summary.skippedRoleConflict, skippedInvalid: summary.skippedInvalid, walletMutation: false, whatsappMutation: false, orderMutation: false });
+    })();
+    return res.status(201).json({ success: true, summary, results, message: "تم استيراد سجلات الكباتن إلى النظام فقط دون واتساب أو تعديل الأرصدة" });
+  } catch (error) {
+    return res.status(500).json({ error: "تعذر استيراد ملف الكباتن", detail: String(error?.message || error).slice(0, 180), mutation: "rolled_back" });
+  }
+});
+
 app.post("/api/admin/captains", requireAdminOrDashboardApi, adminMutationLimiter, (req, res) => {
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();

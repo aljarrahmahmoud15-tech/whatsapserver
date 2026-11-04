@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('server.js', 'utf8');
+assert.match(source, /app\.post\("\/api\/admin\/captains\/import-system-only", requireOwnerAdmin/);
+assert.match(source, /IMPORT_CAPTAINS_SYSTEM_ONLY_V1/);
+const start = source.indexOf('app.post("/api/admin/captains/import-system-only"');
+const end = source.indexOf('app.post("/api/admin/captains", requireAdminOrDashboardApi', start);
+assert.ok(start >= 0 && end > start);
+const block = source.slice(start, end);
+assert.match(block, /walletMutation: false/);
+assert.match(block, /whatsappMutation: false/);
+assert.match(block, /orderMutation: false/);
+assert.doesNotMatch(block, /addCaptainToConfiguredGroup|sendCaptainAppLink|sendWhatsApp|addParticipants/);
+assert.match(block, /role='captain'/);
+console.log('system-only captain import guardrails: ok');
