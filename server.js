@@ -305,6 +305,7 @@ const redeemRate = new Map();
 const adminActionRate = new Map();
 const whatsappAuthRate = new Map();
 const captainPinRecoveryRate = new Map();
+const customerAuthRate = new Map();
 const nexoraOtpRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
@@ -970,6 +971,29 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS customer_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  pin_hash TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS customer_auth_challenges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_account_id INTEGER NOT NULL,
+  phone TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK(purpose IN ('pin_recovery')),
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  verified_at TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(customer_account_id) REFERENCES customer_accounts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_customer_auth_challenges_phone ON customer_auth_challenges(phone, created_at);
 CREATE TABLE IF NOT EXISTS staff_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
@@ -1961,6 +1985,9 @@ function findPersistedWhatsappPhone(lidValue) {
 }
 function captainAuthCodeHash(phone, code) {
   return crypto.createHmac("sha256", CAPTAIN_SESSION_SECRET).update(`${phone}:${String(code)}`).digest("hex");
+}
+function customerAuthCodeHash(phone, code) {
+  return crypto.createHmac("sha256", CAPTAIN_SESSION_SECRET).update(`customer:${phone}:${String(code)}`).digest("hex");
 }
 function createCaptainWhatsappCode() {
   return String(crypto.randomInt(100000, 1000000));
@@ -7563,7 +7590,7 @@ function pruneCompletedRunMap(store, atMs = Date.now()) {
 let runtimeMemoryCleanupTimer = null;
 function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneAdminSendState(atMs);
-  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, captainPinRecoveryRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, captainPinRecoveryRate, customerAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
@@ -10222,6 +10249,29 @@ function requireCaptain(req, res, next) {
   req.captainSession = session;
   next();
 }
+function validCustomerPin(value) { return /^\d{5}$/.test(String(value || "")); }
+function setCustomerSessionCookie(res, token) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `aljarah_customer_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
+}
+function clearCustomerSessionCookie(res) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `aljarah_customer_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+}
+function getCustomerSession(req) {
+  const token = parseCookies(req.headers.cookie || "").aljarah_customer_session;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, CAPTAIN_SESSION_SECRET);
+    return payload && payload.role === "customer" ? payload : null;
+  } catch { return null; }
+}
+function requireCustomer(req, res, next) {
+  const session = getCustomerSession(req);
+  if (!session) return res.status(401).json({ error: "تسجيل دخول العميل مطلوب" });
+  req.customerSession = session;
+  next();
+}
 function validAdminPassword(value) {
   const password = String(value || "");
   if (ADMIN_PASSWORD && constantTimeEquals(password, ADMIN_PASSWORD)) return true;
@@ -10603,6 +10653,96 @@ app.post("/api/admin/captains/:phone/private-media-test", requireAdmin, async (r
   }
   res.json({ success: true, status: deliveryStatus, messageId, operationId, mutation: "none", walletChanged: false, message: "تم إرسال صورة الاختبار الخاصة دون تغيير حالة الحساب أو الرصيد" });
 });
+app.post("/api/customer/register", async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const name = String(req.body?.name || "").trim();
+  const pin = String(req.body?.pin || "").trim();
+  const confirmPin = String(req.body?.confirmPin || "").trim();
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone) || name.length < 2 || name.length > 80 || !validCustomerPin(pin) || pin !== confirmPin) return res.status(400).json({ error: "أدخل اسمًا ورقمًا أردنيًا ورمز دخول من 5 أرقام متطابقًا" });
+  if (pin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
+  if (!consumeRateLimit(customerAuthRate, `${clientAddress(req)}:${phone}:register`, 5)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  const existing = db.prepare("SELECT id FROM customer_accounts WHERE phone=? LIMIT 1").get(phone);
+  if (existing) return res.status(409).json({ error: "يوجد حساب عميل بهذا الرقم؛ استخدم تسجيل الدخول أو استرجاع الرمز" });
+  const stamp = now();
+  const created = db.prepare("INSERT INTO customer_accounts(phone,name,pin_hash,active,created_at,updated_at) VALUES(?,?,?,1,?,?)").run(phone, name, bcrypt.hashSync(pin, 10), stamp, stamp);
+  const token = jwt.sign({ role: "customer", customerId: created.lastInsertRowid, phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
+  setCustomerSessionCookie(res, token);
+  audit("customer.account.created", "customer_account", created.lastInsertRowid, { phone, financialMutation: false, walletMutation: false });
+  res.status(201).json({ success: true, customer: { id: created.lastInsertRowid, phone, name } });
+});
+app.post("/api/customer/login", (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const pin = String(req.body?.pin || "").trim();
+  if (!isValidJordanPhone(phone) || !validCustomerPin(pin)) return res.status(400).json({ error: "رقم الهاتف ورمز الدخول من 5 أرقام مطلوبان" });
+  if (!consumeRateLimit(customerAuthRate, `${clientAddress(req)}:${phone}:login`, 10)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  const customer = db.prepare("SELECT id,phone,name,pin_hash,active FROM customer_accounts WHERE phone=? LIMIT 1").get(phone);
+  if (!customer || !customer.active || !bcrypt.compareSync(pin, customer.pin_hash)) return res.status(401).json({ error: "رقم الهاتف أو رمز الدخول غير صحيح" });
+  const stamp = now();
+  db.prepare("UPDATE customer_accounts SET last_login_at=?,updated_at=? WHERE id=?").run(stamp, stamp, customer.id);
+  setCustomerSessionCookie(res, jwt.sign({ role: "customer", customerId: customer.id, phone: customer.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" }));
+  res.json({ success: true, customer: { id: customer.id, phone: customer.phone, name: customer.name } });
+});
+app.get("/api/customer/account", requireCustomer, (req, res) => {
+  const customer = db.prepare("SELECT id,phone,name,active,created_at,last_login_at FROM customer_accounts WHERE id=? LIMIT 1").get(req.customerSession.customerId);
+  if (!customer || !customer.active) return res.status(403).json({ error: "حساب العميل غير مفعل" });
+  res.json({ success: true, customer });
+});
+app.post("/api/customer/change-pin", requireCustomer, (req, res) => {
+  const currentPin = String(req.body?.currentPin || "").trim();
+  const newPin = String(req.body?.newPin || "").trim();
+  const confirmPin = String(req.body?.confirmPin || "").trim();
+  if (!validCustomerPin(currentPin) || !validCustomerPin(newPin) || newPin !== confirmPin) return res.status(400).json({ error: "أدخل الرمز الحالي ورمزًا جديدًا من 5 أرقام متطابقًا" });
+  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
+  const customer = db.prepare("SELECT id,phone,active,pin_hash FROM customer_accounts WHERE id=? LIMIT 1").get(req.customerSession.customerId);
+  if (!customer || !customer.active) return res.status(403).json({ error: "حساب العميل غير مفعل" });
+  if (!bcrypt.compareSync(currentPin, customer.pin_hash)) return res.status(401).json({ error: "الرمز الحالي غير صحيح" });
+  if (bcrypt.compareSync(newPin, customer.pin_hash)) return res.status(400).json({ error: "استخدم رمزًا جديدًا مختلفًا عن الحالي" });
+  db.prepare("UPDATE customer_accounts SET pin_hash=?,updated_at=? WHERE id=? AND active=1").run(bcrypt.hashSync(newPin, 10), now(), customer.id);
+  audit("customer.pin.self_updated", "customer_account", customer.id, { phone: customer.phone, financialMutation: false, walletMutation: false });
+  res.json({ success: true, message: "تم تغيير رمز العميل بنجاح." });
+});
+app.post("/api/customer/pin-recovery/request-code", async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (!consumeRateLimit(customerAuthRate, `${clientAddress(req)}:${phone}:recovery`, 3)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const customer = db.prepare("SELECT id,phone,name,active FROM customer_accounts WHERE phone=? LIMIT 1").get(phone);
+  if (!customer || !customer.active) return res.status(404).json({ error: "لا يوجد حساب عميل مفعل بهذا الرقم" });
+  const code = createCaptainWhatsappCode();
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  db.transaction(() => {
+    db.prepare("DELETE FROM customer_auth_challenges WHERE customer_account_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(customer.id);
+    db.prepare("INSERT INTO customer_auth_challenges(customer_account_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(customer.id, customer.phone, "pin_recovery", customerAuthCodeHash(customer.phone, code), 0, expiresAt, stamp);
+  })();
+  const sent = await sendBotText(`${customer.phone}@c.us`, `رمز استرجاع حساب العميل في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  if (!sent) {
+    db.prepare("DELETE FROM customer_auth_challenges WHERE customer_account_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(customer.id);
+    return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
+  }
+  audit("customer.pin_recovery_code.sent", "customer_account", customer.id, { phone: customer.phone, expiresAt });
+  res.json({ success: true, expiresAt, message: "تم إرسال رمز الاسترجاع إلى WhatsApp المسجل" });
+});
+app.post("/api/customer/pin-recovery/reset", (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const code = String(req.body?.code || "").trim();
+  const newPin = String(req.body?.newPin || "").trim();
+  const confirmPin = String(req.body?.confirmPin || "").trim();
+  if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code) || !validCustomerPin(newPin) || newPin !== confirmPin) return res.status(400).json({ error: "أدخل رقم الهاتف ورمز WhatsApp ورمزًا جديدًا من 5 أرقام متطابقًا" });
+  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
+  if (!consumeRateLimit(customerAuthRate, `${clientAddress(req)}:${phone}:verify`, 8)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  const customer = db.prepare("SELECT id,phone,active FROM customer_accounts WHERE phone=? LIMIT 1").get(phone);
+  if (!customer || !customer.active) return res.status(401).json({ error: "تعذر التحقق من حساب العميل" });
+  const challenge = db.prepare("SELECT * FROM customer_auth_challenges WHERE customer_account_id=? AND purpose='pin_recovery' AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(customer.id);
+  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز الاسترجاع؛ اطلب رمزًا جديدًا" });
+  db.prepare("UPDATE customer_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
+  if (!constantTimeEquals(challenge.code_hash, customerAuthCodeHash(customer.phone, code))) return res.status(401).json({ error: "رمز الاسترجاع غير صحيح" });
+  const stamp = now();
+  db.prepare("UPDATE customer_accounts SET pin_hash=?,updated_at=? WHERE id=? AND active=1").run(bcrypt.hashSync(newPin, 10), stamp, customer.id);
+  db.prepare("UPDATE customer_auth_challenges SET verified_at=? WHERE id=?").run(stamp, challenge.id);
+  audit("customer.pin_recovered", "customer_account", customer.id, { phone: customer.phone, financialMutation: false, walletMutation: false });
+  res.json({ success: true, message: "تم استرجاع رمز العميل بنجاح. يمكنك الدخول بالرمز الجديد." });
+});
+app.post("/api/customer/logout", (req, res) => { clearCustomerSessionCookie(res); res.json({ success: true }); });
 app.post("/api/captain/login", (req, res) => {
   const pin = String(req.body?.pin || "").trim();
   const rawPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "");

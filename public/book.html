@@ -183,6 +183,14 @@
     .proof-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px var(--mint); }
 
     .booking-card { margin-bottom: 18px; padding: clamp(19px, 3vw, 28px); }
+    .customer-account-panel { margin-bottom: 18px; padding: 18px; border: 1px solid rgba(72, 223, 176, .3); border-radius: var(--radius-lg); background: linear-gradient(145deg, rgba(16, 34, 57, .96), rgba(7, 21, 34, .96)); }
+    .customer-account-panel h2 { margin: 0 0 4px; font-size: 18px; }
+    .customer-account-panel .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .customer-account-panel label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 800; }
+    .customer-account-panel input { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(5, 17, 29, .8); color: var(--text); }
+    .customer-account-panel .form-actions { margin-top: 12px; }
+    .customer-account-panel .form-status { margin-top: 10px; }
+    .customer-account-panel #customer-account-logged { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; color: var(--text); font-size: 11px; }
     .booking-card[hidden] { display: none; }
     .field input[readonly] { border-color: rgba(247, 201, 111, .48); background: rgba(74, 55, 23, .2); color: #ffe5a3; cursor: default; }
     .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
@@ -460,6 +468,14 @@
       </div>
     </header>
     <p class="install-note" id="install-note" role="status" aria-live="polite" hidden></p>
+    <section class="customer-account-panel" id="customer-account-panel" aria-labelledby="customer-account-title">
+      <div class="panel-head"><div><h2 id="customer-account-title">حساب العميل</h2><p id="customer-account-subtitle">أنشئ حسابًا لحماية بياناتك وتسهيل متابعة طلباتك.</p></div><span class="badge" id="customer-account-state">غير مسجل</span></div>
+      <div class="form-grid" id="customer-auth-fields"><label>الاسم<input id="customer-account-name" type="text" autocomplete="name" placeholder="اسمك" maxlength="80"></label><label>رقم الهاتف<input id="customer-account-phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX"></label><label>رمز الدخول من 5 أرقام<input id="customer-account-pin" type="password" inputmode="numeric" maxlength="5" autocomplete="current-password"></label><label id="customer-account-confirm-label">تأكيد الرمز<input id="customer-account-confirm" type="password" inputmode="numeric" maxlength="5" autocomplete="new-password"></label></div>
+      <div class="form-actions" id="customer-auth-actions"><button class="primary-action" id="customer-register-btn" type="button">إنشاء حساب</button><button class="secondary-action" id="customer-login-btn" type="button">دخول</button><button class="secondary-action" id="customer-forgot-btn" type="button">نسيت رمز الدخول؟</button></div>
+      <div class="form-status" id="customer-auth-status" role="status" aria-live="polite"></div>
+      <div hidden id="customer-recovery-fields"><div class="form-grid"><label>رمز WhatsApp من 6 أرقام<input id="customer-recovery-code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label><label>رمز الدخول الجديد<input id="customer-recovery-new-pin" type="password" inputmode="numeric" maxlength="5" autocomplete="new-password"></label><label>تأكيد الرمز الجديد<input id="customer-recovery-confirm" type="password" inputmode="numeric" maxlength="5" autocomplete="new-password"></label></div><div class="form-actions"><button class="primary-action" id="customer-reset-btn" type="button">حفظ الرمز الجديد</button><button class="secondary-action" id="customer-cancel-recovery-btn" type="button">إلغاء</button></div></div>
+      <div hidden id="customer-account-logged"><span id="customer-account-welcome"></span><button class="secondary-action" id="customer-change-pin-btn" type="button">تغيير الرمز</button><button class="secondary-action" id="customer-logout-btn" type="button">تسجيل الخروج</button></div>
+    </section>
 
     <section class="hero" aria-labelledby="page-title">
       <div class="hero-copy">
@@ -687,6 +703,25 @@
       let automaticRouteQuote = null;
       const confirmedMapTargets = { origin: false, destination: false };
       const specialTariff = { dayOpeningFare: 0.468, nightOpeningFare: 0.518, perKm: 0.336, waitingPerMinute: 0.0576, minimumFare: 1, cancellationFee: 0.5, roundingIncrement: 0.05, nightStartHour: 22, nightEndHour: 6 };
+      const customerAccountFields = { name: document.getElementById('customer-account-name'), phone: document.getElementById('customer-account-phone'), pin: document.getElementById('customer-account-pin'), confirm: document.getElementById('customer-account-confirm') };
+      const customerAccountStatus = document.getElementById('customer-auth-status');
+      function customerAccountMessage(text, kind = '') { customerAccountStatus.textContent = text || ''; customerAccountStatus.className = `form-status ${kind}`.trim(); }
+      function customerAccountView(customer) { document.getElementById('customer-account-state').textContent = 'مسجل'; document.getElementById('customer-account-subtitle').textContent = 'يمكنك استخدام الحساب مع طلباتك القادمة.'; document.getElementById('customer-auth-fields').hidden = true; document.getElementById('customer-auth-actions').hidden = true; document.getElementById('customer-recovery-fields').hidden = true; document.getElementById('customer-account-logged').hidden = false; document.getElementById('customer-account-welcome').textContent = `مرحبًا ${customer.name} · ${customer.phone}`; customerAccountFields.name.value = customer.name; customerAccountFields.phone.value = customer.phone; fields.name.value = customer.name; fields.phone.value = customer.phone; updatePreview(); }
+      function customerLoggedOutView() { document.getElementById('customer-account-state').textContent = 'غير مسجل'; document.getElementById('customer-account-subtitle').textContent = 'أنشئ حسابًا لحماية بياناتك وتسهيل متابعة طلباتك.'; document.getElementById('customer-auth-fields').hidden = false; document.getElementById('customer-auth-actions').hidden = false; document.getElementById('customer-account-logged').hidden = true; document.getElementById('customer-account-confirm-label').hidden = false; }
+      async function customerApi(url, options = {}) { const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'تعذر تنفيذ العملية'); return data; }
+      async function loadCustomerAccount() { try { const data = await customerApi('/api/customer/account'); customerAccountView(data.customer); } catch { customerLoggedOutView(); } }
+      async function registerCustomer() { const { name, phone, pin, confirm } = Object.fromEntries(Object.entries(customerAccountFields).map(([key, field]) => [key, valueOf(field)])); if (name.length < 2 || !/^\d{5}$/.test(pin) || pin !== confirm || pin === '00000') return customerAccountMessage('أدخل اسمًا ورقمًا ورمزًا من 5 أرقام متطابقًا، ولا تستخدم 00000.', 'error'); try { const data = await customerApi('/api/customer/register', { method: 'POST', body: JSON.stringify({ name, phone, pin, confirmPin: confirm }) }); customerAccountView(data.customer); customerAccountMessage('تم إنشاء حساب العميل بنجاح.', 'ok'); } catch (error) { customerAccountMessage(error.message, 'error'); } }
+      async function loginCustomer() { const phone = valueOf(customerAccountFields.phone), pin = valueOf(customerAccountFields.pin); if (!phone || !/^\d{5}$/.test(pin)) return customerAccountMessage('أدخل رقم الهاتف ورمز الدخول من 5 أرقام.', 'error'); try { const data = await customerApi('/api/customer/login', { method: 'POST', body: JSON.stringify({ phone, pin }) }); customerAccountView(data.customer); customerAccountMessage('تم تسجيل الدخول بنجاح.', 'ok'); } catch (error) { customerAccountMessage(error.message, 'error'); } }
+      async function requestCustomerRecovery() { const phone = valueOf(customerAccountFields.phone); if (!phone) return customerAccountMessage('أدخل رقم الهاتف أولًا.', 'error'); try { const data = await customerApi('/api/customer/pin-recovery/request-code', { method: 'POST', body: JSON.stringify({ phone }) }); document.getElementById('customer-recovery-fields').hidden = false; document.getElementById('customer-account-confirm-label').hidden = true; customerAccountMessage(data.message || 'تم إرسال رمز WhatsApp.', 'ok'); } catch (error) { customerAccountMessage(error.message, 'error'); } }
+      async function resetCustomerPin() { const phone = valueOf(customerAccountFields.phone), code = valueOf(document.getElementById('customer-recovery-code')), newPin = valueOf(document.getElementById('customer-recovery-new-pin')), confirmPin = valueOf(document.getElementById('customer-recovery-confirm')); if (!/^\d{6}$/.test(code) || !/^\d{5}$/.test(newPin) || newPin !== confirmPin || newPin === '00000') return customerAccountMessage('أدخل رمز WhatsApp من 6 أرقام ورمزًا جديدًا من 5 أرقام متطابقًا.', 'error'); try { const data = await customerApi('/api/customer/pin-recovery/reset', { method: 'POST', body: JSON.stringify({ phone, code, newPin, confirmPin }) }); document.getElementById('customer-recovery-fields').hidden = true; document.getElementById('customer-account-confirm-label').hidden = false; customerAccountFields.pin.value = ''; customerAccountMessage(data.message || 'تم استرجاع الرمز. يمكنك تسجيل الدخول.', 'ok'); } catch (error) { customerAccountMessage(error.message, 'error'); } }
+      async function changeCustomerPin() { const currentPin = window.prompt('أدخل رمز الدخول الحالي من 5 أرقام:'); const newPin = window.prompt('أدخل رمز الدخول الجديد من 5 أرقام:'); const confirmPin = window.prompt('أعد إدخال الرمز الجديد:'); if (currentPin === null || newPin === null || confirmPin === null) return; try { const data = await customerApi('/api/customer/change-pin', { method: 'POST', body: JSON.stringify({ currentPin, newPin, confirmPin }) }); customerAccountMessage(data.message || 'تم تغيير الرمز.', 'ok'); } catch (error) { customerAccountMessage(error.message, 'error'); } }
+      document.getElementById('customer-register-btn').addEventListener('click', registerCustomer);
+      document.getElementById('customer-login-btn').addEventListener('click', loginCustomer);
+      document.getElementById('customer-forgot-btn').addEventListener('click', requestCustomerRecovery);
+      document.getElementById('customer-reset-btn').addEventListener('click', resetCustomerPin);
+      document.getElementById('customer-cancel-recovery-btn').addEventListener('click', () => { document.getElementById('customer-recovery-fields').hidden = true; document.getElementById('customer-account-confirm-label').hidden = false; customerAccountMessage(''); });
+      document.getElementById('customer-change-pin-btn').addEventListener('click', changeCustomerPin);
+      document.getElementById('customer-logout-btn').addEventListener('click', async () => { await customerApi('/api/customer/logout', { method: 'POST' }).catch(() => {}); customerLoggedOutView(); customerAccountMessage('تم تسجيل الخروج.', 'ok'); });
 
       function valueOf(field) { return field.value.trim(); }
       function parseCoordinatePair(value) {
@@ -1407,6 +1442,7 @@
       updateMapTargetStatuses();
       updatePreview();
       void restoreSmartRide();
+      void loadCustomerAccount();
     })();
   </script>
 </body>
