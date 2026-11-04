@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>اختبار ربط حساب الكابتن | وصلني الآن</title>
+<style>
+:root{color-scheme:dark;--bg:#07111f;--panel:#0e1d31;--line:#24405f;--text:#edf5ff;--muted:#9db2c9;--accent:#48d6a6;--warn:#ffcc70;--bad:#ff8c8c}*{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#07111f,#10263c);color:var(--text);font-family:Tahoma,Arial,sans-serif;min-height:100vh;padding:28px}.wrap{max-width:760px;margin:auto}.brand{color:var(--accent);font-weight:700;letter-spacing:.04em}.panel{background:rgba(14,29,49,.94);border:1px solid var(--line);border-radius:20px;padding:24px;margin-top:18px;box-shadow:0 18px 55px #0004}h1{margin:8px 0 10px;font-size:clamp(24px,5vw,38px)}h2{margin:0 0 8px;font-size:20px}p{color:var(--muted);line-height:1.8}.notice{padding:13px 15px;border-radius:12px;background:#102941;color:var(--muted);line-height:1.8}.notice.ok{border:1px solid #2c9f7a;color:#baffea}.notice.warn{border:1px solid #a97823;color:#ffe1a0}.notice.bad{border:1px solid #a84e5c;color:#ffc0c0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:650px){body{padding:15px}.grid{grid-template-columns:1fr}}label{display:block;color:var(--muted);font-size:14px}input{width:100%;margin-top:7px;border:1px solid var(--line);border-radius:10px;padding:13px;background:#081625;color:var(--text);font-size:16px}button,a.button{display:inline-block;border:0;border-radius:10px;padding:13px 17px;margin:14px 8px 0 0;background:var(--accent);color:#062018;font-weight:700;cursor:pointer;text-decoration:none}button.secondary,a.secondary{background:#183550;color:var(--text)}button:disabled{opacity:.55;cursor:not-allowed}.result{margin-top:18px;display:grid;gap:10px}.row{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #203a55;padding:10px 0}.row:last-child{border-bottom:0}.value{font-weight:700;text-align:left;direction:ltr}.small{font-size:13px;color:var(--muted)}code{direction:ltr;display:inline-block;color:#baffea}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="brand">وصلني الآن · SERVER 2</div>
+  <h1>اختبار ربط حساب الكابتن</h1>
+  <p>صفحة قراءة فقط للتأكد من أن طلب التسجيل أو الحساب المعتمد ظاهر في لوحة الإدارة. لا تنشئ حسابًا، ولا تعتمد طلبًا، ولا تغيّر الرصيد أو الطلبات.</p>
+
+  <section class="panel">
+    <h2>1. فحص الجاهزية</h2>
+    <div id="health" class="notice">لم يبدأ الفحص بعد.</div>
+    <button id="healthBtn">فحص الخدمة</button>
+    <a class="button secondary" href="/captain.html?mode=registration">فتح تسجيل كابتن جديد</a>
+    <a class="button secondary" href="/admin-v27.html">فتح لوحة المالك</a>
+  </section>
+
+  <section class="panel">
+    <h2>2. مطابقة الكابتن مع لوحة الإدارة</h2>
+    <p class="small">إذا كان رمز لوحة المالك محفوظًا في هذا المتصفح، سيُستخدم محليًا فقط. لا يتم عرضه أو حفظه في هذه الصفحة.</p>
+    <div class="grid">
+      <label>رقم هاتف الكابتن
+        <input id="phone" inputmode="tel" autocomplete="off" placeholder="9627xxxxxxxx">
+      </label>
+      <label>رمز لوحة المالك، عند الحاجة فقط
+        <input id="token" type="password" autocomplete="off" placeholder="لا يُحفظ تلقائيًا">
+      </label>
+    </div>
+    <button id="checkBtn">تحقق من الربط</button>
+    <button id="clearBtn" class="secondary">مسح الرمز من الصفحة</button>
+    <div id="result" class="result"><div class="notice">أدخل رقم الهاتف ثم اضغط «تحقق من الربط».</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>طريقة القراءة</h2>
+    <div class="notice">التسجيل الجديد يظهر أولًا كطلب <b>قيد المراجعة</b> في قسم دعوات الكباتن. بعد موافقة المالك يظهر الحساب في قائمة الكباتن بحالة <b>نشط</b>. هذه الصفحة لا تنفذ الموافقة.</div>
+  </section>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const normalize=v=>{let s=String(v||'').replace(/\D/g,'');if(s.startsWith('00'))s=s.slice(2);if(s.startsWith('0'))s='962'+s.slice(1);return s};
+function headers(){const typed=$('token').value.trim();const saved=localStorage.getItem('adminToken')||'';const token=typed||saved;return token?{Authorization:'Bearer '+token}:{};}
+async function json(path){const r=await fetch(path,{cache:'no-store',credentials:'same-origin',headers:headers()});const t=await r.text();let x={};try{x=t?JSON.parse(t):{}}catch{x={error:t||'استجابة غير صالحة'}}if(!r.ok){const e=new Error(x.error||('HTTP '+r.status));e.status=r.status;throw e}return x;}
+function show(id,kind,text){const el=$(id);el.className='notice '+(kind||'');el.innerHTML=text;}
+$('healthBtn').onclick=async()=>{show('health','','جارٍ فحص الخدمة…');try{const h=await json('/health');const s=await json('/status?fresh=1');show('health','ok',`الخدمة تعمل. <b>ready=${esc(h.ready)}</b> · WhatsApp: <b>${esc(s.whatsappState||'غير متاح')}</b> · استقبال القروب: <b>${esc(s.groupReceiverReady)}</b>`)}catch(e){show('health','bad','تعذر فحص الخدمة: '+esc(e.message))}};
+$('clearBtn').onclick=()=>{$('token').value='';sessionStorage.removeItem('captainLinkTestToken');show('result','', 'تم مسح الرمز من الصفحة. لم يتم تعديل أي بيانات.')};
+$('checkBtn').onclick=async()=>{const phone=normalize($('phone').value);if(!/^9627\d{8}$/.test(phone)){show('result','warn','أدخل رقمًا أردنيًا بصيغة دولية صحيحة، مثل <code>9627xxxxxxxx</code>.');return}show('result','', 'جارٍ قراءة بيانات لوحة الإدارة…');try{const [captains,invites]=await Promise.all([json('/api/admin/captains?fresh=1'),json('/api/admin/captain-invites?fresh=1')]);const captainRows=captains.captains||[];const inviteRows=invites.invites||[];const captain=captainRows.find(x=>normalize(x.phone)===phone);const invite=inviteRows.find(x=>normalize(x.phone)===phone);if(!captain&&!invite){show('result','warn',`لم توجد مطابقة للرقم <code>${esc(phone)}</code> في قائمة الكباتن أو طلبات التسجيل.`);return}let html=`<div class="notice ok"><b>تم العثور على سجل مرتبط بالرقم.</b></div>`;if(captain)html+=`<div class="row"><span>حساب الكابتن</span><span class="value">${esc(captain.name||'موجود')} · ${esc(captain.account_status||'—')} · ${Number(captain.active)===1?'نشط':'غير نشط'}</span></div>`;if(invite)html+=`<div class="row"><span>طلب التسجيل</span><span class="value">${esc(invite.status||'—')}</span></div>`;html+=`<div class="notice">النتيجة قراءة فقط. الاعتماد أو التفعيل يتم من لوحة المالك، وليس من هذه الصفحة.</div>`;$('result').innerHTML=html}catch(e){show('result',e.status===401||e.status===403?'warn':'bad',e.status===401||e.status===403?'يلزم تسجيل الدخول إلى لوحة المالك أو إدخال رمزها في الحقل المحلي.':'تعذر قراءة بيانات الربط: '+esc(e.message))}};
+</script>
+</body>
+</html>
