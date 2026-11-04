@@ -997,6 +997,38 @@ CREATE TABLE IF NOT EXISTS customer_auth_challenges (
   FOREIGN KEY(customer_account_id) REFERENCES customer_accounts(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_customer_auth_challenges_phone ON customer_auth_challenges(phone, created_at);
+CREATE TABLE IF NOT EXISTS ride_ratings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ride_id INTEGER NOT NULL,
+  customer_account_id INTEGER,
+  customer_phone TEXT NOT NULL,
+  captain_user_id INTEGER,
+  rating INTEGER CHECK(rating IS NULL OR rating BETWEEN 1 AND 5),
+  comment TEXT,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_last4 TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','submitted','expired')),
+  expires_at TEXT NOT NULL,
+  submitted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(ride_id, customer_phone)
+);
+CREATE INDEX IF NOT EXISTS idx_ride_ratings_customer ON ride_ratings(customer_account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ride_ratings_captain_status ON ride_ratings(captain_user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ride_ratings_pending_expiry ON ride_ratings(status, expires_at);
+CREATE TABLE IF NOT EXISTS rating_message_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL UNIQUE,
+  phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  ride_rating_id INTEGER,
+  event_type TEXT NOT NULL DEFAULT 'received' CHECK(event_type IN ('received','rating_submitted','ignored','expired')),
+  processed_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rating_message_events_phone ON rating_message_events(phone, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rating_message_events_rating ON rating_message_events(ride_rating_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS staff_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,

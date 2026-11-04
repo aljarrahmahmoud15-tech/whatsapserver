@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('server.js', 'utf8');
+assert.match(server, /CREATE TABLE IF NOT EXISTS ride_ratings/);
+assert.match(server, /token_hash TEXT NOT NULL UNIQUE/);
+assert.match(server, /CHECK\(rating IS NULL OR rating BETWEEN 1 AND 5\)/);
+assert.match(server, /CHECK\(status IN \('pending','submitted','expired'\)\)/);
+assert.match(server, /UNIQUE\(ride_id, customer_phone\)/);
+assert.match(server, /CREATE TABLE IF NOT EXISTS rating_message_events/);
+assert.match(server, /message_id TEXT NOT NULL UNIQUE/);
+assert.match(server, /event_type TEXT NOT NULL DEFAULT 'received'/);
+assert.match(server, /idx_rating_message_events_phone/);
+assert.match(server, /idx_ride_ratings_pending_expiry/);
+assert.doesNotMatch(server, /ride_ratings[^;]*token TEXT NOT NULL/);
+console.log('ride rating and WhatsApp rating message event schema guardrails verified');
