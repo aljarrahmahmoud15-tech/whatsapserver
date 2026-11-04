@@ -12821,7 +12821,12 @@ app.post("/api/admin/group/send-direct-invites", requireAdmin, adminMutationLimi
   const invalidPhones = rawPhones.map((phone) => phoneWithCountry(String(phone || "").trim())).filter((phone) => !isValidJordanPhone(phone) || isBlockedPhone(phone));
   const phones = [...new Set(rawPhones.map((phone) => phoneWithCountry(String(phone || "").trim())).filter((phone) => isValidJordanPhone(phone) && !isBlockedPhone(phone)))];
   if (!phones.length) return res.status(400).json({ error: "No valid eligible Jordan phone numbers were provided", invalidCount: invalidPhones.length });
-  const inviteUrl = normalizeOfficialGroupInviteUrl(req.body?.inviteUrl) || await getOfficialGroupInviteUrl();
+  let inviteUrl = normalizeOfficialGroupInviteUrl(req.body?.inviteUrl) || await getOfficialGroupInviteUrl();
+  if (!inviteUrl) {
+    const groupChat = await openCreatedGroupForAdmin(groupId);
+    const inviteCode = groupChat && typeof groupChat.getInviteCode === "function" ? await withTimeout(groupChat.getInviteCode(), 30000, null) : null;
+    inviteUrl = normalizeOfficialGroupInviteUrl(inviteCode ? `https://chat.whatsapp.com/${inviteCode}` : "");
+  }
   if (!inviteUrl) return res.status(502).json({ error: "Official group invite URL unavailable" });
   const alreadySent = phones.filter((phone) => db.prepare("SELECT 1 FROM notifications WHERE recipient_phone=? AND event='group.member.invite_text' AND delivery_status='sent' LIMIT 1").get(phone)).length;
   const candidates = phones.filter((phone) => !db.prepare("SELECT 1 FROM notifications WHERE recipient_phone=? AND event='group.member.invite_text' AND delivery_status='sent' LIMIT 1").get(phone));
