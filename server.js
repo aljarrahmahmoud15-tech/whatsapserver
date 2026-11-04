@@ -304,6 +304,7 @@ const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
 const whatsappAuthRate = new Map();
+const captainPinRecoveryRate = new Map();
 const nexoraOtpRate = new Map();
 const apiRate = new Map();
 const qrRate = new Map();
@@ -1371,6 +1372,7 @@ CREATE TABLE IF NOT EXISTS captain_auth_challenges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   captain_user_id INTEGER NOT NULL,
   phone TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'login',
   code_hash TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   expires_at TEXT NOT NULL,
@@ -1570,6 +1572,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_lifecycle ON order_candidates(lifecycle_stage,updated_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
+const existingCaptainAuthChallengeColumns = db.prepare("PRAGMA table_info(captain_auth_challenges)").all().map((column) => column.name);
+if (!existingCaptainAuthChallengeColumns.includes("purpose")) db.exec("ALTER TABLE captain_auth_challenges ADD COLUMN purpose TEXT NOT NULL DEFAULT 'login'");
 const existingCardColumns = db.prepare("PRAGMA table_info(topup_cards)").all().map((column) => column.name);
 if (!existingCardColumns.includes("assigned_captain_id")) db.exec("ALTER TABLE topup_cards ADD COLUMN assigned_captain_id INTEGER");
 if (!existingCardColumns.includes("sent_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN sent_at TEXT");
@@ -7559,7 +7563,7 @@ function pruneCompletedRunMap(store, atMs = Date.now()) {
 let runtimeMemoryCleanupTimer = null;
 function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneAdminSendState(atMs);
-  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, captainPinRecoveryRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
@@ -10641,6 +10645,48 @@ app.post("/api/captain/change-pin", requireCaptain, adminMutationLimiter, (req, 
   audit("captain.pin.self_updated", "user", captain.id, { phone: captain.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
   res.json({ success: true, message: "تم تغيير رمز الكابتن بنجاح دون تغيير الرصيد أو الطلبات." });
 });
+app.post("/api/captain/pin-recovery/request-code", async (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
+  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:${phone}`, 3)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const user = findCaptainByPhone(phone, { activeOnly: true });
+  if (!user || user.role !== "captain" || Number(user.is_bot) === 1) return res.status(404).json({ error: "لا يوجد حساب كابتن مفعل بهذا الرقم" });
+  const code = createCaptainWhatsappCode();
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  db.transaction(() => {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(user.id);
+    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, user.phone, "pin_recovery", captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
+  })();
+  const sent = await sendBotText(`${user.phone}@c.us`, `رمز استرجاع رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
+  if (!sent) {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(user.id);
+    return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
+  }
+  audit("captain.pin_recovery_code.sent", "user", user.id, { phone: user.phone, expiresAt });
+  res.json({ success: true, expiresAt, message: "تم إرسال رمز الاسترجاع إلى WhatsApp المسجل" });
+});
+app.post("/api/captain/pin-recovery/reset", (req, res) => {
+  const phone = phoneWithCountry(String(req.body?.phone || ""));
+  const code = String(req.body?.code || "").trim();
+  const newPin = String(req.body?.newPin || "").trim();
+  const confirmPin = String(req.body?.confirmPin || "").trim();
+  if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code) || !validCaptainPin(newPin) || newPin !== confirmPin) return res.status(400).json({ error: "أدخل رقم الهاتف ورمز WhatsApp ورمزًا جديدًا من 5 أرقام متطابقًا" });
+  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
+  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:${phone}:verify`, 8)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  const user = findCaptainByPhone(phone, { activeOnly: true });
+  if (!user || user.role !== "captain" || Number(user.is_bot) === 1) return res.status(401).json({ error: "تعذر التحقق من الحساب" });
+  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
+  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز الاسترجاع؛ اطلب رمزًا جديدًا" });
+  db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
+  if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return res.status(401).json({ error: "رمز الاسترجاع غير صحيح" });
+  const stamp = now();
+  const updated = db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',captain_whatsapp_verified_at=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync(newPin, 10), stamp, stamp, user.id);
+  if (!updated.changes) return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
+  db.prepare("UPDATE captain_auth_challenges SET verified_at=? WHERE id=?").run(stamp, challenge.id);
+  audit("captain.pin_recovered", "user", user.id, { phone: user.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
+  res.json({ success: true, message: "تم استرجاع رمز الدخول بنجاح. يمكنك الدخول بالرمز الجديد." });
+});
 app.post("/api/captain/login-link/exchange", (req, res) => {
   const token = String(req.body?.token || "").trim();
   if (token.length < 32 || token.length > 160) return res.status(400).json({ error: "رابط الدخول غير صالح" });
@@ -10670,12 +10716,12 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
   const stamp = now();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   db.transaction(() => {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
-    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?)").run(user.id, user.phone, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL").run(user.id);
+    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, user.phone, "login", captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
   })();
   const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
   if (!sent) {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL").run(user.id);
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL").run(user.id);
     return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
   }
   audit("captain.whatsapp_code.sent", "user", user.id, { phone: user.phone, expiresAt });
@@ -10703,7 +10749,7 @@ app.post("/api/captain/whatsapp/verify", (req, res) => {
   if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "رقم الهاتف ورمز التحقق مطلوبان" });
   const user = findCaptainByPhone(phone, { activeOnly: true });
   if (!user || normalizeCaptainAuthMethod(user.captain_auth_method) !== "whatsapp") return res.status(401).json({ error: "تعذر التحقق من الحساب" });
-  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
+  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
   if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز التحقق؛ اطلب رمزًا جديدًا" });
   db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
   if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return res.status(401).json({ error: "رمز التحقق غير صحيح" });

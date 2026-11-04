@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('server.js', 'utf8');
+const page = fs.readFileSync('public/captain.html', 'utf8');
+assert.match(server, /CREATE TABLE IF NOT EXISTS captain_auth_challenges[\s\S]*purpose TEXT NOT NULL DEFAULT 'login'/);
+assert.match(server, /app\.post\("\/api\/captain\/pin-recovery\/request-code"/);
+assert.match(server, /app\.post\("\/api\/captain\/pin-recovery\/reset"/);
+assert.match(server, /purpose='pin_recovery'/);
+assert.match(server, /captain\.pin_recovered/);
+assert.match(server, /bcrypt\.hashSync\(newPin, 10\)/);
+assert.doesNotMatch(server, /audit\("captain\.pin_recovered"[^\n]*newPin/);
+assert.match(page, /id="forgot-pin-btn"/);
+assert.match(page, /\/api\/captain\/pin-recovery\/request-code/);
+assert.match(page, /\/api\/captain\/pin-recovery\/reset/);
+assert.match(page, /id="recovery-code"/);
+console.log('captain WhatsApp PIN recovery guardrails verified');

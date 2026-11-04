@@ -92,7 +92,25 @@
         <label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
+        <button class="link-button" id="forgot-pin-btn" type="button">نسيت رمز الدخول؟</button>
         <div class="hint" id="invite-hint">للتسجيل لأول مرة، ارجع للصفحة السابقة واختر «تسجيل كابتن جديد ذاتيًا».</div>
+      </form>
+    </section>
+    <section id="pin-recovery" class="login hidden">
+      <form id="pin-recovery-form" class="login-card">
+        <div class="eyebrow">استرجاع آمن</div>
+        <h1>نسيت رمز الدخول؟</h1>
+        <p class="muted">سنرسل رمز تحقق مؤقتًا إلى WhatsApp المرتبط بحسابك. لا تشارك الرمز مع أي شخص.</p>
+        <label class="label">رقم هاتف الكابتن<input class="input" id="recovery-phone" inputmode="tel" autocomplete="tel" required></label>
+        <button class="secondary" id="recovery-request-btn" type="button">إرسال رمز التحقق</button>
+        <div id="recovery-code-fields" class="hidden">
+          <label class="label">رمز WhatsApp المكوّن من 6 أرقام<input class="input" id="recovery-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code"></label>
+          <label class="label">رمز الدخول الجديد من 5 أرقام<input class="input" id="recovery-new-pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password"></label>
+          <label class="label">تأكيد رمز الدخول الجديد<input class="input" id="recovery-confirm-pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="new-password"></label>
+          <button class="primary" id="recovery-reset-btn" type="submit">حفظ رمز الدخول الجديد</button>
+        </div>
+        <div id="pin-recovery-status" class="hint" role="status" aria-live="polite"></div>
+        <button class="link-button" id="recovery-back-btn" type="button">العودة إلى تسجيل الدخول</button>
       </form>
     </section>
 
@@ -181,7 +199,7 @@
     function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value ?? '0.00'; }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
     function statusLabel(value) { return ({open:'مفتوح',accepted:'مثبت',completed:'مكتمل',cancelled:'ملغى'})[value] || value || 'غير محدد'; }
-    function showSection(id) { ['entry','registration','pending','login','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
+    function showSection(id) { ['entry','registration','pending','login','pin-recovery','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
     function topupCardStatus(value) { return ({issued:'جاهزة للتفعيل',redeemed:'تمت إضافتها إلى الرصيد',void:'ملغاة'})[value] || value || 'غير محدد'; }
     function renderTopupCards(cards) {
       const box = $('#topup-card-notifications');
@@ -231,6 +249,10 @@
     });
     $('#entry-register')?.addEventListener('click', () => showSection('registration'));
     $('#entry-login')?.addEventListener('click', () => showSection('login'));
+    $('#forgot-pin-btn')?.addEventListener('click', () => { $('#recovery-phone').value = $('#phone').value.trim(); $('#pin-recovery-status').textContent = ''; $('#recovery-code-fields').classList.add('hidden'); showSection('pin-recovery'); });
+    $('#recovery-back-btn')?.addEventListener('click', () => showSection('login'));
+    $('#recovery-request-btn')?.addEventListener('click', async () => { const button=$('#recovery-request-btn'), phone=$('#recovery-phone').value.trim(), status=$('#pin-recovery-status'); button.disabled=true; status.textContent='جارٍ إرسال رمز التحقق…'; try { const result=await api('/api/captain/pin-recovery/request-code',{method:'POST',body:JSON.stringify({phone})}); status.textContent=result.message||'تم إرسال الرمز.'; $('#recovery-code-fields').classList.remove('hidden'); } catch(error) { status.textContent=error.message||'تعذر إرسال الرمز.'; } finally { button.disabled=false; } });
+    $('#pin-recovery-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#recovery-reset-btn'), status=$('#pin-recovery-status'), phone=$('#recovery-phone').value.trim(), code=$('#recovery-code').value.trim(), newPin=$('#recovery-new-pin').value.trim(), confirmPin=$('#recovery-confirm-pin').value.trim(); status.textContent=''; if(!/^\d{6}$/.test(code)||!/^[0-9]{5}$/.test(newPin)||newPin!==confirmPin){status.textContent='أدخل رمز WhatsApp من 6 أرقام ورمز دخول جديدًا من 5 أرقام متطابقًا.';return;} if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;} button.disabled=true; try { const result=await api('/api/captain/pin-recovery/reset',{method:'POST',body:JSON.stringify({phone,code,newPin,confirmPin})}); status.textContent=result.message||'تم استرجاع الرمز.'; $('#pin-recovery-form').reset(); setTimeout(() => showSection('login'), 1200); } catch(error) { status.textContent=error.message||'تعذر استرجاع رمز الدخول.'; } finally { button.disabled=false; } });
     $('#approved-login')?.addEventListener('click', () => { if (submittedCaptain) loginCaptain(submittedCaptain.phone, submittedCaptain.pin); });
     $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { await loginCaptain($('#phone').value.trim(), $('#pin').value); $('#pin').value = ''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
     $('#captain-change-pin-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#captain-change-pin-btn'), status=$('#captain-change-pin-status'), currentPin=$('#captain-current-pin').value.trim(), newPin=$('#captain-new-pin').value.trim(), confirmPin=$('#captain-confirm-pin').value.trim(); status.textContent=''; if(!/^\d{5}$/.test(currentPin)||!/^[0-9]{5}$/.test(newPin)||newPin!==confirmPin){status.textContent='أدخل الرموز من 5 أرقام وتأكد من تطابق الرمز الجديد.';return;} if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;} button.disabled=true; try { const result=await api('/api/captain/change-pin',{method:'POST',body:JSON.stringify({currentPin,newPin,confirmPin})}); status.textContent=result.message||'تم تغيير الرمز بنجاح.'; $('#captain-change-pin-form').reset(); } catch(error) { status.textContent=error.message||'تعذر تغيير الرمز.'; } finally { button.disabled=false; } });
