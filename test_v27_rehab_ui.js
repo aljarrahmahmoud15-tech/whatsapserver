@@ -14,10 +14,11 @@ test('V27 mobile rehabilitation keeps group operations delegated and reads fresh
   assert.match(html, /prefetched\|\|await freshApi\('\/api\/admin\/v27\/bootstrap'\)/);
   assert.match(html, /document\.querySelectorAll\('\[data-screen\]'\)/);
   assert.match(html, /if\(screen!==\'admin\'\)void ensureFullData\(\)/);
-  assert.match(html, /state\.groupSummary=r\[12\]/);
-  assert.match(html, /state\.staff=Array\.isArray\(r\[13\]\?\.accounts\)/);
-  assert.match(html, /state\.supportTickets=Array\.isArray\(r\[14\]\?\.tickets\)/);
-  assert.match(html, /state\.v27Health=r\[15\]/);
-  assert.match(html, /state\.v27OwnerControl=r\[16\]/);
-  assert.match(html, /state\.v27Diagnostics=r\[17\]/);
+  assert.match(html, /state\.leads=Array\.isArray\(r\[12\]\.leads\)/);
+  assert.match(html, /state\.groupSummary=r\[13\]\|\|null/);
+  assert.match(html, /state\.staff=Array\.isArray\(r\[14\]\?\.accounts\)/);
+  assert.match(html, /state\.supportTickets=Array\.isArray\(r\[15\]\?\.tickets\)/);
+  assert.match(html, /state\.v27Health=r\[16\]\|\|null/);
+  assert.match(html, /state\.v27OwnerControl=r\[17\]\|\|null/);
+  assert.match(html, /state\.v27Diagnostics=r\[18\]\|\|null/);
 });
