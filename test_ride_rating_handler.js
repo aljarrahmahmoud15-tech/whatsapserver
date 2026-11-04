@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('server.js', 'utf8');
+assert.match(server, /async function handleCustomerRatingReply/);
+assert.match(server, /INSERT OR IGNORE INTO rating_message_events/);
+assert.match(server, /normalizeRatingDigits/);
+assert.match(server, /rating BETWEEN 1 AND 5/);
+assert.match(server, /status='pending' AND expires_at>\?/);
+assert.match(server, /status='submitted'/);
+assert.match(server, /UPDATE rating_message_events SET ride_rating_id=.*rating_submitted/);
+assert.match(server, /CUSTOMER-RATING-\$\{pending\.id\}-SUBMITTED/);
+assert.match(server, /function ensureRideRatingRequest/);
+assert.match(server, /CUSTOMER-RATING-\$\{row\.id\}-REQUESTED/);
+assert.match(server, /handleCustomerRatingReply\(msg, phone\)/);
+assert.doesNotMatch(server, /handleCustomerRatingReply\(msg, phone\)[\s\S]{0,300}wallet/);
+console.log('ride rating WhatsApp reply handler guardrails verified');

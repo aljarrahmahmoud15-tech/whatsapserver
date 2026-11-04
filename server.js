@@ -1692,9 +1692,10 @@ const directRideService = createDirectRideService({
   audit: (action, entityType, entityId, details, actorUserId = null) => audit(action, entityType, entityId, details, actorUserId),
   emitEvent: (payload) => {
     directRideNotificationHub.publish(payload);
-    const row = payload?.rideId ? db.prepare("SELECT customer_account_id,phone,request_code,origin,destination FROM direct_ride_requests WHERE id=? LIMIT 1").get(payload.rideId) : null;
+    const row = payload?.rideId ? db.prepare("SELECT id,customer_account_id,phone,request_code,origin,destination,captain_user_id FROM direct_ride_requests WHERE id=? LIMIT 1").get(payload.rideId) : null;
     const customerEvent = { priced: "received", rider_confirmed: "confirmed", assigned: "assigned", arrived: "arrived", in_trip: "started", completed: "completed", cancelled: "cancelled" }[payload?.eventType];
     if (row?.customer_account_id && customerEvent) void sendCustomerStatusText({ phone: row.phone, event: `customer.booking.${customerEvent}`, title: "تحديث حجزك", text: `الحجز ${row.request_code}\nالحالة: ${customerEvent === "received" ? "تم استلام الحجز" : customerEvent === "confirmed" ? "تم تأكيد الحجز" : customerEvent === "assigned" ? "تم تعيين الكابتن" : customerEvent === "arrived" ? "وصل الكابتن" : customerEvent === "started" ? "بدأت الرحلة" : customerEvent === "completed" ? "اكتملت الرحلة" : "تم إلغاء الحجز"}\n${row.origin} ← ${row.destination}`, idempotencyKey: `CUSTOMER-DIRECT-RIDE-${row.id}-${customerEvent}` }).catch(() => null);
+    if (row && customerEvent === "completed") ensureRideRatingRequest(row);
   },
 });
 const cleanPhone = (value = "") => String(value).replace(/[^0-9]/g, "").replace(/^00/, "");
@@ -2682,6 +2683,46 @@ function notifyCustomerBookingStatus(row, eventName, statusText) {
   const label = row.request_type === "order" ? "الأوردر" : row.request_type === "passenger" ? "حجز الراكب" : "الرحلة الذكية";
   void sendCustomerStatusText({ phone: row.phone, event: `customer.booking.${eventName}`, title: "تحديث حجزك", text: `الحجز ${row.request_code}\n${label}\nالحالة: ${statusText}\n${row.origin} ← ${row.destination}`, idempotencyKey: `CUSTOMER-BOOKING-${row.request_code}-${eventName}` }).catch(() => null);
 }
+function ensureRideRatingRequest(row) {
+  if (!row?.id || !row.customer_account_id || !isValidJordanPhone(row.phone)) return null;
+  const existing = db.prepare("SELECT * FROM ride_ratings WHERE ride_id=? AND customer_phone=? LIMIT 1").get(row.id, phoneWithCountry(row.phone));
+  if (existing) return existing;
+  const rawToken = crypto.randomBytes(24).toString("base64url");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare("INSERT OR IGNORE INTO ride_ratings(ride_id,customer_account_id,customer_phone,captain_user_id,token_hash,token_last4,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?, 'pending',?,?,?)")
+    .run(row.id, row.customer_account_id, phoneWithCountry(row.phone), row.captain_user_id || null, crypto.createHash("sha256").update(rawToken).digest("hex"), rawToken.slice(-4), expiresAt, stamp, stamp);
+  const rating = db.prepare("SELECT * FROM ride_ratings WHERE ride_id=? AND customer_phone=? LIMIT 1").get(row.id, phoneWithCountry(row.phone));
+  if (result.changes) {
+    audit("customer.ride_rating.requested", "ride_rating", rating.id, { rideId: row.id, requestCode: row.request_code, expiresAt, financialMutation: false });
+    void sendCustomerStatusText({ phone: row.phone, event: "customer.ride_rating.requested", title: "تقييم الرحلة", text: `اكتملت رحلتك ${row.request_code}.\nقيّم الرحلة من 1 إلى 5 بإرسال رقم واحد فقط:\n1 = سيئ جدًا · 5 = ممتاز\nصلاحية التقييم 48 ساعة.`, idempotencyKey: `CUSTOMER-RATING-${row.id}-REQUESTED` }).catch(() => null);
+  }
+  return rating;
+}
+function normalizeRatingDigits(value) {
+  return String(value || "").replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit))).trim();
+}
+async function handleCustomerRatingReply(msg, phone) {
+  const messageId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || "").trim();
+  const body = String(msg?.body || "").trim();
+  if (!messageId || !body) return false;
+  const normalized = normalizeRatingDigits(body);
+  if (!/^[1-5]$/.test(normalized)) return false;
+  const event = db.prepare("INSERT OR IGNORE INTO rating_message_events(message_id,phone,body,event_type,processed_at,created_at) VALUES(?,?,?,'received',?,?)").run(messageId, phone, body, now(), now());
+  if (!event.changes) return true;
+  const pending = db.prepare("SELECT * FROM ride_ratings WHERE customer_phone=? AND status='pending' AND expires_at>? ORDER BY id DESC LIMIT 1").get(phone, now());
+  if (!pending) {
+    db.prepare("UPDATE rating_message_events SET event_type='expired' WHERE message_id=?").run(messageId);
+    return true;
+  }
+  const stamp = now();
+  const changed = db.prepare("UPDATE ride_ratings SET rating=?,status='submitted',submitted_at=?,updated_at=? WHERE id=? AND status='pending' AND expires_at>?").run(Number(normalized), stamp, stamp, pending.id, stamp);
+  if (!changed.changes) return true;
+  db.prepare("UPDATE rating_message_events SET ride_rating_id=?,event_type='rating_submitted' WHERE message_id=?").run(pending.id, messageId);
+  audit("customer.ride_rating.submitted", "ride_rating", pending.id, { rideId: pending.ride_id, rating: Number(normalized), messageId, financialMutation: false });
+  void sendCustomerStatusText({ phone, event: "customer.ride_rating.submitted", title: "تأكيد التقييم", text: `شكرًا لك. تم تسجيل تقييمك للرحلة، وكانت الدرجة ${normalized} من 5.`, idempotencyKey: `CUSTOMER-RATING-${pending.id}-SUBMITTED`, sourceMessageId: messageId }).catch(() => null);
+  return true;
+}
 async function retryCaptainStatusNotifications() {
   if (!CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") || !client || !isReady) return { attempted: 0, disabled: !CAPTAIN_STATUS_NOTIFICATIONS_ENABLED || !notificationEnabled("captainStatus") };
   const events = ["captain.join.received", "captain.approval", "captain.access_card.sent", "captain.access_card.delivered", "captain.wallet.credit_sent", "captain.wallet.credit_redeemed", "captain.activated", "captain.deactivated"];
@@ -3182,6 +3223,7 @@ async function handleCustomerMessage(msg) {
   const name = (contact && (contact.pushname || contact.name)) || displayPhone(phone);
   const body = String(msg.body || "").trim();
   if (!body) return;
+  if (await handleCustomerRatingReply(msg, phone)) return;
   let lead = db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
   if (!lead) {
     lead = ensureCustomerLead(phone, chatId, name, msg.id && msg.id._serialized, body);
