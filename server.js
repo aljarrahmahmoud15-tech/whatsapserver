@@ -32,6 +32,9 @@ const { createOwnerControlStore, ownerCommandPayloadContainsCode } = require("./
 const { createOwnerVault } = require("./owner-vault");
 const { cancelSettledOrderAndReverse } = require("./order-cancellation");
 const { createWeeklySubscriptionScheduler, businessWeekPeriod } = require("./weekly-subscription-scheduler");
+const { createWhatsAppIdentityHandler } = require("./whatsapp-identity-route");
+const { canDeleteAccount } = require("./account-deletion-policy");
+const { createCaptainBalanceImportService } = require("./captain-balance-import");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -108,6 +111,7 @@ const V27_BOOTSTRAP_CACHE_TTL_MS = Math.max(250, Math.min(5000, Number(process.e
 const ADMIN_GROUP_SUMMARY_CACHE_TTL_MS = Math.max(1000, Math.min(30000, Number(process.env.ADMIN_GROUP_SUMMARY_CACHE_TTL_MS || 5000)));
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const DASHBOARD_API_TOKEN = process.env.DASHBOARD_API_TOKEN || "";
+const WHATSAPP_INTERNAL_IDENTITY_TOKEN = String(process.env.WHATSAPP_INTERNAL_IDENTITY_TOKEN || "").trim();
 const JWT_SECRET = process.env.JWT_SECRET || process.env.ADMIN_TOKEN || "";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "Fadi";
 const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
@@ -1558,6 +1562,16 @@ if (!existingLedgerColumns.includes("idempotency_key")) db.exec("ALTER TABLE wal
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency ON wallet_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
 db.exec("CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user_created ON wallet_ledger(user_id, created_at DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_created ON audit_logs(entity_type, entity_id, created_at DESC)");
+const captainBalanceImportService = createCaptainBalanceImportService({
+  db,
+  normalizePhone: phoneWithCountry,
+  validPhone: isValidJordanPhone,
+  money,
+  now,
+  audit,
+  minBalanceCents: CAPTAIN_MIN_BALANCE_CENTS,
+  manualDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
+});
 const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlements)").all().map((column) => column.name);
 if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
@@ -10850,6 +10864,22 @@ app.get("/api/customer/account", requireCustomer, (req, res) => {
   if (!customer || !customer.active) return res.status(403).json({ error: "حساب العميل غير مفعل" });
   res.json({ success: true, customer });
 });
+app.delete("/api/customer/account", requireCustomer, (req, res) => {
+  const customerId = Number(req.customerSession.customerId);
+  const customer = db.prepare("SELECT id,phone,name,active FROM customer_accounts WHERE id=? LIMIT 1").get(customerId);
+  const policy = canDeleteAccount({ role: "customer", active: Boolean(customer?.active), confirmation: String(req.body?.confirmation || "") });
+  if (!policy.ok) return res.status(policy.status).json({ error: policy.reason === "confirmation_required" ? "اكتب حذف حسابي للتأكيد" : "حساب العميل غير متاح للحذف", reason: policy.reason });
+  const stamp = now();
+  const anonymizedPhone = `deleted_customer_${customer.id}_${crypto.randomBytes(8).toString("hex")}`;
+  db.transaction(() => {
+    db.prepare("DELETE FROM customer_auth_challenges WHERE customer_account_id=?").run(customer.id);
+    db.prepare("UPDATE ride_ratings SET customer_phone='deleted',comment=NULL WHERE customer_account_id=?").run(customer.id);
+    db.prepare("UPDATE customer_accounts SET phone=?,name='حساب محذوف',pin_hash=?,active=0,updated_at=?,last_login_at=NULL WHERE id=? AND active=1").run(anonymizedPhone, bcrypt.hashSync(crypto.randomBytes(24).toString("hex"), 10), stamp, customer.id);
+    audit("customer.account.deleted", "customer_account", customer.id, { previousPhoneLast4: String(customer.phone).slice(-4), anonymized: true, financialMutation: false, walletMutation: false });
+  })();
+  clearCustomerSessionCookie(res);
+  return res.json({ success: true, deleted: true, message: "تم حذف حساب العميل وإخفاء بياناته الشخصية." });
+});
 app.post("/api/customer/change-pin", requireCustomer, (req, res) => {
   const currentPin = String(req.body?.currentPin || "").trim();
   const newPin = String(req.body?.newPin || "").trim();
@@ -10963,6 +10993,25 @@ app.post("/api/captain/change-pin", requireCaptain, adminMutationLimiter, (req, 
   audit("captain.pin.self_updated", "user", captain.id, { phone: captain.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
   res.json({ success: true, message: "تم تغيير رمز الكابتن بنجاح دون تغيير الرصيد أو الطلبات." });
 });
+app.delete("/api/captain/account", requireCaptain, (req, res) => {
+  const captainId = Number(req.captainSession.userId);
+  const captain = db.prepare("SELECT id,phone,name,active,is_bot,wallet_cents,account_status FROM users WHERE id=? AND role='captain' LIMIT 1").get(captainId);
+  const policy = canDeleteAccount({ role: "captain", active: Boolean(captain?.active && captain.account_status === "active"), isBot: Boolean(captain?.is_bot), walletCents: captain?.wallet_cents, confirmation: String(req.body?.confirmation || "") });
+  if (!policy.ok) {
+    const message = policy.reason === "confirmation_required" ? "اكتب حذف حسابي للتأكيد" : policy.reason === "non_zero_wallet_requires_settlement" ? "لا يمكن حذف حساب الكابتن قبل تسوية الرصيد" : "حساب الكابتن غير متاح للحذف";
+    return res.status(policy.status).json({ error: message, reason: policy.reason });
+  }
+  const stamp = now();
+  const anonymizedPhone = `deleted_captain_${captain.id}_${crypto.randomBytes(8).toString("hex")}`;
+  db.transaction(() => {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(captain.id);
+    db.prepare("UPDATE whatsapp_identities SET active=0,phone=? WHERE user_id=?").run(anonymizedPhone, captain.id);
+    db.prepare("UPDATE users SET phone=?,name='حساب محذوف',registration_name=NULL,vehicle_type=NULL,vehicle_model=NULL,active=0,account_status='deleted',captain_pin_hash=NULL,captain_pin_ciphertext=NULL,updated_at=? WHERE id=? AND role='captain' AND active=1").run(anonymizedPhone, stamp, captain.id);
+    audit("captain.account.deleted", "user", captain.id, { previousPhoneLast4: String(captain.phone).slice(-4), anonymized: true, financialMutation: false, walletMutation: false });
+  })();
+  clearCaptainSessionCookie(res);
+  return res.json({ success: true, deleted: true, message: "تم حذف حساب الكابتن وإخفاء بياناته الشخصية." });
+});
 app.post("/api/captain/pin-recovery/request-code", async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
@@ -11061,6 +11110,15 @@ app.post("/api/internal/nexora/otp", async (req, res) => {
   if (result.status === "uncertain") return res.status(202).json({ ok: true, status: "uncertain" });
   return res.status(503).json({ error: "تعذر إرسال رمز OTP", status: result.status });
 });
+app.get("/api/internal/whatsapp/identity", createWhatsAppIdentityHandler({
+  token: WHATSAPP_INTERNAL_IDENTITY_TOKEN,
+  constantTimeEquals,
+  phoneWithCountry,
+  isValidJordanPhone,
+  isBlockedPhone,
+  findCaptainByPhone,
+  findCustomerByPhone: (phone) => db.prepare("SELECT id,phone,name,active FROM customer_accounts WHERE phone=? AND active=1 LIMIT 1").get(phone),
+}));
 app.post("/api/captain/whatsapp/verify", (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
   const code = String(req.body?.code || "").trim();
@@ -13516,6 +13574,26 @@ app.post("/api/admin/captains/import-system-only", requireOwnerAdmin, adminMutat
     return res.status(201).json({ success: true, summary, results, message: "تم استيراد سجلات الكباتن إلى النظام فقط دون واتساب أو تعديل الأرصدة" });
   } catch (error) {
     return res.status(500).json({ error: "تعذر استيراد ملف الكباتن", detail: String(error?.message || error).slice(0, 180), mutation: "rolled_back" });
+  }
+});
+
+app.post("/api/admin/captain-balances/import/preview", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const expectedRows = Number(req.body?.expectedRows || 0);
+    const result = captainBalanceImportService.preview(rows, { sourceReference: req.body?.sourceReference, expectedRows });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ success: true, mutation: "none", ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "تعذر إنشاء معاينة مطابقة الأرصدة", mutation: "none" });
+  }
+});
+app.post("/api/admin/captain-balances/import/apply", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  try {
+    const result = captainBalanceImportService.apply(req.body?.previewId, req.body?.fileHash, req.body?.confirmation);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(409).json({ error: error.message || "تعذر اعتماد مطابقة الأرصدة", financialMutation: false });
   }
 });
 
