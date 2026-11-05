@@ -1562,16 +1562,6 @@ if (!existingLedgerColumns.includes("idempotency_key")) db.exec("ALTER TABLE wal
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency ON wallet_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''");
 db.exec("CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user_created ON wallet_ledger(user_id, created_at DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_created ON audit_logs(entity_type, entity_id, created_at DESC)");
-const captainBalanceImportService = createCaptainBalanceImportService({
-  db,
-  normalizePhone: phoneWithCountry,
-  validPhone: isValidJordanPhone,
-  money,
-  now,
-  audit,
-  minBalanceCents: CAPTAIN_MIN_BALANCE_CENTS,
-  manualDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
-});
 const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlements)").all().map((column) => column.name);
 if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
@@ -1957,6 +1947,16 @@ const randomCode = () => {
 };
 const displayPhone = (phone) => phone ? `+${phone}` : "غير معروف";
 const isValidJordanPhone = (phone) => /^9627\d{8}$/.test(String(phone));
+const captainBalanceImportService = createCaptainBalanceImportService({
+  db,
+  normalizePhone: phoneWithCountry,
+  validPhone: isValidJordanPhone,
+  money,
+  now,
+  audit,
+  minBalanceCents: CAPTAIN_MIN_BALANCE_CENTS,
+  manualDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
+});
 function normalizeCaptainAuthMethod(value) {
   return String(value || "pin").trim().toLowerCase() === "whatsapp" ? "whatsapp" : "pin";
 }
