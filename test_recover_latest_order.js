@@ -17,7 +17,7 @@ vm.runInNewContext(`${source.slice(parseStart, parseEnd)}\n${source.slice(recove
 const groupId = "120363430275024633@g.us";
 const messages = [
   { from: groupId, fromMe: false, body: "تم", timestamp: 300 },
-  { from: groupId, fromMe: false, body: "هل سعر 5 مناسب من إربد إلى عمّان؟", timestamp: 250 },
+  { from: groupId, fromMe: false, body: "هل الرحلة متاحة من إربد إلى عمّان؟", timestamp: 250 },
   { from: groupId, fromMe: false, body: "السعر 5\nراكب بنت\nمن إربد إلى عمّان", timestamp: 200, id: { _serialized: "order-message" } },
   { from: "other-group@g.us", fromMe: false, body: "السعر 7\nحمولة\nمن إربد إلى عمّان", timestamp: 400 },
   { from: groupId, fromMe: true, body: "السعر 9\nراكب\nمن إربد إلى عمّان", timestamp: 500 },

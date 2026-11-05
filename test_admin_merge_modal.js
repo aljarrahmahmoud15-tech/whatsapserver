@@ -3,7 +3,7 @@ const fs = require('node:fs');
 
 const admin = fs.readFileSync('./admin.html', 'utf8');
 const mergeStart = admin.indexOf('function mergeCaptain');
-const mergeEnd = admin.indexOf('async function secureDeleteCaptain', mergeStart);
+const mergeEnd = admin.indexOf('async function removeCaptainFromOfficialGroup', mergeStart);
 assert.ok(mergeStart >= 0, 'mergeCaptain must exist');
 assert.ok(mergeEnd > mergeStart, 'mergeCaptain boundary must exist');
 const mergeFunction = admin.slice(mergeStart, mergeEnd);

@@ -22,13 +22,13 @@ assert.ok(vaultRouteStart >= 0 && vaultRouteEnd > vaultRouteStart);
 assert.doesNotMatch(server.slice(vaultRouteStart, vaultRouteEnd), /owner-vault\/execute|eval\(/);
 assert.doesNotMatch(vaultSource, /eval\(|Function\(/);
 for (const marker of [
-  "خزنة المالك V27",
+  "خزنة المالك V26",
   'data-admin-action="vault"',
   "/api/admin/owner-vault",
   "owner.decision.note",
   "مشفر",
   "لا تنفيذ آلي",
-  "أوامر المالك V27",
+  "أوامر المالك V26",
   "bot.restart",
   "session.refresh",
   "group.broadcast",
