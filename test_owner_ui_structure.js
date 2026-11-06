@@ -13,7 +13,7 @@ scripts.forEach((source, index) => {
 const drawerIndex = html.indexOf('<div id="ops-drawer">');
 const heroIndex = html.indexOf('<section class="hero">');
 assert.ok(drawerIndex > 0 && drawerIndex < heroIndex, "operations drawer must appear near the top, before the overview hero");
-assert.match(html, /id="username"[^>]*value="Aljarah"/, "owner username must match production login");
+assert.match(html, /id="username"[^>]*value="Alj_nFhrXhrjtv2Z"/, "owner username must match production login");
 assert.doesNotMatch(html, /showToast\('القسم جاهز للربط ببياناته التشغيلية\.'\)/, "navigation must not report a placeholder response");
 
 console.log("owner UI structure verification passed");
