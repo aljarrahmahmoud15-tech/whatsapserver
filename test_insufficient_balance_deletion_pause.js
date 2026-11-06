@@ -25,7 +25,8 @@ const reopen = server.slice(reopenStart, reopenEnd);
 assert.match(reopen, /!\["deleted", "paused"\]\.includes\(deletionStatus\)/);
 assert.match(reopen, /messageDeletionPaused: deletionStatus === "paused"/);
 assert.match(server, /سيبقى ردك ظاهرًا مؤقتًا ولن يُعتمد الحجز/);
-assert.match(server, /الحجز متاح من جديد/);
+assert.match(reopen, /notifyOfficialGroupOrderReopened\(/);
+assert.match(reopen, /candidate_reopened/);
 
 const ownerDeleteStart = server.indexOf('if (body === "هذه"');
 const ownerDeleteEnd = server.indexOf('\n  }', ownerDeleteStart);

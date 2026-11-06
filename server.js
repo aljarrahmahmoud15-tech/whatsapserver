@@ -2241,19 +2241,10 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
   const title = "إعادة فتح الحجز";
-  const route = origin || destination
-    ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}`
-    : "";
-  const valueLine = Number.isFinite(Number(priceCents))
-    ? `💰 ${money(priceCents)} JOD · 💳 العمولة ${money(requiredCents)} JOD`
-    : `💳 العمولة ${money(requiredCents)} JOD`;
   const message = [
-    "⚠️ لم يثبت الحجز لعدم كفاية الرصيد",
-    `🏠 ${String(downloaderName || "غير محدد")} · 🚕 ${String(executorName || "غير محدد")}`,
-    valueLine,
-    route,
-    "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
-  ].filter(Boolean).join("\n");
+    "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
+    `رقم الرحلة: ${String(sourceKey)}`,
+  ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
@@ -2390,18 +2381,10 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   }
   const event = `order.acceptance.reopened.${candidateId}`;
   const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
-  const route = candidate.origin || candidate.destination
-    ? `📍 ${candidate.origin || "غير محدد"} ← ${candidate.destination || "غير محدد"}`
-    : "";
   const message = [
-    "⚠️ لم يثبت الحجز لعدم كفاية الرصيد",
-    `🏠 ${String(candidate.producer_name_snapshot || candidate.producer_name || "غير مسجل")} · 🚕 ${String(rejectedCaptainName || "غير مسجل")}`,
-    `💰 ${money(candidate.price_cents)} JOD · 💳 العمولة ${money(requiredCents)} JOD`,
-    route,
-    messageDeletionPaused
-      ? "⏸️ رد «تم» مرفوض لعدم كفاية الرصيد وسيبقى ظاهرًا مؤقتًا؛ الحجز متاح من جديد، أرسل «تم» ثم 👍 للتثبيت."
-      : "🗑️ بعد حذف «تم» يصبح الحجز متاحًا من جديد؛ أرسل «تم» ثم 👍 للتثبيت.",
-  ].filter(Boolean).join("\n");
+    "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
+    `رقم الرحلة: ${candidateId}`,
+  ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
     return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null, candidateId };
