@@ -1,20 +1,15 @@
-const assert = require("assert");
-const limit = -100;
-const fee = 100;
-const mayExecute = (balance) => balance - fee >= limit;
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('./server.js', 'utf8');
+const limit = 0;
+const mayExecute = (balance, fee) => balance - fee >= limit;
 
-assert.equal(mayExecute(0), true, "الرصيد 0.00 يسمح بالوصول إلى −1.00");
-assert.equal(mayExecute(99), true, "الرصيد المتوقع السالب ضمن حد −1.00 يُسمح به");
-assert.equal(mayExecute(-100), false, "المشترك عند الحد لا يبدأ تنفيذًا يتجاوزه");
-const botWallet = { is_bot: 1, wallet_cents: 100 };
-assert.equal(mayExecute(botWallet.wallet_cents), true, "محفظة البوت تخضع للحد نفسه");
-assert.equal(mayExecute(-101), false, "محفظة البوت تحت الحد لا تنفذ");
-
-const server = require("fs").readFileSync(require("path").join(__dirname, "server.js"), "utf8");
-assert.match(server, /existing\.active === 0/);
-assert.match(server, /producer\.active === 0/);
-assert.match(server, /negative_balance_floor_without_removal/);
-assert.match(server, /process\.env\.CAPTAIN_MIN_BALANCE_CENTS \|\| -100/);
-assert.match(server, /debtLimit: `\$\{money\(CAPTAIN_MIN_BALANCE_CENTS\)\} JOD للخصومات اليدوية والاشتراكات فقط/);
-
-console.log("credit floor -1.00 JOD and no-negative-removal guard verified");
+assert.equal(mayExecute(100, 100), true, 'الرصيد الكافي يسمح بالعملية');
+assert.equal(mayExecute(99, 100), false, 'العملية التي تؤدي إلى رصيد سالب مرفوضة');
+assert.equal(mayExecute(0, 1), false, 'الرصيد صفر لا يسمح بإنشاء دين');
+assert.match(server, /process\.env\.CAPTAIN_MIN_BALANCE_CENTS \|\| 0/);
+assert.match(server, /policy: "no_debt_no_removal"/);
+assert.match(server, /error: "الرصيد غير كافٍ"/);
+assert.match(server, /negative_balance_removal_blocked/);
+assert.match(server, /captain_removal_blocked_for_insufficient_balance/);
+console.log('credit floor 0.00 JOD and no-debt/no-removal guard verified');

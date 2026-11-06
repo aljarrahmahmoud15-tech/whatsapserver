@@ -44,7 +44,7 @@ assert(server.includes('إشعار رصيد مستحق من وصلني الآن'
 assert(server.includes('إشعار نفاد رصيد المحفظة'), 'zero wallet alert uses a dedicated title');
 assert(server.includes('عزيزي الكابتن ${captain.name}،'), 'negative wallet alert addresses the captain politely');
 assert(server.includes('أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.'), 'negative wallet alert shows the current balance');
-assert(server.includes('المبلغ المستحق لشحن المحفظة وتصفير الدين'), 'negative wallet alert includes the approved due amount');
+assert(server.includes('المبلغ المطلوب لشحن المحفظة قبل تنفيذ أي خصم جديد'), 'negative wallet alert explains the no-debt top-up requirement');
 assert(server.includes('شكرًا لتعاونك مع وصلني الآن – Waslni Now.'), 'negative wallet alert uses the approved closing');
 assert(server.includes('captain.wallet.negative'), 'negative wallet notifications use a dedicated event');
 assert(server.includes('captain.wallet.zero_balance'), 'zero wallet notifications use a dedicated event');
@@ -53,7 +53,7 @@ assert(server.includes('app.post("/api/admin/notifications/negative-balance-warn
 assert(server.includes('SEND_NEGATIVE_BALANCE_WARNING_TO_ALL'), 'negative balance warning requires explicit confirmation');
 assert(server.includes("wallet_cents<0 ORDER BY id"), 'negative balance warning targets all negative captains');
 assert(server.includes('captain.negative_balance_warning.sent'), 'negative balance warning is audited per captain');
-assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.'), 'negative balance warning uses the approved wording');
+assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.'), 'legacy warning route remains separately guarded');
 assert(server.includes('negativeBalanceWarningRuns'), 'negative balance warning broadcast is idempotent by run');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents'), 'subscription debit triggers wallet threshold policy');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance'), 'administrative debit triggers wallet threshold policy');

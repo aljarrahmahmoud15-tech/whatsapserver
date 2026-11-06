@@ -35,7 +35,7 @@ assert.match(page, /async function ensureFullData\(\)/);
 assert.match(page, /state\.fullDataLoaded/);
 assert.match(page, /await ensureFullData\(\);/);
 assert.match(page, /state\.fullDataLoaded=true/);
-assert.match(page, /fetch\('\/api\/admin\/v27\/bootstrap'/);
+assert.match(page, /(?:fetch|freshApi)\(['"]\/api\/admin\/v27\/bootstrap/);
 assert.doesNotMatch(page, /bootstrap\(\).*\/api\/admin\/bot\/status/);
 assert.match(page, /v27DiagnosticsRefresh.*loadBootstrap/);
 assert.doesNotMatch(page, /groupPanelsStarted.*loadGroupLink/);
