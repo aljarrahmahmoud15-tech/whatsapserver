@@ -4,11 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { DatabaseSync } = require('node:sqlite');
-const { localParts, nextThursdayOccurrence, dueSlot, businessWeekPeriod,
+const { localParts, nextFridayOccurrence, dueSlot, businessWeekPeriod,
   createWeeklySubscriptionScheduler } = require('./weekly-subscription-scheduler');
 const source = fs.readFileSync('server.js', 'utf8');
-const NOW = '2026-10-16T00:00:00.000Z';
-const THURSDAY = '2026-10-22T20:00:00.000Z';
+const NOW = '2026-10-16T12:00:00.000Z';
+const FRIDAY = '2026-10-23T11:00:00.000Z';
 
 function memoryDb() {
   const raw = new DatabaseSync(':memory:');
@@ -93,66 +93,67 @@ function fixture(options = {}) {
 }
 
 function activate(f) {
-  return f.scheduler.configure({ enabled: true, hour: 23, minute: 0 });
+  return f.scheduler.configure({ enabled: true, hour: 14, minute: 0 });
 }
 
-test('11pm Thursday is 20:00 UTC and first occurrence is Oct 22, not now', () => {
-  assert.equal(nextThursdayOccurrence(NOW), THURSDAY);
-  assert.deepEqual(localParts(THURSDAY), { dateKey: '2026-10-22', hour: 23, minute: 0, weekday: 4 });
-  assert.equal(nextThursdayOccurrence(THURSDAY), '2026-10-29T20:00:00.000Z');
-  assert.equal(nextThursdayOccurrence('2026-12-31T20:00:00.000Z'), '2027-01-07T20:00:00.000Z');
+test('2pm Friday is 11:00 UTC and next occurrence is Oct 23 after the current slot', () => {
+  assert.equal(nextFridayOccurrence(NOW), FRIDAY);
+  assert.deepEqual(localParts(FRIDAY), { dateKey: '2026-10-23', hour: 14, minute: 0, weekday: 5 });
+  assert.equal(nextFridayOccurrence(FRIDAY), '2026-10-30T11:00:00.000Z');
+  assert.equal(nextFridayOccurrence('2026-12-31T20:00:00.000Z'), '2027-01-01T11:00:00.000Z');
 });
 
 test('activation changes only settings; scheduler defaults disabled', () => {
   const f = fixture(); f.seed(1);
   assert.equal(f.scheduler.status().enabled, false);
-  assert.equal(f.scheduler.tick(THURSDAY).status, 'not_due');
+  assert.equal(f.scheduler.tick(FRIDAY).status, 'not_due');
   const c = activate(f);
-  assert.equal(c.firstRunAt, THURSDAY);
-  assert.equal(c.nextRunAt, THURSDAY);
+  assert.equal(c.firstRunAt, FRIDAY);
+  assert.equal(c.nextRunAt, FRIDAY);
   assert.equal(f.balance(1), 500);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 0);
   assert.equal(f.scheduler.tick(NOW).status, 'not_due');
 });
 
-test('no run before 23:00, Friday, or a missed previous week', () => {
-  const config = { enabled: true, firstRunAt: THURSDAY, hour: 23, minute: 0 };
-  assert.equal(dueSlot(config, '2026-10-22T19:59:59.000Z'), null);
-  assert.equal(dueSlot(config, '2026-10-22T21:00:00.000Z'), null);
-  assert.equal(dueSlot(config, '2026-10-23T20:00:00.000Z'), null);
-  assert.equal(dueSlot(config, '2026-10-22T20:45:00.000Z').key, 'THURSDAY-2026-10-22');
+test('no run before 14:00, Saturday, or a missed previous week', () => {
+  const config = { enabled: true, firstRunAt: FRIDAY, hour: 14, minute: 0 };
+  assert.equal(dueSlot(config, '2026-10-23T10:59:59.000Z'), null);
+  assert.equal(dueSlot(config, '2026-10-24T10:00:00.000Z'), null);
+  assert.equal(dueSlot(config, '2026-10-24T11:00:00.000Z'), null);
+  assert.equal(dueSlot(config, '2026-10-23T11:45:00.000Z').key, 'FRIDAY-2026-10-23');
 });
 
-test('charges active captains only; exact 1 JOD becomes zero and remains active', () => {
+test('charges every active non-archived captain regardless of balance or activity', () => {
   const f = fixture();
   f.seed(1); f.seed(2, { wallet_cents: 100 });
-  f.seed(3, { wallet_cents: 99 });
-  f.seed(4, { created_at: '2026-10-22T01:00:00.000Z' });
-  f.seed(5, { created_at: '2026-10-21T22:00:00.000Z' }); // Today in Amman, yesterday UTC.
+  f.seed(3, { wallet_cents: 0 });
+  f.seed(4, { activity: false });
+  f.seed(5, { wallet_cents: -50 });
   f.seed(6, { active: 0 }); f.seed(7, { account_status: 'suspended' });
   f.seed(8, { archived_at: NOW }); f.seed(9, { is_bot: 1 });
   f.seed(10, { role: 'company' }); f.seed(11, { account_status: 'merged' });
   f.seed(12, { created_at: 'bad-date' }); f.seed(13, { created_at: '2026-10-23T00:00:00.000Z' });
   activate(f);
-  const r = f.scheduler.tick(THURSDAY);
-  assert.deepEqual(r, { status: 'completed', scheduleKey: 'THURSDAY-2026-10-22', appliedCount: 2, totalCents: 200 });
-  assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 0);
+  const r = f.scheduler.tick(FRIDAY);
+  assert.deepEqual(r, { status: 'completed', scheduleKey: 'FRIDAY-2026-10-23', appliedCount: 7, totalCents: 700 });
+  assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 0); assert.equal(f.balance(3), -100); assert.equal(f.balance(4), 400); assert.equal(f.balance(5), -150);
   assert.equal(f.db.prepare('SELECT active FROM users WHERE id=2').get().active, 1);
-  for (const id of [3,4,5,6,7,8,9,10,11,12,13]) assert.equal(f.balance(id), id === 3 ? 99 : 500);
-  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 2);
+  for (const id of [6,7,8,9,10,11]) assert.equal(f.balance(id), 500);
+  assert.equal(f.balance(12), 400); assert.equal(f.balance(13), 400);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 7);
   const details = JSON.parse(f.db.prepare('SELECT details_json FROM wallet_ledger WHERE user_id=1').get().details_json);
   assert.equal(details.scheduled, true); assert.equal(details.manual, false);
 });
 
 test('completed schedule is never rerun after restart or later top-up', () => {
   const f = fixture(); f.seed(1); f.seed(2, { wallet_cents: 50 }); activate(f);
-  f.scheduler.tick(THURSDAY);
+  f.scheduler.tick(FRIDAY);
   f.db.prepare('UPDATE users SET wallet_cents=500 WHERE id=2').run();
   const restarted = createWeeklySubscriptionScheduler(f.dependencies);
-  assert.equal(restarted.tick('2026-10-22T20:30:00.000Z').status, 'already_completed');
+  assert.equal(restarted.tick('2026-10-23T20:30:00.000Z').status, 'already_completed');
   assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 500);
-  assert.equal(restarted.status(THURSDAY).lastRun.appliedCount, 1);
-  assert.equal(restarted.status(THURSDAY).nextRunAt, '2026-10-29T20:00:00.000Z');
+  assert.equal(restarted.status(FRIDAY).lastRun.appliedCount, 2);
+  assert.equal(restarted.status(FRIDAY).nextRunAt, '2026-10-30T11:00:00.000Z');
 });
 
 test('manual and automatic operations share idempotency across legacy UTC boundary', () => {
@@ -161,46 +162,46 @@ test('manual and automatic operations share idempotency across legacy UTC bounda
   assert.equal(f.balance(1), 400);
   const second = f.context.applyManualWeeklyCaptainCharges('2026-10-16T01:00:00.000Z');
   assert.equal(second.applied.length, 0); assert.equal(f.balance(1), 400);
-  activate(f); assert.equal(f.scheduler.tick(THURSDAY).appliedCount, 1);
+  activate(f); assert.equal(f.scheduler.tick(FRIDAY).appliedCount, 1);
   assert.equal(f.balance(1), 300);
   const friday = f.context.applyManualWeeklyCaptainCharges('2026-10-23T01:00:00.000Z');
   assert.equal(friday.applied.length, 0); assert.equal(f.balance(1), 300);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 2);
 });
 
-test('the next Thursday can charge once again, and skipped new captains qualify then', () => {
-  const f = fixture(); f.seed(1); f.seed(2, { created_at: '2026-10-22T01:00:00.000Z' }); activate(f);
-  assert.equal(f.scheduler.tick(THURSDAY).appliedCount, 1);
-  assert.equal(f.scheduler.tick('2026-10-29T20:00:00.000Z').appliedCount, 2);
-  assert.equal(f.balance(1), 300); assert.equal(f.balance(2), 400);
+test('the next Friday can charge once again, and skipped new captains qualify then', () => {
+  const f = fixture(); f.seed(1); f.seed(2, { created_at: '2026-10-23T01:00:00.000Z' }); activate(f);
+  assert.equal(f.scheduler.tick(FRIDAY).appliedCount, 2);
+  assert.equal(f.scheduler.tick('2026-10-30T11:00:00.000Z').appliedCount, 2);
+  assert.equal(f.balance(1), 300); assert.equal(f.balance(2), 300);
 });
 
 test('batch failure rolls back all wallets and ledgers; retry is bounded and idempotent', () => {
   const f = fixture(); f.seed(1); f.seed(2); activate(f); f.failAudit(2);
-  assert.equal(f.scheduler.tick(THURSDAY).status, 'failed');
+  assert.equal(f.scheduler.tick(FRIDAY).status, 'failed');
   assert.equal(f.balance(1), 500); assert.equal(f.balance(2), 500);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 0);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM captain_subscription_charges').get().n, 0);
-  assert.equal(f.scheduler.tick('2026-10-22T20:01:00.000Z').status, 'retry_wait');
+  assert.equal(f.scheduler.tick('2026-10-23T11:01:00.000Z').status, 'retry_wait');
   f.failAudit(null);
-  const retry = f.scheduler.tick('2026-10-22T20:05:00.000Z');
+  const retry = f.scheduler.tick('2026-10-23T11:05:00.000Z');
   assert.equal(retry.appliedCount, 2); assert.equal(f.balance(1), 400);
-  assert.equal(f.scheduler.status('2026-10-22T20:06:00.000Z').lastRun.attemptCount, 2);
-  assert.equal(f.scheduler.tick('2026-10-22T20:10:00.000Z').status, 'already_completed');
+  assert.equal(f.scheduler.status('2026-10-23T20:06:00.000Z').lastRun.attemptCount, 2);
+  assert.equal(f.scheduler.tick('2026-10-23T11:10:00.000Z').status, 'already_completed');
 });
 
-test('persistent failures stop after three attempts and never catch up on Friday', () => {
+test('persistent failures stop after three attempts and never catch up on Saturday', () => {
   const f = fixture(); f.seed(1); activate(f); f.failAudit(1);
-  for (const stamp of [THURSDAY, '2026-10-22T20:05:00.000Z', '2026-10-22T20:10:00.000Z']) assert.equal(f.scheduler.tick(stamp).status, 'failed');
-  assert.equal(f.scheduler.tick('2026-10-22T20:15:00.000Z').status, 'attempt_limit');
-  assert.equal(f.scheduler.tick('2026-10-22T21:00:00.000Z').status, 'not_due');
+  for (const stamp of [FRIDAY, '2026-10-23T20:05:00.000Z', '2026-10-23T20:10:00.000Z']) assert.equal(f.scheduler.tick(stamp).status, 'failed');
+  assert.equal(f.scheduler.tick('2026-10-23T11:15:00.000Z').status, 'attempt_limit');
+  assert.equal(f.scheduler.tick('2026-10-24T11:00:00.000Z').status, 'not_due');
   assert.equal(f.balance(1), 500);
 });
 
-test('startup catches a missed time on the same Thursday, with only one timer', () => {
+test('startup catches a missed time on the same Friday, with only one timer', () => {
   let timerCount = 0; let clearCount = 0;
   const f = fixture({ setIntervalFn: () => { timerCount += 1; return { unref() {} }; }, clearIntervalFn: () => { clearCount += 1; } });
-  f.seed(1); activate(f); f.setNow('2026-10-22T20:20:00.000Z');
+  f.seed(1); activate(f); f.setNow('2026-10-23T11:20:00.000Z');
   f.scheduler.start(); f.scheduler.start();
   assert.equal(timerCount, 1); assert.equal(f.balance(1), 400);
   f.scheduler.stop(); assert.equal(clearCount, 1); assert.equal(f.scheduler.status().timerRunning, false);
@@ -209,20 +210,20 @@ test('startup catches a missed time on the same Thursday, with only one timer', 
 test('disable changes no wallet; invalid time and corrupted settings fail closed', () => {
   const f = fixture(); f.seed(1); activate(f);
   assert.throws(() => f.scheduler.configure({ enabled: true, hour: 24, minute: 0 }));
-  assert.throws(() => f.scheduler.configure({ enabled: 'true', hour: 23, minute: 0 }));
-  f.scheduler.configure({ enabled: false, hour: 23, minute: 0 });
-  assert.equal(f.scheduler.tick(THURSDAY).status, 'not_due'); assert.equal(f.balance(1), 500);
+  assert.throws(() => f.scheduler.configure({ enabled: 'true', hour: 14, minute: 0 }));
+  f.scheduler.configure({ enabled: false, hour: 14, minute: 0 });
+  assert.equal(f.scheduler.tick(FRIDAY).status, 'not_due'); assert.equal(f.balance(1), 500);
   f.dependencies.setSetting('captain_weekly_schedule_v1', '{not-json');
   assert.equal(f.scheduler.status().enabled, false);
 });
 
 test('Amman business-week boundary and owner-only schedule endpoint contract', () => {
-  assert.deepEqual(businessWeekPeriod('2026-10-22T20:00:00.000Z'), {
+  assert.deepEqual(businessWeekPeriod('2026-10-23T11:00:00.000Z'), {
     start: '2026-10-21T21:00:00.000Z', end: '2026-10-28T21:00:00.000Z',
   });
   assert.match(source, /app\.get\("\/api\/admin\/captain-subscriptions\/schedule", requireBotWalletOwner/);
   assert.match(source, /app\.post\("\/api\/admin\/captain-subscriptions\/schedule", requireBotWalletOwner/);
-  assert.match(source, /ENABLE_THURSDAY_WEEKLY_CAPTAIN_CHARGE/);
+  assert.match(source, /ENABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE/);
   assert.match(source, /financialMutation: false/);
   assert.match(source, /CAPTAIN_DAILY_CHARGE_ENABLED = false/);
   assert.match(source, /CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false/);

@@ -43,17 +43,17 @@ function localDateTimeIso(dateKey, hour = 0, minute = 0) {
 }
 
 // The business week starts Thursday at 00:00 in Amman. This guard also finds
-// historical manual fees written under the legacy Friday-UTC period keys.
+// historical manual fees written under the legacy UTC period keys.
 function businessWeekPeriod(stamp) {
   const parts = localParts(stamp);
   const startDate = shiftDate(parts.dateKey, -((parts.weekday - 4 + 7) % 7));
   return { start: localDateTimeIso(startDate), end: localDateTimeIso(shiftDate(startDate, 7)) };
 }
 
-function nextThursdayOccurrence(stamp, hour = 23, minute = 0) {
+function nextFridayOccurrence(stamp, hour = 14, minute = 0) {
   validateTime(hour, minute);
   const parts = localParts(stamp);
-  let dateKey = shiftDate(parts.dateKey, (4 - parts.weekday + 7) % 7);
+  let dateKey = shiftDate(parts.dateKey, (5 - parts.weekday + 7) % 7);
   let candidate = localDateTimeIso(dateKey, hour, minute);
   if (Date.parse(candidate) <= Date.parse(stamp)) {
     dateKey = shiftDate(dateKey, 7);
@@ -72,11 +72,11 @@ function validateTime(hour, minute) {
 function dueSlot(config, stamp) {
   if (!config.enabled || !config.firstRunAt) return null;
   const parts = localParts(stamp);
-  if (parts.weekday !== 4 || parts.hour * 60 + parts.minute < config.hour * 60 + config.minute) return null;
+  if (parts.weekday !== 5 || parts.hour * 60 + parts.minute < config.hour * 60 + config.minute) return null;
   const scheduledAt = localDateTimeIso(parts.dateKey, config.hour, config.minute);
   if (Date.parse(scheduledAt) < Date.parse(config.firstRunAt)) return null;
-  // Never catch up on Friday or accumulate missed weeks.
-  return { key: `THURSDAY-${parts.dateKey}`, date: parts.dateKey, scheduledAt };
+  // Never catch up on a missed Friday or accumulate missed weeks.
+  return { key: `FRIDAY-${parts.dateKey}`, date: parts.dateKey, scheduledAt };
 }
 
 function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute, audit,
@@ -98,14 +98,14 @@ function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute
   let running = false;
 
   function config() {
-    const fallback = { enabled: false, weekday: 4, hour: 23, minute: 0,
+    const fallback = { enabled: false, weekday: 5, hour: 14, minute: 0,
       timezone: TIMEZONE, firstRunAt: null };
     let saved;
     try { saved = JSON.parse(getSetting(SETTING_KEY, 'null')); } catch { return fallback; }
     if (!saved || typeof saved.enabled !== 'boolean') return fallback;
     try { validateTime(saved.hour, saved.minute); } catch { return fallback; }
     if (saved.enabled && !Number.isFinite(Date.parse(saved.firstRunAt))) return fallback;
-    return { ...fallback, ...saved, weekday: 4, timezone: TIMEZONE };
+    return { ...fallback, ...saved, weekday: 5, timezone: TIMEZONE };
   }
 
   function status(stamp = clock()) {
@@ -115,15 +115,15 @@ function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute
       completed_at AS completedAt,applied_count AS appliedCount,total_cents AS totalCents,
       skipped_count AS skippedCount,error FROM captain_weekly_schedule_runs
       ORDER BY scheduled_at DESC LIMIT 1`).get() || null;
-    let nextRunAt = current.enabled ? nextThursdayOccurrence(stamp, current.hour, current.minute) : null;
+    let nextRunAt = current.enabled ? nextFridayOccurrence(stamp, current.hour, current.minute) : null;
     if (nextRunAt && Date.parse(nextRunAt) < Date.parse(current.firstRunAt)) nextRunAt = current.firstRunAt;
     const due = dueSlot(current, stamp);
     const dueRecord = due ? db.prepare('SELECT status,attempt_count FROM captain_weekly_schedule_runs WHERE schedule_key=?').get(due.key) : null;
     if (due && (!dueRecord || (dueRecord.status === 'failed' && dueRecord.attempt_count < MAX_ATTEMPTS))) nextRunAt = due.scheduledAt;
-    return { ...current, nextRunAt, amountCents: 100, eligibleScope: 'active_registered_captains_with_completed_download_or_execution',
-      excludeRegisteredOnExecutionDay: true, minimumBalanceCents: 100,
-      excludedIdentities: ['bot', 'company', 'archived', 'merged', 'inactive', 'official_group_admin', 'no_completed_download_or_execution'],
-      repeatedWithinWeek: false, catchUp: 'same_thursday_only', maxAttempts: MAX_ATTEMPTS,
+    return { ...current, nextRunAt, amountCents: 100, eligibleScope: 'active_non_archived_captains_regardless_of_balance_or_activity',
+      excludeRegisteredOnExecutionDay: false, minimumBalanceCents: 0,
+      excludedIdentities: ['bot', 'company', 'archived', 'merged', 'inactive', 'official_group_admin'],
+      repeatedWithinWeek: false, catchUp: 'same_friday_only', maxAttempts: MAX_ATTEMPTS,
       timerRunning: timer !== null, lastRun };
   }
 
@@ -135,8 +135,8 @@ function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute
     validateTime(hour, minute);
     const stamp = clock();
     const unchanged = prior.enabled && input.enabled && prior.hour === hour && prior.minute === minute;
-    const next = { enabled: input.enabled, weekday: 4, hour, minute, timezone: TIMEZONE,
-      firstRunAt: input.enabled ? (unchanged ? prior.firstRunAt : nextThursdayOccurrence(stamp, hour, minute)) : prior.firstRunAt,
+    const next = { enabled: input.enabled, weekday: 5, hour, minute, timezone: TIMEZONE,
+      firstRunAt: input.enabled ? (unchanged ? prior.firstRunAt : nextFridayOccurrence(stamp, hour, minute)) : prior.firstRunAt,
       updatedAt: stamp };
     setSetting(SETTING_KEY, JSON.stringify(next));
     return status(stamp);
@@ -206,4 +206,4 @@ function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute
 }
 
 module.exports = { TIMEZONE, SETTING_KEY, localParts, localDateTimeIso, businessWeekPeriod,
-  nextThursdayOccurrence, dueSlot, createWeeklySubscriptionScheduler };
+  nextFridayOccurrence, dueSlot, createWeeklySubscriptionScheduler };

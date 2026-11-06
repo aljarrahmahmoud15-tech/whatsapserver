@@ -152,7 +152,7 @@ const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number.isFinite(configuredUnquote
   : 6 * 60 * 60 * 1000;
 const CAPTAIN_SUBSCRIPTION_CENTS = 100;
 // Legacy interval-based subscription deductions remain hard-off.
-// Thursday scheduling has a separate authenticated owner setting, off by default.
+// Friday scheduling has a separate authenticated owner setting, off by default.
 const CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false;
 const configuredLargeDirectCreditJod = Number(process.env.DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_JOD || 10);
 const DIRECT_WALLET_LARGE_CREDIT_THRESHOLD_CENTS = Math.max(1, Math.round((Number.isFinite(configuredLargeDirectCreditJod) ? configuredLargeDirectCreditJod : 10) * 100));
@@ -5437,13 +5437,7 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
   const businessWeek = businessWeekPeriod(stamp);
   const candidates = db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
     FROM users
-    WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND archived_at IS NULL
-      AND EXISTS (
-        SELECT 1 FROM orders o
-        JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
-        WHERE (o.captain_user_id=users.id OR o.producer_user_id=users.id)
-          AND o.status='completed' AND o.settlement_state='settled'
-      )
+    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
     ORDER BY id`).all();
   const applied = [];
   const skipped = [];
@@ -5457,21 +5451,17 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
         if (existing) return { state: "already_recorded", chargeId: existing.id, status: existing.status };
         const current = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,is_bot,account_status,created_at FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status='active' AND archived_at IS NULL").get(captain.id);
         if (!current || !current.active) return { state: "ineligible" };
-        if (!Number.isFinite(Date.parse(current.created_at))) return { state: "invalid_registration_date" };
-        if (ammanDateKey(current.created_at) === today) return { state: "registered_today" };
-        if (ammanDateKey(current.created_at) > today) return { state: "invalid_registration_date" };
-        if (Number(current.wallet_cents || 0) < CAPTAIN_SUBSCRIPTION_CENTS) return { state: "below_balance_threshold" };
         const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
         db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, captain.id);
         const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
-          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, scheduled ? "اشتراك أسبوعي تلقائي يوم الخميس" : "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, registeredDate: ammanDateKey(current.created_at), chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }), reference);
+          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, scheduled ? "اشتراك أسبوعي تلقائي يوم الجمعة" : "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }), reference);
         const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,ledger_id,reference,created_at,applied_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)")
-          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ registeredDate: ammanDateKey(current.created_at), chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }));
+          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }));
         audit("captain.subscription.charged", "user", captain.id, { phone: current.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference, manual: !scheduled, scheduled, scheduleKey }, null);
         return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance };
       })();
       if (result.state === "applied") applied.push({ ...captain, ...result, reference });
-      else if (["registered_today", "below_balance_threshold", "invalid_registration_date"].includes(result.state)) skipped.push({ ...captain, ...result, reference });
+      else if (result.state === "ineligible") skipped.push({ ...captain, ...result, reference });
     } catch (error) {
       console.error(`[Subscription] ${scheduled ? "scheduled" : "manual"} charge failed for captain ${captain.id}:`, error.message);
       skipped.push({ ...captain, state: "error", reference, error: error.message });
@@ -17033,7 +17023,7 @@ app.get("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, admi
   res.json({ success: true, mutation: "none", ...weeklySubscriptionScheduler.status() });
 });
 app.post("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, (req, res) => {
-  const expected = req.body?.enabled === true ? "ENABLE_THURSDAY_WEEKLY_CAPTAIN_CHARGE" : "DISABLE_THURSDAY_WEEKLY_CAPTAIN_CHARGE";
+  const expected = req.body?.enabled === true ? "ENABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE" : "DISABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE";
   if (String(req.body?.confirmation || "") !== expected) return res.status(400).json({ error: "تأكيد المالك للجدولة مطلوب" });
   try {
     const schedule = db.transaction(() => {
