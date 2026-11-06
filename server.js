@@ -125,6 +125,8 @@ const ADMIN_PANEL_CREDENTIALS = Object.freeze({
 });
 const OWNER_DIRECT_TOKEN = process.env.OWNER_DIRECT_TOKEN || "";
 const OWNER_DIRECT_EXPIRES_AT = Number(process.env.OWNER_DIRECT_EXPIRES_AT || 0);
+const ADMIN_AUTH_GENERATION_SETTING_KEY = "admin_auth_generation_v1";
+const ADMIN_BEARER_GENERATION_SETTING_KEY = "admin_bearer_generation_v1";
 const OWNER_VAULT_SECRET = process.env.OWNER_VAULT_SECRET || "";
 const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERNAME || "admin";
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "";
@@ -930,7 +932,7 @@ app.get("/owner-direct", (req, res) => {
   const validToken = OWNER_DIRECT_TOKEN && constantTimeEquals(provided, OWNER_DIRECT_TOKEN);
   const validTime = OWNER_DIRECT_EXPIRES_AT > Date.now();
   if (!validToken || !validTime || !JWT_SECRET) return res.status(401).send("رابط الدخول المباشر غير صالح أو انتهت صلاحيته");
-  setSessionCookie(res, jwt.sign({ role: "company", username: ADMIN_USERNAME, direct: true }, JWT_SECRET, { expiresIn: "30m" }));
+  setSessionCookie(res, jwt.sign({ role: "company", username: ADMIN_USERNAME, direct: true, authGeneration: currentAdminAuthGeneration() }, JWT_SECRET, { expiresIn: "30m" }));
   res.setHeader("Referrer-Policy", "no-referrer");
   res.redirect(302, "/");
 });
@@ -3291,6 +3293,22 @@ function getSetting(key, fallback = null) {
 }
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
+}
+function currentAdminAuthGeneration() {
+  let generation = getSetting(ADMIN_AUTH_GENERATION_SETTING_KEY, null);
+  if (!generation) {
+    generation = crypto.randomBytes(24).toString("base64url");
+    setSetting(ADMIN_AUTH_GENERATION_SETTING_KEY, generation);
+  }
+  if (getSetting(ADMIN_BEARER_GENERATION_SETTING_KEY, null) === null) {
+    setSetting(ADMIN_BEARER_GENERATION_SETTING_KEY, generation);
+  }
+  return String(generation);
+}
+function rotateAdminAuthGeneration() {
+  const generation = crypto.randomBytes(24).toString("base64url");
+  setSetting(ADMIN_AUTH_GENERATION_SETTING_KEY, generation);
+  return generation;
 }
 function insufficientBalanceAcceptanceDeletionEnabled() {
   const raw = getSetting(INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY, null);
@@ -10318,13 +10336,14 @@ function isAdmin(req) {
 }
 function getWebAdminSession(req) {
   const header = String(req.headers.authorization || "");
-  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return { role: "company", username: ADMIN_USERNAME, source: "admin_token" };
+  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken) && getSetting(ADMIN_BEARER_GENERATION_SETTING_KEY, null) === currentAdminAuthGeneration()) return { role: "company", username: ADMIN_USERNAME, source: "admin_token" };
   if (!JWT_SECRET) return null;
   const token = parseCookies(req.headers.cookie || "").aljarah_session;
   if (!token) return null;
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     if (!payload || !["company", "accountant", "operations"].includes(payload.role)) return null;
+    if (!payload.authGeneration || payload.authGeneration !== currentAdminAuthGeneration()) return null;
     return payload;
   } catch { return null; }
 }
@@ -11218,7 +11237,7 @@ app.post("/api/auth/login", async (req, res) => {
   if (!JWT_SECRET) return res.status(503).json({ error: "مصادقة الإدارة غير مهيأة" });
   const validPassword = credentials.password === ADMIN_PASSWORD ? validAdminPassword(password) : constantTimeEquals(password, credentials.password);
   if (username !== credentials.username || !validPassword) return res.status(401).json({ error: "بيانات دخول لوحة الإدارة غير صحيحة" });
-  const token = jwt.sign({ role: "company", username, panel: panel || "default" }, JWT_SECRET, { expiresIn: "7d" });
+  const token = jwt.sign({ role: "company", username, panel: panel || "default", authGeneration: currentAdminAuthGeneration() }, JWT_SECRET, { expiresIn: "7d" });
   setSessionCookie(res, token);
   res.json({ success: true, role: "company", username, panel: panel || "default" });
 });
@@ -11229,13 +11248,21 @@ app.post("/api/auth/staff-login", (req, res) => {
   if (!JWT_SECRET || !account || !account.active || !bcrypt.compareSync(password, account.password_hash)) return res.status(401).json({ error: "اسم المستخدم أو كلمة المرور غير صحيحة" });
   const permissions = staffAccountPermissions(account);
   db.prepare("UPDATE staff_accounts SET last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), account.id);
-  setSessionCookie(res, jwt.sign({ role: account.role, staffId: account.id, username: account.username, name: account.name, permissions }, JWT_SECRET, { expiresIn: "12h" }));
+  setSessionCookie(res, jwt.sign({ role: account.role, staffId: account.id, username: account.username, name: account.name, permissions, authGeneration: currentAdminAuthGeneration() }, JWT_SECRET, { expiresIn: "12h" }));
   res.json({ success: true, role: account.role, name: account.name, username: account.username, permissions, permissionLabels: STAFF_PERMISSION_LABELS, portalUrl: staffPortalUrl(req) });
 });
 app.post("/api/auth/logout", (req, res) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
   res.json({ success: true });
+});
+app.post("/api/auth/logout-all", requireOwnerAdmin, (req, res) => {
+  const generation = rotateAdminAuthGeneration();
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `aljarah_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`);
+  audit("admin.auth.logout_all", "system", "admin_sessions", { generationLast4: generation.slice(-4), actor: req.ownerSession?.username || "owner" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, sessionsRevoked: true, message: "تم تسجيل الخروج من جميع لوحات الإدارة" });
 });
 app.get("/api/staff/me", requireStaff, (req, res) => res.json({ user: { role: req.staffSession.role, username: req.staffSession.username, name: req.staffSession.name || req.staffSession.username, permissions: req.staffSession.role === "company" ? [...STAFF_PERMISSION_KEYS] : (req.staffSession.permissions || []), permissionLabels: STAFF_PERMISSION_LABELS }, portalUrl: staffPortalUrl(req) }));
 app.get("/api/staff/overview", requireStaff, (req, res) => {
@@ -12100,6 +12127,7 @@ app.post("/api/admin/change-password", requireOwnerAdmin, (req, res) => {
     fs.writeFileSync(temporaryPath, `${newToken}\n`, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporaryPath, PERSISTED_ADMIN_TOKEN_PATH);
     activeAdminToken = newToken;
+    setSetting(ADMIN_BEARER_GENERATION_SETTING_KEY, currentAdminAuthGeneration());
     audit("admin.token.changed", "system", "admin", { persisted: true });
     res.setHeader("Cache-Control", "no-store");
     res.json({ success: true, message: "ADMIN_TOKEN changed and persisted", restartRequiredForRenderEnv: true });
