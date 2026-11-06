@@ -8,11 +8,12 @@ const guardEnd = server.indexOf('\nfunction latestOpenOrder', guardStart);
 assert.ok(guardStart >= 0 && guardEnd > guardStart, 'acceptance balance policy must exist');
 const guardSource = server.slice(guardStart, guardEnd);
 assert.match(guardSource, /state: "insufficient_balance"/);
-assert.doesNotMatch(guardSource, /allowed_with_negative_balance/);
+assert.match(guardSource, /CAPTAIN_MIN_BALANCE_CENTS/);
 assert.match(guardSource, /return \{ allowed: false, state: "insufficient_balance"/);
 assert.match(guardSource, /return \{ allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents \}/);
 
 const context = {
+  CAPTAIN_MIN_BALANCE_CENTS: -100,
   BOT_FINANCIAL_MODE: 'captain',
   calculateConfiguredSettlement: () => ({ confirmingCaptainFeeCents: 125 }),
   companyUser: () => ({ id: 1, role: 'company' }),
@@ -20,8 +21,7 @@ const context = {
 vm.runInNewContext(`${guardSource}\nthis.acceptanceBalanceGuard = acceptanceBalanceGuard;`, context);
 const candidate = { id: 55, price_cents: 1000, order_kind: 'regular' };
 const lowPositive = context.acceptanceBalanceGuard(candidate, { id: 17, is_bot: 0, wallet_cents: 25 });
-assert.equal(lowPositive.allowed, false);
-assert.equal(lowPositive.state, 'insufficient_balance');
+assert.equal(lowPositive.allowed, true);
 assert.equal(lowPositive.projectedBalanceCents, -100);
 const alreadyNegative = context.acceptanceBalanceGuard(candidate, { id: 18, is_bot: 0, wallet_cents: -50 });
 assert.equal(alreadyNegative.allowed, false);
@@ -53,7 +53,7 @@ const historyEnd = server.indexOf('\nfunction ', historyStart + 10);
 const history = server.slice(historyStart, historyEnd > historyStart ? historyEnd : undefined);
 assert.match(history, /return \{ state: "insufficient_balance"/);
 assert.match(server, /if \(direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS\)/, 'manual wallet debits retain their existing debt limit');
-assert.match(server, /negative projected balances rejected; normal debit 15%, order debit 20%/);
-assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ الطلب العادي يخصم 15% والأوردر يخصم 20% عند كفاية الرصيد/);
+assert.match(server, /negative projected balances allowed down to -1\.00 JOD; normal debit 15%, order debit 20%/);
+assert.match(server, /يُسمح بالتثبيت حتى رصيد متوقع -1\.00 دينار؛ الطلب العادي يخصم 15% والأوردر يخصم 20% حتى حد الدين/);
 
-console.log('negative-balance settlement is rejected before mutation; manual debit limit remains');
+console.log('negative-balance settlement is allowed to -1.00 JOD and rejected below the floor; manual debit limit remains');

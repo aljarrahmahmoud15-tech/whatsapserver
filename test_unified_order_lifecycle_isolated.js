@@ -345,10 +345,10 @@ async function approve(doneId = "done-1") {
   reset({ executorBalance: 239 });
   await ingestPrice();
   await context.handleIncomingMessage(message("done-debt", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)));
-  assert.equal(state.acceptance, null, "لا يُسجل تم عندما لا يغطي الرصيد العمولة");
-  assert.equal(state.candidate.status, "candidate", "يبقى الطلب متاحًا بعد رفض القبول منخفض الرصيد");
-  assert.equal(state.ledgers.length, 0, "رفض القبول منخفض الرصيد لا ينشئ حركة مالية");
-  assert.equal(users.executor.wallet_cents, 239, "لا يتغير رصيد المنفذ عند الرفض");
+  assert.ok(state.acceptance, "يُسجل تم عندما يبقى الرصيد المتوقع ضمن حد -1.00");
+  assert.equal(state.candidate.status, "pending", "يبقى القبول بانتظار التأكيد حتى التسوية");
+  assert.equal(state.ledgers.length, 0, "تسجيل القبول لا ينشئ حركة مالية قبل التأكيد");
+  assert.equal(users.executor.wallet_cents, 239, "لا يتغير الرصيد قبل تأكيد التسوية");
 
   reset({ archived: true });
   await context.handleIncomingMessage(message("price-archived", "السعر 20", PRODUCER));

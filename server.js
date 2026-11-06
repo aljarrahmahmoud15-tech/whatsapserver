@@ -130,7 +130,7 @@ const CAPTAIN_USERNAME = process.env.CAPTAIN_USERNAME || process.env.ADMIN_USERN
 const CAPTAIN_PASSWORD = process.env.CAPTAIN_PASSWORD || process.env.ADMIN_PASSWORD || "";
 const CAPTAIN_PASSWORD_HASH = process.env.CAPTAIN_PASSWORD_HASH || ADMIN_PASSWORD_HASH;
 const CAPTAIN_SESSION_SECRET = JWT_SECRET || ADMIN_TOKEN || crypto.randomBytes(32).toString("hex");
-const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -300);
+const CAPTAIN_MIN_BALANCE_CENTS = Number(process.env.CAPTAIN_MIN_BALANCE_CENTS || -100);
 // Owner-requested temporary pause: keep enabled until the owner explicitly asks to resume.
 // Owner setting gates low-balance «تم» acceptance deletion; captain removal has its own pause below.
 const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY = "insufficient_balance_acceptance_deletion_enabled";
@@ -2991,9 +2991,11 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
     : removalContext?.confirmedSettlement === true
       ? confirmedOrderDebtEvidence(removalContext.orderId, captain.id)
       : null;
-  const removal = removalEvidence
-    ? await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }))
-    : { status: "removal_deferred_confirmation_required", error: "confirmed_settlement_and_card_required" };
+  const removal = CAPTAIN_REMOVAL_PAUSED
+    ? { status: "removal_paused", error: "captain_removal_paused" }
+    : removalEvidence
+      ? await suspendMemberForDebt(configuredRuntimeGroupId(), captain.phone, balanceCents, removalContext).catch((error) => ({ status: "remove_failed", error: String(error?.message || error).slice(0, 200) }))
+      : { status: "removal_deferred_confirmation_required", error: "confirmed_settlement_and_card_required" };
   if (!removalEvidence) {
     audit(isZeroBalance ? "captain.wallet.zero_removal_deferred" : "captain.wallet.negative_removal_deferred", "user", captain.id, {
       balanceCents: Number(balanceCents),
@@ -3010,16 +3012,18 @@ async function notifyCaptainNegativeBalance({ captainId, balanceCents, reason, r
       policy: "owner_confirmed_negative_balance_without_settlement_gate",
     });
   }
-  const removalLine = removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
-    ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
-    : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
-      ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
-      : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
+  const removalLine = removal.status === "removal_paused"
+    ? "يبقى حسابك نشطًا ولن تتم إزالتك من القروب بسبب الرصيد السالب وفق سياسة حد -1.00 د.أ."
+    : removal.status === "removed" || removal.status === "already_removed" || removal.status === "not_in_group"
+      ? "تم إيقاف الحساب وإزالتك من قروب وصلني الآن إلى حين تسديد الرصيد المستحق."
+      : removal.status === "account_suspended_whatsapp_unavailable" || removal.status === "group_unavailable" || removal.status === "remove_failed"
+        ? "تم إيقاف الحساب في النظام، وتعذرت إزالته من القروب حاليًا؛ ستتم إعادة المحاولة تلقائيًا."
+        : "تم تسجيل الرصيد المستحق، وسيبقى الحساب معزولًا حتى تسوية الدين بقرار إداري.";
   const lines = [
     `عزيزي الكابتن ${captain.name}،`,
     `أصبح رصيد محفظتك الحالي ${money(balanceCents)} JOD.`,
     isZeroBalance ? "عند وصول الرصيد إلى صفر، يُوقف الحساب ويُزال من القروب عند الإمكان." : `المبلغ المستحق لشحن المحفظة وتصفير الدين: ${money(Math.abs(Number(balanceCents)))} JOD.`,
-    isZeroBalance ? "تُحفظ السجلات دون تسوية أو تثبيت أي طلب معلّق." : "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
+    isZeroBalance ? "تُحفظ السجلات دون تسوية أو تثبيت أي طلب معلّق." : CAPTAIN_REMOVAL_PAUSED ? "سياسة الرصيد السالب: يبقى الحساب نشطًا ولا تتم إزالته من القروب، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق." : "سياسة الرصيد السالب: يُعزل الحساب فورًا ويُزال من القروب عند الإمكان، مع حفظ السجل ودون تسوية أو تثبيت أي طلب معلّق.",
     removalLine,
     `سبب الحركة: ${String(reason || "حركة مالية").trim().slice(0, 160)}`,
     `يمكنك الدخول إلى بوابة الكابتن من هنا: ${captainAppUrl(PUBLIC_APP_URL)}`,
@@ -3096,31 +3100,47 @@ async function enforceCaptainWalletThresholds({ captainId, balanceCents, reason,
   if (!CAPTAIN_DEBT_POLICY_ENABLED) return { status: "disabled", policy: "debt_enforcement_disabled", financialMutation: false, groupMutation: false };
   const balance = Number(balanceCents);
   if (!Number.isFinite(balance)) return { status: "invalid_balance" };
+  if (balance < CAPTAIN_MIN_BALANCE_CENTS) {
+    audit("captain.wallet.debt_floor_reached", "user", captainId, {
+      balanceCents: balance,
+      debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS,
+      reason: String(reason || "").slice(0, 160),
+      reference: String(reference || "").slice(0, 100),
+      financialMutation: false,
+      groupMutation: false,
+      policy: "negative_balance_floor_without_removal",
+    });
+    return { status: "debt_floor_reached", financialMutation: false, groupMutation: false, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
+  }
   if (balance < 0) {
-    // Only a negative wallet isolates the captain. A zero wallet remains active
-    // under the warning policy; this never settles, creates, or confirms an order.
-    const automaticIsolationContext = {
-      ...(removalContext || {}),
-      allowUnconfirmedRemoval: true,
-      source: "automatic_negative_balance_isolation",
-    };
-    return notifyCaptainNegativeBalance({ captainId, balanceCents: balance, reason, reference, removalContext: automaticIsolationContext, allowZero: false });
+    audit("captain.wallet.negative_balance_allowed", "user", captainId, {
+      balanceCents: balance,
+      debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS,
+      reason: String(reason || "").slice(0, 160),
+      reference: String(reference || "").slice(0, 100),
+      financialMutation: false,
+      groupMutation: false,
+      policy: "allow_negative_balance_to_floor",
+    });
+    return { status: "allowed_negative_balance", financialMutation: false, groupMutation: false, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS };
   }
   if (balance < CAPTAIN_LOW_BALANCE_WARNING_CENTS) return notifyCaptainLowBalance({ captainId, balanceCents: balance, reason, reference });
   return { status: "not_required" };
 }
-async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false, allowUnconfirmedRemoval = false } = {}) {
+async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly = false } = {}) {
   if (!CAPTAIN_DEBT_POLICY_ENABLED) return { status: "disabled", policy: "debt_enforcement_disabled", scanned: 0, negative: 0, warned: 0, removed: 0, financialMutation: false, groupMutation: false };
   if (captainWalletPolicySweepInFlight) return { status: "already_running", scanned: 0, negative: 0, warned: 0 };
   captainWalletPolicySweepInFlight = true;
   const captains = negativeOnly
     ? db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < 0 ORDER BY id").all()
     : db.prepare("SELECT id,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status IN ('active','suspended') AND wallet_cents < ? ORDER BY id").all(CAPTAIN_LOW_BALANCE_WARNING_CENTS);
-  const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, deferred: 0, failed: 0, startedAt: now(), completedAt: null };
+  const progress = run || { status: "running", total: 0, scanned: 0, negative: 0, warned: 0, allowed: 0, floorReached: 0, removed: 0, alreadyRemoved: 0, deferred: 0, failed: 0, startedAt: now(), completedAt: null };
   progress.total = captains.length;
   progress.scanned = 0;
   progress.negative = 0;
   progress.warned = 0;
+  progress.allowed = 0;
+  progress.floorReached = 0;
   progress.removed = 0;
   progress.alreadyRemoved = 0;
   progress.deferred = 0;
@@ -3144,6 +3164,8 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
         else if (removalStatus === "already_removed" || removalStatus === "not_in_group") progress.alreadyRemoved += 1;
         // A policy gate is not a fault: removal is intentionally deferred until a confirmed
         // settlement plus confirmation card exists, or until the owner confirms explicitly.
+        else if (result?.status === "allowed_negative_balance") progress.allowed += 1;
+        else if (result?.status === "debt_floor_reached") progress.floorReached += 1;
         else if (removalStatus === "removal_deferred_confirmation_required") progress.deferred += 1;
         else {
           progress.failed += 1;
@@ -5929,7 +5951,7 @@ function acceptanceBalanceGuard(candidate, captain) {
   const balanceCents = Number(walletOwner.wallet_cents || 0);
   const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
   const projectedBalanceCents = balanceCents - requiredCents;
-  if (projectedBalanceCents < 0) {
+  if (projectedBalanceCents < CAPTAIN_MIN_BALANCE_CENTS) {
     return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents };
   }
   return { allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents };
@@ -9459,7 +9481,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
       audit("order.candidate_debt_limit_blocked", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
     }
-    if (projectedCaptainBalance < 0) {
+    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
       return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
     }
     const stamp = now();
@@ -9540,7 +9562,7 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
       audit("order.history.debt_limit_blocked", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
     }
-    if (projectedCaptainBalance < 0) {
+    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
       return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
     }
     const stamp = acceptedAt || now();
@@ -11352,7 +11374,7 @@ app.get("/api/public/operations-feed", (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { normalOrder: { producerWalletRate: "12.5%", companyWalletRate: "2.5%", confirmingCaptainWalletRate: "-15%" }, order: { producerWalletRate: "15%", companyWalletRate: "5%", confirmingCaptainWalletRate: "-20%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative projected balances rejected; normal debit 15%, order debit 20%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "send due-balance message and remove from configured group" : "no automatic warning, isolation, or removal", idempotent: true },
+    policy: { normalOrder: { producerWalletRate: "12.5%", companyWalletRate: "2.5%", confirmingCaptainWalletRate: "-15%" }, order: { producerWalletRate: "15%", companyWalletRate: "5%", confirmingCaptainWalletRate: "-20%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "negative projected balances allowed down to -1.00 JOD; normal debit 15%, order debit 20%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "allow negative balance to -1.00 JOD without suspension or removal" : "no automatic warning, isolation, or removal", idempotent: true },
   });
 });
 
@@ -16141,23 +16163,23 @@ app.get("/api/admin/notifications/negative-balance-warning/:runKey", requireAdmi
 });
 app.post("/api/admin/captains/enforce-wallet-policy", requireAdmin, async (req, res) => {
   if (!CAPTAIN_DEBT_POLICY_ENABLED) return res.status(409).json({ error: "تم إيقاف سياسة المديونية؛ لا توجد إزالة أو تحذيرات تلقائية", policy: "debt_enforcement_disabled", mutation: "none", financialMutation: false, groupMutation: false });
-  if (String(req.body?.confirmation || "") !== "REMOVE_NEGATIVE_CAPTAINS_NOW") return res.status(400).json({ error: "التأكيد الصريح REMOVE_NEGATIVE_CAPTAINS_NOW مطلوب" });
+  if (String(req.body?.confirmation || "") !== "CHECK_NEGATIVE_BALANCE_FLOOR") return res.status(400).json({ error: "التأكيد الصريح CHECK_NEGATIVE_BALANCE_FLOOR مطلوب" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
-  const runKey = String(req.body?.runKey || `NEG-REMOVE-${Date.now().toString(36).toUpperCase()}`).trim();
-  if (!/^NEG-REMOVE-[A-Z0-9-]{8,80}$/.test(runKey)) return res.status(400).json({ error: "مفتاح العملية غير صالح" });
-  if (captainWalletPolicyRuns.has(runKey)) return res.json({ success: true, started: true, ...captainWalletPolicyRuns.get(runKey), mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  const runKey = String(req.body?.runKey || `NEG-FLOOR-${Date.now().toString(36).toUpperCase()}`).trim();
+  if (!/^NEG-(?:REMOVE|FLOOR)-[A-Z0-9-]{8,80}$/.test(runKey)) return res.status(400).json({ error: "مفتاح العملية غير صالح" });
+  if (captainWalletPolicyRuns.has(runKey)) return res.json({ success: true, started: true, ...captainWalletPolicyRuns.get(runKey), mutation: "negative_balance_floor_checked_no_removal", financialMutation: false });
   if (captainWalletPolicySweepInFlight) return res.status(409).json({ error: "توجد عملية إزالة أخرى قيد التنفيذ؛ لا تُكرر الطلب" });
   const run = { runKey, status: "running", total: 0, scanned: 0, negative: 0, warned: 0, removed: 0, alreadyRemoved: 0, failed: 0, startedAt: now(), completedAt: null };
   captainWalletPolicyRuns.set(runKey, run);
-  void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true, allowUnconfirmedRemoval: true }).then((result) => {
-    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_captains_removed_and_notified", financialMutation: false, settlementGate: "bypassed_by_owner_admin_action" });
+  void enforceCaptainWalletThresholdsForAll(run, { negativeOnly: true }).then((result) => {
+    audit("captain.wallet_policy.enforced", "system", "captains", { ...result, runKey, mutation: "negative_balance_floor_checked_no_removal", financialMutation: false, groupMutation: false });
   });
-  res.status(202).json({ success: true, started: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  res.status(202).json({ success: true, started: true, ...run, mutation: "negative_balance_floor_checked_no_removal", financialMutation: false, groupMutation: false });
 });
 app.get("/api/admin/captains/enforce-wallet-policy/:runKey", requireAdmin, (req, res) => {
   const run = captainWalletPolicyRuns.get(String(req.params.runKey || ""));
   if (!run) return res.status(404).json({ error: "عملية إزالة المحافظ غير موجودة أو انتهت من الذاكرة" });
-  res.json({ success: true, ...run, mutation: "negative_captains_removed_and_notified", financialMutation: false });
+  res.json({ success: true, ...run, mutation: "negative_balance_floor_checked_no_removal", financialMutation: false, groupMutation: false });
 });
 app.post("/api/redeem", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 12)) return res.status(429).json({ error: "Too many redemption attempts; try again later" });
@@ -16350,7 +16372,7 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "2.5%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "15%", confirmingCaptainWalletDebit: "20%", companyWalletCredit: "5%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع سالبًا؛ الطلب العادي يخصم 15% والأوردر يخصم 20% عند كفاية الرصيد", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "إرسال قيمة الدين وإزالة الكابتن من القروب الرسمي" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12.5%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "2.5%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "15%", confirmingCaptainWalletDebit: "20%", companyWalletCredit: "5%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُسمح بالتثبيت حتى رصيد متوقع -1.00 دينار؛ الطلب العادي يخصم 15% والأوردر يخصم 20% حتى حد الدين", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: CAPTAIN_DEBT_POLICY_ENABLED ? "السماح برصيد سالب حتى -1.00 دينار دون إيقاف أو إزالة" : "لا تحذير أو عزل أو إزالة تلقائية", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();

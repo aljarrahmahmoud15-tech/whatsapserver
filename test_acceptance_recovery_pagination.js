@@ -64,6 +64,6 @@ assert.match(source, /deferred: progress\.deferred,/, 'deferred removals must be
 
 // The captain notification must state the immediate isolation policy clearly.
 assert.doesNotMatch(source, /بسبب تعذر الوصول إلى القروب الرسمي/, 'the misleading group-access reason must be gone');
-assert.match(source, /يُعزل الحساب فورًا ويُزال من القروب عند الإمكان/, 'the notification must state immediate isolation');
+assert.match(source, /يبقى حسابك نشطًا ولن تتم إزالتك من القروب/, 'the notification must respect the global removal pause');
 
 console.log('acceptance recovery pagination and unquoted recovery guardrails verified');
