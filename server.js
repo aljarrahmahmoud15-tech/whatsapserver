@@ -1600,12 +1600,18 @@ if (!existingOrderColumns.includes("archive_state")) db.exec("ALTER TABLE orders
 if (!existingOrderColumns.includes("archived_at")) db.exec("ALTER TABLE orders ADD COLUMN archived_at TEXT");
 if (!existingOrderColumns.includes("archive_reason")) db.exec("ALTER TABLE orders ADD COLUMN archive_reason TEXT");
 const existingCandidateColumns = db.prepare("PRAGMA table_info(order_candidates)").all().map((column) => column.name);
+if (!existingCandidateColumns.includes("public_trip_no")) db.exec("ALTER TABLE order_candidates ADD COLUMN public_trip_no INTEGER");
 if (!existingCandidateColumns.includes("lifecycle_stage")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_stage TEXT NOT NULL DEFAULT 'candidate_created'");
 if (!existingCandidateColumns.includes("lifecycle_blocker")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_blocker TEXT");
 if (!existingCandidateColumns.includes("lifecycle_updated_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN lifecycle_updated_at TEXT");
 if (!existingCandidateColumns.includes("archive_state")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_state TEXT NOT NULL DEFAULT 'active'");
 if (!existingCandidateColumns.includes("archived_at")) db.exec("ALTER TABLE order_candidates ADD COLUMN archived_at TEXT");
 if (!existingCandidateColumns.includes("archive_reason")) db.exec("ALTER TABLE order_candidates ADD COLUMN archive_reason TEXT");
+const missingPublicTripCandidates = db.prepare("SELECT id FROM order_candidates WHERE public_trip_no IS NULL ORDER BY id ASC").all();
+let nextPublicTripNo = Number(db.prepare("SELECT COALESCE(MAX(public_trip_no),0)+1 AS next FROM order_candidates").get().next || 1);
+const backfillPublicTripNo = db.prepare("UPDATE order_candidates SET public_trip_no=? WHERE id=? AND public_trip_no IS NULL");
+for (const candidate of missingPublicTripCandidates) backfillPublicTripNo.run(nextPublicTripNo++, candidate.id);
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_order_candidates_public_trip_no ON order_candidates(public_trip_no) WHERE public_trip_no IS NOT NULL");
 const existingSpecialBookingColumns = db.prepare("PRAGMA table_info(special_booking_requests)").all().map((column) => column.name);
 if (!existingSpecialBookingColumns.includes("customer_account_id")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN customer_account_id INTEGER");
 if (!existingSpecialBookingColumns.includes("distance_km")) db.exec("ALTER TABLE special_booking_requests ADD COLUMN distance_km REAL");
@@ -1693,6 +1699,16 @@ db.exec(`
   WHERE status IN ('accepted','completed') AND EXISTS(SELECT 1 FROM wallet_ledger WHERE wallet_ledger.order_id=orders.id);
 `);
 const now = () => new Date().toISOString();
+const assignCandidatePublicTripNo = db.transaction((candidateId) => {
+  const id = Number(candidateId || 0);
+  if (!Number.isInteger(id) || id < 1) return null;
+  const existing = db.prepare("SELECT public_trip_no FROM order_candidates WHERE id=? LIMIT 1").get(id);
+  if (!existing) return null;
+  if (Number.isInteger(Number(existing.public_trip_no)) && Number(existing.public_trip_no) > 0) return Number(existing.public_trip_no);
+  const next = Number(db.prepare("SELECT COALESCE(MAX(public_trip_no),0)+1 AS next FROM order_candidates").get().next || 1);
+  db.prepare("UPDATE order_candidates SET public_trip_no=?,updated_at=? WHERE id=? AND public_trip_no IS NULL").run(next, now(), id);
+  return next;
+});
 const directRideNotificationHub = createDirectRideNotificationHub();
 const directRideService = createDirectRideService({
   db,
@@ -2235,7 +2251,7 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, priceCents, origin, destination, sourceMessageId, downloaderName, executorName }) {
+async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId, publicTripNo }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
@@ -2243,7 +2259,7 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const title = "إعادة فتح الحجز";
   const message = [
     "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
-    `رقم الرحلة: ${String(sourceKey)}`,
+    `رقم الرحلة: ${String(publicTripNo)}`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -2312,7 +2328,7 @@ async function notifyOrderCancellationParties({ order, producer, captain, reason
   ]);
   return { producer: producerNotice, executor: executorNotice };
 }
-async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, priceCents, origin, destination, downloaderName, executorName }) {
+async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, publicTripNo }) {
   if (!insufficientBalanceAcceptanceDeletionEnabled()) {
     const deletionResult = { ok: false, requested: false, revoked: false, paused: true, reason: "insufficient_balance_acceptance_deletion_paused" };
     audit("order.acceptance.message_deletion_paused_insufficient_balance", "message", String(messageId || ""), {
@@ -2333,12 +2349,8 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     groupId,
     balanceCents,
     requiredCents,
-    priceCents,
-    origin,
-    destination,
     sourceMessageId: messageId,
-    downloaderName,
-    executorName,
+    publicTripNo,
   });
   const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status));
   if (!alertConfirmed) {
@@ -2373,7 +2385,7 @@ async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message
     };
   }
 }
-async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName = null, messageDeletionPaused = false }) {
+async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, messageDeletionPaused = false }) {
   const targetGroupId = String(groupId || "").trim();
   const candidateId = Number(candidate?.id || 0);
   if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
@@ -2383,7 +2395,7 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
   const message = [
     "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
-    `رقم الرحلة: ${candidateId}`,
+    `رقم الرحلة: ${String(candidate?.public_trip_no || "غير محدد")}`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
@@ -2438,7 +2450,7 @@ async function reopenOrderAfterInsufficientBalance({ groupId, candidate, require
       candidateId: Number(candidate?.id || 0),
       singleMessage: true,
     }
-    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, rejectedCaptainName, messageDeletionPaused: deletionStatus === "paused" });
+    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, messageDeletionPaused: deletionStatus === "paused" });
   if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
     updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
       reason: "captain_acceptance_rejected_insufficient_balance",
@@ -5778,6 +5790,7 @@ function createOrderCandidate({ messageId, groupId, body, producer, parsed }) {
   if (recentDuplicate) return recentDuplicate;
   const stamp = now();
   const result = db.prepare("INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)").run(messageId, groupId, body, cents(parsed.price), parsed.origin, parsed.destination, parsed.tripTime, parsed.orderKind, producer.id, phoneWithCountry(producer.phone), producer.name || null, stamp, stamp);
+  assignCandidatePublicTripNo(result.lastInsertRowid);
   db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=? WHERE id=?").run(stamp, result.lastInsertRowid);
   audit("order.candidate.created", "order_candidate", result.lastInsertRowid, { groupId, producerPhone: producer.phone });
   console.log(`[OrderCandidate] candidate created from ${groupId}`);
@@ -7593,6 +7606,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
       continue;
     }
     if (unquotedResult?.state === "insufficient_balance") {
+      unquoted.candidate.public_trip_no = assignCandidatePublicTripNo(unquoted.candidate.id);
       audit("order.acceptance_rejected_insufficient_balance", "order_candidate", unquoted.candidate.id, {
         acceptanceMessageId: rowMessageId,
         captainId: unquotedResult.captain?.id || null,
@@ -7613,11 +7627,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         candidateId: unquoted.candidate.id,
         balanceCents: unquotedResult.balanceCents,
         requiredCents: unquotedResult.requiredCents,
-        priceCents: unquoted.candidate.price_cents,
-        origin: unquoted.candidate.origin,
-        destination: unquoted.candidate.destination,
-        downloaderName: unquoted.candidate.producer_name_snapshot,
-        executorName: unquotedResult.captain?.name,
+        publicTripNo: unquoted.candidate.public_trip_no,
       });
       const deletionStatus = guardedDeletion.deletionStatus;
       const deletionResult = guardedDeletion.deletionResult;
@@ -8941,6 +8951,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     },
   });
   if (acceptanceResult.state === "insufficient_balance") {
+    candidate.public_trip_no = assignCandidatePublicTripNo(candidate.id);
     audit("order.acceptance_rejected_insufficient_balance", "order_candidate", candidate.id, {
       acceptanceMessageId: messageId,
       captainId: acceptanceResult.captain?.id || null,
@@ -8961,11 +8972,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       candidateId: candidate.id,
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
-      priceCents: candidate.price_cents,
-      origin: candidate.origin,
-      destination: candidate.destination,
-      downloaderName: candidate.producer_name_snapshot,
-      executorName: acceptanceResult.captain?.name,
+      publicTripNo: candidate.public_trip_no,
     });
     const deletionStatus = guardedDeletion.deletionStatus;
     const deletionResult = guardedDeletion.deletionResult;
@@ -11793,6 +11800,7 @@ app.post("/api/admin/special-bookings/:id/publish", requireOwnerAdmin, adminMuta
       const inserted = db.prepare(`INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)`).run(messageId, groupId, body, current.price_cents, current.origin, current.destination, current.trip_time, "special", company.id, phoneWithCountry(company.phone), company.name || COMPANY_BRAND_NAME, stamp, stamp);
       const candidateId = Number(inserted.lastInsertRowid);
+      assignCandidatePublicTripNo(candidateId);
       db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=?").run(stamp, stamp, candidateId);
       db.prepare("UPDATE special_booking_requests SET status='published',published_message_id=?,published_at=?,order_candidate_id=?,updated_at=? WHERE id=? AND status='owner_approved'").run(messageId, stamp, candidateId, stamp, id);
       audit("special_booking.published", "special_booking", id, { requestCode: current.request_code, groupId, messageId, candidateId, financialMutation: false });
@@ -11911,6 +11919,7 @@ app.post("/api/admin/customer-bookings/:id/publish", requireOwnerAdmin, adminMut
       const inserted = db.prepare(`INSERT INTO order_candidates(source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,'candidate',?,?)`).run(messageId, groupId, body, current.price_cents, current.origin, current.destination, current.trip_time, current.request_type, company.id, phoneWithCountry(company.phone), company.name || COMPANY_BRAND_NAME, stamp, stamp);
       const candidateId = Number(inserted.lastInsertRowid);
+      assignCandidatePublicTripNo(candidateId);
       db.prepare("UPDATE order_candidates SET lifecycle_stage='candidate_created',lifecycle_blocker=NULL,lifecycle_updated_at=?,updated_at=? WHERE id=?").run(stamp, stamp, candidateId);
       db.prepare("UPDATE customer_booking_requests SET status='published',published_message_id=?,published_at=?,order_candidate_id=?,updated_at=? WHERE id=? AND status='owner_approved'").run(messageId, stamp, candidateId, stamp, id);
       audit("customer_booking.published", "customer_booking", id, { requestCode: current.request_code, requestType: current.request_type, groupId, messageId, candidateId, financialMutation: false });

@@ -185,10 +185,14 @@ function message(id, body, sender, quoted = null) {
   };
 }
 
-const context = {
-  WHATSAPP_GROUP_ID: GROUP,
-  db,
-  client: { async getMessageById(id) { const key = canonicalMessageId(id, EXECUTOR); return state.targets?.[id] || state.targets?.[key] || message(key, String(id).includes("done") ? "تم" : "رسالة أخرى", EXECUTOR, message("price-1", "السعر 20", PRODUCER)); } },
+	const context = {
+	  WHATSAPP_GROUP_ID: GROUP,
+	  db,
+	  assignCandidatePublicTripNo: () => {
+	    if (state.candidate) state.candidate.public_trip_no = state.candidate.public_trip_no || 1;
+	    return state.candidate?.public_trip_no || 1;
+	  },
+	  client: { async getMessageById(id) { const key = canonicalMessageId(id, EXECUTOR); return state.targets?.[id] || state.targets?.[key] || message(key, String(id).includes("done") ? "تم" : "رسالة أخرى", EXECUTOR, message("price-1", "السعر 20", PRODUCER)); } },
   isReady: true,
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async () => state.reactionSender,
