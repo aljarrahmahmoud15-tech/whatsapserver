@@ -5414,19 +5414,10 @@ function ammanDateKey(stamp = now()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 function manualWeeklyChargeEligibleCaptains(stamp = now()) {
-  const today = ammanDateKey(stamp);
   return db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
     FROM users
     WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
-      AND EXISTS (
-        SELECT 1 FROM orders o
-        JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
-        WHERE (o.captain_user_id=users.id OR o.producer_user_id=users.id)
-          AND o.status='completed' AND o.settlement_state='settled'
-      )
-      AND wallet_cents>=?
-    ORDER BY id`).all(CAPTAIN_SUBSCRIPTION_CENTS)
-    .filter((captain) => Number.isFinite(Date.parse(captain.created_at)) && ammanDateKey(captain.created_at) < today)
+    ORDER BY id`).all()
     .filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
 }
 function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, scheduleKey = null } = {}) {
