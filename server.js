@@ -10331,7 +10331,7 @@ function isAdmin(req) {
 }
 function getWebAdminSession(req) {
   const header = String(req.headers.authorization || "");
-  if (activeAdminToken && header.startsWith("Bearer ") && constantTimeEquals(header.slice(7), activeAdminToken)) return { role: "company", username: ADMIN_USERNAME, source: "admin_token" };
+  // Dashboard access requires an authenticated password session; ADMIN_TOKEN is not a panel login path.
   if (!JWT_SECRET) return null;
   const token = parseCookies(req.headers.cookie || "").aljarah_session;
   if (!token) return null;
