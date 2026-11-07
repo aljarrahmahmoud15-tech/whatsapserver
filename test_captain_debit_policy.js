@@ -11,10 +11,16 @@ assert.match(source, /app\.post\("\/api\/dashboard\/cards", requireCompanyOwner/
 assert.match(source, /app\.post\("\/api\/dashboard\/cards\/:id\/send", requireCompanyOwner/);
 assert.match(source, /app\.post\("\/api\/dashboard\/cards\/:id\/void", requireCompanyOwner/);
 assert.match(source, /app\.post\("\/api\/dashboard\/captains\/:id\/wallet-adjustment", requireCompanyOwner/);
-assert.match(source, /app\.post\("\/api\/admin\/captains\/:id\/wallet-adjustment", requireAdmin/);
-assert.match(source, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireAdmin/);
+assert.match(source, /app\.post\("\/api\/admin\/captains\/:id\/wallet-adjustment", requireOwnerAdmin/);
+assert.match(source, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireOwnerAdmin/);
+const walletHandlerStart = source.indexOf('async function handleAdminWalletAdjustment');
+const walletHandlerEnd = source.indexOf('function handleAdminDirectWalletCredit', walletHandlerStart);
+assert.ok(walletHandlerStart >= 0 && walletHandlerEnd > walletHandlerStart);
+const walletHandler = source.slice(walletHandlerStart, walletHandlerEnd);
+assert.doesNotMatch(walletHandler, /direction === "debit" && !CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED/);
+assert.match(walletHandler, /nextBalance < CAPTAIN_MIN_BALANCE_CENTS/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /"daily_captain_charge"/);
 assert.match(source, /captain_fee/);
 
-console.log('captain wallet policy: debt enforcement, recurring charges, warnings, isolation, and manual debits are disabled; completed order settlement remains active');
+console.log('captain wallet policy: manual wallet debits are owner-only, idempotent, and cannot cross the zero-balance floor');

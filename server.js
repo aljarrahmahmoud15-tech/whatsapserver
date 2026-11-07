@@ -12728,7 +12728,6 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
   const reason = String(req.body?.reason || "").trim();
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
   if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
-  if (direction === "debit" && !CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (direction === "credit" && creditMode === "direct") {
     const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
@@ -12789,8 +12788,8 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
   const stamp = now();
   const ledgerId = db.transaction(() => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "dashboard" }), idempotencyKey);
-    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "dashboard" });
+    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "owner" }), idempotencyKey);
+    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner" });
     return result.lastInsertRowid;
   })();
   void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
@@ -13972,7 +13971,6 @@ async function handleAdminWalletAdjustment(req, res) {
   if (!["credit", "debit"].includes(direction) || (direction === "credit" && !["card", "direct"].includes(creditMode)) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
     return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
-  if (direction === "debit" && !CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED) return res.status(409).json({ error: "تم إيقاف جميع الخصومات اليدوية؛ الخصم المسموح هو تسوية الطلب المكتمل فقط", policy: "order_settlement_only", mutation: "none" });
   const amountCents = Math.round(amount * 100);
   if (amountCents < 1) return res.status(400).json({ error: "المبلغ صغير جدًا" });
   if (direction === "credit") {
@@ -14019,12 +14017,12 @@ async function handleAdminWalletAdjustment(req, res) {
   const nextBalance = captain.wallet_cents + signedAmount;
   if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: "الرصيد غير كافٍ", code: "INSUFFICIENT_BALANCE", minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS });
   const reference = `ADMIN-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const details = { idempotencyKey, direction, amount, amountCents, reason, actor: "admin" };
+  const details = { idempotencyKey, direction, amount, amountCents, reason, actor: "owner" };
   const stamp = now();
   const apply = db.transaction(() => {
     db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
     const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
-    audit("captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance });
+    audit("captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner" });
     return result.lastInsertRowid;
   });
   const ledgerId = apply();
@@ -14253,8 +14251,8 @@ app.post("/api/admin/captain-withdrawal-requests/:id/decision", requireOwnerAdmi
 
 app.post("/api/admin/users/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
 app.post("/api/admin/captains/:id/direct-credit", requireBotWalletOwner, handleAdminDirectWalletCredit);
-app.post("/api/admin/captains/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
-app.post("/api/admin/users/:id/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment);
+app.post("/api/admin/captains/:id/wallet-adjustment", requireOwnerAdmin, handleAdminWalletAdjustment);
+app.post("/api/admin/users/:id/wallet-adjustment", requireOwnerAdmin, handleAdminWalletAdjustment);
 app.get("/api/admin/wallet/:phone", requireBotWalletOwner, (req, res) => {
   const phone = phoneWithCountry(req.params.phone || "");
   const user = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,created_at,updated_at FROM users WHERE phone=? LIMIT 1").get(phone);

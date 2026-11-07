@@ -37,7 +37,7 @@ assert.match(server, /captain\.approval_notification\.test/);
 assert.match(server, /const message = "تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك\."/);
 assert.match(server, /X-Idempotency-Key/);
 
-assert.match(server, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireAdmin, handleAdminWalletAdjustment\)/);
+assert.match(server, /app\.post\("\/api\/admin\/users\/:id\/wallet-adjustment", requireOwnerAdmin, handleAdminWalletAdjustment\)/);
 assert.match(server, /account_status<>'merged'/);
 assert.match(server, /source: "company_direct_transfer"/);
 assert.match(server, /issueIdempotencyKey = `ADMIN-WALLET-/);
