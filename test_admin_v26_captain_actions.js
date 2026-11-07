@@ -17,13 +17,20 @@ assert.match(route, /removeParticipants/);
 assert.match(route, /accountChanged: false/);
 assert.match(route, /financialMutation: false/);
 assert.doesNotMatch(route, /wallet_cents|sendCaptainStatusText|sendServer2DirectAtMostOnce|sendMessage/);
+assert.match(server, /app\.patch\("\/api\/admin\/captains\/:id", requireAdmin/);
+const statusRouteStart = server.indexOf('app.patch("/api/admin/captains/:id", requireAdmin');
+const statusRoute = server.slice(statusRouteStart, server.indexOf('app.patch("/api/admin/captains/:id/pin"', statusRouteStart));
+assert.match(statusRoute, /captain\.activated|captain\.deactivated/);
+assert.match(statusRoute, /active \? "active" : "suspended"/);
 
 for (const marker of [
   'data-safe-action="edit"',
+  'data-safe-action="status"',
   'data-safe-action="credit"',
   'data-safe-action="archive"',
   'data-safe-action="suspend"',
   'function openCaptainAction',
+  'function toggleCaptainStatus',
   'function saveCaptainEdit',
   'function applyCaptainCredit',
   'function archiveCaptainAccount',
