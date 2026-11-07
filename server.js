@@ -2767,6 +2767,66 @@ function startCaptainStatusNotificationRetryScheduler() {
 function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
 }
+const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = [
+  "لشحن محفظتك، يرجى التحويل إلى الحساب المعتمد:",
+  "Orange Money: 0779110123",
+  "بعد التحويل، أرسل صورة الإيصال أو رقم العملية والمبلغ ورقم حسابك إلى الإدارة للمطابقة.",
+  "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
+].join("\n");
+const captainWalletInstructionInFlight = new Set();
+async function sendCaptainWalletTopupInstructions({ phone, sourceMessageId = null }) {
+  const recipientPhone = phoneWithCountry(phone);
+  if (!isValidJordanPhone(recipientPhone) || isBlockedPhone(recipientPhone)) return { status: "invalid" };
+  const sourceKey = String(sourceMessageId || `${recipientPhone}-${Date.now()}`).trim();
+  const idempotencyKey = `CAPTAIN-WALLET-INSTRUCTIONS-${sourceKey}`.slice(0, 100);
+  if (captainWalletInstructionInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true };
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing && ["sent", "delivered", "uncertain", "pending"].includes(existing.delivery_status)) {
+    return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null };
+  }
+  let row = existing;
+  if (row) {
+    db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',event=?,title=?,message=?,delivery_status='pending',source_message_id=? WHERE id=?")
+      .run(recipientPhone, "captain.wallet.topup_instructions", "شحن المحفظة", CAPTAIN_WALLET_TOPUP_INSTRUCTIONS, sourceMessageId, row.id);
+  } else {
+    row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'captain',?,?,?,'pending',?,?,?)")
+      .run(recipientPhone, "captain.wallet.topup_instructions", "شحن المحفظة", CAPTAIN_WALLET_TOPUP_INSTRUCTIONS, sourceMessageId, idempotencyKey, now());
+  }
+  const notificationId = row.lastInsertRowid || row.id;
+  captainWalletInstructionInFlight.add(idempotencyKey);
+  let deliveryStatus = "failed";
+  let messageId = null;
+  let deliveryError = null;
+  try {
+    if (client && isReady) {
+      const resolved = await resolveWhatsAppRecipientId(recipientPhone);
+      const candidates = [...new Set([resolved, `${recipientPhone}@c.us`].map((value) => String(value || "").trim()).filter((value) => /@(c\.us|lid)$/.test(value)))];
+      for (const recipient of candidates) {
+        const result = await sendWhatsAppAtMostOnce(recipient, CAPTAIN_WALLET_TOPUP_INSTRUCTIONS);
+        deliveryError = result.error || null;
+        if (result.status === "sent" || result.status === "uncertain") {
+          deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
+          messageId = result.message?.id?._serialized || null;
+          break;
+        }
+      }
+      if (!candidates.length) deliveryError = "recipient_unresolved";
+    } else deliveryError = "whatsapp_not_ready";
+  } catch (error) {
+    deliveryError = String(error?.message || error).slice(0, 240);
+  }
+  captainWalletInstructionInFlight.delete(idempotencyKey);
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit("captain.wallet.topup_instructions.sent", "user", recipientPhone, {
+    deliveryStatus,
+    idempotencyKey,
+    sourceMessageId: sourceMessageId || null,
+    deliveryError,
+    financialMutation: false,
+    groupMutation: false,
+  });
+  return { status: deliveryStatus, notificationId, messageId };
+}
 function ownerNotificationPhones() {
   return [...GROUP_SETUP_OWNER_PHONES].map(phoneWithCountry).filter((phone, index, all) => phone && !isBotPhone(phone) && all.indexOf(phone) === index);
 }
@@ -3281,6 +3341,12 @@ async function handleCustomerMessage(msg) {
   const name = (contact && (contact.pushname || contact.name)) || displayPhone(phone);
   const body = String(msg.body || "").trim();
   if (!body) return;
+  const normalized = normalizeCustomerText(body);
+  const captain = findActiveRegisteredUser(phone);
+  if (captain && /^(محفظة|محفظه)$/.test(normalized)) {
+    await sendCaptainWalletTopupInstructions({ phone, sourceMessageId: msg.id?._serialized || null });
+    return;
+  }
   if (await handleCustomerRatingReply(msg, phone)) return;
   let lead = db.prepare("SELECT * FROM customer_leads WHERE phone=?").get(phone);
   if (!lead) {
@@ -3288,7 +3354,7 @@ async function handleCustomerMessage(msg) {
     audit("customer.lead.started", "customer_lead", lead.id, { phone, name });
     return;
   }
-  const text = normalizeCustomerText(body);
+  const text = normalized;
   if (/^(الغاء|إلغاء|cancel)$/.test(text)) {
     updateCustomerLead(lead, { state: "cancelled", last_message_id: msg.id && msg.id._serialized, last_text: body });
     return;
