@@ -3343,7 +3343,7 @@ async function handleCustomerMessage(msg) {
   if (!body) return;
   const normalized = normalizeCustomerText(body);
   const captain = findActiveRegisteredUser(phone);
-  if (captain && /^(محفظة|محفظه)$/.test(normalized)) {
+  if (captain && /^(محفظة|محفظه|شحن محفظة|شحن محفظه)$/.test(normalized)) {
     await sendCaptainWalletTopupInstructions({ phone, sourceMessageId: msg.id?._serialized || null });
     return;
   }
