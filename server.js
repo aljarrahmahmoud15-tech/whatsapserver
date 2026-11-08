@@ -35,6 +35,7 @@ const { createWeeklySubscriptionScheduler, businessWeekPeriod } = require("./wee
 const { createWhatsAppIdentityHandler } = require("./whatsapp-identity-route");
 const { canDeleteAccount } = require("./account-deletion-policy");
 const { createCaptainBalanceImportService } = require("./captain-balance-import");
+const { createNegativeBalanceSettlementService } = require("./negative-balance-settlement");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -1990,6 +1991,7 @@ const captainBalanceImportService = createCaptainBalanceImportService({
   minBalanceCents: CAPTAIN_MIN_BALANCE_CENTS,
   manualDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED,
 });
+const negativeBalanceSettlementService = createNegativeBalanceSettlementService({ db, money, now, audit });
 function normalizeCaptainAuthMethod(value) {
   return String(value || "pin").trim().toLowerCase() === "whatsapp" ? "whatsapp" : "pin";
 }
@@ -13799,7 +13801,28 @@ app.post("/api/admin/captain-balances/import/apply", requireOwnerAdmin, adminMut
     res.status(409).json({ error: error.message || "تعذر اعتماد مطابقة الأرصدة", financialMutation: false });
   }
 });
-
+app.get("/api/admin/captain-balances/negative-floor/preview", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  try {
+    const result = negativeBalanceSettlementService.preview({ expectedCount: req.query?.expectedCount, expectedTotalCents: req.query?.expectedTotalCents });
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  } catch (error) {
+    res.status(409).json({ error: error.message || "تعذر إنشاء معاينة تصحيح الأرصدة السالبة", financialMutation: false });
+  }
+});
+app.post("/api/admin/captain-balances/negative-floor/apply", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  try {
+    const result = negativeBalanceSettlementService.apply({
+      previewId: req.body?.previewId,
+      expectedCount: req.body?.expectedCount,
+      expectedTotalCents: req.body?.expectedTotalCents,
+      confirmation: req.body?.confirmation,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(409).json({ error: error.message || "تعذر تصفير الأرصدة السالبة", financialMutation: false });
+  }
+});
 app.post("/api/admin/captains", requireAdminOrDashboardApi, adminMutationLimiter, (req, res) => {
   const phone = phoneWithCountry(String(req.body.phone || ""));
   const name = String(req.body.name || "").trim();

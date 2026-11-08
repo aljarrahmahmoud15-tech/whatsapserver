@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const server = fs.readFileSync('./server.js', 'utf8');
+const ui = fs.readFileSync('./public/admin-v26.html', 'utf8');
+const service = fs.readFileSync('./negative-balance-settlement.js', 'utf8');
+assert.match(server, /\/api\/admin\/captain-balances\/negative-floor\/preview/);
+assert.match(server, /\/api\/admin\/captain-balances\/negative-floor\/apply/);
+assert.match(server, /requireOwnerAdmin, adminMutationLimiter/);
+assert.match(fs.readFileSync('./negative-balance-settlement.js', 'utf8'), /APPLY_NEGATIVE_BALANCE_ZERO_FLOOR_V1/);
+assert.match(service, /is_bot=0 AND active=1 AND account_status='active' AND wallet_cents<0/);
+assert.match(service, /whatsappSent: false/);
+assert.match(service, /accountsDeleted: 0/);
+assert.match(ui, /id="negativeFloorPreview"/);
+assert.match(ui, /id="negativeFloorApply"/);
+assert.match(ui, /previewNegativeFloor/);
+assert.match(ui, /applyNegativeFloor/);
+console.log('negative balance zero-floor owner button and guardrails verified');
