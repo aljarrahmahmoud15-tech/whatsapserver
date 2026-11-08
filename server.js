@@ -2827,6 +2827,54 @@ async function sendCaptainWalletTopupInstructions({ phone, sourceMessageId = nul
   });
   return { status: deliveryStatus, notificationId, messageId };
 }
+async function sendCaptainWalletTopupGroupInstructions({ groupId, sourceMessageId = null }) {
+  const targetGroup = String(groupId || "").trim();
+  if (!isOfficialGroupTarget(targetGroup)) return { status: "blocked", reason: "official_group_required" };
+  const sourceKey = String(sourceMessageId || `${targetGroup}-${Date.now()}`).trim();
+  const idempotencyKey = `GROUP-CAPTAIN-WALLET-INSTRUCTIONS-${sourceKey}`.slice(0, 100);
+  if (captainWalletInstructionInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true };
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing && ["sent", "delivered", "uncertain", "pending"].includes(existing.delivery_status)) {
+    return { status: existing.delivery_status, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null };
+  }
+  const title = "شحن محفظة الكابتن";
+  let row = existing;
+  if (row) {
+    db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='group',event=?,title=?,message=?,delivery_status='pending',source_message_id=? WHERE id=?")
+      .run(targetGroup, "group.captain.wallet.topup_instructions", title, CAPTAIN_WALLET_TOPUP_INSTRUCTIONS, sourceMessageId, row.id);
+  } else {
+    row = db.prepare("INSERT INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)")
+      .run(targetGroup, "group.captain.wallet.topup_instructions", title, CAPTAIN_WALLET_TOPUP_INSTRUCTIONS, sourceMessageId, idempotencyKey, now());
+  }
+  const notificationId = row.lastInsertRowid || row.id;
+  captainWalletInstructionInFlight.add(idempotencyKey);
+  let deliveryStatus = "failed";
+  let messageId = null;
+  let deliveryError = null;
+  try {
+    if (client && isReady) {
+      const result = await sendWhatsAppAtMostOnce(targetGroup, CAPTAIN_WALLET_TOPUP_INSTRUCTIONS);
+      deliveryError = result.error || null;
+      if (result.status === "sent" || result.status === "uncertain") {
+        deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
+        messageId = result.message?.id?._serialized || null;
+      }
+    } else deliveryError = "whatsapp_not_ready";
+  } catch (error) {
+    deliveryError = String(error?.message || error).slice(0, 240);
+  }
+  captainWalletInstructionInFlight.delete(idempotencyKey);
+  db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  audit("group.captain.wallet.topup_instructions.sent", "group", targetGroup, {
+    deliveryStatus,
+    idempotencyKey,
+    sourceMessageId: sourceMessageId || null,
+    deliveryError,
+    financialMutation: false,
+    walletMutation: false,
+  });
+  return { status: deliveryStatus, notificationId, messageId };
+}
 function ownerNotificationPhones() {
   return [...GROUP_SETUP_OWNER_PHONES].map(phoneWithCountry).filter((phone, index, all) => phone && !isBotPhone(phone) && all.indexOf(phone) === index);
 }
@@ -8808,6 +8856,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     ? groupPolicy(groupId)
     : { receiveMessages: true, processOrders: true, settlements: true, moderation: true, reactions: true };
   if (!policy?.receiveMessages) return;
+  const normalizedGroupBody = normalizeCustomerText(body);
+  const groupCaptain = findActiveRegisteredUser(senderPhone);
+  if (isOfficialGroupTarget(groupId) && groupCaptain && /^(محفظة|محفظه|شحن محفظة|شحن محفظه)$/.test(normalizedGroupBody)) {
+    await sendCaptainWalletTopupGroupInstructions({ groupId, sourceMessageId: serializedMessageId(msg) || null });
+    return;
+  }
   if (!policy.processOrders) {
     console.log(`[GroupEvent] passive group message observed: group=${groupId} name=${policy.name}`);
     return;
