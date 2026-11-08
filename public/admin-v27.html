@@ -545,7 +545,7 @@ function ownerCommandResultText(result){if(!result)return '';const state=result.
       async function copyPassengerLink(){const link=new URL('/book.html',location.origin).href;try{await navigator.clipboard.writeText(link);$('passengerHubMessage').className='notice ok passenger-hub-note';$('passengerHubMessage').textContent='تم نسخ رابط واجهة الراكب المعتمدة: '+link;showToast('تم نسخ رابط طلب الرحلة')}catch{$('passengerHubMessage').className='notice warning passenger-hub-note';$('passengerHubMessage').textContent='تعذر النسخ تلقائيًا. افتح طلب الرحلة وانسخ الرابط من شريط العنوان.'}}
       $('passengerPricingButton')?.addEventListener('click',openPassengerPricing);$('passengerCopyLink')?.addEventListener('click',copyPassengerLink);
       function bootstrap(){state.token='';localStorage.removeItem('adminToken');$('appView').classList.add('hidden');$('loginView').classList.remove('hidden');}
-      bootstrap();setInterval(()=>{if(state.loadedAt)setLive()},1000);
+      bootstrap();setInterval(()=>{if(state.loadedAt)setLive()},1000);setInterval(()=>{if(state.loadedAt&&!state.refreshInFlight){state.refreshInFlight=true;void loadBootstrap().finally(()=>{state.refreshInFlight=false})}},60000);
     })();
   </script>
 </body>
