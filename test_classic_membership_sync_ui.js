@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('admin.html', 'utf8');
+assert.match(html, /officialGroupMembershipComparison/);
+assert.match(html, /membership-comparison/);
+assert.match(html, /mutation|قراءة ومطابقة فقط/);
+assert.match(html, /unregisteredInGroup/);
+assert.match(html, /registeredOutsideGroup/);
+assert.match(html, /لا حذف ولا إزالة ولا تعديل أرصدة/);
+console.log('classic membership comparison UI read-only guard: PASS');
