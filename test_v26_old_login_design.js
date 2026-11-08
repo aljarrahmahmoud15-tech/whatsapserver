@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('public/admin-v26.html','utf8');
+assert.match(html, /WASLNI NOW · OPERATIONS/);
+assert.match(html, /لوحة إدارة البوت/);
+assert.match(html, /id="username"/);
+assert.match(html, /id="password"/);
+assert.match(html, /id="togglePassword"/);
+assert.match(html, /id="capsLockWarning"/);
+assert.match(html, /id="loginButton"[^>]*>تسجيل الدخول/);
+assert.doesNotMatch(html, /id="adminToken"/);
+console.log('V26 old login design with password-only auth: PASS');
