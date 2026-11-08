@@ -7,5 +7,7 @@ for (const file of ['public/admin-v26.html', 'public/admin-v27.html']) {
   assert.match(html, /finally\(\(\)=>\{state\.refreshInFlight=false\}\)/);
 }
 assert.match(fs.readFileSync('public/admin-v26.html', 'utf8'), /loadData\(\)\.finally/);
+assert.match(fs.readFileSync('public/admin-v26.html', 'utf8'), /groupHydration\?\.participantCount/);
 assert.match(fs.readFileSync('public/admin-v27.html', 'utf8'), /loadBootstrap\(\)\.finally/);
+assert.match(fs.readFileSync('public/admin-v27.html', 'utf8'), /groupHydration\?\.participantCount/);
 console.log('dashboard automatic refresh guard: PASS');
