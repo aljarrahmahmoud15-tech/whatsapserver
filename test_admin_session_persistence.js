@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('./admin.html', 'utf8');
+assert.match(html, /async function restoreAdminSession\(\)/);
+assert.match(html, /fetch\('\/api\/admin\/bot\/status',\{credentials:'same-origin',cache:'no-store'\}\)/);
+assert.match(html, /if\(response\.ok\)\{showApp\(\);return true\}/);
+assert.match(html, /function bootstrap\(\)\{localStorage\.removeItem\('adminToken'\);token='';setupPasswordAssist\(\);void restoreAdminSession\(\)\}/);
+assert.match(html, /function logout\(\)\{[\s\S]*?\/api\/auth\/logout/);
+assert.doesNotMatch(html, /localStorage\.setItem\(['"](?:adminPassword|password)/i);
+console.log('admin session persistence and password-safety guard: PASS');
