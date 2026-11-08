@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const html = fs.readFileSync('admin.html','utf8');
+const login = html.match(/<section id="login"[\s\S]*?<\/section>/)?.[0] || '';
+assert.match(login, /WASLNI NOW · OPERATIONS/);
+assert.match(login, /لوحة إدارة البوت/);
+assert.match(login, /id="adminUsername"/);
+assert.match(login, /id="adminPassword"/);
+assert.match(login, /id="togglePassword"/);
+assert.match(login, /id="capsLockWarning"/);
+assert.doesNotMatch(login, /ADMIN_TOKEN/);
+assert.doesNotMatch(login, /id="token"/);
+assert.match(html, /panel:\"classic\"/);
+assert.match(html, /function setupPasswordAssist\(\)/);
+console.log('Classic old login design with password-only auth: PASS');
