@@ -3282,11 +3282,12 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
   progress.failed = 0;
   progress.failureStatuses = {};
   progress.firstFailure = null;
+  progress.error = null;
   try {
+    // The zero-floor policy is a read-only diagnostic path. It must never grant
+    // an unconfirmed removal override, even when the policy sweep is owner-triggered.
     const groupRemovalContext = await readGroupRemovalContext(configuredRuntimeGroupId()).catch(() => null);
-    const removalContext = allowUnconfirmedRemoval
-      ? { ...(groupRemovalContext || {}), allowUnconfirmedRemoval: true, source: "admin_negative_wallet_policy" }
-      : groupRemovalContext;
+    const removalContext = groupRemovalContext ? { ...groupRemovalContext, allowUnconfirmedRemoval: false } : null;
     for (let index = 0; index < captains.length; index += 1) {
       const captain = captains[index];
       const result = await enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: captain.wallet_cents, reason: "فحص دوري لسياسة رصيد الكابتن", reference: `BALANCE-POLICY-${captain.id}-${captain.wallet_cents}`, removalContext }).catch(() => null);
@@ -3323,6 +3324,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       failed: progress.failed,
       failureStatuses: progress.failureStatuses,
       firstFailure: progress.firstFailure,
+      error: progress.error || null,
       startedAt: progress.startedAt,
       completedAt: progress.completedAt,
       negativeOnly: Boolean(negativeOnly),
@@ -3343,6 +3345,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
       failed: progress.failed,
       failureStatuses: progress.failureStatuses,
       firstFailure: progress.firstFailure,
+      error: progress.error || null,
       startedAt: progress.startedAt,
       completedAt: progress.completedAt,
       negativeOnly: Boolean(negativeOnly),
@@ -12575,6 +12578,42 @@ app.get("/api/admin/group/summary", requireAdmin, async (req, res) => {
     res.setHeader("Cache-Control", "private, max-age=3, stale-while-revalidate=5");
     res.setHeader("X-Group-Summary-Cache", "MISS");
     return res.json(payload);
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
+  }
+});
+app.get("/api/admin/group/membership-comparison", requireAdmin, adminReadLimiter, async (req, res) => {
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, mutation: "none", error: "Configured official group not found" });
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", groupId, ready: false, error: "Bot not ready" });
+  try {
+    const snapshot = await readGroupSnapshot(groupId);
+    if (!snapshot || !Array.isArray(snapshot.participants)) return res.status(502).json({ success: false, mutation: "none", groupId, error: "Official group participant snapshot unavailable" });
+    const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/i, "").split(":")[0]);
+    const groupRows = snapshot.participants.map((participant) => ({
+      phone: normalize(groupParticipantPhone(participant)),
+      id: participant?.id?._serialized || String(participant?.id || "") || null,
+      isAdmin: Boolean(participant?.isAdmin || participant?.isSuperAdmin),
+    })).filter((row) => row.phone && !isBotPhone(row.phone));
+    const groupByPhone = new Map(groupRows.map((row) => [row.phone, row]));
+    const captains = db.prepare("SELECT id,phone,name,registration_name,active,account_status,is_bot,archived_at FROM users WHERE role='captain' AND account_status<>'merged' AND is_bot=0 ORDER BY id").all();
+    const captainByPhone = new Map(captains.map((captain) => [normalize(captain.phone), captain]));
+    const matched = [];
+    const unregistered = [];
+    for (const row of groupRows) {
+      const captain = captainByPhone.get(row.phone);
+      if (captain) matched.push({ phone: row.phone, captainId: captain.id, name: captain.registration_name || captain.name || row.phone, active: Boolean(captain.active), accountStatus: captain.account_status || null, isAdmin: row.isAdmin });
+      else unregistered.push({ phone: row.phone, isAdmin: row.isAdmin });
+    }
+    const outsideGroup = captains.filter((captain) => !groupByPhone.has(normalize(captain.phone))).map((captain) => ({
+      captainId: captain.id,
+      phone: normalize(captain.phone),
+      name: captain.registration_name || captain.name || normalize(captain.phone),
+      active: Boolean(captain.active),
+      accountStatus: captain.account_status || null,
+      archived: Boolean(captain.archived_at),
+    }));
+    return res.json({ success: true, mutation: "none", groupId, groupName: snapshot.name || null, generatedAt: now(), participantSource: snapshot.participantSource || "unknown", counts: { groupParticipants: groupRows.length, registeredCaptains: captains.length, matched: matched.length, unregisteredInGroup: unregistered.length, registeredOutsideGroup: outsideGroup.length }, matched, unregisteredInGroup: unregistered, registeredOutsideGroup: outsideGroup });
   } catch (error) {
     return res.status(502).json({ success: false, mutation: "none", groupId, error: boundedDiagnosticText(error?.message || error, 300) });
   }
