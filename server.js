@@ -885,6 +885,23 @@ app.get("/admin-v27.html", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
 });
+// Stable alternate entry points for the same dashboards. These aliases do not
+// create a second service, database, WhatsApp session, or group configuration.
+app.get("/waslni-now", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
+app.get("/waslni-v26", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "admin-v26.html"));
+});
+app.get("/waslni-v27", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.sendFile(path.join(__dirname, "public", "admin-v27.html"));
+});
 app.get("/v27/special-booking", v27PageLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Referrer-Policy", "same-origin");
