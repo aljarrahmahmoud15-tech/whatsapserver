@@ -21,6 +21,9 @@ const reopenMessageEnd = reopenHelper.indexOf('  ].join("\\n");', reopenMessageS
 assert.ok(reopenMessageStart >= 0 && reopenMessageEnd > reopenMessageStart, 'reopen message block must exist');
 const reopenMessage = reopenHelper.slice(reopenMessageStart, reopenMessageEnd);
 assert.match(reopenMessage, /رقم الرحلة: \$\{String\(candidate\?\.public_trip_no \|\| "غير محدد"\)\}/);
+assert.match(reopenMessage, /Orange Money: 0779110123/);
+assert.match(reopenMessage, /بعد التحويل، أرسل صورة الوصل أو رقم العملية والمبلغ إلى نفس الرقم للمطابقة\./);
+assert.match(reopenMessage, /لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة\./);
 assert.doesNotMatch(reopenMessage, /candidateId|source_message_id|idempotencyKey/);
 
 const groupStart = server.indexOf('async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure(');

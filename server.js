@@ -2260,6 +2260,11 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const message = [
     "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
     `رقم الرحلة: ${String(publicTripNo)}`,
+    "يرجى شحن رصيدك عبر:",
+    "",
+    "Orange Money: 0779110123",
+    "بعد التحويل، أرسل صورة الوصل أو رقم العملية والمبلغ إلى نفس الرقم للمطابقة.",
+    "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -2396,6 +2401,11 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   const message = [
     "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
     `رقم الرحلة: ${String(candidate?.public_trip_no || "غير محدد")}`,
+    "يرجى شحن رصيدك عبر:",
+    "",
+    "Orange Money: 0779110123",
+    "بعد التحويل، أرسل صورة الوصل أو رقم العملية والمبلغ إلى نفس الرقم للمطابقة.",
+    "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
