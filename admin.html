@@ -241,7 +241,8 @@ async function loadV27Functions(){
   if(badge){badge.textContent='جارٍ التحديث';badge.className='pill'}
   try{
     const data=await api('/api/admin/v27/bootstrap?fresh=1');
-    const status=data.status||{}, s=data.summary||{}, orders=s.orders||status.orders||{}, captains=s.captains||status.captains||{}, group=s.group||data.group||{};
+    const live=await fetch('/status?fresh=1',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null);
+    const status=live||data.status||{}, s=data.summary||{}, orders=s.orders||status.orders||{}, captains=status.captains||s.captains||{}, group=status.groupHydration||s.group||data.group||{};
     const rows=[
       ['WhatsApp',(status.whatsappState||status.ready)?'جاهز':'غير جاهز'],
       ['مستقبل القروب',status.groupReceiverReady?'جاهز':'غير جاهز'],

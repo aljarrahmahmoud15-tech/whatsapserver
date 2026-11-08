@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const v26 = fs.readFileSync('public/admin-v26.html','utf8');
+const classic = fs.readFileSync('admin.html','utf8');
+assert.match(v26, /publicJson\('\/status\?fresh=1'\)/);
+assert.match(v26, /state\.status\?\.captains\?\.activeRegistered/);
+assert.match(v26, /state\.loadedAt=state\.status\?\.groupHydration\?\.at/);
+assert.match(classic, /fetch\('\/status\?fresh=1'/);
+assert.match(classic, /group=status\.groupHydration/);
+console.log('V26 and classic V27 live sync wiring: PASS');
