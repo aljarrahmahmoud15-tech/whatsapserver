@@ -24,7 +24,8 @@ assert.ok(reopenStart >= 0 && reopenEnd > reopenStart, 'the low-balance order re
 const reopen = server.slice(reopenStart, reopenEnd);
 assert.match(reopen, /!\["deleted", "paused"\]\.includes\(deletionStatus\)/);
 assert.match(reopen, /messageDeletionPaused: deletionStatus === "paused"/);
-assert.match(server, /سيبقى ردك ظاهرًا مؤقتًا ولن يُعتمد الحجز/);
+assert.match(server, /تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد/);
+assert.match(server, /تم إلغاء الرحلة رقم/);
 assert.match(reopen, /notifyOfficialGroupOrderReopened\(/);
 assert.match(reopen, /candidate_reopened/);
 

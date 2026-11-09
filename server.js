@@ -2233,13 +2233,16 @@ async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutM
     return { status: "failed", message: null, error: String(error?.message || error).slice(0, 240) };
   }
 }
-async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCents, requiredCents, sourceMessageId, deletionStatus = "requested" }) {
+async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCents, requiredCents, sourceMessageId, publicTripNo }) {
   const phone = phoneWithCountry(captain?.phone);
   const sourceKey = String(sourceMessageId || "").trim();
   if (!captain?.id || !isValidJordanPhone(phone) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `CAPTAIN-ACCEPTANCE-BALANCE-${sourceKey}`;
-  const title = "تم إلغاء الرحلة";
-  const message = "تم إلغاء الرحلة فقط لعدم كفاية الرصيد.";
+  const title = "إلغاء الرحلة لعدم كفاية الرصيد";
+  const message = [
+    "تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد.",
+    `تم إلغاء الرحلة رقم ${String(publicTripNo || "غير محدد")} فقط.`,
+  ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
@@ -2266,15 +2269,10 @@ async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupI
   const sourceKey = String(sourceMessageId || "").trim();
   if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
-  const title = "إعادة فتح الحجز";
+  const title = "إلغاء الرحلة لعدم كفاية الرصيد";
   const message = [
-    "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
-    `رقم الرحلة: ${String(publicTripNo)}`,
-    "يرجى شحن رصيدك عبر:",
-    "",
-    "Orange Money: 0779110123",
-    "بعد التحويل، أرسل صورة الوصل أو رقم العملية والمبلغ إلى نفس الرقم للمطابقة.",
-    "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
+    "تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد.",
+    `تم إلغاء الرحلة رقم ${String(publicTripNo)} فقط.`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
@@ -2409,13 +2407,8 @@ async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCe
   const event = `order.acceptance.reopened.${candidateId}`;
   const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
   const message = [
-    "⚠️ لم يُثبَّت الحجز لعدم كفاية الرصيد.",
-    `رقم الرحلة: ${String(candidate?.public_trip_no || "غير محدد")}`,
-    "يرجى شحن رصيدك عبر:",
-    "",
-    "Orange Money: 0779110123",
-    "بعد التحويل، أرسل صورة الوصل أو رقم العملية والمبلغ إلى نفس الرقم للمطابقة.",
-    "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
+    "تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد.",
+    `تم إلغاء الرحلة رقم ${String(candidate?.public_trip_no || "غير محدد")} فقط.`,
   ].join("\n");
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
@@ -7849,7 +7842,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         balanceCents: unquotedResult.balanceCents,
         requiredCents: unquotedResult.requiredCents,
         sourceMessageId: rowMessageId,
-        deletionStatus,
+        publicTripNo: unquoted.candidate.public_trip_no,
       });
       const reopened = await reopenOrderAfterInsufficientBalance({
         groupId,
@@ -9203,7 +9196,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
       sourceMessageId: messageId,
-      deletionStatus,
+      publicTripNo: candidate.public_trip_no,
     });
     if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
       console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
