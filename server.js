@@ -164,6 +164,8 @@ const CAPTAIN_DAILY_CHARGE_CENTS = 10;
 const CAPTAIN_DAILY_CHARGE_INTERVAL_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.TOPUP_CARD_ARCHIVE_INTERVAL_MS || 5 * 60 * 1000));
+const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
+const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
@@ -5769,6 +5771,71 @@ function startTopupCardArchiveScheduler() {
   const timer = setInterval(() => {
     try { archiveExpiredTopupCards(); } catch (error) { console.error("[TopupArchive] sweep failed:", error.message); }
   }, TOPUP_CARD_ARCHIVE_INTERVAL_MS);
+  timer.unref?.();
+}
+let orderArchiveSweepRunning = false;
+function archiveExpiredOrders() {
+  if (orderArchiveSweepRunning) return { archivedOrders: 0, archivedCandidates: 0, skipped: true };
+  orderArchiveSweepRunning = true;
+  try {
+    const cutoff = new Date(Date.now() - ORDER_ARCHIVE_AFTER_MS).toISOString();
+    const reason = "أرشفة دورية للطلب النهائي الأقدم من 24 ساعة";
+    const candidates = db.prepare(`SELECT id,source_message_id,status
+      FROM order_candidates
+      WHERE status IN ('finalized','cancelled')
+        AND COALESCE(archive_state,'active')='active'
+        AND datetime(COALESCE(updated_at,created_at))<=datetime(?)
+      ORDER BY id ASC LIMIT 1000`).all(cutoff);
+    const orders = db.prepare(`SELECT id,order_no,source_message_id,status,settlement_state
+      FROM orders
+      WHERE status IN ('accepted','completed','cancelled')
+        AND settlement_state IN ('settled','reversed','cancelled')
+        AND COALESCE(archive_state,'active')='active'
+        AND datetime(COALESCE(updated_at,created_at))<=datetime(?)
+      ORDER BY id ASC LIMIT 1000`).all(cutoff);
+    const archivedAt = now();
+    db.transaction(() => {
+      for (const candidate of candidates) {
+        const changed = db.prepare(`UPDATE order_candidates
+          SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+          WHERE id=? AND status IN ('finalized','cancelled')
+            AND COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt, candidate.id);
+        if (changed.changes) audit("order.candidate.archived", "order_candidate", candidate.id, {
+          sourceMessageId: candidate.source_message_id,
+          reason,
+          scope: "scheduled_terminal_archive",
+          financialMutation: false,
+        });
+      }
+      for (const order of orders) {
+        const changed = db.prepare(`UPDATE orders
+          SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+          WHERE id=? AND status IN ('accepted','completed','cancelled')
+            AND settlement_state IN ('settled','reversed','cancelled')
+            AND COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt, order.id);
+        if (changed.changes) audit("order.archived", "order", order.id, {
+          orderNo: order.order_no,
+          sourceMessageId: order.source_message_id,
+          status: order.status,
+          settlementState: order.settlement_state,
+          reason,
+          scope: "scheduled_terminal_archive",
+          financialMutation: false,
+        });
+      }
+    })();
+    const result = { archivedOrders: orders.length, archivedCandidates: candidates.length, cutoff, archivedAt, financialMutation: false };
+    if (orders.length || candidates.length) console.log(`[OrderArchive] archivedOrders=${orders.length} archivedCandidates=${candidates.length} cutoff=${cutoff}`);
+    return result;
+  } finally {
+    orderArchiveSweepRunning = false;
+  }
+}
+function startOrderArchiveScheduler() {
+  try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] initial sweep failed:", error.message); }
+  const timer = setInterval(() => {
+    try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] sweep failed:", error.message); }
+  }, ORDER_ARCHIVE_INTERVAL_MS);
   timer.unref?.();
 }
 const customerRatingReminderInFlight = new Set();
@@ -17750,6 +17817,7 @@ app.listen(PORT, () => {
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
+  startOrderArchiveScheduler();
   startCustomerRatingReminderScheduler();
   startCaptainSubscriptionScheduler();
   startCaptainBalancePolicyScheduler();
