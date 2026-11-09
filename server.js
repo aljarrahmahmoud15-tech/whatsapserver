@@ -2238,18 +2238,8 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
   const sourceKey = String(sourceMessageId || "").trim();
   if (!captain?.id || !isValidJordanPhone(phone) || !sourceKey) return { status: "invalid" };
   const idempotencyKey = `CAPTAIN-ACCEPTANCE-BALANCE-${sourceKey}`;
-  const title = "لم يتم اعتماد كلمة تم";
-  const message = [
-    `الكابتن ${captain.name || displayPhone(phone)}،`,
-    deletionStatus === "deleted"
-      ? "تم حذف/رفض رسالة «تم» لأن رصيد محفظتك لا يغطي عمولة هذا الطلب."
-      : deletionStatus === "paused"
-        ? "تم رفض قبول «تم» لعدم كفاية الرصيد؛ سيبقى ردك ظاهرًا مؤقتًا ولن يُعتمد الحجز."
-        : "تم رفض قبول «تم» لعدم كفاية الرصيد؛ لم يتم حذف الرسالة.",
-    `الرصيد الحالي: ${money(balanceCents)} JOD`,
-    `العمولة المطلوبة: ${money(requiredCents)} JOD`,
-    "يرجى شحن المحفظة ثم المشاركة في طلب آخر.",
-  ].join("\n");
+  const title = "تم إلغاء الرحلة";
+  const message = "تم إلغاء الرحلة فقط لعدم كفاية الرصيد.";
   const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
   if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
   const row = existing
