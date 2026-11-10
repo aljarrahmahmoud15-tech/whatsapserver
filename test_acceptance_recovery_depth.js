@@ -14,14 +14,15 @@ assert.ok(hoursMatch && Number(hoursMatch[1]) >= 24, 'default recovery window mu
 const pagesMatch = source.match(/WHATSAPP_RECOVERY_MAX_PAGES \|\| (\d+)/);
 assert.ok(pagesMatch && Number(pagesMatch[1]) >= 40, 'default page budget must cover the expanded 600-message recovery bound');
 const loadsMatch = source.match(/WHATSAPP_RECOVERY_EARLIER_LOADS \|\| (\d+)/);
-assert.ok(loadsMatch && Number(loadsMatch[1]) > 1, 'default expansion must exceed the old single load');
+assert.ok(loadsMatch && Number(loadsMatch[1]) >= 12, 'default expansion must allow repeated bounded loads of older messages');
 
 // Every recovery path must use the shared bounds instead of the hard-coded 12h window.
 assert.doesNotMatch(source, /const cutoff = Date\.now\(\) - 12 \* 60 \* 60 \* 1000;/);
 assert.doesNotMatch(source, /const maxPages = 6;/);
 assert.doesNotMatch(source, /loads < 1 &&/);
 assert.doesNotMatch(source, /slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* 6\)/);
-assert.match(source, /Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 600\)/);
+assert.match(source, /Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\)/, 'each initial history fallback must stay within the response-time bound');
+assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/, 'pagination can still inspect up to 600 messages in bounded pages');
 
 // The deeper in-page expansion still has to stay bounded and time-limited.
 assert.match(source, /earlierLoadLimit = Math\.max\(1, Math\.min\(12,/);
