@@ -12,6 +12,9 @@ assert.match(searchBlock, /resolveMessageSenderPhone\(candidate\)/);
 assert.match(searchBlock, /directJordanPhoneFromWhatsappValue/);
 assert.match(searchBlock, /phoneWithCountry\(resolvedSearchSender\) === phoneWithCountry\(resolvedCandidateSender\)/);
 assert.match(searchBlock, /search_sender_normalized/);
+assert.match(server, /providedMessageIdCandidates/);
+assert.doesNotMatch(server, /deleteAcceptanceMessagesForInsufficientBalance\(\{[^}]*messageIdCandidates,/s);
+assert.match(server, /messageIdCandidates\(acceptanceMessage\)/);
 
 const rejectionStart = server.indexOf('logOrderTrace("acceptance_rejected_insufficient_balance"');
 const rejectionEnd = server.indexOf("return;", rejectionStart);

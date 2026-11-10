@@ -2350,7 +2350,7 @@ async function notifyOrderCancellationParties({ order, producer, captain, reason
   ]);
   return { producer: producerNotice, executor: executorNotice };
 }
-async function deleteAcceptanceMessagesForInsufficientBalance({ groupId, messageId, message, messageIdCandidates, reason, candidateId, captainId, candidateSourceMessageId, balanceCents, requiredCents }) {
+async function deleteAcceptanceMessagesForInsufficientBalance({ groupId, messageId, message, providedMessageIdCandidates, reason, candidateId, captainId, candidateSourceMessageId, balanceCents, requiredCents }) {
   const targetGroupId = String(groupId || "").trim();
   const candidateKey = Number(candidateId || 0);
   const captainKey = Number(captainId || 0);
@@ -2397,7 +2397,7 @@ async function deleteAcceptanceMessagesForInsufficientBalance({ groupId, message
     try {
       const result = await deleteWhatsAppMessageForEveryone(acceptanceId, {
         message: acceptanceMessage,
-        messageIdCandidates: acceptanceMessage ? messageIdCandidates(acceptanceMessage) : [acceptanceId],
+        messageIdCandidates: acceptanceMessage ? messageIdCandidates(acceptanceMessage) : (Array.isArray(providedMessageIdCandidates) && providedMessageIdCandidates.length ? providedMessageIdCandidates : [acceptanceId]),
         reason,
         groupId: targetGroupId,
         candidateId: candidateKey || null,
@@ -7815,7 +7815,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         groupId,
         messageId: rowMessageId,
         message: acceptance,
-        messageIdCandidates: messageIdCandidates(acceptance),
+        providedMessageIdCandidates: messageIdCandidates(acceptance),
         reason: "insufficient_balance_acceptance_recovery",
         candidateId: unquoted.candidate.id,
         captainId: unquotedResult.captain?.id,
@@ -9181,7 +9181,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       groupId,
       messageId,
       message: msg,
-      messageIdCandidates: messageIdCandidates(msg),
+      providedMessageIdCandidates: messageIdCandidates(msg),
       reason: "insufficient_balance_acceptance",
       candidateId: candidate.id,
       captainId: acceptanceResult.captain?.id,
