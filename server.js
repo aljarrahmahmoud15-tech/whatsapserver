@@ -4500,8 +4500,9 @@ async function getOfficialGroupInviteUrl() {
     return normalizeOfficialGroupInviteUrl(code ? `https://chat.whatsapp.com/${String(code).trim()}` : "");
   } catch (_) { return ""; }
 }
-function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "") {
+function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "", temporaryPin = "") {
   const displayName = String(name || "كابتن").trim().slice(0, 80) || "كابتن";
+  const safePin = String(temporaryPin || "").trim();
   return [
     "━━━━━━━━━━━━━━━━━━",
     "بطاقة ترحيب الكابتن",
@@ -4513,6 +4514,8 @@ function captainGroupWelcomeMessage(name, baseUrl = process.env.PUBLIC_BASE_URL 
     "رابط دخول الكابتن: " + captainLoginUrl(baseUrl),
     ...(groupInviteUrl ? ["رابط القروب الرسمي: " + groupInviteUrl] : []),
     "رقم هاتف الكابتن للنسخ: " + String(phone || "").trim(),
+    "الرمز السري المؤقت: " + (safePin || "استخدم الرمز السري الحالي ولا تشاركه"),
+    "هذه البيانات خاصة بك؛ لا تُرسل إلى القروب ولا تشاركها مع أي شخص.",
     "نتمنى لك بداية موفقة ورزقًا طيبًا.",
     "━━━━━━━━━━━━━━━━━━"
   ].join("\n");
@@ -4536,8 +4539,14 @@ async function sendCaptainGroupWelcome(participant, groupId) {
     ? await withTimeout(client.getContactById(serialized), 8000, null).catch(() => null)
     : null;
   const name = String(contact?.pushname || contact?.name || contact?.shortName || "كابتن").trim();
+  const captain = ensureCaptainUser(phone, name);
+  const preparedCaptain = ensureCaptainAccessCredentials(captain || { phone, name, role: "captain" });
+  let temporaryPin = String(preparedCaptain?.temporaryPin || "").trim();
+  if (!temporaryPin && preparedCaptain?.captain_pin_ciphertext) {
+    try { temporaryPin = String(decryptCardCode(preparedCaptain.captain_pin_ciphertext) || "").trim(); } catch (_) {}
+  }
   const groupInviteUrl = await getOfficialGroupInviteUrl();
-  const message = captainGroupWelcomeMessage(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl);
+  const message = captainGroupWelcomeMessage(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl, temporaryPin);
   let row = existing;
   if (row) {
     db.prepare("UPDATE notifications SET recipient_phone=?,recipient_role='captain',title=?,message=?,delivery_status='pending',message_id=NULL WHERE id=?").run(phone, "ترحيب الكابتن الجديد", message, row.id);
@@ -4556,7 +4565,7 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   let messageId = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
-    const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl), 30000, null);
+    const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl, temporaryPin), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
     const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: message }, 30000);
     if (result.status === "sent" || result.status === "uncertain") {
@@ -6297,13 +6306,14 @@ async function renderOperationsMessageMedia(title, lines = []) {
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "aljarah-operations-message.png");
 }
-async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "") {
+async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_BASE_URL || "", phone = "", groupInviteUrl = "", temporaryPin = "") {
   const logoPath = path.join(__dirname, "public", "aljarah-logo-mark-card.png");
   let logoData = "";
   try { logoData = fs.readFileSync(logoPath).toString("base64"); } catch (_) {}
   const safeName = escapeXml(name || "كابتن");
   const safeUrl = escapeXml(captainLoginUrl(baseUrl));
   const safePhone = escapeXml(String(phone || "").trim());
+  const safePin = escapeXml(String(temporaryPin || "").trim() || "استخدم الرمز الحالي");
   const safeGroupInviteUrl = escapeXml(normalizeOfficialGroupInviteUrl(groupInviteUrl));
   const logo = logoData
     ? `<image href="data:image/png;base64,${logoData}" x="487" y="82" width="106" height="106" preserveAspectRatio="xMidYMid meet" opacity=".86"/>`
@@ -6330,7 +6340,7 @@ async function renderCaptainWelcomeCardMedia(name, baseUrl = process.env.PUBLIC_
     <rect x="314" y="704" width="452" height="88" rx="20" fill="url(#glass)" stroke="#eafff6" stroke-opacity=".78" stroke-width="2"/><path d="M332 722 H748" stroke="#ffffff" stroke-opacity=".42" stroke-width="2"/><text x="540" y="751" text-anchor="middle" fill="#ffffff" font-size="24" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">↗ رابط دخول الكابتن</text><text x="540" y="778" text-anchor="middle" fill="#d7fff0" font-size="14" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">الرابط الحقيقي يرسل كنص قابل للنقر أسفل الصورة</text>
     <rect x="314" y="806" width="452" height="58" rx="17" fill="url(#glass)" stroke="#eafff6" stroke-opacity=".62" stroke-width="2"/><text x="540" y="830" text-anchor="middle" fill="#ffffff" font-size="18" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">↗ رابط القروب الرسمي</text><text x="540" y="852" text-anchor="middle" fill="#d7fff0" font-size="11" font-family="Arial, sans-serif">${safeGroupInviteUrl || "يظهر بعد اتصال القروب الرسمي"}</text>
     <text x="540" y="900" text-anchor="middle" fill="#f6c84c" font-size="20" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">نتمنى لك بداية موفقة ورزقًا طيبًا</text><text x="540" y="928" text-anchor="middle" fill="#a7f3d0" font-size="15" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">ترحيب وتعليمات التشغيل فقط · رسمي</text>
-    <rect x="82" y="952" width="916" height="104" rx="20" fill="#06141c" stroke="#397074" stroke-width="2"/><text x="940" y="985" text-anchor="end" fill="#f6c84c" font-size="17" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">رابط الدخول والرقم للنسخ</text><text x="940" y="1022" text-anchor="end" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safeUrl}</text><text x="140" y="1022" fill="#effff9" font-size="18" font-family="Arial, sans-serif">${safePhone}</text>
+    <rect x="82" y="952" width="916" height="104" rx="20" fill="#06141c" stroke="#397074" stroke-width="2"/><text x="940" y="982" text-anchor="end" fill="#f6c84c" font-size="17" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif" font-weight="700">بيانات الدخول الخاصة</text><text x="940" y="1014" text-anchor="end" fill="#effff9" font-size="16" font-family="Arial, sans-serif">${safeUrl}</text><text x="140" y="984" fill="#a7f3d0" font-size="15" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">رقم الهاتف: ${safePhone}</text><text x="140" y="1018" fill="#effff9" font-size="17" font-family="Arial, sans-serif" font-weight="700">الرمز السري: ${safePin}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), "alezwa-captain-welcome-card.png");
