@@ -9233,6 +9233,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       balanceCents: acceptanceResult.balanceCents,
       deletionStatus,
+      deletionResult: deletionResult || null,
       acceptanceMode,
       correctionStatus: correction.status,
       notificationStatus: notification.status,
@@ -15330,16 +15331,26 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   if (!result?.ok && typeof client?.searchMessages === "function" && searchBody === "تم" && deletionContext.groupId) {
     try {
       const searchResults = await withTimeout(client.searchMessages("تم", { page: 0, limit: 100, chatId: deletionContext.groupId }), 20000, []);
-      const searchCandidates = (Array.isArray(searchResults) ? searchResults : []).filter((candidate) => {
+      const resolvedSearchSender = await resolveMessageSenderPhone(originalMessage).catch(() => "")
+        || directJordanPhoneFromWhatsappValue(searchSender)
+        || phoneWithCountry(persistedReceipt?.sender_phone || "");
+      const searchCandidates = [];
+      for (const candidate of (Array.isArray(searchResults) ? searchResults : [])) {
         const body = String(candidate?.body || candidate?.text || "").trim();
         const candidateTimestamp = Number(candidate?.timestamp || candidate?.t || 0);
         const candidateSender = String(candidate?.author || candidate?.from || "").trim();
         const withinWindow = searchTimestamp > 0 && candidateTimestamp > 0
           ? Math.abs(candidateTimestamp - searchTimestamp) <= 180
           : false;
-        const sameSender = !searchSender || !candidateSender || searchSender === candidateSender;
-        return candidate && !candidate.fromMe && body === "تم" && withinWindow && sameSender && resolveGroupChatId(candidate) === deletionContext.groupId;
-      });
+        if (!candidate || candidate.fromMe || body !== "تم" || !withinWindow || resolveGroupChatId(candidate) !== deletionContext.groupId) continue;
+        const resolvedCandidateSender = await resolveMessageSenderPhone(candidate).catch(() => "")
+          || directJordanPhoneFromWhatsappValue(candidateSender);
+        const sameSender = resolvedSearchSender && resolvedCandidateSender
+          ? phoneWithCountry(resolvedSearchSender) === phoneWithCountry(resolvedCandidateSender)
+          : !searchSender || !candidateSender || searchSender === candidateSender;
+        if (sameSender) searchCandidates.push(candidate);
+      }
+      console.log(`[WhatsApp][MessageDelete] search_sender_normalized message=${deletionKey} sourceResolved=${Boolean(resolvedSearchSender)} candidates=${searchCandidates.length}`);
       if (searchCandidates.length === 1) {
         const candidate = searchCandidates[0];
         searchFallbackMessageId = serializedMessageId(candidate) || null;
