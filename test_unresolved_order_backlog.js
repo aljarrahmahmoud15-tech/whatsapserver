@@ -9,7 +9,7 @@ assert.match(source, /async function recoverUnresolvedOrderMessages\(groupId\)/)
 assert.match(source, /recordUnresolvedOrderMessage\(\{\n        messageId,/);
 assert.match(source, /lastUnresolvedOrderRecovery = \{ startedAt/);
 assert.match(source, /unresolvedOrderRecovery: lastUnresolvedOrderRecovery/);
-assert.match(source, /Math\.min\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)/);
+assert.match(source, /Math\.min\(200, Math\.max\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)\)/);
 assert.match(source, /pagesScanned: 0/);
 assert.match(source, /messagesFetched: 0/);
 assert.match(source, /const maxPages = WHATSAPP_RECOVERY_MAX_PAGES/);

@@ -278,7 +278,7 @@ const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(
 // of pending bookings sit deeper than that window, so the scan reported zero matches and
 // the bookings stayed unconfirmed. These bounds keep the scan cheap but reach far enough.
 const WHATSAPP_RECOVERY_SCAN_HOURS = Math.max(1, Math.min(168, Number(process.env.WHATSAPP_RECOVERY_SCAN_HOURS || 72)));
-const WHATSAPP_RECOVERY_MAX_PAGES = Math.max(1, Math.min(40, Number(process.env.WHATSAPP_RECOVERY_MAX_PAGES || 12)));
+const WHATSAPP_RECOVERY_MAX_PAGES = Math.max(1, Math.min(40, Number(process.env.WHATSAPP_RECOVERY_MAX_PAGES || 40)));
 const WHATSAPP_RECOVERY_EARLIER_LOADS = Math.max(1, Math.min(12, Number(process.env.WHATSAPP_RECOVERY_EARLIER_LOADS || 6)));
 const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 25)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 180000));
@@ -7601,7 +7601,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
   // while the in-page history loader still reads the group. Without this fallback the function
   // scanned zero messages on every run and still reported a silent success.
   if (!recoveredMessages.length) {
-    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 600), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
     if (Array.isArray(history?.messages) && history.messages.length) {
       fastScan = { ...history, source: "history-fallback" };
       recoveredMessages = history.messages;
@@ -7692,7 +7692,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     // and keep paging from its oldest message so recovery depth is not capped at one page.
     const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
     if (!before && fastMessages.length === 0) {
-      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 600), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
       if (Array.isArray(history?.messages) && history.messages.length) {
         const historyOldest = history.messages.reduce((oldest, message) => {
           const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
