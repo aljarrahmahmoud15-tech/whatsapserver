@@ -7665,7 +7665,9 @@ async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   // The execution batch stays bounded, but the reported backlog must not be capped:
   // a saturated counter hides real growth and makes a stuck queue look stable.
-  const recoveryBatchLimit = Math.min(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT);
+  // Candidate matching needs a wider bounded set than the small per-page recovery batch;
+  // otherwise older pending candidates can be starved when the backlog exceeds the default 15.
+  const recoveryBatchLimit = Math.min(200, Math.max(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT));
   const pendingCandidatesTotal = Number(db.prepare("SELECT COUNT(*) AS total FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL").get(groupId)?.total || 0);
   const pendingCandidates = db.prepare("SELECT c.source_message_id FROM order_candidates c LEFT JOIN order_candidate_acceptances a ON a.candidate_id=c.id WHERE c.group_id=? AND c.status IN ('candidate','pending') AND a.id IS NULL AND c.source_message_id IS NOT NULL ORDER BY c.updated_at DESC LIMIT ?").all(groupId, recoveryBatchLimit);
   lastAcceptanceRecovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), pendingCandidates: pendingCandidates.length, pendingCandidatesTotal, pendingCandidatesCapped: pendingCandidatesTotal > pendingCandidates.length, pagesScanned: 0, messagesFetched: 0, scanned: 0, quoteLookupAttempts: 0, quoteFallbackMatches: 0, quotedMatches: 0, unquotedAttempts: 0, unquotedMatches: 0, recovered: 0, recoveredQuoted: 0, recoveredUnquoted: 0, errors: 0, lastError: null, lastStage: "started", finishedAt: null };

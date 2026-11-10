@@ -49,6 +49,7 @@ assert.match(source, /function findUnquotedAcceptanceCandidate\(groupId, senderP
 assert.match(recovery, /pendingCandidatesTotal/, 'the total pending backlog must be reported');
 assert.match(recovery, /pendingCandidatesCapped/, 'the report must disclose that the batch is capped');
 assert.match(recovery, /SELECT COUNT\(\*\) AS total FROM order_candidates c LEFT JOIN order_candidate_acceptances a/, 'the total must be counted without a limit');
+assert.match(recovery, /Math\.min\(200, Math\.max\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)\)/, 'quoted recovery must compare against a wider bounded candidate set');
 
 // The historical candidate recovery had no fallback at all and scanned zero messages every run.
 const histStart = source.indexOf('async function recoverHistoricalOrderCandidates(groupId) {');
