@@ -39,6 +39,8 @@ assert.match(recovery, /unquotedAcceptanceRows\.push\(/, 'unquoted acceptances m
 assert.match(recovery, /findUnquotedAcceptanceCandidate\(groupId, senderPhone, acceptanceTimestampMs, UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS\)/, 'unquoted recovery must use the recovery window');
 assert.match(recovery, /acceptanceMode: "unquoted"/, 'unquoted recovery must record the acceptance mode');
 assert.match(recovery, /recoveredUnquoted/, 'recovered unquoted acceptances must be reported separately');
+assert.match(recovery, /if \(!matchingPendingSourceId\) continue;/, 'quoted recovery must require an exact pending-candidate source ID');
+assert.doesNotMatch(recovery, /if \(!matchingPendingSourceId \|\| !parseOrder\(quoted\?\.body\)\.isOrder\)/, 'a quoted preview need not be reparsable after the exact source ID is verified');
 assert.match(source, /const UNQUOTED_ACCEPTANCE_RECOVERY_WINDOW_MS = Number\.isFinite\(/, 'recovery window must be bounded and configurable');
 assert.match(source, /function findUnquotedAcceptanceCandidate\(groupId, senderPhone, acceptanceTimestampMs = Date\.now\(\), windowMs = UNQUOTED_ACCEPTANCE_WINDOW_MS\)/, 'unquoted lookup must accept a window override');
 

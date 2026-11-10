@@ -7737,7 +7737,9 @@ async function recoverPendingAcceptanceMessages(groupId) {
     }
     const sourceId = serializedMessageId(quoted);
     const matchingPendingSourceId = sourceId && Array.from(pendingSourceIds).find((pendingSourceId) => sourceMessageIdsEqual(pendingSourceId, sourceId));
-    if (!matchingPendingSourceId || !parseOrder(quoted?.body).isOrder) continue;
+    // The exact source-message ID of a pending database candidate is stronger evidence than
+    // reparsing a quoted preview that WhatsApp may truncate or format differently.
+    if (!matchingPendingSourceId) continue;
     lastAcceptanceRecovery.quotedMatches += 1;
     setAcceptanceRecoveryStage("before_handle_incoming_message");
     try {
