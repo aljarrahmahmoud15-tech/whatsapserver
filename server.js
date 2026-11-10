@@ -21,6 +21,7 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
 const { calculateFare, farePolicyResponse } = require("./pricing");
+const { evaluateBalance } = require("./insufficient-balance-cleanup");
 const { calculateSpecialTripFare, specialTripTariffResponse } = require("./special-trip-pricing");
 const { ensureDirectRideSchema, createDirectRideService } = require("./direct-ride-service");
 const { createDirectRideNotificationHub } = require("./direct-ride-notifications");
@@ -6105,13 +6106,12 @@ function acceptanceBalanceGuard(candidate, captain) {
   const company = companyUser();
   const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
   if (!walletOwner) return { allowed: false, state: "stale" };
-  const balanceCents = Number(walletOwner.wallet_cents || 0);
-  const requiredCents = Number(settlement.confirmingCaptainFeeCents || 0);
-  const projectedBalanceCents = balanceCents - requiredCents;
-  if (projectedBalanceCents < CAPTAIN_MIN_BALANCE_CENTS) {
-    return { allowed: false, state: "insufficient_balance", walletOwner, balanceCents, requiredCents, projectedBalanceCents };
-  }
-  return { allowed: true, walletOwner, balanceCents, requiredCents, projectedBalanceCents };
+  const balanceGuard = evaluateBalance({
+    balanceCents: Number(walletOwner.wallet_cents || 0),
+    requiredCents: Number(settlement.confirmingCaptainFeeCents || 0),
+    minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS,
+  });
+  return { ...balanceGuard, walletOwner };
 }
 function latestOpenOrder(groupId) {
   return db.prepare("SELECT * FROM orders WHERE group_id=? AND status='open' AND COALESCE(archive_state,'active')='active' AND pending_message_id IS NULL ORDER BY id DESC LIMIT 1").get(groupId);
@@ -9633,12 +9633,10 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "stale" };
-    const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
-    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.candidate_debt_limit_blocked", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
-    }
-    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
+    const balanceGuard = evaluateBalance({ balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: Number(settlement.confirmingCaptainFeeCents || 0), minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS });
+    if (!balanceGuard.allowed) {
+      audit("order.candidate_debt_limit_blocked", "order_candidate", candidateId, { captainId: captain.id, chargedWalletId: walletOwner.id, requiredCents: balanceGuard.requiredCents, balanceCents: balanceGuard.balanceCents, projectedBalanceCents: balanceGuard.projectedBalanceCents, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
+      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: balanceGuard.balanceCents, requiredCents: balanceGuard.requiredCents, projectedBalanceCents: balanceGuard.projectedBalanceCents };
     }
     const stamp = now();
     const companyWalletCharge = walletOwner.role === "company";
@@ -9714,12 +9712,10 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const company = companyUser();
     const walletOwner = captain.is_bot === 1 && BOT_FINANCIAL_MODE === "company" ? company : captain;
     if (!walletOwner) return { state: "unlinked" };
-    const projectedCaptainBalance = Number(walletOwner.wallet_cents || 0) - settlement.confirmingCaptainFeeCents;
-    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      audit("order.history.debt_limit_blocked", "order", orderId, { captainId: captain.id, requiredCents: settlement.confirmingCaptainFeeCents, balanceCents: walletOwner.wallet_cents, projectedBalanceCents: projectedCaptainBalance, legacyDebtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, policy: "order_settlement_rejects_negative_balance" });
-    }
-    if (projectedCaptainBalance < CAPTAIN_MIN_BALANCE_CENTS) {
-      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: settlement.confirmingCaptainFeeCents, projectedBalanceCents: projectedCaptainBalance };
+    const balanceGuard = evaluateBalance({ balanceCents: Number(walletOwner.wallet_cents || 0), requiredCents: Number(settlement.confirmingCaptainFeeCents || 0), minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS });
+    if (!balanceGuard.allowed) {
+      audit("order.history.debt_limit_blocked", "order", orderId, { captainId: captain.id, requiredCents: balanceGuard.requiredCents, balanceCents: balanceGuard.balanceCents, projectedBalanceCents: balanceGuard.projectedBalanceCents, policy: "order_settlement_rejects_negative_balance" });
+      return { state: "insufficient_balance", captain, chargedWallet: walletOwner, balanceCents: balanceGuard.balanceCents, requiredCents: balanceGuard.requiredCents, projectedBalanceCents: balanceGuard.projectedBalanceCents };
     }
     const stamp = acceptedAt || now();
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind, producerRateBps: policy.producerRateBps, companyRateBps: policy.companyRateBps });

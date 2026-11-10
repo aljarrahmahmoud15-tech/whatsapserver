@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { calculateSettlement, settlementLedgerNotes } = require("./finance");
+const { evaluateBalance } = require("./insufficient-balance-cleanup");
 const { isBotGeneratedMessage } = require("./message_guardrails");
 
 const source = fs.readFileSync(path.join(__dirname, "server.js"), "utf8");
@@ -231,6 +232,7 @@ function message(id, body, sender, quoted = null) {
   findPersistedWhatsappPhone: () => null,
   money: (value) => (Number(value || 0) / 100).toFixed(2),
   calculateSettlement,
+  evaluateBalance,
   settlementLedgerNotes,
   PRODUCER_RATE_BPS: 1250,
   SPECIAL_ORDER_RATE_BPS: 1500,
