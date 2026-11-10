@@ -8225,6 +8225,8 @@ function createClient() {
       void retryFailedBookingConfirmations()
         .then((result) => { if (result.attempted) console.log(`[WhatsApp] retried failed booking confirmations: attempted=${result.attempted} sent=${result.sent} suppressed=${result.suppressed}`); })
         .catch((error) => console.error("[WhatsApp] booking confirmation retry failed:", error.message));
+      const recoveryGroupId = configuredRuntimeGroupId();
+      if (recoveryGroupId) startBackgroundOrderRecovery(recoveryGroupId);
     }, GROUP_HYDRATION_READY_DELAY_MS);
   });
   instance.on("auth_failure", (message) => {
