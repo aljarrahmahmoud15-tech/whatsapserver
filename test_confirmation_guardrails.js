@@ -71,6 +71,8 @@ assert.match(server, /const WHATSAPP_RECOVERY_MAX_PAGES = Math\.max\(1, Math\.mi
 assert.match(server, /cutoff = Date\.now\(\) - WHATSAPP_RECOVERY_SCAN_HOURS \* 60 \* 60 \* 1000/);
 assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
 assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true \}\)/);
+assert.match(server, /chat\.fetchMessages\(includeOutgoing \? \{ limit \} : \{ limit, fromMe: false \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, \[\]\)/);
+assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 25000/);
 assert.match(server, /source: "history-fallback"/);
 assert.match(server, /if \(normalizedMessages\.length\) return \{ chat, messages: normalizedMessages \};/);
 assert.match(server, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/);

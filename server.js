@@ -4947,7 +4947,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
   let chat = await resolveReadableGroupChat(groupId);
   if (!chat) chat = await resolveGroupChat(groupId);
   if (chat) {
-    const messages = await withTimeout(chat.fetchMessages(includeOutgoing ? { limit } : { limit, fromMe: false }), 90000, []);
+    const messages = await withTimeout(chat.fetchMessages(includeOutgoing ? { limit } : { limit, fromMe: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, []);
     const normalizedMessages = Array.isArray(messages) ? messages : [];
     if (normalizedMessages.length) return { chat, messages: normalizedMessages };
     // WhatsApp Web can expose the chat object while its high-level cache is empty
@@ -7601,7 +7601,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
   // while the in-page history loader still reads the group. Without this fallback the function
   // scanned zero messages on every run and still reported a silent success.
   if (!recoveredMessages.length) {
-    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
     if (Array.isArray(history?.messages) && history.messages.length) {
       fastScan = { ...history, source: "history-fallback" };
       recoveredMessages = history.messages;
@@ -7692,7 +7692,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
     // and keep paging from its oldest message so recovery depth is not capped at one page.
     const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
     if (!before && fastMessages.length === 0) {
-      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [] });
+      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
       if (Array.isArray(history?.messages) && history.messages.length) {
         const historyOldest = history.messages.reduce((oldest, message) => {
           const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
