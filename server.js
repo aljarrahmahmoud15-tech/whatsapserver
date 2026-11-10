@@ -2265,6 +2265,40 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
+const officialGroupInsufficientBalanceNotificationInFlight = new Set();
+async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, publicTripNo, deletionStatus }) {
+  const targetGroupId = String(groupId || "").trim();
+  const sourceKey = String(sourceMessageId || "").trim();
+  const tripNo = String(publicTripNo || "غير محدد").trim();
+  if (!targetGroupId || !isOfficialGroupTarget(targetGroupId) || !sourceKey) return { status: "invalid" };
+  if (!['deleted', 'partial'].includes(String(deletionStatus || ""))) return { status: "not_sent", reason: "message_not_deleted" };
+  const idempotencyKey = `GROUP-ACCEPTANCE-BALANCE-${sourceKey}`;
+  if (officialGroupInsufficientBalanceNotificationInFlight.has(idempotencyKey)) return { status: "already_in_flight", idempotencyKey };
+  const title = "إلغاء الرحلة لعدم كفاية الرصيد";
+  const message = `تم حذف رسالة تم من الكابتن لعدم كفاية الرصيد، وتم إلغاء الرحلة رقم ${tripNo} فقط.`;
+  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
+  const row = existing
+    ? { lastInsertRowid: existing.id }
+    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'official_group','official_group.acceptance.insufficient_balance',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
+  const notificationId = row.lastInsertRowid || existing?.id;
+  if (!notificationId) return { status: "duplicate" };
+  officialGroupInsufficientBalanceNotificationInFlight.add(idempotencyKey);
+  try {
+    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 30000);
+    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = serializedMessageId(result?.message) || result?.message?.id?._serialized || null;
+    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+    audit("official_group.acceptance.insufficient_balance_notified", "chat", targetGroupId, { sourceMessageId: sourceKey, publicTripNo: tripNo, deletionStatus, deliveryStatus, idempotencyKey, financialMutation: false });
+    return { status: deliveryStatus, notificationId, messageId };
+  } catch (error) {
+    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
+    audit("official_group.acceptance.insufficient_balance_notification_failed", "chat", targetGroupId, { sourceMessageId: sourceKey, publicTripNo: tripNo, error: String(error?.message || error).slice(0, 180), idempotencyKey, financialMutation: false });
+    return { status: "failed", notificationId };
+  } finally {
+    officialGroupInsufficientBalanceNotificationInFlight.delete(idempotencyKey);
+  }
+}
 const cancellationPartyNotificationInFlight = new Set();
 async function notifyOrderCancellationParty({ order, recipient, role, reason = "producer_thumb_removed" }) {
   const phone = phoneWithCountry(recipient?.phone);
@@ -7771,7 +7805,12 @@ async function recoverPendingAcceptanceMessages(groupId) {
       });
       const deletionStatus = guardedDeletion.deletionStatus;
       const deletionResult = guardedDeletion.deletionResult;
-      const correction = { status: "not_sent", reason: "group_notification_disabled" };
+      const correction = await notifyOfficialGroupInsufficientAcceptanceBalance({
+        groupId,
+        sourceMessageId: rowMessageId,
+        publicTripNo: unquoted.candidate.public_trip_no,
+        deletionStatus,
+      });
       const notification = await notifyCaptainInsufficientAcceptanceBalance({
         captain: unquotedResult.captain,
         balanceCents: unquotedResult.balanceCents,
@@ -9123,7 +9162,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     });
     const deletionStatus = guardedDeletion.deletionStatus;
     const deletionResult = guardedDeletion.deletionResult;
-    const correction = { status: "not_sent", reason: "group_notification_disabled" };
+    const correction = await notifyOfficialGroupInsufficientAcceptanceBalance({
+      groupId,
+      sourceMessageId: messageId,
+      publicTripNo: candidate.public_trip_no,
+      deletionStatus,
+    });
     const notification = await notifyCaptainInsufficientAcceptanceBalance({
       captain: acceptanceResult.captain,
       balanceCents: acceptanceResult.balanceCents,
