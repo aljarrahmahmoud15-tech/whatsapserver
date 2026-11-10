@@ -2256,41 +2256,11 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
     const messageId = result.message?.id?._serialized || null;
     db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-    audit("captain.acceptance.insufficient_balance_notified", "user", captain.id, { sourceMessageId: sourceKey, balanceCents, requiredCents, deletionStatus, deliveryStatus, idempotencyKey });
+    audit("captain.acceptance.insufficient_balance_notified", "user", captain.id, { sourceMessageId: sourceKey, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
     return { status: deliveryStatus, notificationId, messageId };
   } catch (error) {
     db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
     audit("captain.acceptance.insufficient_balance_notification_failed", "user", captain.id, { sourceMessageId: sourceKey, error: String(error?.message || error).slice(0, 180), idempotencyKey });
-    return { status: "failed", notificationId };
-  }
-}
-async function notifyOfficialGroupInsufficientAcceptanceDeletionFailure({ groupId, balanceCents, requiredCents, sourceMessageId, publicTripNo }) {
-  const targetGroupId = String(groupId || "").trim();
-  const sourceKey = String(sourceMessageId || "").trim();
-  if (!isConfiguredGroup(targetGroupId) || !sourceKey) return { status: "invalid" };
-  const idempotencyKey = `GROUP-ACCEPTANCE-ALERT-TEXT-${sourceKey}`;
-  const title = "إلغاء الرحلة لعدم كفاية الرصيد";
-  const message = [
-    "تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد.",
-    `تم إلغاء الرحلة رقم ${String(publicTripNo)} فقط.`,
-  ].join("\n");
-  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
-  const row = existing
-    ? { lastInsertRowid: existing.id }
-    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group','order.acceptance.insufficient_balance_deletion_failed',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
-  const notificationId = row.lastInsertRowid || existing?.id;
-  if (!notificationId) return { status: "duplicate" };
-  try {
-    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 20000);
-    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
-    const messageId = serializedMessageId(result?.message) || result?.message?.id?._serialized || result?.message?.id?.id || result?.messageId || null;
-    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-    audit("order.acceptance.insufficient_balance_deletion_correction", "message", sourceKey, { groupId: targetGroupId, balanceCents, requiredCents, deliveryStatus, idempotencyKey });
-    return { status: deliveryStatus, notificationId, messageId };
-  } catch (error) {
-    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
-    audit("order.acceptance.insufficient_balance_deletion_correction_failed", "message", sourceKey, { groupId: targetGroupId, error: String(error?.message || error).slice(0, 180), idempotencyKey });
     return { status: "failed", notificationId };
   }
 }
@@ -2341,140 +2311,100 @@ async function notifyOrderCancellationParties({ order, producer, captain, reason
   ]);
   return { producer: producerNotice, executor: executorNotice };
 }
-async function deleteAcceptanceOnlyAfterGroupAlert({ groupId, messageId, message, messageIdCandidates, reason, candidateId, balanceCents, requiredCents, publicTripNo }) {
+async function deleteAcceptanceMessagesForInsufficientBalance({ groupId, messageId, message, messageIdCandidates, reason, candidateId, captainId, candidateSourceMessageId, balanceCents, requiredCents }) {
+  const targetGroupId = String(groupId || "").trim();
+  const candidateKey = Number(candidateId || 0);
+  const captainKey = Number(captainId || 0);
   if (!insufficientBalanceAcceptanceDeletionEnabled()) {
-    const deletionResult = { ok: false, requested: false, revoked: false, paused: true, reason: "insufficient_balance_acceptance_deletion_paused" };
+    const deletionResult = { ok: false, requested: false, revoked: false, paused: true, deletedCount: 0, reason: "insufficient_balance_acceptance_deletion_paused" };
     audit("order.acceptance.message_deletion_paused_insufficient_balance", "message", String(messageId || ""), {
-      groupId: String(groupId || ""),
-      candidateId: candidateId || null,
+      groupId: targetGroupId,
+      candidateId: candidateKey || null,
+      captainId: captainKey || null,
       balanceCents: Number.isFinite(balanceCents) ? balanceCents : null,
       requiredCents: Number.isFinite(requiredCents) ? requiredCents : null,
       deletionStatus: "paused",
       financialMutation: false,
+      groupNotification: false,
     });
-    return {
-      correction: { status: "not_needed", reason: "insufficient_balance_acceptance_deletion_paused" },
-      deletionStatus: "paused",
-      deletionResult,
-    };
+    return { deletionStatus: "paused", deletionResult };
   }
-  const correction = await notifyOfficialGroupInsufficientAcceptanceDeletionFailure({
-    groupId,
-    balanceCents,
-    requiredCents,
-    sourceMessageId: messageId,
-    publicTripNo,
-  });
-  const alertConfirmed = Boolean(correction && ["sent", "already_sent"].includes(correction.status));
-  if (!alertConfirmed) {
-    return {
-      correction,
-      deletionStatus: "blocked_until_group_alert_confirmed",
-      deletionResult: null,
-    };
-  }
-  let deletionResult = null;
-  try {
-    deletionResult = await deleteWhatsAppMessageForEveryone(messageId, {
-      message,
-      messageIdCandidates,
-      reason,
-      groupId,
-      candidateId,
-      balanceCents,
-      requiredCents,
-    });
-    return {
-      correction,
-      deletionStatus: deletionResult?.ok ? "deleted" : "failed",
-      deletionResult,
-    };
-  } catch (error) {
-    console.warn(`[Order] guarded acceptance deletion failed message=${orderTraceKey(messageId)} error=${String(error?.message || error).slice(0, 180)}`);
-    return {
-      correction,
-      deletionStatus: "failed",
-      deletionResult: { ok: false, reason: String(error?.message || error).slice(0, 180) },
-    };
-  }
-}
-async function notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, messageDeletionPaused = false }) {
-  const targetGroupId = String(groupId || "").trim();
-  const candidateId = Number(candidate?.id || 0);
-  if (!candidateId || !isOfficialGroupTarget(targetGroupId) || !isConfiguredGroup(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
-    return { status: "invalid", candidateId };
-  }
-  const event = `order.acceptance.reopened.${candidateId}`;
-  const idempotencyKey = `ORDER-REOPEN-INSUFFICIENT-BALANCE-${candidateId}`;
-  const message = [
-    "تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد.",
-    `تم إلغاء الرحلة رقم ${String(candidate?.public_trip_no || "غير محدد")} فقط.`,
-  ].join("\n");
-  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") {
-    return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null, candidateId };
-  }
-  if (orderReopenNotificationInFlight.has(idempotencyKey)) return { status: "pending", duplicate: true, candidateId };
-  const row = existing
-    ? { lastInsertRowid: existing.id }
-    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)").run(targetGroupId, event, "إعادة فتح الحجز", message, candidate.source_message_id || null, idempotencyKey, now());
-  const notificationId = row.lastInsertRowid || existing?.id;
-  if (!notificationId) return { status: "duplicate", candidateId };
-  orderReopenNotificationInFlight.add(idempotencyKey);
-  try {
-    const sent = await sendServer2DirectAtMostOnce(targetGroupId, message, undefined, 20000);
-    const deliveryStatus = sent ? "sent" : "failed";
-    const messageId = serializedMessageId(sent) || sent?.id?._serialized || sent?.id?.id || null;
-    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-    audit(deliveryStatus === "sent" ? "order.acceptance.reopened" : "order.acceptance.reopen_failed", "order_candidate", candidateId, {
-      groupId: targetGroupId,
-      messageId,
-      sourceMessageId: candidate.source_message_id || null,
-      requiredCents,
-      rejectedCaptainName: rejectedCaptainName || null,
-      messageDeletionPaused: Boolean(messageDeletionPaused),
-      financialMutation: false,
-      idempotencyKey,
-    });
-    return { status: deliveryStatus, notificationId, messageId, candidateId };
-  } catch (error) {
-    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
-    audit("order.acceptance.reopen_failed", "order_candidate", candidateId, {
-      groupId: targetGroupId,
-      sourceMessageId: candidate.source_message_id || null,
-      error: String(error?.message || error).slice(0, 180),
-      financialMutation: false,
-      idempotencyKey,
-    });
-    return { status: "failed", notificationId, candidateId };
-  } finally {
-    orderReopenNotificationInFlight.delete(idempotencyKey);
-  }
-}
-async function reopenOrderAfterInsufficientBalance({ groupId, candidate, requiredCents, rejectedCaptainName = null, deletionStatus, correction = null }) {
-  if (!["deleted", "paused"].includes(deletionStatus)) {
-    return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId: Number(candidate?.id || 0) };
-  }
-  const reopened = correction && ["sent", "already_sent"].includes(correction.status)
-    ? {
-      status: "already_sent",
-      notificationId: correction.notificationId || null,
-      messageId: correction.messageId || null,
-      candidateId: Number(candidate?.id || 0),
-      singleMessage: true,
+  const rows = candidateKey && captainKey
+    ? db.prepare("SELECT a.acceptance_message_id FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE a.candidate_id=? AND a.captain_user_id=? AND c.group_id=? AND a.acceptance_message_id IS NOT NULL ORDER BY a.id ASC").all(candidateKey, captainKey, targetGroupId)
+    : [];
+  const ids = new Set([messageId, ...rows.map((row) => row.acceptance_message_id)].map((value) => String(value || "").trim()).filter(Boolean));
+  const sourceId = String(candidateSourceMessageId || "").trim();
+  if (candidateKey && captainKey && sourceId) {
+    const seenMessages = new Set();
+    for (const entry of recentWhatsAppMessages.values()) {
+      const candidateMessage = entry?.message;
+      const candidateMessageId = serializedMessageId(candidateMessage);
+      if (!candidateMessage || !candidateMessageId || seenMessages.has(candidateMessageId)) continue;
+      seenMessages.add(candidateMessageId);
+      if (resolveGroupChatId(candidateMessage) !== targetGroupId || !isCaptainAcceptance(candidateMessage.body)) continue;
+      const senderPhone = await resolveMessageSenderPhone(candidateMessage).catch(() => null);
+      const sender = senderPhone ? db.prepare("SELECT id FROM users WHERE phone=? LIMIT 1").get(senderPhone) : null;
+      if (!sender || Number(sender.id) !== captainKey) continue;
+      const quotedId = String(candidateMessage.__quotedMessageId || candidateMessage.quotedStanzaID || candidateMessage.quotedMessageId || candidateMessage._data?.quotedStanzaID || candidateMessage._data?.quotedMessageId || candidateMessage._data?.quotedMsgId || serializedMessageId(candidateMessage.__quoted || candidateMessage.quotedMsg || candidateMessage._data?.quotedMsg) || "").trim();
+      const unquotedMatch = !quotedId && findUnquotedAcceptanceCandidate(targetGroupId, senderPhone, Number(candidateMessage.timestamp || 0) * 1000 || Date.now(), UNQUOTED_ACCEPTANCE_WINDOW_MS)?.candidate?.id === candidateKey;
+      if (sourceMessageIdsEqual(quotedId, sourceId) || unquotedMatch) ids.add(candidateMessageId);
     }
-    : await notifyOfficialGroupOrderReopened({ groupId, candidate, requiredCents, messageDeletionPaused: deletionStatus === "paused" });
-  if (["sent", "already_sent"].includes(reopened.status) && candidate?.id) {
-    updateOrderCandidateLifecycle(candidate.id, "candidate_reopened", "insufficient_balance", {
-      reason: "captain_acceptance_rejected_insufficient_balance",
-      reopenedMessageId: reopened.messageId || null,
-      messageDeletionPaused: deletionStatus === "paused",
-      financialMutation: false,
-    });
   }
-  return reopened;
+  const messageIds = [...ids];
+  const results = [];
+  for (const acceptanceId of messageIds) {
+    let acceptanceMessage = sourceMessageIdsEqual(acceptanceId, messageId) ? message : null;
+    if (!acceptanceMessage) acceptanceMessage = await getWhatsAppMessageByIdVariants(acceptanceId, 5000).catch(() => null);
+    try {
+      const result = await deleteWhatsAppMessageForEveryone(acceptanceId, {
+        message: acceptanceMessage,
+        messageIdCandidates: acceptanceMessage ? messageIdCandidates(acceptanceMessage) : [acceptanceId],
+        reason,
+        groupId: targetGroupId,
+        candidateId: candidateKey || null,
+        captainId: captainKey || null,
+        balanceCents,
+        requiredCents,
+      });
+      results.push({ messageId: acceptanceId, ok: Boolean(result?.ok), result });
+    } catch (error) {
+      results.push({ messageId: acceptanceId, ok: false, result: { ok: false, reason: String(error?.message || error).slice(0, 180) } });
+    }
+  }
+  const deletedCount = results.filter((entry) => entry.ok).length;
+  const deletionResult = { ok: messageIds.length > 0 && deletedCount === messageIds.length, requested: messageIds.length > 0, revoked: deletedCount > 0, paused: false, deletedCount, attemptedCount: messageIds.length, results };
+  audit("order.acceptance.messages_deleted_insufficient_balance", "order_candidate", candidateKey, {
+    groupId: targetGroupId,
+    captainId: captainKey || null,
+    messageIds,
+    deletedCount,
+    attemptedCount: messageIds.length,
+    financialMutation: false,
+    groupNotification: false,
+  });
+  return { deletionStatus: deletionResult.ok ? "deleted" : deletedCount > 0 ? "partial" : "failed", deletionResult };
 }
-
+async function reopenOrderAfterInsufficientBalance({ candidate, requiredCents, deletionStatus }) {
+  const candidateId = Number(candidate?.id || 0);
+  if (!candidateId || !["deleted", "paused", "partial"].includes(deletionStatus)) {
+    return { status: "not_reopened", reason: "acceptance_message_not_confirmed_deleted", candidateId };
+  }
+  updateOrderCandidateLifecycle(candidateId, "candidate_reopened", "insufficient_balance", {
+    reason: "captain_acceptance_rejected_insufficient_balance",
+    messageDeletionStatus: deletionStatus,
+    messageDeletionPaused: deletionStatus === "paused",
+    requiredCents,
+    financialMutation: false,
+    groupNotification: false,
+  });
+  audit("order.acceptance.reopened_without_group_notification", "order_candidate", candidateId, {
+    messageDeletionStatus: deletionStatus,
+    requiredCents,
+    financialMutation: false,
+    groupNotification: false,
+  });
+  return { status: "reopened_no_group_notice", messageId: null, candidateId };
+}
 async function mediaFromRemoteVideoUrl(url, index = 0) {
   const response = await fetch(String(url), { redirect: "follow", headers: { accept: "video/mp4,video/*" } });
   if (!response.ok) throw new Error(`Guide video download failed with HTTP ${response.status}`);
@@ -7823,20 +7753,22 @@ async function recoverPendingAcceptanceMessages(groupId) {
         acceptanceMode: "unquoted",
         recoveryMode: "unquoted",
       });
-      const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
+      const guardedDeletion = await deleteAcceptanceMessagesForInsufficientBalance({
         groupId,
         messageId: rowMessageId,
         message: acceptance,
         messageIdCandidates: messageIdCandidates(acceptance),
         reason: "insufficient_balance_acceptance_recovery",
         candidateId: unquoted.candidate.id,
+        captainId: unquotedResult.captain?.id,
+        candidateSourceMessageId: unquoted.candidate.source_message_id,
         balanceCents: unquotedResult.balanceCents,
         requiredCents: unquotedResult.requiredCents,
         publicTripNo: unquoted.candidate.public_trip_no,
       });
       const deletionStatus = guardedDeletion.deletionStatus;
       const deletionResult = guardedDeletion.deletionResult;
-      const correction = guardedDeletion.correction;
+      const correction = { status: "not_sent", reason: "group_notification_disabled" };
       const notification = await notifyCaptainInsufficientAcceptanceBalance({
         captain: unquotedResult.captain,
         balanceCents: unquotedResult.balanceCents,
@@ -7850,7 +7782,6 @@ async function recoverPendingAcceptanceMessages(groupId) {
         requiredCents: unquotedResult.requiredCents,
         rejectedCaptainName: unquotedResult.captain?.name,
         deletionStatus,
-        correction,
       });
       if (!["sent", "already_sent"].includes(reopened.status)) {
         console.warn(`[Order] recovery insufficient-balance order reopen ${reopened.status} candidate=${unquoted.candidate.id}`);
@@ -9174,23 +9105,22 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       acceptanceMode,
       acceptanceSource,
     });
-    const guardedDeletion = await deleteAcceptanceOnlyAfterGroupAlert({
+    const guardedDeletion = await deleteAcceptanceMessagesForInsufficientBalance({
       groupId,
       messageId,
       message: msg,
       messageIdCandidates: messageIdCandidates(msg),
       reason: "insufficient_balance_acceptance",
       candidateId: candidate.id,
+      captainId: acceptanceResult.captain?.id,
+      candidateSourceMessageId: candidate.source_message_id,
       balanceCents: acceptanceResult.balanceCents,
       requiredCents: acceptanceResult.requiredCents,
       publicTripNo: candidate.public_trip_no,
     });
     const deletionStatus = guardedDeletion.deletionStatus;
     const deletionResult = guardedDeletion.deletionResult;
-    const correction = guardedDeletion.correction;
-    if (!['sent', 'already_sent', 'uncertain', 'not_needed'].includes(correction.status)) {
-      console.warn(`[Order] insufficient-balance group correction ${correction.status} message=${orderTraceKey(messageId)}`);
-    }
+    const correction = { status: "not_sent", reason: "group_notification_disabled" };
     const notification = await notifyCaptainInsufficientAcceptanceBalance({
       captain: acceptanceResult.captain,
       balanceCents: acceptanceResult.balanceCents,
@@ -9207,7 +9137,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       requiredCents: acceptanceResult.requiredCents,
       rejectedCaptainName: acceptanceResult.captain?.name,
       deletionStatus,
-      correction,
     });
     if (!["sent", "already_sent"].includes(reopened.status)) {
       console.warn(`[Order] insufficient-balance order reopen ${reopened.status} candidate=${candidate.id}`);

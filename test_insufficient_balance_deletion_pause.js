@@ -3,35 +3,16 @@ const fs = require('node:fs');
 const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /const INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY = "insufficient_balance_acceptance_deletion_enabled"/);
-assert.match(server, /insufficientBalanceAcceptanceDeletionPaused: !insufficientBalanceAcceptanceDeletionEnabled\(\)/);
 assert.match(server, /function insufficientBalanceAcceptanceDeletionEnabled\(\)/);
-assert.match(server, /app\.patch\("\/api\/admin\/settings\/acceptance-deletion", requireOwnerAdmin/);
-
-const helperStart = server.indexOf('async function deleteAcceptanceOnlyAfterGroupAlert(');
-const helperEnd = server.indexOf('\nasync function notifyOfficialGroupOrderReopened', helperStart);
-assert.ok(helperStart >= 0 && helperEnd > helperStart, 'the low-balance deletion helper must exist');
+assert.match(server, /async function deleteAcceptanceMessagesForInsufficientBalance/);
+const helperStart = server.indexOf('async function deleteAcceptanceMessagesForInsufficientBalance(');
+const helperEnd = server.indexOf('\nasync function reopenOrderAfterInsufficientBalance', helperStart);
+assert.ok(helperStart >= 0 && helperEnd > helperStart);
 const helper = server.slice(helperStart, helperEnd);
-const pauseIndex = helper.indexOf('if (!insufficientBalanceAcceptanceDeletionEnabled())');
-const correctionIndex = helper.indexOf('notifyOfficialGroupInsufficientAcceptanceDeletionFailure({');
-const deleteIndex = helper.indexOf('deleteWhatsAppMessageForEveryone(messageId, {');
-assert.ok(pauseIndex >= 0 && correctionIndex > pauseIndex && deleteIndex > correctionIndex, 'the deletion gate and group-alert-before-delete order must remain explicit');
-assert.match(helper, /deletionStatus: deletionResult\?\.ok \? "deleted" : "failed"/);
-assert.match(helper, /deleteWhatsAppMessageForEveryone\(messageId/);
-
-const reopenStart = server.indexOf('async function reopenOrderAfterInsufficientBalance(');
-const reopenEnd = server.indexOf('\nasync function mediaFromRemoteVideoUrl', reopenStart);
-assert.ok(reopenStart >= 0 && reopenEnd > reopenStart, 'the low-balance order reopen path must exist');
-const reopen = server.slice(reopenStart, reopenEnd);
-assert.match(reopen, /!\["deleted", "paused"\]\.includes\(deletionStatus\)/);
-assert.match(reopen, /messageDeletionPaused: deletionStatus === "paused"/);
-assert.match(server, /تم حذف رسالة «تم» من الكابتن لعدم كفاية الرصيد/);
-assert.match(server, /تم إلغاء الرحلة رقم/);
-assert.match(reopen, /notifyOfficialGroupOrderReopened\(/);
-assert.match(reopen, /candidate_reopened/);
-
-const ownerDeleteStart = server.indexOf('if (body === "هذه"');
-const ownerDeleteEnd = server.indexOf('\n  }', ownerDeleteStart);
-assert.ok(ownerDeleteStart >= 0 && ownerDeleteEnd > ownerDeleteStart);
-assert.match(server.slice(ownerDeleteStart, ownerDeleteEnd), /deleteWhatsAppMessageForEveryone\(quotedMessageId/);
-
-console.log('insufficient-balance acceptance deletion enabled; unrelated captain removal remains paused');
+assert.match(helper, /if \(!insufficientBalanceAcceptanceDeletionEnabled\(\)\)/);
+assert.match(helper, /captainId/);
+assert.match(helper, /deletedCount/);
+assert.match(helper, /groupNotification: false/);
+assert.match(server, /reopened_without_group_notification/);
+assert.doesNotMatch(server, /await notifyOfficialGroupOrderReopened\(/);
+console.log('insufficient-balance deletion gate remains guarded; group notification is disabled');
