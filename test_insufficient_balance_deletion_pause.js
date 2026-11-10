@@ -13,6 +13,8 @@ assert.match(helper, /if \(!insufficientBalanceAcceptanceDeletionEnabled\(\)\)/)
 assert.match(helper, /captainId/);
 assert.match(helper, /deletedCount/);
 assert.match(helper, /groupNotification: false/);
-assert.match(server, /reopened_without_group_notification/);
+assert.match(server, /reopened_after_insufficient_balance/);
+assert.match(server, /acceptanceMessageDeleted/);
+assert.match(server, /acceptance_message_not_confirmed_deleted/);
 assert.doesNotMatch(server, /await notifyOfficialGroupOrderReopened\(/);
-console.log('insufficient-balance deletion gate remains guarded; group notification is disabled');
+console.log('insufficient-balance deletion gate remains guarded; no group claim is sent unless the acceptance message deletion is confirmed');

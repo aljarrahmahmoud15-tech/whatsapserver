@@ -11,7 +11,8 @@ assert.match(server, /SELECT COALESCE\(MAX\(public_trip_no\),0\)\+1 AS next FROM
 assert.match(server, /UPDATE order_candidates SET public_trip_no=\?,updated_at=\? WHERE id=\? AND public_trip_no IS NULL/);
 assert.match(server, /async function notifyCaptainInsufficientAcceptanceBalance/);
 assert.match(server, /تم إلغاء الرحلة رقم \$\{String\(publicTripNo \|\| "غير محدد"\)\} فقط/);
-assert.match(server, /reopened_without_group_notification/);
+assert.match(server, /reopened_after_insufficient_balance/);
+assert.match(server, /async function notifyOfficialGroupInsufficientAcceptanceBalance/);
 assert.doesNotMatch(server, /await notifyOfficialGroupInsufficientAcceptanceDeletionFailure\(/);
 assert.doesNotMatch(server, /await notifyOfficialGroupOrderReopened\(/);
 
@@ -40,4 +41,4 @@ assert.deepEqual(orderedNumbers, [
 ]);
 assert.ok(orderedNumbers.every((line) => /^رقم الرحلة: [1-9]\d*$/.test(line)));
 
-console.log('public trip numbers are sequential and used only in the captain notice');
+console.log('public trip numbers remain sequential across captain and group notices');
