@@ -5858,10 +5858,11 @@ function parseOrder(text) {
       price = (minimum + maximum) / 2;
     }
   };
-  const priceKeyword = "(?:السعر|سعر|price)";
-  const rangeMatch = normalized.match(new RegExp(priceKeyword + "\\s*[:：]?\\s*(?:من\\s*)?(" + amountPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + amountPattern + ")", "i"));
-  const singleMatch = normalized.match(new RegExp(priceKeyword + "\\s*[:：]?\\s*(" + amountPattern + ")", "i"));
-  const currencyMatch = normalized.match(new RegExp("(" + amountPattern + ")\\s*(?:دينار|دنانير|jod)", "i"));
+  const priceKeyword = "(?:الأجرة|الاجرة|أجرة|اجرة|أجار|اجار|السعر|سعر|القيمة|قيمة|المبلغ|مبلغ|price)";
+  const priceLabel = priceKeyword + "(?:\\s+(?:الرحلة|الطلب|المشوار))?";
+  const rangeMatch = normalized.match(new RegExp(priceLabel + "\\s*[:：]?\\s*(?:من\\s*)?(" + amountPattern + ")\\s*(?:إلى|الى|ل|[-–—])\\s*(" + amountPattern + ")", "i"));
+  const singleMatch = normalized.match(new RegExp(priceLabel + "\\s*[:：]?\\s*(" + amountPattern + ")", "i"));
+  const currencyMatch = normalized.match(new RegExp("(" + amountPattern + ")\\s*(?:د\\.?\\s*أ|د\\.?ا|دينار(?:\\s+أردني)?|دنانير|jod)", "i"));
   const requestKindMatch = normalized.match(/(?:راكب(?:ة)?|ركاب|حمولة|سيارة(?:\s+كاملة)?|سياره(?:\s+كامله)?|استقبال\s+مطار|أ?وردر|order)/i);
   const requestAmountMatch = requestKindMatch
     ? normalized.slice(requestKindMatch.index + requestKindMatch[0].length).match(new RegExp("^\\s*[:：-]?\\s*(" + amountPattern + ")", "i"))
@@ -5880,9 +5881,11 @@ function parseOrder(text) {
   const route = routeLine.match(/من\s+(.+?)\s+إلى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+الى\s+(.+)/i) || routeLine.match(/من\s+(.+?)\s+ل(?:ـ)?\s*(.+)/i);
   const requestKind = Boolean(requestKindMatch);
   return {
-    // الصيغة التشغيلية المعتمدة: السعر قد يظهر في أي موضع، بصيغة رقمية أو لفظية؛ النوع اختياري للعرض فقط.
+    // الصيغة التشغيلية المعتمدة: تُستخرج الأجرة قبل فحص قبول الكابتن؛ ثم يستخدم
+    // acceptanceBalanceGuard السعر المحفوظ لحساب عمولة 16% وحد الرصيد.
     isOrder: price !== null,
     price,
+    priceCents: price === null ? null : Math.round(price * 100),
     priceMin,
     priceMax,
     requestKind: requestKindMatch ? requestKindMatch[0].trim() : null,

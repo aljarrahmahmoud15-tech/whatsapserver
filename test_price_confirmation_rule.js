@@ -16,6 +16,10 @@ assert.equal(context.parseOrder("السعر 35 دينار").price, 35, "وحدة
 assert.equal(context.parseOrder("تم السعر 35").isOrder, true, "السعر يُقبل في أي موضع");
 assert.equal(context.parseOrder("من إربد إلى عمّان السعر 35").isOrder, true, "السعر داخل النص ينشئ طلبًا");
 assert.equal(context.parseOrder("راكب من إربد إلى عمّان السعر خمس دنانير").price, 5, "السعر اللفظي مدعوم");
+assert.equal(context.parseOrder("أجرة الرحلة: 5 د.أ").priceCents, 500, "أجرة الرحلة الرقمية مع د.أ مدعومة");
+assert.equal(context.parseOrder("أجار ٥ دنانير من إربد إلى عمّان").price, 5, "أجار مع رقم عربي مدعوم");
+assert.equal(context.parseOrder("القيمة: خمس دنانير").price, 5, "القيمة اللفظية مدعومة");
+assert.equal(context.parseOrder("المبلغ 5.50 د.ا").priceCents, 550, "المبلغ العشري مع د.ا مدعوم");
 assert.equal(context.parseOrder("تم").isOrder, false, "تم ليست طلب سعر");
 
 const acceptanceStart = source.indexOf("function isCaptainAcceptance(");
