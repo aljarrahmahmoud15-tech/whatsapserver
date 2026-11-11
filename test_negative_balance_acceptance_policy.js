@@ -10,6 +10,7 @@ const guardSource = server.slice(guardStart, guardEnd);
 const context = {
   CAPTAIN_MIN_BALANCE_CENTS: 0,
   BOT_FINANCIAL_MODE: 'captain',
+  ORDER_SETTLEMENT_ALLOW_NEGATIVE_BALANCE: true,
   calculateConfiguredSettlement: () => ({ confirmingCaptainFeeCents: 125 }),
   companyUser: () => ({ id: 1, role: 'company' }),
   evaluateBalance,
@@ -17,14 +18,14 @@ const context = {
 vm.runInNewContext(`${guardSource}\nthis.acceptanceBalanceGuard = acceptanceBalanceGuard;`, context);
 const candidate = { id: 55, price_cents: 1000, order_kind: 'regular' };
 const insufficient = context.acceptanceBalanceGuard(candidate, { id: 17, is_bot: 0, wallet_cents: 25 });
-assert.equal(insufficient.allowed, false);
-assert.equal(insufficient.state, 'insufficient_balance');
+assert.equal(insufficient.allowed, true);
+assert.equal(insufficient.state, 'allowed_negative_balance');
 assert.equal(insufficient.projectedBalanceCents, -100);
 const exact = context.acceptanceBalanceGuard(candidate, { id: 19, is_bot: 0, wallet_cents: 125 });
 assert.equal(exact.allowed, true);
 assert.equal(exact.projectedBalanceCents, 0);
 assert.match(server, /const balanceGuard = evaluateBalance\(/);
-assert.match(server, /if \(!balanceGuard\.allowed\)/);
-assert.match(server, /orderSettlementDebtPolicy: "projected balances below 0\.00 JOD are rejected/);
-assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0\.00 دينار/);
-console.log('zero-floor settlement guard verified');
+assert.match(server, /if \(!balanceGuard\.allowed && !ORDER_SETTLEMENT_ALLOW_NEGATIVE_BALANCE\)/);
+assert.match(server, /orderSettlementDebtPolicy: "projected balances below 0\.00 JOD are allowed for order settlement/);
+assert.match(server, /يُسمح بالتثبيت حتى يصبح الرصيد سالبًا/);
+console.log('negative balance order settlement policy verified');

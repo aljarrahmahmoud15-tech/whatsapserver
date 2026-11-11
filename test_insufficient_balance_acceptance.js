@@ -4,7 +4,8 @@ const server = fs.readFileSync('server.js', 'utf8');
 
 assert.match(server, /function acceptanceBalanceGuard\(candidate, captain\)/);
 assert.match(server, /state: "insufficient_balance"/);
-assert.doesNotMatch(server, /order\.acceptance\.allowed_with_negative_balance/);
+assert.match(server, /state: "allowed_negative_balance"/);
+assert.match(server, /ORDER_SETTLEMENT_ALLOW_NEGATIVE_BALANCE/);
 assert.match(server, /acceptanceBalanceGuard\(candidate, captain\)/);
 const registerAcceptanceStart = server.indexOf('function registerAcceptance');
 const registerGuardIndex = server.indexOf('const balanceGuard = acceptanceBalanceGuard(candidate, captain)', registerAcceptanceStart);
@@ -37,7 +38,7 @@ assert.match(server, /function messageIdIdentityVariants\(value\)/);
 assert.match(server, /findPersistedWhatsappPhone\(participant\)/);
 assert.match(server, /SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=\? AND active=1/);
 assert.match(server, /for \(const messageId of messageIds\) recentWhatsAppMessages\.set\(messageId/);
-assert.match(server, /messageIdCandidates: messageIdCandidates\(msg\)/);
+assert.match(server, /providedMessageIdCandidates: messageIdCandidates\((?:msg|acceptance)\)/);
 assert.match(server, /const requestedMessageIds = \[\.\.\.new Set\(/);
 assert.match(server, /requestedMessageIds\.flatMap\(\(value\) => messageIdLookupVariants\(value\)\)/);
 assert.match(server, /const lookupIds = \[\.\.\.new Set\(/);
@@ -96,4 +97,4 @@ assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart, 'unquoted recovery 
 assert.match(server.slice(recoveryStart, recoveryEnd), /deleteAcceptanceMessagesForInsufficientBalance\(/);
 assert.match(server.slice(recoveryStart, recoveryEnd), /message: acceptance/);
 assert.match(server.slice(recoveryStart, recoveryEnd), /acceptanceMode: "unquoted"/);
-console.log('insufficient balance blocks and revokes captain acceptance');
+console.log('insufficient balance rejection remains guarded off for order settlement');
