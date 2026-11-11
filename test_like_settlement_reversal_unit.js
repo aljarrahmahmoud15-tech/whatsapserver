@@ -46,11 +46,21 @@ test("لا يحدث تثبيت أو تسوية عند رسالة تم وحدها
 
 test("إعجاب الكابتن الأول يثبت مرة واحدة وإزالة الإعجاب تستدعي العكس", () => {
   assert.match(reactionSource, /reactionValue !== "👍"/);
-  assert.match(reactionSource, /const producerAuthorized = Boolean\(/);
+  assert.match(reactionSource, /const captainApproved = Boolean\(/);
+  assert.match(reactionSource, /approvingCaptain\.is_bot !== 1/);
   assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
   assert.match(reactionSource, /if \(removedThumb\)/);
   assert.match(reactionSource, /cancelOrderForReactionRemoval\(/);
   assert.match(reactionSource, /enforceCaptainWalletThresholds\(/);
+});
+
+test("أي كابتن بشري نشط يستطيع اعتماد رسالة تم، والبوت لا يعتمد ماليًا", () => {
+  const approvalBlock = reactionSource.slice(reactionSource.indexOf("const approvingCaptain"), reactionSource.indexOf("const settlementConfirmerPhone"));
+  assert.match(approvalBlock, /approvingCaptain\.role === "captain"/);
+  assert.match(approvalBlock, /approvingCaptain\.active === 1/);
+  assert.match(approvalBlock, /approvingCaptain\.account_status === "active"/);
+  assert.match(approvalBlock, /approvingCaptain\.is_bot !== 1/);
+  assert.doesNotMatch(approvalBlock, /approverNormalizedPhone === producerPhone/);
 });
 
 test("الدورة المعزولة تتحقق من التسوية مرة واحدة والعكس مرة واحدة", () => {

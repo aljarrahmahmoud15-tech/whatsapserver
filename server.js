@@ -9494,7 +9494,8 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    if (!producer || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone))) return { state: "unauthorized" };
+    const reactingCaptain = producerPhone ? findCaptainByPhone(producerPhone, { activeOnly: true }) : null;
+    if (!producer || (!ownerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone)))) return { state: "unauthorized" };
     const stamp = now();
     const pendingCaptain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (current.status === "open" && current.pending_message_id === expectedMessageId) {
@@ -9531,7 +9532,8 @@ function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, p
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
-    if (!producer || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(producerPhone))) return { state: "unauthorized" };
+    const reactingCaptain = producerPhone ? findCaptainByPhone(producerPhone, { activeOnly: true }) : null;
+    if (!producer || (!ownerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone)))) return { state: "unauthorized" };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status='pending' LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
     const stamp = now();
@@ -10310,8 +10312,9 @@ async function handleMessageReaction(reaction) {
     const acceptance = db.prepare("SELECT a.*,c.* FROM order_candidate_acceptances a JOIN order_candidates c ON c.id=a.candidate_id WHERE c.group_id=? AND c.status='pending' AND a.acceptance_message_id=? AND a.status='pending' LIMIT 1").get(target.from, messageId);
     if (acceptance) {
       const producer = acceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.producer_user_id) : null;
-      const producerAuthorized = Boolean(producer && approverPhone && (phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone) || ((producer.role === "company" || producer.is_bot === 1) && isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company")));
-      if (!producerAuthorized || isBlockedPhone(approverPhone)) return;
+      const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
+      const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
+      if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
       const cancelled = cancelPendingOrderForProducerReaction(acceptance.candidate_id, messageId, approverPhone);
       if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
@@ -10319,7 +10322,9 @@ async function handleMessageReaction(reaction) {
     const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
     if (!order) return;
     const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
-    if (!producer || !approverPhone || phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone)) return;
+    const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
+    const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
+    if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
     if (result.state === "cancelled" && result.reversed && result.producer) {
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
@@ -10393,37 +10398,32 @@ async function handleMessageReaction(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Final settlement is authorized only when the captain who posted the
-  // original price/order message reacts with 👍 on the selected «تم» reply.
-  // The owner-only rule remains limited to the ❌ cancellation path below.
-  const producerPhone = phoneWithCountry(producer.phone);
-  const approverNormalizedPhone = phoneWithCountry(approverPhone);
+  // Final settlement is authorized when any active human captain reacts with
+  // 👍 on the selected «تم» reply. The bot identity never performs approval.
   const approvingCaptain = approverPhone
     ? (typeof findCaptainByPhone === "function"
       ? findCaptainByPhone(approverPhone, { activeOnly: true })
       : (typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(approverPhone) : null))
     : null;
-  const producerApproved = Boolean(
+  const captainApproved = Boolean(
     approvingCaptain &&
     approvingCaptain.role === "captain" &&
     approvingCaptain.is_bot !== 1 &&
     approvingCaptain.active === 1 &&
-    approvingCaptain.account_status === "active" &&
-    producerPhone &&
-    approverNormalizedPhone === producerPhone
+    approvingCaptain.account_status === "active"
   );
-  if (!producerApproved || isBlockedPhone(approverPhone)) {
+  if (!captainApproved || isBlockedPhone(approverPhone)) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {
       acceptanceMessageId: pending.acceptance_message_id,
       reaction: "👍",
       reactionOwnerResolved: Boolean(approverPhone),
     });
-    logOrderTrace("reaction_approver_not_original_producer", {
+    logOrderTrace("reaction_approver_not_active_human_captain", {
       groupKey: orderTraceKey(target.from),
       reactionKey: orderTraceKey(messageId),
       candidateId: pending.candidate_id,
       approverKey: orderTraceKey(approverPhone),
-      producerKey: orderTraceKey(producer.phone),
+      approvingCaptainKey: orderTraceKey(approvingCaptain?.phone),
     });
     return;
   }

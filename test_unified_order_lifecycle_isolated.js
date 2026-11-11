@@ -217,6 +217,7 @@ function message(id, body, sender, quoted = null) {
   ensureProducerUser: () => ({ ...users.producer }),
   ensureCaptainUser: (phone, name) => phone === EXECUTOR ? { ...users.executor, name: name || users.executor.name } : null,
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
+  findCaptainByPhone: (phone, { activeOnly = false } = {}) => Object.values(users).find((user) => user.role === "captain" && user.phone === phone && (!activeOnly || (user.active === 1 && user.account_status === "active"))) || null,
   isBotPhone: (phone) => String(phone) === BOT,
   isBotGeneratedMessage,
   cents: (value) => Math.round(Number(value) * 100),
@@ -282,10 +283,10 @@ async function ingestAcceptance(doneId = "done-1") {
   await context.handleIncomingMessage(message(doneId, "تم جاهز الآن", EXECUTOR, quoted));
   assert.equal(state.acceptance?.acceptance_message_id, canonicalMessageId(doneId, EXECUTOR), "تم المقتبسة تسجل معرف WhatsApp الكامل");
 }
-async function approve(doneId = "done-1") {
+async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   const acceptanceId = canonicalMessageId(doneId, EXECUTOR);
   state.targets = { [acceptanceId]: message(acceptanceId, "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
-  state.reactionSender = PRODUCER;
+  state.reactionSender = approverPhone;
   await context.handleMessageReaction({ reaction: "👍", msgId: acceptanceId });
 }
 
@@ -302,6 +303,13 @@ async function approve(doneId = "done-1") {
   await approve();
   assert.equal(state.ledgers.length, 3, "التفاعل المكرر لا يكرر التسوية");
   assert.equal(state.confirmations.length, 1, "بطاقة واحدة فقط");
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-any-captain");
+  await approve("done-any-captain", EXECUTOR);
+  assert.equal(state.candidate.status, "finalized", "أي كابتن بشري نشط يستطيع اعتماد رسالة تم");
+  assert.equal(state.ledgers.length, 3);
 
   reset();
   await ingestPrice();
