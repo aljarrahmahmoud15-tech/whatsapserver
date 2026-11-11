@@ -58,7 +58,41 @@
 #app.captain-compact-home .head .availability{display:none}
 #app.captain-compact-home .head-actions{align-items:flex-start}
 #app.captain-compact-home .metrics .metric.balance{display:block;margin:0}
-</style></head>
+</style><style>
+/* هوية الكابتن البيضاء والحمراء */
+:root{--bg:#f7f4f4;--panel:#ffffff;--panel-2:#ffffff;--line:#ead7da;--text:#271518;--muted:#756568;--cyan:#b3202d;--green:#b3202d;--orange:#921b27;--red:#b3202d;--shadow:0 18px 50px rgba(74,18,25,.10)}
+body{background:linear-gradient(180deg,#ffffff 0%,#f8f3f3 100%);color:#271518}
+body:before,body:after{display:none}
+.bar{background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(255,255,255,.92),transparent);border-bottom-color:#ead7da}
+.mark{background:linear-gradient(135deg,#c52a38,#8e1724);color:#fff}
+.brand small,.head p,.panel-head p,.muted,.hint,.footer{color:#756568}
+.head h1{color:#241317}
+.availability{border-color:#e4aeb4;background:#fff2f3;color:#9d1d29}
+.ghost{border-color:#dcaab0;color:#a51f2b;background:#fff}
+.ghost:hover{border-color:#b3202d;color:#7e1620}
+.metric,.panel,.login-card{background:#fff;border-color:#ead7da;box-shadow:0 16px 42px rgba(74,18,25,.09)}
+.metric.balance strong,.metric.net strong,.metric.fees strong{color:#b3202d}
+.input{background:#fff;color:#271518;border-color:#d9b8bd}
+.input:focus{border-color:#b3202d;box-shadow:0 0 0 3px rgba(179,32,45,.12)}
+.primary{background:linear-gradient(135deg,#c52a38,#941923);color:#fff;box-shadow:0 10px 24px rgba(179,32,45,.18)}
+.topup-window{background:linear-gradient(145deg,#fff,#fff8f8);border-color:#d9949c;box-shadow:0 18px 48px rgba(115,25,35,.12)}
+.topup-window .panel-head{border-bottom-color:#efd1d5}
+.topup-window .count{color:#a51f2b;border-color:#e4aeb4;background:#fff1f2}
+.topup-policy{border-color:#e6aeb4;background:#fff2f3;color:#7e343b}
+.topup-policy strong{color:#9d1d29}
+.payment-box{border-color:#ebc8cc;background:#fff8f8}
+.payment-option{border-color:#efdadd;background:#fff}
+.payment-option:hover{border-color:#c75560;background:#fff5f6}
+.payment-option strong,.payment-help b,.card-value{color:#a51f2b}
+.payment-option span,.payment-help{color:#6f5c60}
+.topup-cards{background:linear-gradient(145deg,#fff,#fff7f7);border-color:#e2a9af}
+.topup-cards:before{background:radial-gradient(circle,rgba(179,32,45,.12),transparent 63%);opacity:.18}
+.card-notification{border-top-color:#f0dadd}
+.card-note{color:#756568}
+.card-status-issued{color:#a51f2b}.card-status-redeemed{color:#8e1d28}.card-status-void{color:#b3202d}
+.empty{border-color:#dfc4c7;color:#756568}.empty strong{color:#3a1d21}
+</style>
+</head>
 <body>
   <div class="shell">
     <header class="bar">
