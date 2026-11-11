@@ -3332,15 +3332,7 @@ async function enforceCaptainWalletThresholdsForAll(run = null, { negativeOnly =
 }
 function notifyCaptainCreditSent({ captain, valueCents, cardId = null }) {
   if (!captain?.phone) return;
-  const key = cardId ? `CAPTAIN-WALLET-CARD-SENT-${cardId}` : `CAPTAIN-WALLET-CREDIT-SENT-${phoneWithCountry(captain.phone)}-${Date.now()}`;
-  void sendCaptainStatusText({
-    phone: captain.phone,
-    event: "captain.wallet.credit_sent",
-    title: "إرسال بطاقة الرصيد",
-    text: "تم إرسال بطاقة الرصيد إلى واتسابك.",
-    idempotencyKey: key,
-  });
-  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "تم إرسال بطاقة الرصيد."], ownersOnly: true });
+  void notifyOperations({ event: "captain.wallet.credit_sent", title: "تم إرسال الرصيد", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, `تم إرسال صورة بطاقة الرصيد${cardId ? ` #${cardId}` : ""} فقط دون شرح إضافي.`], ownersOnly: true });
 }
 async function notifyCaptainCreditRedeemed({ captain, valueCents, balanceCents, cardId }) {
   if (!captain?.phone || !cardId) return { status: "skipped" };
@@ -6264,9 +6256,6 @@ async function renderTopupCardMedia({ cardId, code, valueCents, captainName, app
     <rect x="650" y="235" width="335" height="145" rx="22" fill="#07111f" stroke="#f6c84c" stroke-opacity=".7" stroke-width="2"/>
     <text x="680" y="278" fill="#9fb2c6" font-size="18" font-family="Noto Sans Arabic, Noto Naskh Arabic, Arial, sans-serif">رمز التفعيل</text>
     <text x="680" y="337" fill="#ffe493" font-size="34" font-family="Arial, sans-serif" font-weight="700" letter-spacing="2">${safeCode}</text>
-    <text x="76" y="602" fill="#d6e0ec" font-size="18" font-family="Arial, sans-serif">افتح بوابة التشغيل الرسمية ثم اختر دخول الكابتن وأدخل الرمز لإضافة الرصيد مباشرة.</text>
-    <text x="76" y="630" fill="#8fe9df" font-size="16" font-family="Arial, sans-serif">${safeUrl}</text>
-    <text x="1000" y="602" text-anchor="end" fill="#f6c84c" font-size="18" font-family="Arial, sans-serif">CARD-${escapeXml(cardId)}</text>
   </svg>`;
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return new MessageMedia("image/png", png.toString("base64"), `aljarah-topup-card-${cardId}.png`);
@@ -13025,11 +13014,10 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
     try {
       const code = decryptCardCode(card.code_ciphertext);
       const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-      const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${captain.name}`, `القيمة: ${money(amountCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "أدخل رمز البطاقة في بوابة التشغيل لإضافة الرصيد مباشرة."]);
       const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents: amountCents, captainName: captain.name, appUrl });
       const recipient = await resolveWhatsAppRecipientId(captain.phone);
       if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل", cardId: card.id, status: "issued" });
-      const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
+      const sent = await sendServer2DirectAtMostOnce(recipient, media, undefined, 30000);
       if (!sent) return res.status(504).json({ error: "تم إصدار البطاقة لكن انتهت مهلة إرسالها", cardId: card.id, status: "issued" });
       db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `WALLET-DELIVERY-${idempotencyKey}`.slice(0, 100), card.id);
       audit("topup_card.sent", "topup_card", card.id, { captainId: captain.id, source: "company_direct_transfer" });
@@ -16049,7 +16037,6 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
   try {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-    const caption = brandedMessage("بطاقة شحن رسمية", [`الكابتن: ${card.captain_name || "حسابك"}`, `القيمة: ${money(card.value_cents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل رمز البطاقة واضغط Enter لإضافة الرصيد مباشرة."]);
     const recipient = await resolveWhatsAppRecipientId(card.captain_phone);
     if (!recipient) return res.status(409).json({ error: "تعذر حل حساب WhatsApp للكابتن؛ البطاقة محفوظة ولم تُرسل" });
     let sent = null;
@@ -16058,7 +16045,7 @@ async function handleStoredTopupCardDelivery(req, res, deliveryMode = "media") {
       sent = await sendServer2DirectAtMostOnce(recipient, text, undefined, 30000);
     } else {
       const media = await renderTopupCardMedia({ cardId, code, valueCents: card.value_cents, captainName: card.captain_name, appUrl });
-      sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
+      sent = await sendServer2DirectAtMostOnce(recipient, media, undefined, 30000);
     }
     if (!sent) return res.status(504).json({ error: "انتهت مهلة إرسال البطاقة" });
     const update = db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), deliveryIdempotencyKey, cardId);
@@ -16669,11 +16656,10 @@ app.post("/api/admin/support-tickets/:id/fulfill-topup", requireAdmin, async (re
   try {
     const code = decryptCardCode(card.code_ciphertext);
     const appUrl = captainAppUrl(captainInviteBaseUrl(req));
-    const caption = brandedMessage("بطاقة شحن الرصيد", [`الكابتن: ${captain.name}`, `القيمة: ${money(valueCents)} JOD`, "هذه البطاقة مخصصة لرقمك وتُستخدم مرة واحدة فقط.", `الدخول: ${appUrl}`, "افتح البوابة، اضغط زر التشغيل، اختر دخول الكابتن، ثم أدخل الرمز لإضافة الرصيد مباشرة."]);
     const media = await renderTopupCardMedia({ cardId: card.id, code, valueCents, captainName: captain.name, appUrl });
     const recipient = await resolveWhatsAppRecipientId(phone);
     if (!recipient) throw new Error("captain WhatsApp account could not be resolved");
-    const sent = await sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000);
+    const sent = await sendServer2DirectAtMostOnce(recipient, media, undefined, 30000);
     if (!sent) throw new Error("send timeout");
     db.prepare("UPDATE topup_cards SET sent_at=?,delivery_idempotency_key=? WHERE id=? AND status='issued' AND sent_at IS NULL").run(now(), `SUPPORT-DELIVERY-${ticketId}`, card.id);
     db.prepare("UPDATE support_tickets SET status='resolved',admin_reply=?,updated_at=? WHERE id=?").run(`تم إصدار وإرسال بطاقة الشحن #${card.id} إلى WhatsApp.`, now(), ticketId);

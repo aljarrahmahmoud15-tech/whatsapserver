@@ -34,8 +34,8 @@ assert(server.includes('whatsapp.reconnect.requested'), 'reconnect requests noti
 assert(server.includes('captain.activated'), 'captain status changes notify captain and owner');
 assert(server.includes('function notifyCaptainCreditSent'), 'captain credit notification helper exists');
 assert(server.includes('event: "captain.wallet.credit_sent"'), 'captain credit notification uses a dedicated event');
-assert(server.includes('CAPTAIN-WALLET-CARD-SENT-${cardId}'), 'captain credit notification is idempotent per card');
-assert(server.includes('تم إرسال بطاقة الرصيد إلى واتسابك.'), 'captain credit notification uses the short sent wording');
+assert(server.includes('صورة بطاقة الرصيد'), 'card delivery event records image-only delivery');
+assert(!server.includes('تم إرسال بطاقة الرصيد إلى واتسابك.'), 'card delivery does not send an extra captain text notice');
 assert(server.includes('const resolved = await resolveWhatsAppRecipientId(recipientPhone);'), 'captain status notices resolve the current WhatsApp recipient');
 assert(server.includes('event: "captain.approval"'), 'captain approval sends a dedicated short notification');
 assert(server.includes('تمت موافقة الشركة على الكابتن الجديد وتفعيل حسابك.'), 'captain approval notification uses the approved short wording');
@@ -62,7 +62,7 @@ assert(server.includes('operations card not sent because branded media failed'),
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');
 assert(server.includes('const media = await renderTopupCardMedia({ cardId: card.id'), 'top-up request fulfillment renders a card image');
 assert(server.includes('const recipient = await resolveWhatsAppRecipientId(phone);'), 'top-up request resolves the captain WhatsApp identity');
-assert(server.includes('sendServer2DirectAtMostOnce(recipient, media, { caption }, 30000)'), 'top-up request sends the generated card through the guarded Server 2 path');
+assert(server.includes('sendServer2DirectAtMostOnce(recipient, media, undefined, 30000)'), 'top-up request sends the generated card without a caption through the guarded Server 2 path');
 assert(index.includes('.hero-card{padding:17px 20px'), 'owner request console is compact');
 assert(index.includes('id="topup-requests-open"'), 'top-up requests remain accessible from the compact console');
 assert(index.includes('data-topup-fulfill'), 'top-up approval remains a single fulfill-and-send action');
