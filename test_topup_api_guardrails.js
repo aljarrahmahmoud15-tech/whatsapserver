@@ -53,7 +53,7 @@ assert.doesNotMatch(deliveryBlock, /console\.(?:log|error)[^\n]*code/, 'card cod
 assert.doesNotMatch(deliveryBlock, /audit\([^\n]*\bcode\b/, 'card code must not be written to audit logs');
 assert.ok(server.includes('const appUrl = captainAppUrl(captainInviteBaseUrl(req))'), 'card message contains the official operations gateway');
 assert.ok(server.includes('app.post("/api/captain/redeem-card", requireCaptain'), 'captain session redemption API exists');
-assert.ok(server.includes('إضافة الرصيد تتم من المالك فقط'), 'captain redemption is blocked by owner-only credit policy');
+assert.ok(server.includes('رمز البطاقة ومفتاح منع التكرار مطلوبان'), 'captain redemption validates code and idempotency');
 assert.ok(server.includes('if (!cardEncryptionKey) return res.status(503)'), 'card issuance requires encryption');
 assert.ok(server.includes('app.post("/api/redeem"'), 'captain redemption endpoint remains available');
 assert.ok(index.includes('id="generate-card"'), 'owner card issuance control exists');
@@ -72,7 +72,7 @@ assert.ok(admin.includes('إرسال WhatsApp'), 'admin users table includes Wha
 assert.ok(index.includes('data-card-history-send'), 'owner UI provides controlled resend action');
 assert.ok(index.includes("'/api/admin/cards/'+encodeURIComponent(cardId)+'/send-text'"), 'owner UI uses the reliable text resend endpoint');
 assert.ok(index.includes('https://whatsapserver-2-9lma.onrender.com/join.html'), 'owner invite points to the official operations gateway');
-assert.ok(!fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has no card redemption form');
-assert.ok(!fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app cannot submit card redemption');
-assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('إضافة الرصيد من المالك فقط'), 'captain app explains owner-only credit policy');
+assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has a card redemption form');
+assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app submits card redemption');
+assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('تفعيل البطاقة وإضافة الرصيد'), 'captain app labels the card activation action');
 console.log('top-up API guardrails verified');
