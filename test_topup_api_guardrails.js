@@ -75,4 +75,9 @@ assert.ok(index.includes('https://whatsapserver-2-9lma.onrender.com/join.html'),
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-redeem-form"'), 'captain app has a card redemption form');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('/api/captain/redeem-card'), 'captain app submits card redemption');
 assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('تفعيل البطاقة وإضافة الرصيد'), 'captain app labels the card activation action');
+assert.ok(server.includes('parseReceiptAttachment'), 'top-up requests validate receipt attachments');
+assert.ok(server.includes('receipt_data'), 'support tickets persist receipt data');
+assert.ok(server.includes('receiptAttached: Boolean(receipt)'), 'top-up response reports whether a receipt was attached');
+assert.ok(fs.readFileSync('./public/captain.html', 'utf8').includes('id="topup-receipt-file"'), 'captain app has a transfer receipt upload field');
+assert.ok(index.includes('عرض الوصل'), 'owner support table exposes the uploaded receipt');
 console.log('top-up API guardrails verified');

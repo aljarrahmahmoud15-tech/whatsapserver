@@ -583,7 +583,7 @@ app.use((req, res, next) => {
   if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
 });
-app.use(express.json({ limit: "256kb" }));
+app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use("/api", (req, res, next) => {
   const readOnlyRequest = ["GET", "HEAD", "OPTIONS"].includes(String(req.method || "").toUpperCase());
@@ -1685,6 +1685,10 @@ if (!existingCardColumns.includes("redemption_idempotency_key")) db.exec("ALTER 
 if (!existingCardColumns.includes("archived_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN archived_at TEXT");
 if (!existingCardColumns.includes("archive_reason")) db.exec("ALTER TABLE topup_cards ADD COLUMN archive_reason TEXT");
 if (!existingCardColumns.includes("destroyed_at")) db.exec("ALTER TABLE topup_cards ADD COLUMN destroyed_at TEXT");
+const existingSupportTicketColumns = db.prepare("PRAGMA table_info(support_tickets)").all().map((column) => column.name);
+if (!existingSupportTicketColumns.includes("receipt_data")) db.exec("ALTER TABLE support_tickets ADD COLUMN receipt_data TEXT");
+if (!existingSupportTicketColumns.includes("receipt_mime")) db.exec("ALTER TABLE support_tickets ADD COLUMN receipt_mime TEXT");
+if (!existingSupportTicketColumns.includes("receipt_name")) db.exec("ALTER TABLE support_tickets ADD COLUMN receipt_name TEXT");
 db.exec(`CREATE TABLE IF NOT EXISTS topup_card_archive (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   card_id INTEGER NOT NULL UNIQUE,
@@ -2133,6 +2137,18 @@ function createTicketCode() {
   let code;
   do { code = `CS-${crypto.randomBytes(3).toString("hex").toUpperCase()}`; } while (db.prepare("SELECT id FROM support_tickets WHERE ticket_code=?").get(code));
   return code;
+}
+function parseReceiptAttachment(rawData, rawMime = "", rawName = "") {
+  const value = String(rawData || "").trim();
+  if (!value) return null;
+  const match = value.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) throw new Error("أرفق صورة وصل بصيغة JPG أو PNG أو WEBP فقط");
+  const mime = match[1].toLowerCase().replace("image/jpg", "image/jpeg");
+  const base64 = match[2].replace(/\s+/g, "");
+  const buffer = Buffer.from(base64, "base64");
+  if (!buffer.length || buffer.length > 5 * 1024 * 1024) throw new Error("حجم صورة الوصل يجب ألا يتجاوز 5 ميغابايت");
+  const name = String(rawName || "وصل-حوالة").replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 120) || "وصل-حوالة";
+  return { data: `data:${mime};base64,${base64}`, mime, name };
 }
 const SUPPORT_CATEGORIES = new Set(["general", "topup_card", "booking"]);
 // Keep only explicitly blocked human identities; bot identity is controlled by BOT_PHONE/BOT_PHONE_INTL.
@@ -16565,14 +16581,16 @@ app.post("/api/captain/topup-request", requireCaptain, (req, res) => {
   const requestedValue = Number(req.body?.requestedValue);
   const message = String(req.body?.message || "أطلب شحن رصيد للمحفظة").trim().slice(0, 500);
   if (!Number.isFinite(requestedValue) || requestedValue <= 0 || requestedValue > 1000) return res.status(400).json({ error: "أدخل قيمة شحن صحيحة بين 1 و1000" });
+  let receipt = null;
+  try { receipt = parseReceiptAttachment(req.body?.receiptData, req.body?.receiptMime, req.body?.receiptName); } catch (error) { return res.status(400).json({ error: error.message }); }
   const open = db.prepare("SELECT ticket_code FROM support_tickets WHERE account_ref=? AND category='topup_card' AND status IN ('new','in_progress') ORDER BY id DESC LIMIT 1").get(phoneWithCountry(captain.phone));
   if (open) return res.status(409).json({ error: `لديك طلب شحن مفتوح بالفعل: ${open.ticket_code}` });
   const ticketCode = createTicketCode();
   const stamp = now();
-  db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'new',?,?)").run(ticketCode, captain.name, phoneWithCountry(captain.phone), "topup_card", message, cents(requestedValue), stamp, stamp);
-  audit("captain.topup_request.created", "support_ticket", ticketCode, { captainId: captain.id, requestedValueCents: cents(requestedValue) }, captain.id);
-  void notifyOperations({ event: "topup_request.created", title: "طلب شحن رصيد جديد", lines: [`الكابتن: ${captain.name}`, `القيمة المطلوبة: ${money(cents(requestedValue))} JOD`, `رقم الطلب: ${ticketCode}`, "بانتظار موافقة المالك لإصدار البطاقة وإرسالها."], ownersOnly: true });
-  res.status(201).json({ success: true, ticketCode, status: "new", message: "تم إرسال طلب شحن الرصيد إلى الشركة" });
+  db.prepare("INSERT INTO support_tickets(ticket_code,requester_name,account_ref,category,message,requested_value_cents,receipt_data,receipt_mime,receipt_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?, ?,?,'new',?,?)").run(ticketCode, captain.name, phoneWithCountry(captain.phone), "topup_card", message, cents(requestedValue), receipt?.data || null, receipt?.mime || null, receipt?.name || null, stamp, stamp);
+  audit("captain.topup_request.created", "support_ticket", ticketCode, { captainId: captain.id, requestedValueCents: cents(requestedValue), receiptAttached: Boolean(receipt) }, captain.id);
+  void notifyOperations({ event: "topup_request.created", title: "طلب شحن رصيد جديد", lines: [`الكابتن: ${captain.name}`, `القيمة المطلوبة: ${money(cents(requestedValue))} JOD`, `رقم الطلب: ${ticketCode}`, `إيصال الحوالة: ${receipt ? "مرفق" : "غير مرفق"}`, "بانتظار موافقة المالك لإصدار البطاقة وإرسالها."], ownersOnly: true });
+  res.status(201).json({ success: true, ticketCode, status: "new", receiptAttached: Boolean(receipt), message: "تم إرسال طلب شحن الرصيد إلى الشركة" });
 });
 app.post("/api/support/tickets", (req, res) => {
   if (!consumeRateLimit(redeemRate, clientAddress(req), 8)) return res.status(429).json({ error: "Too many support requests; try again later" });
