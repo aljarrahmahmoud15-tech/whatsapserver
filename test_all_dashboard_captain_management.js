@@ -22,8 +22,8 @@ assert.match(legacy, /function saveCaptain\(id\)/);
 assert.match(legacy, /function removeCaptainFromOfficialGroup\(id,name\)/);
 assert.match(legacy, /function secureDeleteCaptain\(id,name\)/);
 assert.match(legacy, /suspend-and-remove/);
-assert.match(legacy, /حذف \/ أرشفة آمنة/);
-assert.match(legacy, /إزالة من القروب/);
+assert.match(legacy, /حذف آمن و.*إيقاف مع حفظ السجل/);
+assert.match(legacy, /الإزالة والحذف موقوفان/);
 
 for (const [name, page] of [['V26', v26], ['V27', v27]]) {
   assert.match(page, /data-safe-action="edit"/);

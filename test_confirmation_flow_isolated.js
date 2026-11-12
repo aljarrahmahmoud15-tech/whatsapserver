@@ -158,13 +158,14 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
 
 (async () => {
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[3].phone });
-  assert.strictEqual(candidate.status, "pending", "إعجاب المنفذ لا يعتمد الطلب");
-  assert.strictEqual(ledgers.length, 0, "لا توجد تسوية عند إعجاب المنفذ");
+  assert.strictEqual(candidate.status, "finalized", "إعجاب كابتن بشري نشط يعتمد الطلب");
+  assert.strictEqual(ledgers.length, 3, "تُسجل التسوية عند أول إعجاب صالح");
+  assert.strictEqual(messages.length, 1, "تُرسل رسالة تأكيد واحدة عند أول إعجاب صالح");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0799999999" });
-  assert.strictEqual(candidate.status, "pending", "الهوية غير المرتبطة لا تعتمد الطلب");
+  assert.strictEqual(candidate.status, "finalized", "الهوية غير المرتبطة لا تعيد فتح الطلب المثبت");
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[2].phone });
-  assert.strictEqual(candidate.status, "finalized", "التفاعل الصالح يثبت المرشح");
+  assert.strictEqual(candidate.status, "finalized", "التفاعل بعد التثبيت يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث عند أول 👍");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة عند أول 👍");
 

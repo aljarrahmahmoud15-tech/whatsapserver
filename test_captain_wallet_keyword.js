@@ -17,7 +17,8 @@ test('wallet keyword is captain-only and does not mutate wallet or group state',
   assert.match(source, /const captain = findActiveRegisteredUser\(phone\);/);
   assert.match(source, /if \(captain && \/\^\(محفظة\|محفظه\|شحن محفظة\|شحن محفظه\)\$\/.test\(normalized\)\)/);
   assert.match(source, /async function sendCaptainWalletTopupGroupInstructions\(\{ groupId, sourceMessageId = null \}\)/);
-  assert.match(source, /isOfficialGroupTarget\(groupId\) && groupCaptain && \/\^\(محفظة\|محفظه\|شحن محفظة\|شحن محفظه\)\$\/.test\(normalizedGroupBody\)/);
+  assert.match(source, /const officialGroupTarget = typeof isOfficialGroupTarget === "function" && isOfficialGroupTarget\(groupId\);/);
+  assert.match(source, /if \(officialGroupTarget && groupCaptain && \/\^\(محفظة\|محفظه\|شحن محفظة\|شحن محفظه\)\$\/.test\(normalizedGroupBody\)/);
   assert.match(source, /group\.captain\.wallet\.topup_instructions/);
   const handlerStart = source.indexOf('async function sendCaptainWalletTopupInstructions');
   const handlerEnd = source.indexOf('function ownerNotificationPhones', handlerStart);

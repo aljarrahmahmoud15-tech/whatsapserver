@@ -37,7 +37,7 @@ assert.match(server, /function messageIdIdentityVariants\(value\)/);
 assert.match(server, /findPersistedWhatsappPhone\(participant\)/);
 assert.match(server, /SELECT whatsapp_lid FROM whatsapp_identities WHERE phone=\? AND active=1/);
 assert.match(server, /for \(const messageId of messageIds\) recentWhatsAppMessages\.set\(messageId/);
-assert.match(server, /messageIdCandidates: messageIdCandidates\(msg\)/);
+assert.match(server, /providedMessageIdCandidates: messageIdCandidates\(msg\)/);
 assert.match(server, /const requestedMessageIds = \[\.\.\.new Set\(/);
 assert.match(server, /requestedMessageIds\.flatMap\(\(value\) => messageIdLookupVariants\(value\)\)/);
 assert.match(server, /const lookupIds = \[\.\.\.new Set\(/);

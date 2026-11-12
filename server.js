@@ -8955,9 +8955,10 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     ? groupPolicy(groupId)
     : { receiveMessages: true, processOrders: true, settlements: true, moderation: true, reactions: true };
   if (!policy?.receiveMessages) return;
-  const normalizedGroupBody = normalizeCustomerText(body);
-  const groupCaptain = findActiveRegisteredUser(senderPhone);
-  if (isOfficialGroupTarget(groupId) && groupCaptain && /^(محفظة|محفظه|شحن محفظة|شحن محفظه)$/.test(normalizedGroupBody)) {
+  const normalizedGroupBody = typeof normalizeCustomerText === "function" ? normalizeCustomerText(body) : body;
+  const groupCaptain = typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(senderPhone) : null;
+  const officialGroupTarget = typeof isOfficialGroupTarget === "function" && isOfficialGroupTarget(groupId);
+  if (officialGroupTarget && groupCaptain && /^(محفظة|محفظه|شحن محفظة|شحن محفظه)$/.test(normalizedGroupBody)) {
     await sendCaptainWalletTopupGroupInstructions({ groupId, sourceMessageId: serializedMessageId(msg) || null });
     return;
   }
@@ -15542,9 +15543,13 @@ app.post("/api/admin/group/delete-single-member-message", requireAdmin, async (r
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const messageId = String(req.body?.messageId || "").trim();
-  const expectedBody = String(req.body?.expectedBody || "تم").trim();
+  const expectedType = String(req.body?.expectedType || "").trim().toLowerCase();
+  const expectedBody = String(req.body?.expectedBody === undefined ? "تم" : req.body.expectedBody).trim();
   const expectedAuthor = String(req.body?.expectedAuthor || "").trim();
-  if (!groupId || !isConfiguredGroup(groupId) || !messageId || expectedBody !== "تم") return res.status(400).json({ error: "configured groupId, messageId, and expectedBody=تم are required", mutation: "none" });
+  const allowedExpectedTypes = new Set(["audio", "ptt"]);
+  if (!groupId || !isConfiguredGroup(groupId) || !messageId || (expectedType && !allowedExpectedTypes.has(expectedType)) || (!expectedType && expectedBody !== "تم")) {
+    return res.status(400).json({ error: "configured groupId, messageId, expectedBody=تم or expectedType=audio|ptt are required", mutation: "none" });
+  }
   let message = await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!message) {
     const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
@@ -15552,11 +15557,14 @@ app.post("/api/admin/group/delete-single-member-message", requireAdmin, async (r
   }
   const body = String(message?.body || message?.text || "").trim();
   const author = String(message?.author || message?.from || "").trim();
-  const valid = Boolean(message && !message.fromMe && resolveGroupChatId(message) === groupId && body === expectedBody && (!expectedAuthor || author === expectedAuthor));
-  if (!valid) return res.status(409).json({ error: "Message failed exact member-message validation; no message was deleted", mutation: "none", groupId, messageId, found: Boolean(message), fromMe: message?.fromMe ?? null, body, author, chatId: message ? resolveGroupChatId(message) : null });
-  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "owner_confirmed_single_member_message_force_delete", groupId });
-  audit("owner.single_member_message_force_deleted", "message", messageId, { groupId, body, author, deletion, financialMutation: false });
-  return res.json({ success: Boolean(deletion?.ok), mutation: "message_deleted", financialMutation: false, groupId, messageId, body, author, deletion });
+  const actualType = String(message?.type || "").trim().toLowerCase();
+  const validContent = expectedType ? actualType === expectedType : body === expectedBody;
+  const valid = Boolean(message && !message.fromMe && resolveGroupChatId(message) === groupId && validContent && (!expectedAuthor || author === expectedAuthor));
+  if (!valid) return res.status(409).json({ error: "Message failed exact member-message validation; no message was deleted", mutation: "none", groupId, messageId, found: Boolean(message), fromMe: message?.fromMe ?? null, body, type: actualType || null, author, chatId: message ? resolveGroupChatId(message) : null });
+  const deletionReason = expectedType ? "owner_confirmed_single_member_audio_force_delete" : "owner_confirmed_single_member_message_force_delete";
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: deletionReason, groupId });
+  audit("owner.single_member_message_force_deleted", "message", messageId, { groupId, body, type: actualType || null, author, deletion, financialMutation: false, orderMutation: false });
+  return res.json({ success: Boolean(deletion?.ok), mutation: "message_deleted", financialMutation: false, orderMutation: false, groupId, messageId, body, type: actualType || null, author, deletion });
 });
 app.post("/api/admin/group/delete-single-test-message", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
