@@ -3762,6 +3762,60 @@ function notificationEnabled(name) {
   const definition = OWNER_NOTIFICATION_DEFINITIONS[name];
   return Boolean(definition && readBooleanSetting(definition.key, definition.defaultValue));
 }
+const GROUP_ACTIVITY_MONITOR_SETTING_KEY = "official_group_activity_monitor_enabled";
+const GROUP_ACTIVITY_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
+const GROUP_ACTIVITY_WINDOW_MS = 60 * 1000;
+const GROUP_ACTIVITY_REPEAT_WINDOW_MS = 10 * 60 * 1000;
+const GROUP_ACTIVITY_SPIKE_THRESHOLD = 30;
+const GROUP_ACTIVITY_REPEAT_THRESHOLD = 3;
+const groupActivityMonitorState = { officialMessageTimes: [], senderEvents: new Map(), alertAt: new Map() };
+function groupActivityMonitoringEnabled() {
+  return readBooleanSetting(GROUP_ACTIVITY_MONITOR_SETTING_KEY, true);
+}
+function groupActivityAlertAllowed(key, at = Date.now()) {
+  const last = Number(groupActivityMonitorState.alertAt.get(key) || 0);
+  if (last && at - last < GROUP_ACTIVITY_ALERT_COOLDOWN_MS) return false;
+  groupActivityMonitorState.alertAt.set(key, at);
+  if (groupActivityMonitorState.alertAt.size > 200) groupActivityMonitorState.alertAt.delete(groupActivityMonitorState.alertAt.keys().next().value);
+  return true;
+}
+function notifyGroupActivityAnomaly({ kind, title, lines, groupId, senderPhone = null, messageId = null }) {
+  if (!groupActivityMonitoringEnabled() || !groupId || groupId !== configuredRuntimeGroupId()) return;
+  const alertKey = `${kind}:${senderPhone || "group"}`;
+  if (!groupActivityAlertAllowed(alertKey)) return;
+  audit("group.activity_anomaly.detected", "group", groupId, { kind, groupId, senderPhone: senderPhone ? phoneWithCountry(senderPhone) : null, messageId: messageId || null, financialMutation: false, orderMutation: false, deletionMutation: false });
+  void notifyOperations({ event: `group.activity_anomaly.${kind}`, title, lines: [...lines, "تنبيه مراقبة فقط؛ لم يتم حذف رسالة أو تنفيذ تسوية أو تعديل رصيد."], ownersOnly: true })
+    .catch((error) => console.warn(`[GroupMonitor] owner alert failed: ${String(error?.message || error).slice(0, 180)}`));
+}
+function observeOfficialGroupMessageActivity({ groupId, senderPhone = null, messageId = null }) {
+  if (!groupActivityMonitoringEnabled() || groupId !== configuredRuntimeGroupId()) return;
+  const at = Date.now();
+  groupActivityMonitorState.officialMessageTimes = groupActivityMonitorState.officialMessageTimes.filter((value) => value >= at - GROUP_ACTIVITY_WINDOW_MS);
+  groupActivityMonitorState.officialMessageTimes.push(at);
+  if (groupActivityMonitorState.officialMessageTimes.length >= GROUP_ACTIVITY_SPIKE_THRESHOLD) {
+    notifyGroupActivityAnomaly({ kind: "message_spike", title: "تنبيه نشاط غير معتاد في القروب", lines: [`عدد الرسائل خلال آخر دقيقة: ${groupActivityMonitorState.officialMessageTimes.length}`, `القروب: ${groupId}`], groupId, messageId });
+  }
+  const phone = phoneWithCountry(senderPhone);
+  if (!phone || isBotPhone(phone)) return;
+  const senderEvents = (groupActivityMonitorState.senderEvents.get(phone) || []).filter((value) => value >= at - GROUP_ACTIVITY_REPEAT_WINDOW_MS);
+  senderEvents.push(at);
+  groupActivityMonitorState.senderEvents.set(phone, senderEvents);
+  if (senderEvents.length >= GROUP_ACTIVITY_REPEAT_THRESHOLD) {
+    notifyGroupActivityAnomaly({ kind: "repeated_sender_activity", title: "تنبيه تكرار نشاط من حساب واحد", lines: [`الحساب: ${phone}`, `عدد الأحداث خلال 10 دقائق: ${senderEvents.length}`, `القروب: ${groupId}`], groupId, senderPhone: phone, messageId });
+  }
+}
+function observeDeletionAnomaly({ groupId, senderPhone, messageId, status, reason }) {
+  if (!groupActivityMonitoringEnabled() || groupId !== configuredRuntimeGroupId() || status !== "failed") return;
+  const phone = phoneWithCountry(senderPhone) || "unknown";
+  const key = `deletion_failure:${phone}`;
+  const at = Date.now();
+  const failures = (groupActivityMonitorState.senderEvents.get(key) || []).filter((value) => value >= at - GROUP_ACTIVITY_REPEAT_WINDOW_MS);
+  failures.push(at);
+  groupActivityMonitorState.senderEvents.set(key, failures);
+  if (failures.length >= GROUP_ACTIVITY_REPEAT_THRESHOLD) {
+    notifyGroupActivityAnomaly({ kind: "repeated_deletion_failure", title: "تنبيه تكرار فشل حذف رسائل القروب", lines: [`الحساب: ${phone}`, `عدد حالات الفشل خلال 10 دقائق: ${failures.length}`, `السبب الأخير: ${reason || "غير محدد"}`], groupId, senderPhone: phone === "unknown" ? null : phone, messageId });
+  }
+}
 
 function boundedIntegerSetting(key, fallback, minimum, maximum) {
   const value = Number(getSetting(key, fallback));
@@ -8729,9 +8783,11 @@ function recordGroupMessageTelemetry(event, msg) {
     lastOfficialGroupEventGroupId = groupId;
     lastOfficialGroupMessageTelemetry = telemetry;
     recordOwnerControlCheckpoint("official-group.event");
+    if (!telemetry.fromMe) observeOfficialGroupMessageActivity({ groupId, messageId: telemetry.messageId });
   } else {
     lastIgnoredGroupEventGroupId = groupId;
     lastIgnoredGroupMessageTelemetry = telemetry;
+    if (configuredRuntimeGroupId()) notifyGroupActivityAnomaly({ kind: "outside_group_event", title: "تنبيه حدث من قروب خارج النطاق", lines: [`القروب المرصود: ${groupId}`, "تم تجاهل الحدث ولم تتم معالجته."], groupId: configuredRuntimeGroupId(), messageId: telemetry.messageId });
   }
   console.log(`[GroupEvent] ${event} fromMe=${Boolean(msg.fromMe)} configured=${configured} quoted=${telemetry.hasQuotedMessage}`);
 }
@@ -8968,9 +9024,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg)) {
     if (typeof handleIncomingVoiceMessagePolicy !== "function") return;
-    await handleIncomingVoiceMessagePolicy(msg, { groupId, senderPhone }).catch((error) => {
+    const voiceDeletionResult = await handleIncomingVoiceMessagePolicy(msg, { groupId, senderPhone }).catch((error) => {
       audit("voice_message_deletion.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+      return { status: "failed", reason: String(error?.message || error).slice(0, 180) };
     });
+    if (typeof observeDeletionAnomaly === "function") observeDeletionAnomaly({ groupId, senderPhone, messageId: serializedMessageId(msg) || null, status: voiceDeletionResult?.status, reason: voiceDeletionResult?.deletion?.reason || voiceDeletionResult?.reason || null });
     return;
   }
   const generalDeletionResult = typeof handleIncomingGeneralMessageDeletionPolicy === "function"
@@ -8979,6 +9037,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return { status: "failed" };
       })
     : { status: "not_applicable" };
+  if (!msg.fromMe) {
+    if (typeof observeDeletionAnomaly === "function") observeDeletionAnomaly({ groupId, senderPhone, messageId: serializedMessageId(msg) || null, status: generalDeletionResult?.status, reason: generalDeletionResult?.deletion?.reason || generalDeletionResult?.reason || null });
+  }
   if (["deleted", "failed"].includes(generalDeletionResult?.status)) return;
   const botGenerated = isBotGeneratedMessage(msg);
   // رسائل البوت العادية ليست رسائل تشغيلية ولا تُحفظ؛ الطلب المنسّق فقط يُسجّل باسم الشركة.
@@ -10367,7 +10428,10 @@ async function handleMessageReaction(reaction) {
       acceptance = findPendingAcceptanceByMessage(target.from, messageId);
     }
   }
-  if (!acceptance) return;
+  if (!acceptance) {
+    if (typeof notifyGroupActivityAnomaly === "function") notifyGroupActivityAnomaly({ kind: "unlinked_reaction_attempt", title: "تنبيه تفاعل غير مرتبط بطلب", lines: [`معرّف الرسالة: ${messageId}`, "لم يتم العثور على قبول صالح مرتبط بطلب مفتوح."], groupId: target.from, senderPhone: approverPhone, messageId });
+    return;
+  }
   const pending = acceptance;
   const acceptanceMode = pending.acceptance_mode === "unquoted" ? "unquoted" : "quoted";
   const quotedReply = sourceMessageIdsEqual(pending.acceptance_message_id, messageId) ? (quotedForTarget || await getQuotedMessageWithFallback(target)) : null;
@@ -10426,6 +10490,7 @@ async function handleMessageReaction(reaction) {
       approverKey: orderTraceKey(approverPhone),
       approvingCaptainKey: orderTraceKey(approvingCaptain?.phone),
     });
+    if (typeof notifyGroupActivityAnomaly === "function") notifyGroupActivityAnomaly({ kind: "unauthorized_reaction_attempt", title: "تنبيه تفاعل غير مصرح به", lines: [`معرّف الرسالة: ${messageId}`, `هوية المتفاعل: ${approverPhone || "غير محددة"}`, "تم رفض الاعتماد ولم تُنفّذ تسوية."], groupId: target.from, senderPhone: approverPhone, messageId });
     return;
   }
   const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
