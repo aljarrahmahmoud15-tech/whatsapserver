@@ -5671,13 +5671,47 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
         return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance };
       })();
       if (result.state === "applied") applied.push({ ...captain, ...result, reference });
-      else if (result.state === "ineligible") skipped.push({ ...captain, ...result, reference });
+      else if (result.state === "ineligible" || result.state === "skipped_debt_limit") skipped.push({ ...captain, ...result, reference });
     } catch (error) {
       console.error(`[Subscription] ${scheduled ? "scheduled" : "manual"} charge failed for captain ${captain.id}:`, error.message);
       skipped.push({ ...captain, state: "error", reference, error: error.message });
     }
   }
   return { status: "completed", period, chargeDate: today, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, applied, skipped, eligibleCount: applied.length, totalCents: applied.length * CAPTAIN_SUBSCRIPTION_CENTS };
+}
+function collectPendingWeeklyCaptainCharges(stamp = now()) {
+  const period = currentCaptainSubscriptionPeriod(stamp);
+  if (!period) return { status: "before_start", applied: [], skipped: [], eligibleCount: 0, totalCents: 0 };
+  const pending = db.prepare(`SELECT c.id AS charge_id,c.user_id,c.period_start,c.period_end,c.amount_cents,c.reference,
+      u.id,u.phone,u.name,u.registration_name,u.wallet_cents,u.active,u.is_bot,u.account_status
+    FROM captain_subscription_charges c JOIN users u ON u.id=c.user_id
+    WHERE c.period_start=? AND c.status='skipped_debt_limit' AND u.role='captain'
+      AND u.active=1 AND u.is_bot=0 AND u.account_status='active' AND u.archived_at IS NULL
+    ORDER BY u.id`).all(period.start);
+  const applied = [];
+  const skipped = [];
+  for (const candidate of pending) {
+    try {
+      const result = db.transaction(() => {
+        const current = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,is_bot,account_status FROM users WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL").get(candidate.user_id);
+        if (!current) return { state: "ineligible" };
+        const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
+        if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return { state: "skipped_debt_limit", balanceBeforeCents: Number(current.wallet_cents) };
+        const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
+          .run(current.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, candidate.reference, "تحصيل اشتراك أسبوعي مؤجل بعد توفر الرصيد", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, pending: true, ownerApproved: true }), `${candidate.reference}-PENDING`);
+        db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, current.id);
+        db.prepare("UPDATE captain_subscription_charges SET status='applied',ledger_id=?,applied_at=?,details_json=? WHERE id=? AND status='skipped_debt_limit'")
+          .run(ledger.lastInsertRowid, stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, pending: true, ownerApproved: true }), candidate.charge_id);
+        audit("captain.subscription.pending_collected", "user", current.id, { phone: current.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference: candidate.reference, ownerApproved: true });
+        return { state: "applied", ledgerId: ledger.lastInsertRowid, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance };
+      })();
+      if (result.state === "applied") applied.push({ ...candidate, ...result });
+      else skipped.push({ ...candidate, ...result });
+    } catch (error) {
+      skipped.push({ ...candidate, state: "error", error: error.message });
+    }
+  }
+  return { status: "completed", period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, applied, skipped, eligibleCount: applied.length, totalCents: applied.length * CAPTAIN_SUBSCRIPTION_CENTS };
 }
 function applyCaptainSubscriptionCharges(stamp = now(), { manual = false } = {}) {
   if (!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED) return { status: "disabled_by_owner", applied: [], skipped: [] };
@@ -17482,6 +17516,25 @@ app.post("/api/admin/captain-subscriptions/execute", requireBotWalletOwner, (req
   const result = applyManualWeeklyCaptainCharges(stamp);
   audit("captain.subscription.manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, manualOnly: true });
   res.json({ success: true, manualOnly: true, automaticDeductions: weeklySubscriptionScheduler.config().enabled, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
+});
+app.get("/api/admin/captain-subscriptions/pending-preview", requireBotWalletOwner, adminReadLimiter, (req, res) => {
+  const period = currentCaptainSubscriptionPeriod();
+  if (!period) return res.json({ success: true, mutation: "none", period: null, pendingCount: 0, collectibleCount: 0, totalCents: 0, captains: [] });
+  const rows = db.prepare(`SELECT c.id AS chargeId,c.user_id AS userId,c.amount_cents AS amountCents,c.reference,
+      u.name,u.phone,u.wallet_cents AS balanceCents
+    FROM captain_subscription_charges c JOIN users u ON u.id=c.user_id
+    WHERE c.period_start=? AND c.status='skipped_debt_limit' AND u.role='captain'
+      AND u.active=1 AND u.is_bot=0 AND u.account_status='active' AND u.archived_at IS NULL
+    ORDER BY u.id`).all(period.start);
+  const captains = rows.map((row) => ({ ...row, balance: money(row.balanceCents), collectible: Number(row.balanceCents) - CAPTAIN_SUBSCRIPTION_CENTS >= CAPTAIN_MIN_BALANCE_CENTS }));
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", period, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, pendingCount: captains.length, collectibleCount: captains.filter((row) => row.collectible).length, totalCents: captains.length * CAPTAIN_SUBSCRIPTION_CENTS, captains });
+});
+app.post("/api/admin/captain-subscriptions/collect-pending", requireBotWalletOwner, (req, res) => {
+  if (String(req.body?.confirmation || "") !== "COLLECT_PENDING_WEEKLY_CAPTAIN_CHARGE") return res.status(400).json({ error: "تأكيد تحصيل الرسوم المؤجلة مطلوب" });
+  const result = collectPendingWeeklyCaptainCharges(now());
+  audit("captain.subscription.pending_manual_run", "system", "captains", { period: result.period || null, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, ownerApproved: true });
+  res.json({ success: true, manualOnly: true, automaticDeductions: false, ...result, appliedCount: result.applied?.length || 0, skippedCount: result.skipped?.length || 0 });
 });
 app.get("/api/admin/subscriptions", requireAdmin, adminReadLimiter, v27AdminReadCache("subscriptions", 1000), (req, res) => {
   const requestedPeriod = String(req.query.periodStart || "").trim();
