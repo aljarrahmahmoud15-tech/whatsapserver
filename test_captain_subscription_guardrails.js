@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const source = fs.readFileSync('server.js', 'utf8');
+const eligibility = source.slice(source.indexOf('function weeklyChargeEligibleCaptains'), source.indexOf('function ammanDateKey'));
 
 assert.match(source, /const CAPTAIN_SUBSCRIPTION_CENTS = 100/);
 assert.match(source, /const CAPTAIN_SUBSCRIPTION_START = "2026-09-18T00:00:00\.000Z"/);
@@ -17,8 +18,10 @@ assert.match(source, /function updateOfficialGroupAdminSnapshot\(groupId, snapsh
 assert.match(source, /function officialGroupAdminSnapshotReady\(\)/);
 assert.match(source, /function isOfficialGroupAdminPhone\(phone\)/);
 assert.match(source, /!isOfficialGroupAdminPhone\(captain\.phone\)/);
-assert.match(source, /JOIN orders o ON o\.captain_user_id=u\.id/);
-assert.match(source, /status='completed' AND o\.settlement_state='settled'/);
+assert.match(eligibility, /JOIN orders o ON o\.captain_user_id=u\.id/);
+assert.match(eligibility, /COALESCE\(o\.updated_at,o\.created_at\)>=\?/);
+assert.doesNotMatch(eligibility, /JOIN order_settlements s ON s\.order_id=o\.id AND s\.status='applied'/, 'weekly eligibility must not require an applied settlement');
+assert.doesNotMatch(eligibility, /o\.status='completed' AND o\.settlement_state='settled'/, 'weekly eligibility accepts any booking status');
 assert.match(source, /deferred_group_admin_snapshot/);
 assert.match(source, /"skipped_debt_limit"/);
 assert.match(source, /nextBalance < CAPTAIN_MIN_BALANCE_CENTS/);

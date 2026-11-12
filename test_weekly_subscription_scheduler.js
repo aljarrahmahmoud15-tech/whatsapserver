@@ -81,9 +81,10 @@ function fixture(options = {}) {
     const keys = Object.keys(row);
     db.prepare(`INSERT INTO users(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`).run(...Object.values(row));
     if (activity) {
+      const activityPatch = typeof activity === 'object' ? activity : {};
       const orderId = 10000 + id;
       db.prepare(`INSERT INTO orders(id,producer_user_id,captain_user_id,status,settlement_state,updated_at,created_at) VALUES(?,?,?,?,?,?,?)`)
-        .run(orderId, null, id, 'completed', 'settled', row.updated_at || NOW, row.created_at || NOW);
+        .run(orderId, null, id, activityPatch.status || 'completed', activityPatch.settlement_state || 'settled', activityPatch.updated_at || row.updated_at || NOW, row.created_at || NOW);
       db.prepare(`INSERT INTO order_settlements(order_id,status) VALUES(?, 'applied')`).run(orderId);
     }
   }
@@ -123,7 +124,7 @@ test('no run before 14:00, Saturday, or a missed previous week', () => {
   assert.equal(dueSlot(config, '2026-10-23T11:45:00.000Z').key, 'FRIDAY-2026-10-23');
 });
 
-test('charges only active executors with a completed settled order and respects the zero floor', () => {
+test('charges active executors with any booking in the window and respects the zero floor', () => {
   const f = fixture();
   f.seed(1); f.seed(2, { wallet_cents: 100 });
   f.seed(3, { wallet_cents: 0 });
@@ -133,14 +134,16 @@ test('charges only active executors with a completed settled order and respects 
   f.seed(8, { archived_at: NOW }); f.seed(9, { is_bot: 1 });
   f.seed(10, { role: 'company' }); f.seed(11, { account_status: 'merged' });
   f.seed(12, { created_at: 'bad-date' }); f.seed(13, { created_at: '2026-10-23T00:00:00.000Z' });
+  f.seed(14, { activity: { status: 'open', settlement_state: 'pending' } });
+  f.seed(15, { activity: { status: 'cancelled', settlement_state: 'reversed' } });
   activate(f);
   const r = f.scheduler.tick(FRIDAY);
-  assert.deepEqual(r, { status: 'completed', scheduleKey: 'FRIDAY-2026-10-23', appliedCount: 4, totalCents: 400 });
+  assert.deepEqual(r, { status: 'completed', scheduleKey: 'FRIDAY-2026-10-23', appliedCount: 6, totalCents: 600 });
   assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 0); assert.equal(f.balance(3), 0); assert.equal(f.balance(4), 500); assert.equal(f.balance(5), -50);
   assert.equal(f.db.prepare('SELECT active FROM users WHERE id=2').get().active, 1);
   for (const id of [6,7,8,9,10,11]) assert.equal(f.balance(id), 500);
-  assert.equal(f.balance(12), 400); assert.equal(f.balance(13), 400);
-  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 4);
+  assert.equal(f.balance(12), 400); assert.equal(f.balance(13), 400); assert.equal(f.balance(14), 400); assert.equal(f.balance(15), 400);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 6);
   const details = JSON.parse(f.db.prepare('SELECT details_json FROM wallet_ledger WHERE user_id=1').get().details_json);
   assert.equal(details.scheduled, true); assert.equal(details.manual, false);
 });

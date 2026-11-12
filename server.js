@@ -5625,9 +5625,7 @@ function weeklyChargeEligibleCaptains(stamp = now()) {
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
   return db.prepare(`SELECT DISTINCT u.id,u.phone,u.name,u.wallet_cents
     FROM users u JOIN orders o ON o.captain_user_id=u.id
-    JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
     WHERE u.role='captain' AND u.active=1 AND u.is_bot=0 AND u.account_status='active'
-      AND o.status='completed' AND o.settlement_state='settled'
       AND COALESCE(o.updated_at,o.created_at)>=? AND COALESCE(o.updated_at,o.created_at)<=?
     ORDER BY u.id`).all(cutoff, stamp).filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
 }
