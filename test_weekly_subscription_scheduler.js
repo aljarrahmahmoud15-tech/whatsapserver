@@ -224,7 +224,7 @@ test('Amman business-week boundary and owner-only schedule endpoint contract', (
   });
   assert.match(source, /app\.get\("\/api\/admin\/captain-subscriptions\/schedule", requireBotWalletOwner/);
   assert.match(source, /app\.post\("\/api\/admin\/captain-subscriptions\/schedule", requireBotWalletOwner/);
-  assert.match(source, /ENABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE/);
+  assert.match(source, /ENABLE_\$\{weekdayName \|\| "WEEKLY"\}_WEEKLY_CAPTAIN_CHARGE/);
   assert.match(source, /financialMutation: false/);
   assert.match(source, /CAPTAIN_DAILY_CHARGE_ENABLED = false/);
   assert.match(source, /CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED = false/);

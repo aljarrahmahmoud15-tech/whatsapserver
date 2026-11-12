@@ -17450,11 +17450,13 @@ app.get("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, admi
   res.json({ success: true, mutation: "none", ...weeklySubscriptionScheduler.status() });
 });
 app.post("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, (req, res) => {
-  const expected = req.body?.enabled === true ? "ENABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE" : "DISABLE_FRIDAY_WEEKLY_CAPTAIN_CHARGE";
+  const weekday = req.body?.weekday === undefined ? 5 : Number(req.body.weekday);
+  const weekdayName = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"][weekday];
+  const expected = req.body?.enabled === true ? `ENABLE_${weekdayName || "WEEKLY"}_WEEKLY_CAPTAIN_CHARGE` : "DISABLE_WEEKLY_CAPTAIN_CHARGE";
   if (String(req.body?.confirmation || "") !== expected) return res.status(400).json({ error: "تأكيد المالك للجدولة مطلوب" });
   try {
     const schedule = db.transaction(() => {
-      const updated = weeklySubscriptionScheduler.configure({ enabled: req.body?.enabled, hour: req.body?.hour, minute: req.body?.minute });
+      const updated = weeklySubscriptionScheduler.configure({ enabled: req.body?.enabled, weekday, hour: req.body?.hour, minute: req.body?.minute });
       audit("captain.subscription.schedule_configured", "system", "captains", { enabled: updated.enabled, hour: updated.hour, minute: updated.minute, timezone: updated.timezone, firstRunAt: updated.firstRunAt });
       return updated;
     })();
