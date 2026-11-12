@@ -120,7 +120,7 @@ function createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute
     const due = dueSlot(current, stamp);
     const dueRecord = due ? db.prepare('SELECT status,attempt_count FROM captain_weekly_schedule_runs WHERE schedule_key=?').get(due.key) : null;
     if (due && (!dueRecord || (dueRecord.status === 'failed' && dueRecord.attempt_count < MAX_ATTEMPTS))) nextRunAt = due.scheduledAt;
-    return { ...current, nextRunAt, amountCents: 100, eligibleScope: 'active_non_archived_captains_regardless_of_balance_or_activity',
+    return { ...current, nextRunAt, amountCents: 100, eligibleScope: 'active_non_archived_executors_with_completed_settled_order_in_last_7_days',
       excludeRegisteredOnExecutionDay: false, minimumBalanceCents: 0,
       excludedIdentities: ['bot', 'company', 'archived', 'merged', 'inactive', 'official_group_admin'],
       repeatedWithinWeek: false, catchUp: 'same_friday_only', maxAttempts: MAX_ATTEMPTS,

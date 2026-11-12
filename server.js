@@ -5624,7 +5624,7 @@ function captainDisplayName(name) {
 function weeklyChargeEligibleCaptains(stamp = now()) {
   const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
   return db.prepare(`SELECT DISTINCT u.id,u.phone,u.name,u.wallet_cents
-    FROM users u JOIN orders o ON (o.captain_user_id=u.id OR o.producer_user_id=u.id)
+    FROM users u JOIN orders o ON o.captain_user_id=u.id
     JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
     WHERE u.role='captain' AND u.active=1 AND u.is_bot=0 AND u.account_status='active'
       AND o.status='completed' AND o.settlement_state='settled'
@@ -5637,11 +5637,7 @@ function ammanDateKey(stamp = now()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 function manualWeeklyChargeEligibleCaptains(stamp = now()) {
-  return db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
-    FROM users
-    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
-    ORDER BY id`).all()
-    .filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
+  return weeklyChargeEligibleCaptains(stamp);
 }
 function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, scheduleKey = null } = {}) {
   const period = currentCaptainSubscriptionPeriod(stamp);
@@ -5649,10 +5645,7 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
   if (typeof WHATSAPP_GROUP_ID !== "undefined" && WHATSAPP_GROUP_ID && !officialGroupAdminSnapshotReady()) return { status: "deferred_group_admin_snapshot", applied: [], skipped: [], eligibleCount: 0, totalCents: 0 };
   const today = ammanDateKey(stamp);
   const businessWeek = businessWeekPeriod(stamp);
-  const candidates = db.prepare(`SELECT id,phone,name,registration_name,wallet_cents,active,account_status,created_at
-    FROM users
-    WHERE role='captain' AND active=1 AND is_bot=0 AND account_status='active' AND archived_at IS NULL
-    ORDER BY id`).all();
+  const candidates = weeklyChargeEligibleCaptains(stamp);
   const applied = [];
   const skipped = [];
   for (const captain of candidates) {
@@ -5666,6 +5659,11 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
         const current = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,is_bot,account_status,created_at FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status='active' AND archived_at IS NULL").get(captain.id);
         if (!current || !current.active) return { state: "ineligible" };
         const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
+        if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) {
+          const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,reference,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)")
+            .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "skipped_debt_limit", reference, stamp, JSON.stringify({ reason: "debt_limit", balanceCents: current.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, executorOnly: true }));
+          return { state: "skipped_debt_limit", chargeId: charge.lastInsertRowid };
+        }
         db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, captain.id);
         const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
           .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, scheduled ? "اشتراك أسبوعي تلقائي يوم الجمعة" : "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }), reference);

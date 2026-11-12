@@ -17,10 +17,12 @@ assert.match(source, /function updateOfficialGroupAdminSnapshot\(groupId, snapsh
 assert.match(source, /function officialGroupAdminSnapshotReady\(\)/);
 assert.match(source, /function isOfficialGroupAdminPhone\(phone\)/);
 assert.match(source, /!isOfficialGroupAdminPhone\(captain\.phone\)/);
-assert.match(source, /o\.captain_user_id=u\.id OR o\.producer_user_id=u\.id/);
+assert.match(source, /JOIN orders o ON o\.captain_user_id=u\.id/);
 assert.match(source, /status='completed' AND o\.settlement_state='settled'/);
 assert.match(source, /deferred_group_admin_snapshot/);
 assert.match(source, /"skipped_debt_limit"/);
+assert.match(source, /nextBalance < CAPTAIN_MIN_BALANCE_CENTS/);
+assert.match(source, /executorOnly: true/);
 assert.match(source, /"subscription_fee"/);
 assert.match(source, /function startCaptainSubscriptionScheduler\(\)/);
 assert.match(source, /!manual && !CAPTAIN_SUBSCRIPTION_CHARGES_ENABLED/);

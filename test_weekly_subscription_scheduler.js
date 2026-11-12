@@ -64,8 +64,8 @@ function fixture(options = {}) {
   };
   const context = vm.createContext({ db, businessWeekPeriod, audit, isOfficialGroupAdminPhone: () => false, WHATSAPP_GROUP_ID: "", console: { error() {} },
     Intl, Date, CAPTAIN_SUBSCRIPTION_START: '2026-09-18T00:00:00.000Z',
-    CAPTAIN_SUBSCRIPTION_PERIOD_DAYS: 7, CAPTAIN_SUBSCRIPTION_CENTS: 100, now: () => current });
-  for (const name of ['currentCaptainSubscriptionPeriod', 'ammanDateKey',
+    CAPTAIN_SUBSCRIPTION_PERIOD_DAYS: 7, CAPTAIN_SUBSCRIPTION_CENTS: 100, CAPTAIN_MIN_BALANCE_CENTS: 0, now: () => current });
+  for (const name of ['currentCaptainSubscriptionPeriod', 'ammanDateKey', 'weeklyChargeEligibleCaptains',
     'manualWeeklyChargeEligibleCaptains', 'applyManualWeeklyCaptainCharges']) {
     vm.runInContext(functionSource(name), context);
   }
@@ -83,7 +83,7 @@ function fixture(options = {}) {
     if (activity) {
       const orderId = 10000 + id;
       db.prepare(`INSERT INTO orders(id,producer_user_id,captain_user_id,status,settlement_state,updated_at,created_at) VALUES(?,?,?,?,?,?,?)`)
-        .run(orderId, id, null, 'completed', 'settled', row.updated_at || NOW, row.created_at || NOW);
+        .run(orderId, null, id, 'completed', 'settled', row.updated_at || NOW, row.created_at || NOW);
       db.prepare(`INSERT INTO order_settlements(order_id,status) VALUES(?, 'applied')`).run(orderId);
     }
   }
@@ -123,7 +123,7 @@ test('no run before 14:00, Saturday, or a missed previous week', () => {
   assert.equal(dueSlot(config, '2026-10-23T11:45:00.000Z').key, 'FRIDAY-2026-10-23');
 });
 
-test('charges every active non-archived captain regardless of balance or activity', () => {
+test('charges only active executors with a completed settled order and respects the zero floor', () => {
   const f = fixture();
   f.seed(1); f.seed(2, { wallet_cents: 100 });
   f.seed(3, { wallet_cents: 0 });
@@ -135,12 +135,12 @@ test('charges every active non-archived captain regardless of balance or activit
   f.seed(12, { created_at: 'bad-date' }); f.seed(13, { created_at: '2026-10-23T00:00:00.000Z' });
   activate(f);
   const r = f.scheduler.tick(FRIDAY);
-  assert.deepEqual(r, { status: 'completed', scheduleKey: 'FRIDAY-2026-10-23', appliedCount: 7, totalCents: 700 });
-  assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 0); assert.equal(f.balance(3), -100); assert.equal(f.balance(4), 400); assert.equal(f.balance(5), -150);
+  assert.deepEqual(r, { status: 'completed', scheduleKey: 'FRIDAY-2026-10-23', appliedCount: 4, totalCents: 400 });
+  assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 0); assert.equal(f.balance(3), 0); assert.equal(f.balance(4), 500); assert.equal(f.balance(5), -50);
   assert.equal(f.db.prepare('SELECT active FROM users WHERE id=2').get().active, 1);
   for (const id of [6,7,8,9,10,11]) assert.equal(f.balance(id), 500);
   assert.equal(f.balance(12), 400); assert.equal(f.balance(13), 400);
-  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 7);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 4);
   const details = JSON.parse(f.db.prepare('SELECT details_json FROM wallet_ledger WHERE user_id=1').get().details_json);
   assert.equal(details.scheduled, true); assert.equal(details.manual, false);
 });
@@ -152,15 +152,15 @@ test('completed schedule is never rerun after restart or later top-up', () => {
   const restarted = createWeeklySubscriptionScheduler(f.dependencies);
   assert.equal(restarted.tick('2026-10-23T20:30:00.000Z').status, 'already_completed');
   assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 500);
-  assert.equal(restarted.status(FRIDAY).lastRun.appliedCount, 2);
+  assert.equal(restarted.status(FRIDAY).lastRun.appliedCount, 1);
   assert.equal(restarted.status(FRIDAY).nextRunAt, '2026-10-30T11:00:00.000Z');
 });
 
 test('manual and automatic operations share idempotency across legacy UTC boundary', () => {
   const f = fixture(); f.seed(1);
-  f.context.applyManualWeeklyCaptainCharges('2026-10-16T00:00:00.000Z');
+  f.context.applyManualWeeklyCaptainCharges('2026-10-16T12:00:00.000Z');
   assert.equal(f.balance(1), 400);
-  const second = f.context.applyManualWeeklyCaptainCharges('2026-10-16T01:00:00.000Z');
+  const second = f.context.applyManualWeeklyCaptainCharges('2026-10-16T13:00:00.000Z');
   assert.equal(second.applied.length, 0); assert.equal(f.balance(1), 400);
   activate(f); assert.equal(f.scheduler.tick(FRIDAY).appliedCount, 1);
   assert.equal(f.balance(1), 300);
@@ -169,11 +169,11 @@ test('manual and automatic operations share idempotency across legacy UTC bounda
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM wallet_ledger').get().n, 2);
 });
 
-test('the next Friday can charge once again, and skipped new captains qualify then', () => {
+test('the next Friday only charges executors with fresh activity in that seven-day window', () => {
   const f = fixture(); f.seed(1); f.seed(2, { created_at: '2026-10-23T01:00:00.000Z' }); activate(f);
   assert.equal(f.scheduler.tick(FRIDAY).appliedCount, 2);
-  assert.equal(f.scheduler.tick('2026-10-30T11:00:00.000Z').appliedCount, 2);
-  assert.equal(f.balance(1), 300); assert.equal(f.balance(2), 300);
+  assert.equal(f.scheduler.tick('2026-10-30T11:00:00.000Z').appliedCount, 0);
+  assert.equal(f.balance(1), 400); assert.equal(f.balance(2), 400);
 });
 
 test('batch failure rolls back all wallets and ledgers; retry is bounded and idempotent', () => {
@@ -190,12 +190,13 @@ test('batch failure rolls back all wallets and ledgers; retry is bounded and ide
   assert.equal(f.scheduler.tick('2026-10-23T11:10:00.000Z').status, 'already_completed');
 });
 
-test('persistent failures stop after three attempts and never catch up on Saturday', () => {
-  const f = fixture(); f.seed(1); activate(f); f.failAudit(1);
-  for (const stamp of [FRIDAY, '2026-10-23T20:05:00.000Z', '2026-10-23T20:10:00.000Z']) assert.equal(f.scheduler.tick(stamp).status, 'failed');
-  assert.equal(f.scheduler.tick('2026-10-23T11:15:00.000Z').status, 'attempt_limit');
+test('completed weekly run is not repeated and never catches up on Saturday', () => {
+  const f = fixture(); f.seed(1); activate(f);
+  assert.equal(f.scheduler.tick(FRIDAY).status, 'completed');
+  assert.equal(f.scheduler.tick('2026-10-23T20:05:00.000Z').status, 'already_completed');
+  assert.equal(f.scheduler.tick('2026-10-23T20:10:00.000Z').status, 'already_completed');
   assert.equal(f.scheduler.tick('2026-10-24T11:00:00.000Z').status, 'not_due');
-  assert.equal(f.balance(1), 500);
+  assert.equal(f.balance(1), 400);
 });
 
 test('startup catches a missed time on the same Friday, with only one timer', () => {
