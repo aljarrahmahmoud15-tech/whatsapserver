@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="/captain-designs.css?v=1" rel="stylesheet">
   <style>
     .demo-banner{margin:20px 0 0;padding:13px 15px;border:1px solid #ffb75f66;border-radius:14px;background:#ffb75f12;color:#ffd08d;font-size:11px;line-height:1.8}.demo-banner strong{color:#fff0c7;display:block;margin-bottom:3px}
     :root{--bg:#07111f;--panel:#0f1d2e;--panel-2:#14283e;--line:#29445f;--text:#f5f8ff;--muted:#9cafc5;--cyan:#48d9d1;--green:#65dfa0;--orange:#ffb75f;--red:#ff7d7d;--shadow:0 22px 70px #0005}
@@ -127,8 +128,20 @@
       <div id="demo-banner" class="demo-banner hidden"><strong>وضع المعاينة التجريبية</strong>الأرقام والرحلات الظاهرة هنا أمثلة توضيحية فقط، وليست بيانات حقيقية ولا تؤثر على حسابات الكباتن.</div>
       <div class="head">
         <div><div class="eyebrow">مساحة الكابتن</div><h1>أهلًا، <span id="captain-name">—</span></h1><p>هذه الصفحة تعرض الحساب الحقيقي المرتبط برقم الهاتف المسجل.</p></div>
-        <div class="head-actions"><span class="availability">● الحساب نشط</span><button class="ghost" id="logout" type="button">تسجيل الخروج</button></div>
+        <div class="head-actions"><span class="availability">● الحساب نشط</span><button class="ghost" id="captain-design-gallery-toggle" type="button" aria-expanded="false" aria-controls="captain-design-gallery">التصاميم القديمة</button><button class="ghost" id="logout" type="button">تسجيل الخروج</button></div>
       </div>
+
+      <section id="captain-design-gallery" class="panel captain-design-gallery hidden" aria-label="معرض التصاميم القديمة">
+        <div class="panel-head"><div><h2>معرض التصاميم القديمة</h2><p>استعرض الأنماط السابقة واختر تصميمًا واحدًا. اختيارك يُحفظ لحسابك ويُطبق دون تغيير الوظائف.</p></div><button class="ghost" id="captain-design-gallery-close" type="button">إغلاق</button></div>
+        <div class="captain-design-grid">
+          <article class="captain-design-card" data-captain-design-card="classic"><div class="captain-design-preview" data-design-preview="classic" aria-hidden="true"><div class="design-preview-bar"><i></i><b>وصلني الآن</b></div><div class="design-preview-panel"><span>الرصيد الحالي</span><strong>2.59</strong><div><i></i><i></i></div></div></div><div class="captain-design-copy"><div><h3>الكلاسيكي الأساسي</h3><p>الواجهة الداكنة الأصلية بلمسات تركواز.</p></div><span class="captain-design-active" data-active-design="classic" hidden>فعال</span></div><button class="ghost captain-design-activate" type="button" data-activate-captain-design="classic">تفعيل هذا التصميم</button></article>
+          <article class="captain-design-card" data-captain-design-card="taj"><div class="captain-design-preview" data-design-preview="taj" aria-hidden="true"><div class="design-preview-bar"><i></i><b>وصلني الآن</b></div><div class="design-preview-panel"><span>الرصيد الحالي</span><strong>2.59</strong><div><i></i><i></i></div></div></div><div class="captain-design-copy"><div><h3>الكلاسيكي الداكن الذهبي</h3><p>طابع التاج القديم مع الحفاظ على هوية وصلني الآن.</p></div><span class="captain-design-active" data-active-design="taj" hidden>فعال</span></div><button class="ghost captain-design-activate" type="button" data-activate-captain-design="taj">تفعيل هذا التصميم</button></article>
+          <article class="captain-design-card" data-captain-design-card="red-white"><div class="captain-design-preview" data-design-preview="red-white" aria-hidden="true"><div class="design-preview-bar"><i></i><b>وصلني الآن</b></div><div class="design-preview-panel"><span>الرصيد الحالي</span><strong>2.59</strong><div><i></i><i></i></div></div></div><div class="captain-design-copy"><div><h3>الأبيض والأحمر</h3><p>تصميم فاتح بأزرار ولمسات حمراء.</p></div><span class="captain-design-active" data-active-design="red-white" hidden>فعال</span></div><button class="ghost captain-design-activate" type="button" data-activate-captain-design="red-white">تفعيل هذا التصميم</button></article>
+          <article class="captain-design-card" data-captain-design-card="rahlati"><div class="captain-design-preview" data-design-preview="rahlati" aria-hidden="true"><div class="design-preview-bar"><i></i><b>وصلني الآن</b></div><div class="design-preview-panel"><span>الرصيد الحالي</span><strong>2.59</strong><div><i></i><i></i></div></div></div><div class="captain-design-copy"><div><h3>رحلتي الآن</h3><p>واجهة فاتحة بلون أخضر هادئ وبطاقات مبسطة.</p></div><span class="captain-design-active" data-active-design="rahlati" hidden>فعال</span></div><button class="ghost captain-design-activate" type="button" data-activate-captain-design="rahlati">تفعيل هذا التصميم</button></article>
+          <article class="captain-design-card" data-captain-design-card="compact"><div class="captain-design-preview" data-design-preview="compact" aria-hidden="true"><div class="design-preview-bar"><i></i><b>وصلني الآن</b></div><div class="design-preview-panel"><span>الرصيد الحالي</span><strong>2.59</strong><div><i></i><i></i></div></div></div><div class="captain-design-copy"><div><h3>التصميم المختصر</h3><p>مسافات وبطاقات أخف مع بقاء الأقسام متاحة.</p></div><span class="captain-design-active" data-active-design="compact" hidden>فعال</span></div><button class="ghost captain-design-activate" type="button" data-activate-captain-design="compact">تفعيل هذا التصميم</button></article>
+        </div>
+        <div id="captain-design-status" class="hint" role="status" aria-live="polite">اختيار التصميم يغيّر مظهر حسابك فقط؛ لا يغير الرصيد أو الطلبات.</div>
+      </section>
 
       <section class="topup-request topup-window panel" aria-label="طلب شحن الرصيد"><div class="panel-head"><div><h2>نافذة شحن رصيد الكابتن</h2><p>حوّل المبلغ، ثم أرسل إشعار الموافقة إلى الإدارة للمراجعة.</p></div><span class="count">مثال: 5 JOD</span></div><div class="topup-policy"><strong>لماذا تشحن رصيدك؟</strong><span>يحذف النظام رسالة «تم» التي يرسلها الكابتن إذا لم يكفِ رصيده لعمولة الطلب نفسه، بعد مطابقة الطلب والتحقق من الحالة.</span></div><div class="payment-box" aria-label="طرق التحويل"><div class="payment-option"><strong>Orange Money</strong><span>الحساب المعتمد يُرسل من الإدارة داخل النظام<br><small>فادي الجراح</small></span></div><div class="payment-option"><strong>بنك الاتحاد</strong><span>اسم المستفيد: <b>فادي الجراح</b><br>رقم الحساب: <b dir="ltr">FADI137137</b></span></div></div><p class="payment-help">بعد التحويل، أدخل <b>رقم العملية أو آخر 4 أرقام</b>. لا تتم إضافة الرصيد إلا بعد مراجعة الإدارة وتأكيد التحويل.</p><div class="topup-form"><label class="label">قيمة الشحن (JOD)<input class="input" id="topup-request-value" type="number" min="1" max="1000" step="0.01" placeholder="مثال: 5" required></label><label class="label">طريقة التحويل<select class="input" id="topup-payment-method"><option value="Orange Money">Orange Money</option><option value="بنك الاتحاد">بنك الاتحاد — FADI137137 — فادي الجراح</option></select></label><label class="label wide">رقم العملية أو مرجع التحويل (اختياري)<input class="input" id="topup-transfer-reference" maxlength="80" placeholder="مثال: آخر 4 أرقام من العملية"></label><label class="label wide">إرفاق وصل الحوالة (اختياري)<input class="input" id="topup-receipt-file" type="file" accept="image/jpeg,image/png,image/webp"></label><small class="hint wide">ارفع صورة واضحة للوصل فقط. الحد الأقصى 5 ميغابايت.</small><label class="label wide">ملاحظة للإدارة (اختياري)<input class="input" id="topup-request-note" maxlength="500" placeholder="تم التحويل، أرجو مراجعة الطلب"></label><button class="primary" id="topup-request-btn" type="button">إرسال إشعار الموافقة إلى الإدارة</button></div><div id="topup-request-status" class="hint" role="status"></div></section>
       <section class="captain-tools panel" aria-label="أدوات V27 للكابتن"><div class="panel-head"><div><h2>مساحة V27 للكابتن</h2><p>خدمة العملاء والتثبيت من نفس التطبيق، بعد اعتماد الحساب.</p></div><span class="count">V27</span></div><div class="captain-tool-grid"><button class="primary" id="install-app-btn" type="button">تثبيت تطبيق V27 على الجهاز</button><button class="ghost" id="captain-support-open" type="button">فتح خدمة العملاء</button></div><div id="install-status" class="hint" role="status">التثبيت يظهر مباشرة عند جاهزية المتصفح.</div></section>
@@ -142,9 +155,14 @@
         <div class="metric fees" hidden aria-hidden="true"><span>إجمالي الخصومات</span><strong id="fees">—</strong><small>رسوم المحفظة المسجلة</small></div>
       </section>
 
+      <section id="captain-active-orders-panel" class="panel captain-active-orders" aria-label="الطلبات الجارية والمعلقة">
+        <div class="panel-head"><div><h2>الطلبات الجارية أو المعلقة</h2><p>تبقى ظاهرة حتى اعتمادها أو إكمالها، حتى لو كان تاريخها أقدم.</p></div><span id="active-order-count" class="count">0 طلب</span></div>
+        <div id="active-orders-list" class="rows"><div class="loading">جاري تحميل الطلبات الجارية…</div></div>
+      </section>
+
       <div class="grid">
         <section id="captain-new-orders" class="panel" aria-label="الطلبات الجديدة للكابتن">
-          <div class="panel-head"><div><h2>سجل الطلبات الجديدة</h2><p>تظهر هنا الطلبات المنشأة من وقت بدء الإخفاء البصري؛ الطلبات الأقدم لا تظهر.</p></div><span id="trip-count" class="count">0 رحلة</span></div>
+          <div class="panel-head"><div><h2>سجل الطلبات الجديدة</h2><p>الطلبات المكتملة الأقدم مؤرشفة ولا تُحذف؛ الطلبات الجارية أو المعلقة تبقى ظاهرة في القسم أعلاه.</p></div><span id="trip-count" class="count">0 رحلة</span></div>
           <div id="trips" class="rows"><div class="loading">جاري تحميل البيانات الحقيقية…</div></div>
         </section>
         <section class="panel" hidden aria-hidden="true">
@@ -198,6 +216,36 @@
     }
     function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value ?? '0.00'; }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
+    const captainDesignTitles = {classic:'الكلاسيكي الأساسي',taj:'الكلاسيكي الداكن الذهبي', 'red-white':'الأبيض والأحمر',rahlati:'رحلتي الآن',compact:'التصميم المختصر'};
+    function applyCaptainDesign(design) {
+      const chosen = Object.hasOwn(captainDesignTitles, String(design)) ? String(design) : 'classic';
+      document.body.dataset.captainDesign = chosen;
+      document.querySelectorAll('[data-activate-captain-design]').forEach((button) => {
+        const active = button.dataset.activateCaptainDesign === chosen;
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        button.textContent = active ? 'التصميم مفعل' : 'تفعيل هذا التصميم';
+        button.closest('[data-captain-design-card]')?.querySelector('[data-active-design]')?.toggleAttribute('hidden', !active);
+      });
+      return chosen;
+    }
+    async function activateCaptainDesign(design, button) {
+      const status = $('#captain-design-status');
+      if (!Object.hasOwn(captainDesignTitles, String(design))) return;
+      button.disabled = true;
+      if (status) status.textContent = 'جارٍ حفظ اختيار التصميم…';
+      try {
+        if (new URLSearchParams(location.search).get('demo') === '1') {
+          applyCaptainDesign(design);
+          if (status) status.textContent = `تمت معاينة ${captainDesignTitles[design]} فقط؛ لا تُحفظ التغييرات في وضع التجربة.`;
+          return;
+        }
+        const result = await api('/api/captain/ui-design', {method:'PUT',body:JSON.stringify({design})});
+        applyCaptainDesign(result.design);
+        if (status) status.textContent = `تم تفعيل ${captainDesignTitles[result.design]} وحفظه لحسابك. لم يتغير أي طلب أو رصيد.`;
+      } catch (error) {
+        if (status) status.textContent = error.message || 'تعذر حفظ التصميم؛ بقي التصميم السابق فعالًا.';
+      } finally { button.disabled = false; }
+    }
     function statusLabel(value) { return ({open:'مفتوح',accepted:'مثبت',completed:'مكتمل',cancelled:'ملغى'})[value] || value || 'غير محدد'; }
     function showSection(id) { ['entry','registration','pending','login','pin-recovery','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
     function topupCardStatus(value) { return ({issued:'جاهزة للتفعيل',redeemed:'تمت إضافتها إلى الرصيد',void:'ملغاة'})[value] || value || 'غير محدد'; }
@@ -211,19 +259,34 @@
     function renderWithdrawalRequests(rows) { const box=$('#withdrawal-request-list'); if(!box)return; const items=Array.isArray(rows)?rows:[]; box.innerHTML=items.length?items.map(r=>`<article class="row"><div class="row-top"><span class="row-title">${escapeHtml(withdrawalStatusLabel(r.status))}</span><span class="row-date">${escapeHtml(r.createdAt||'')}</span></div><div class="ledger-note">طلب ${escapeHtml(r.requestCode||'—')} · المبلغ ${escapeHtml(r.amount||'0.00')} JOD</div><div class="ledger-date">${escapeHtml(r.ownerNote||r.note||'بانتظار قرار المالك')}</div></article>`).join(''):'<div class="empty"><strong>لا توجد طلبات سحب</strong>يمكنك إنشاء طلب جديد ليظهر هنا.</div>'; }
     function render(data) {
       currentCaptain = data.user || currentCaptain;
+      applyCaptainDesign(data.user?.uiDesign || 'classic');
       setText('captain-name', data.user?.name || 'كابتن');
       setText('balance', data.wallet?.balance || '0.00');
       setText('net-earnings', data.earnings?.net || '0.00');
       setText('fees', data.earnings?.executedDebit || data.earnings?.fees || '0.00'); setText('posted-share', data.earnings?.postedShare || data.earnings?.gross || '0.00');
       const trips = Array.isArray(data.trips) ? data.trips : [];
       const entries = Array.isArray(data.entries) ? data.entries : [];
+      const activeOrders = Array.isArray(data.activeOrders) ? data.activeOrders : [];
       setText('trip-count', `${trips.length} رحلة`); setText('ledger-count', `${entries.length} حركة`);
+      setText('active-order-count', `${activeOrders.length} طلب`);
+      $('#active-orders-list').innerHTML = activeOrders.length ? activeOrders.map((order) => `<article class="row captain-active-order"><div class="row-top"><span class="row-title">طلب جارٍ #${escapeHtml(order.order_no || '—')}</span><span class="tag">${escapeHtml(order.stateLabel || 'بانتظار الاعتماد')}</span></div><div class="row-main"><div>${escapeHtml(order.origin || 'تفاصيل الطلب')}</div><span class="arrow" aria-hidden="true">←</span><div>${escapeHtml(order.destination || 'قيد الإجراء')}</div></div><div class="row-meta"><span>الأجرة: ${escapeHtml(order.price || '—')} JOD</span><span>وقت الرحلة: ${escapeHtml(order.trip_time || 'غير محدد')}</span><span>آخر تحديث: ${escapeHtml(order.updated_at || order.created_at || '')}</span></div></article>`).join('') : '<div class="empty"><strong>لا توجد طلبات معلقة أو جارية الآن</strong>ستبقى أي طلبات قديمة ما زالت قيد العمل ظاهرة هنا حتى تنتهي.</div>';
       $('#trips').innerHTML = trips.length ? trips.map((trip) => { const orderNo = escapeHtml(trip.order_no); return `<article class="row"><div class="row-top"><span class="row-title">طلب #${orderNo}</span><span class="row-date">${escapeHtml(trip.trip_time || trip.updated_at || trip.created_at || '')}</span></div><div class="settlement-summary" role="status"><span class="check" aria-hidden="true">✓</span><span class="summary-text">تمت التسوية المالية للطلب #${orderNo}</span></div></article>`; }).join('') : '<div class="empty"><strong>لا توجد رحلات مسجلة</strong>ستظهر تفاصيل الأرباح هنا بعد تثبيت أول طلب لهذا الحساب.</div>';
       $('#ledger').innerHTML = entries.length ? entries.map((entry) => { const positive = Number(entry.amount_cents) >= 0; return `<article class="row"><div><span class="ledger-title">${escapeHtml(entry.note || entry.type || 'حركة رصيد')}</span><span class="ledger-note">المرجع: ${escapeHtml(entry.reference || '—')}</span></div><div class="ledger-amount ${positive ? 'credit' : 'debit'}">${positive ? '+' : ''}${escapeHtml(entry.amount)} JOD</div><div class="ledger-date">الرصيد بعد الحركة: ${escapeHtml(entry.balanceAfter)} JOD · ${escapeHtml(entry.created_at || '')}</div></article>`; }).join('') : '<div class="empty"><strong>لا توجد حركات رصيد</strong>سيظهر سجل الرصيد هنا عند تسجيل أول حركة فعلية.</div>';
       renderTopupCards(data.topupCards);
       renderWithdrawalRequests(data.withdrawalRequests);
     }
     async function loadOverview() { const data = await api('/api/captain/overview'); render(data); }
+    $('#captain-design-gallery-toggle')?.addEventListener('click', () => {
+      const gallery = $('#captain-design-gallery');
+      const open = gallery?.classList.toggle('hidden') === false;
+      $('#captain-design-gallery-toggle')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) gallery.scrollIntoView({behavior:'smooth',block:'nearest'});
+    });
+    $('#captain-design-gallery-close')?.addEventListener('click', () => {
+      $('#captain-design-gallery')?.classList.add('hidden');
+      $('#captain-design-gallery-toggle')?.setAttribute('aria-expanded','false');
+    });
+    document.querySelectorAll('[data-activate-captain-design]').forEach((button) => button.addEventListener('click', () => activateCaptainDesign(button.dataset.activateCaptainDesign, button)));
     function updateInviteStatus(invite) {
       inviteState = invite;
       if (invite.status === 'pending') { showSection('pending'); setText('pending-title','الطلب قيد المراجعة'); setText('pending-message','تم إرسال طلبك إلى الشركة. لا يمكن إنشاء الحساب أو الدخول أو استخدام النظام قبل موافقة المالك. ستظهر هنا نتيجة الموافقة أو الرفض.'); $('#approved-login').classList.add('hidden'); return; }

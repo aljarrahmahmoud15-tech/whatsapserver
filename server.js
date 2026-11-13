@@ -170,6 +170,7 @@ const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.OR
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
+const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
@@ -3444,6 +3445,7 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
 }
+function captainUiDesignSettingKey(userId) { return `captain_ui_design:${Number(userId)}`; }
 function insufficientBalanceAcceptanceDeletionEnabled() {
   const raw = getSetting(INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY, null);
   if (raw === null) return true;
@@ -11617,6 +11619,15 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
+  const pendingOrderRows = db.prepare(`SELECT source_message_id,order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
+    FROM orders WHERE status='open' AND pending_captain_user_id=?
+    UNION ALL
+    SELECT source_message_id,public_trip_no AS order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
+    FROM order_candidates WHERE status='pending' AND pending_captain_user_id=?
+    ORDER BY updated_at DESC LIMIT 50`).all(user.id, user.id);
+  const pendingOrderMap = new Map();
+  for (const row of pendingOrderRows) if (!pendingOrderMap.has(row.source_message_id)) pendingOrderMap.set(row.source_message_id, { ...row, price: money(row.price_cents), stateLabel: row.status === "pending" ? "بانتظار الاعتماد" : "قيد التنفيذ" });
+  const activeOrders = [...pendingOrderMap.values()];
   const captainVisibilityCutoff = getSetting(CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING, null);
   const tripRows = captainVisibilityCutoff ? db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
@@ -11625,6 +11636,8 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     WHERE (o.producer_user_id=? OR o.captain_user_id=? OR s.producer_user_id=? OR s.captain_user_id=?)
       AND COALESCE(o.archive_state,'active')<>'archived'
       AND datetime(o.created_at)>=datetime(?)
+      AND o.status IN ('accepted','completed')
+      AND (s.status='applied' OR o.settlement_state='settled')
     ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id, user.id, user.id, captainVisibilityCutoff).map((trip) => {
       const finalized = ['accepted', 'completed'].includes(trip.status) && trip.settlement_status === 'applied';
       const postedShareCents = finalized && Number(trip.producer_user_id || trip.settlement_producer_user_id) === Number(user.id) ? Number(trip.settlement_producer_cents ?? trip.producer_cents ?? 0) : 0;
@@ -11641,16 +11654,34 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     FROM order_settlements s JOIN orders o ON o.id=s.order_id`).get(user.id, user.id, user.id, user.id);
   const topupCards = db.prepare("SELECT id,value_cents,status,sent_at,redeemed_at,created_at FROM topup_cards WHERE assigned_captain_id=? ORDER BY id DESC LIMIT 20").all(user.id).map((card) => ({ id: card.id, value: money(card.value_cents), status: card.status, sentAt: card.sent_at, redeemedAt: card.redeemed_at, createdAt: card.created_at }));
   const withdrawalRequests = captainWithdrawalRequestRows("", 50, user.id);
+  const storedUiDesign = getSetting(captainUiDesignSettingKey(user.id), "classic");
+  const uiDesign = CAPTAIN_UI_DESIGN_IDS.has(storedUiDesign) ? storedUiDesign : "classic";
   res.setHeader("Cache-Control", "no-store");
   res.json({
-    user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at },
+    user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at, uiDesign },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
     earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' }, order: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } } },
     entries,
     trips,
+    activeOrders,
     topupCards,
     withdrawalRequests,
   });
+});
+app.put("/api/captain/ui-design", requireCaptain, adminMutationLimiter, (req, res) => {
+  const captainId = Number(req.captainSession.userId);
+  const design = String(req.body?.design || "").trim();
+  if (!CAPTAIN_UI_DESIGN_IDS.has(design)) return res.status(400).json({ error: "التصميم المحدد غير متاح" });
+  const current = db.prepare("SELECT id,role,active,account_status FROM users WHERE id=? LIMIT 1").get(captainId);
+  if (!current || current.role !== "captain" || !current.active || current.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير نشط" });
+  const settingKey = captainUiDesignSettingKey(captainId);
+  const previousDesign = CAPTAIN_UI_DESIGN_IDS.has(getSetting(settingKey, "classic")) ? getSetting(settingKey, "classic") : "classic";
+  db.transaction(() => {
+    setSetting(settingKey, design);
+    audit("captain.ui_design.updated", "user", captainId, { previousDesign, design, financialMutation: false, walletMutation: false, orderStateMutation: false }, captainId);
+  })();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, design, financialMutation: false, walletMutation: false });
 });
 app.post("/api/auth/login", async (req, res) => {
   const username = String(req.body?.username || "").trim();

@@ -1,5 +1,5 @@
-const CACHE = 'v27-captain-shell-v1';
-const SHELL = ['/captain', '/captain.html', '/captain-manifest.json', '/aljarah-logo-mark-clean.png'];
+const CACHE = 'v27-captain-shell-v2';
+const SHELL = ['/captain', '/captain.html', '/captain-designs.css?v=1', '/captain-manifest.json', '/aljarah-logo-mark-clean.png'];
 self.addEventListener('install', (event) => { event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (event) => { event.waitUntil(self.clients.claim()); });
 self.addEventListener('fetch', (event) => {
