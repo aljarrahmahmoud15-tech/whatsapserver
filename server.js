@@ -4733,8 +4733,9 @@ function createGroupSnapshotFlight(key, evaluate, timeoutMs = 40000) {
   const timed = new Promise((resolve) => {
     timeoutHandle = setTimeout(() => {
       timeoutHandle = null;
-      if (groupSnapshotFlights.get(key) === flight) groupSnapshotFlights.delete(key);
-      resolve({ ok: false, reason: "group_snapshot_evaluation_timeout" });
+      // Keep the flight registered until the underlying page evaluation actually settles.
+      // This prevents another caller from launching overlapping work on a stalled Chromium page.
+      resolve({ ok: false, reason: "group_snapshot_evaluation_timeout", stage: "page_evaluate", detail: `deadline_${Math.max(1, Number(timeoutMs) || 40000)}ms` });
     }, Math.max(1, Number(timeoutMs) || 40000));
     underlying.then((result) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -4889,13 +4890,30 @@ async function readGroupSnapshot(groupId) {
   const directChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
   const directSnapshot = snapshotFromGroupChat(groupId, directChat);
   if (directSnapshot) {
-    lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, detail: null, participantCount: directSnapshot.participants.length, participantSource: "chat" };
+    lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, stage: null, detail: null, participantCount: directSnapshot.participants.length, participantSource: "chat" };
     updateOfficialGroupAdminSnapshot(groupId, directSnapshot);
     return directSnapshot;
   }
   const key = `${generationAtStart}:${groupId}`;
   const flight = createGroupSnapshotFlight(key, () => pageAtStart.evaluate(async (requestedId) => {
     const compactError = (error) => String(error?.message || error || "unknown").slice(0, 180);
+    const withStageTimeout = async (stage, timeoutMs, operation) => {
+      let timeoutHandle = null;
+      try {
+        return await Promise.race([
+          Promise.resolve().then(operation),
+          new Promise((_, reject) => {
+            timeoutHandle = window.setTimeout(() => {
+              const error = new Error("group_snapshot_stage_timeout");
+              error.snapshotStage = stage;
+              reject(error);
+            }, Math.max(1, Number(timeoutMs) || 1));
+          }),
+        ]);
+      } finally {
+        if (timeoutHandle) window.clearTimeout(timeoutHandle);
+      }
+    };
     const module = (name) => {
       try { return window.require(name); } catch (_) { return null; }
     };
@@ -4913,21 +4931,34 @@ async function readGroupSnapshot(groupId) {
       const collections = module("WAWebCollections");
       const wid = widFactory?.createWid ? widFactory.createWid(requestedId) : null;
       let chat = collections?.Chat?.get && wid ? collections.Chat.get(wid) : null;
-      if ((!chat || !chat.groupMetadata) && window.WWebJS?.getChat) chat = await window.WWebJS.getChat(requestedId, { getAsModel: false }) || chat;
-      if ((!chat || !chat.groupMetadata) && collections?.Chat && module("WAWebFindChatAction")?.findOrCreateLatestChat && wid) {
-        chat = (await module("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat || null;
+      if ((!chat || !chat.groupMetadata) && window.WWebJS?.getChat) {
+        chat = await withStageTimeout("wwebjs_get_chat", 8000, () => window.WWebJS.getChat(requestedId, { getAsModel: false })) || chat;
+      }
+      const findChatAction = module("WAWebFindChatAction");
+      if ((!chat || !chat.groupMetadata) && collections?.Chat && findChatAction?.findOrCreateLatestChat && wid) {
+        chat = (await withStageTimeout("find_or_create_latest_chat", 8000, () => findChatAction.findOrCreateLatestChat(wid)))?.chat || null;
       }
       if (!chat || !chat.groupMetadata) return { ok: false, reason: "group_chat_metadata_unavailable", modules: { widFactory: Boolean(widFactory), collections: Boolean(collections), wwebjs: Boolean(window.WWebJS?.getChat) } };
       const groupMetadata = collections?.GroupMetadata || collections?.WAWebGroupMetadataCollection;
       try {
         const queryJob = module("WAWebGroupQueryJob");
-        if (queryJob?.queryAndUpdateGroupMetadataById) await queryJob.queryAndUpdateGroupMetadataById({ id: requestedId });
-        else if (groupMetadata?.update && wid) await groupMetadata.update(wid);
+        if (queryJob?.queryAndUpdateGroupMetadataById) {
+          await withStageTimeout("group_metadata_query", 14000, () => queryJob.queryAndUpdateGroupMetadataById({ id: requestedId }));
+        } else if (groupMetadata?.update && wid) {
+          await withStageTimeout("group_metadata_update", 14000, () => groupMetadata.update(wid));
+        }
       } catch (error) {
-        try { if (groupMetadata?.update && wid) await groupMetadata.update(wid); } catch (_) {}
+        if (error?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: error.snapshotStage, detail: "stage_deadline_exceeded" };
+        try {
+          if (groupMetadata?.update && wid) await withStageTimeout("group_metadata_fallback_update", 8000, () => groupMetadata.update(wid));
+        } catch (fallbackError) {
+          if (fallbackError?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: fallbackError.snapshotStage, detail: "stage_deadline_exceeded" };
+        }
         if (!chat.groupMetadata) return { ok: false, reason: "group_metadata_refresh_failed", detail: compactError(error) };
       }
-      const hydratedChat = collections?.Chat?.get && wid ? (collections.Chat.get(wid) || chat) : (window.WWebJS?.getChat ? await window.WWebJS.getChat(requestedId, { getAsModel: false }) || chat : chat);
+      const hydratedChat = collections?.Chat?.get && wid
+        ? (collections.Chat.get(wid) || chat)
+        : (window.WWebJS?.getChat ? await withStageTimeout("refetch_hydrated_chat", 7000, () => window.WWebJS.getChat(requestedId, { getAsModel: false })) || chat : chat);
       const hydratedMetadata = hydratedChat?.groupMetadata || chat.groupMetadata;
       if (!hydratedMetadata) return { ok: false, reason: "group_metadata_missing_after_refresh" };
       const metadata = hydratedMetadata.serialize ? hydratedMetadata.serialize() : hydratedMetadata;
@@ -4954,6 +4985,7 @@ async function readGroupSnapshot(groupId) {
         },
       };
     } catch (error) {
+      if (error?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: error.snapshotStage, detail: "stage_deadline_exceeded" };
       return { ok: false, reason: "group_snapshot_evaluation_failed", detail: compactError(error) };
     }
   }, groupId));
@@ -4963,7 +4995,7 @@ async function readGroupSnapshot(groupId) {
     const fallbackChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
     const fallbackSnapshot = snapshotFromGroupChat(groupId, fallbackChat);
     if (fallbackSnapshot) {
-      lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, detail: null, participantCount: fallbackSnapshot.participants.length, participantSource: "chat" };
+      lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, stage: null, detail: null, participantCount: fallbackSnapshot.participants.length, participantSource: "chat" };
       updateOfficialGroupAdminSnapshot(groupId, fallbackSnapshot);
       return fallbackSnapshot;
     }
@@ -4971,17 +5003,19 @@ async function readGroupSnapshot(groupId) {
       status: "failed",
       at: now(),
       reason: boundedDiagnosticText(result?.reason || "unknown", 180),
+      stage: boundedDiagnosticText(result?.stage || "", 80) || null,
       detail: boundedDiagnosticText(result?.detail || "no_detail", 1200),
       participantCount: 0,
       participantSource: result?.participantSource || null,
     };
-    console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason} detail=${lastGroupHydrationDiagnostic.detail}`);
+    console.warn(`[WhatsApp][GroupHydration] failed: ${lastGroupHydrationDiagnostic.reason} stage=${lastGroupHydrationDiagnostic.stage || "unknown"} detail=${lastGroupHydrationDiagnostic.detail}`);
     return null;
   }
   lastGroupHydrationDiagnostic = {
     status: "ready",
     at: now(),
     reason: null,
+    stage: null,
     detail: null,
     participantCount: result.snapshot.participants.length,
     participantSource: result.snapshot.participantSource || null,
@@ -6926,6 +6960,7 @@ let lastGroupHydrationDiagnostic = {
   status: "unknown",
   at: null,
   reason: null,
+  stage: null,
   detail: null,
   participantCount: null,
   participantSource: null,

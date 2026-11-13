@@ -5,10 +5,16 @@ const vm = require("vm");
 const source = fs.readFileSync("server.js", "utf8");
 
 assert.match(source, /async function readGroupSnapshot\(groupId\)/, "group snapshot resolver must exist");
-assert.match(source, /window\.WWebJS\?\.getChat\)\s*chat = await window\.WWebJS\.getChat\(requestedId, \{ getAsModel: false \}\)/, "snapshot resolver must have a WWebJS chat fallback");
+assert.match(source, /withStageTimeout\("wwebjs_get_chat", 8000/, "WWebJS chat fetch must have a labeled stage timeout");
+assert.match(source, /withStageTimeout\("find_or_create_latest_chat", 8000/, "chat discovery must have a labeled stage timeout");
+assert.match(source, /withStageTimeout\("group_metadata_query", 14000/, "group metadata query must have a labeled stage timeout");
+assert.match(source, /withStageTimeout\("group_metadata_fallback_update", 8000/, "metadata fallback update must have a labeled stage timeout");
+assert.match(source, /withStageTimeout\("refetch_hydrated_chat", 7000/, "hydrated chat refetch must have a labeled stage timeout");
 assert.match(source, /WAWebGroupQueryJob/, "snapshot resolver must refresh group metadata when available");
 assert.match(source, /group_participants_empty/, "empty participant snapshots must be diagnosed explicitly");
 assert.match(source, /group_snapshot_evaluation_timeout/, "snapshot evaluation timeouts must be diagnosed explicitly");
+assert.match(source, /group_snapshot_stage_timeout/, "timed-out page stages must report their own failure class");
+assert.match(source, /stage: error\.snapshotStage/, "timed-out page stages must expose the stage name");
 assert.match(source, /lastGroupHydrationDiagnostic/, "group hydration state must be exposed to runtime diagnostics");
 assert.match(source, /groupHydration: \{ \.\.\.lastGroupHydrationDiagnostic \}/, "public/V27 status must expose group hydration state");
 assert.match(source, /const groupSnapshotFlights = new Map\(\)/, "group hydration must keep a single-flight registry");
@@ -58,16 +64,28 @@ vm.runInNewContext(`${source.slice(pageErrorStart, pageErrorEnd)}\nthis.handleWh
 
 (async () => {
   let resolveFirst;
+  let evaluations = 0;
   const timedOut = flightContext.createGroupSnapshotFlight("generation-a:configured-group", () => new Promise((resolve) => { resolveFirst = resolve; }), 10);
   const timeoutResult = await timedOut.timed;
   assert.equal(timeoutResult.reason, "group_snapshot_evaluation_timeout");
-  assert.equal(flightContext.groupSnapshotFlights.has("generation-a:configured-group"), false, "a timed-out flight must not poison future retries");
+  assert.equal(timeoutResult.stage, "page_evaluate", "the global timeout must identify the Puppeteer evaluation stage");
+  assert.equal(flightContext.groupSnapshotFlights.has("generation-a:configured-group"), true, "a timed-out flight must remain registered while its page evaluation is unresolved");
+
+  const blockedRetry = flightContext.createGroupSnapshotFlight("generation-a:configured-group", () => {
+    evaluations += 1;
+    return Promise.resolve({ ok: true });
+  }, 250);
+  assert.strictEqual(blockedRetry, timedOut, "calls during a stalled evaluation must share the timed-out flight instead of starting overlapping page work");
+  assert.equal(evaluations, 0, "a second page evaluation must not start while the first remains unresolved");
+
+  resolveFirst({ ok: true, snapshot: { participants: [] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(flightContext.groupSnapshotFlights.has("generation-a:configured-group"), false, "the flight must be released after the underlying page evaluation settles");
 
   let resolveRetry;
   const retry = flightContext.createGroupSnapshotFlight("generation-a:configured-group", () => new Promise((resolve) => { resolveRetry = resolve; }), 250);
-  resolveFirst({ ok: true, snapshot: { participants: [] } });
+  assert.notStrictEqual(retry, timedOut, "a new evaluation may start after the previous page work has actually settled");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.strictEqual(flightContext.groupSnapshotFlights.get("generation-a:configured-group"), retry, "a late result from an old flight must not remove the newer retry");
   resolveRetry({ ok: true, snapshot: { participants: ["synthetic"] } });
   const retryResult = await retry.timed;
   assert.equal(retryResult.ok, true);
