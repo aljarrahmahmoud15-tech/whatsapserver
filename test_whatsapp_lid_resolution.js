@@ -22,7 +22,8 @@ assert.match(source, /app\.post\("\/api\/admin\/group\/audit-lid-mappings", requ
 assert.match(source, /financialMutation: false/);
 assert.match(source, /A WhatsApp LID ending with @lid is required/);
 assert.match(source, /accepted_message_sender/);
-assert.match(source, /for \(const delay of \[1500, 5000\]\)/);
+assert.match(source, /function scheduleReactionRetry\(reaction, delays = \[1500, 5000\]\)/);
+assert.match(source, /scheduleReactionRetry\(reaction, \[1500, 5000\]\)/);
 assert.match(source, /reconcileStoredThumbReaction\(messageId\)/);
 const start = source.indexOf("const whatsappLidPhoneCache = new Map();");
 const end = source.indexOf("function recordGroupMessageTelemetry(", start);

@@ -16,6 +16,7 @@ assert.match(flow, /V26_CANCEL_ORDER/, 'the server confirmation marker is preser
 assert.match(flow, /X-Idempotency-Key/, 'the action remains idempotent');
 assert.match(flow, /body:JSON\.stringify\(\{confirmation:'V26_CANCEL_ORDER',idempotencyKey,reason\}\)/, 'the entered reason is sent to the protected API');
 assert.match(flow, /closeModal\(\);await loadData\(\)/, 'successful reversal closes and refreshes the dashboard');
-assert.doesNotMatch(flow, /window\.confirm/, 'the cancellation flow uses the dedicated modal instead of an unstructured browser prompt');
+assert.match(flow, /if\(!window\.confirm\('تأكيد نهائي: إلغاء الحجز وعكس التسوية المالية؟/, 'the dedicated review modal retains the additional final owner confirmation');
+assert.match(flow, /لن تتكرر الحركة إذا كانت منفذة مسبقًا\.'\)\)return;/, 'declining the final confirmation stops the financial action');
 
 console.log('V26 cancellation modal guardrails verified');
