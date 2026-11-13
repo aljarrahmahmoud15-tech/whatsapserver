@@ -11619,19 +11619,19 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const allTrips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.archive_state,o.archived_at,o.archive_reason,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
+  const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
       p.name AS producer_name,c.name AS captain_name
     FROM orders o LEFT JOIN order_settlements s ON s.order_id=o.id LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
-    WHERE o.producer_user_id=? OR o.captain_user_id=? OR s.producer_user_id=? OR s.captain_user_id=? ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id, user.id, user.id).map((trip) => {
+    WHERE (o.producer_user_id=? OR o.captain_user_id=? OR s.producer_user_id=? OR s.captain_user_id=?)
+      AND COALESCE(o.archive_state,'active')<>'archived'
+    ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id, user.id, user.id).map((trip) => {
       const finalized = ['accepted', 'completed'].includes(trip.status) && trip.settlement_status === 'applied';
       const postedShareCents = finalized && Number(trip.producer_user_id || trip.settlement_producer_user_id) === Number(user.id) ? Number(trip.settlement_producer_cents ?? trip.producer_cents ?? 0) : 0;
       const executedDebitCents = finalized && Number(trip.captain_user_id || trip.settlement_captain_user_id) === Number(user.id) ? Number(trip.settlement_captain_fee_cents ?? ((trip.producer_cents || 0) + (trip.company_cents || 0))) : 0;
       const role = postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant';
       return { ...trip, ...settlementFinancials(trip), grossEarnings: money(postedShareCents), walletFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role, roleLabel: role === 'downloader' ? 'كابتن تنزيل الطلب' : role === 'executor' ? 'كابتن التنفيذ' : 'مشارك' };
     });
-  const archivedTrips = allTrips.filter((trip) => String(trip.archive_state || "active") === "archived");
-  const trips = allTrips.filter((trip) => String(trip.archive_state || "active") !== "archived");
   const totals = db.prepare(`SELECT
     COALESCE(SUM(CASE WHEN s.producer_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.producer_cents ELSE 0 END),0) AS posted_share_cents,
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.captain_fee_cents ELSE 0 END),0) AS executed_debit_cents,
@@ -11647,7 +11647,6 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' }, order: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } } },
     entries,
     trips,
-    archivedTrips,
     topupCards,
     withdrawalRequests,
   });

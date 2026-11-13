@@ -12,12 +12,11 @@ assert.match(server, /pre-captain-order-view-reset-/);
 assert.match(server, /captain\.order_view\.reset/);
 assert.match(server, /financialMutation: false/);
 assert.match(server, /deletion: false/);
-assert.match(server, /const archivedTrips = allTrips\.filter/);
-assert.match(server, /const trips = allTrips\.filter/);
-assert.match(server, /archivedTrips,/);
-assert.match(captain, /id="captain-archive-panel"/);
-assert.match(captain, /id="archived-trips"/);
-assert.match(captain, /data\.archivedTrips/);
-assert.match(captain, /مخفي بصريًا/);
+assert.match(server, /COALESCE\(o\.archive_state,'active'\)<>'archived'/);
+assert.doesNotMatch(server, /archivedTrips/);
+assert.match(server, /ORDER_DELETION_DISABLED\s*\)\s*\{/);
+assert.doesNotMatch(captain, /captain-compact-home/);
+assert.doesNotMatch(captain, /captain-archive-panel|archived-trips|data\.archivedTrips/);
+assert.match(captain, /id="captain-tools"|class="captain-tools panel"/);
 
 console.log('order visual archive policy checks passed');
