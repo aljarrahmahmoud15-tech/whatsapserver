@@ -8049,6 +8049,7 @@ function scheduleReactionRetry(reaction, delays = [1500, 5000]) {
   const reactionValue = String(reaction?.reaction || "").trim();
   if (!messageId) return;
   const key = `${messageId}:${reactionValue}`;
+  const scheduledConnectionGeneration = connectionGeneration;
   const retryDelays = Array.isArray(delays) && delays.length ? delays : [1500, 5000];
   const expiresAt = Date.now() + Math.max(REACTION_MESSAGE_LOCK_TTL_MS, Number(retryDelays[retryDelays.length - 1] || 0) + 30 * 1000);
   pruneReactionMessageState();
@@ -8057,7 +8058,7 @@ function scheduleReactionRetry(reaction, delays = [1500, 5000]) {
   retryDelays.forEach((delayMs, retryIndex) => {
     setTimeout(() => {
       if (retryIndex >= retryDelays.length - 1) reactionRetrySchedules.delete(key);
-      if (generation !== connectionGeneration || !isReady) return;
+      if (scheduledConnectionGeneration !== connectionGeneration || !isReady) return;
       void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
       void reconcileStoredThumbReaction(messageId).catch((error) => console.error("[WhatsApp] stored reaction retry:", error));
     }, delayMs).unref?.();

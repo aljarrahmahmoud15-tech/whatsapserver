@@ -16,6 +16,9 @@ assert.match(source, /scheduleReactionRetry\(reaction, \[1500, 5000\]\)/);
 
 const retryBlock = source.slice(source.indexOf('function scheduleReactionRetry'), source.indexOf('function shouldHandleMessageEvent'));
 assert.match(retryBlock, /if \(reactionRetrySchedules\.has\(key\)\) return/);
+assert.match(retryBlock, /const scheduledConnectionGeneration = connectionGeneration/);
+assert.match(retryBlock, /scheduledConnectionGeneration !== connectionGeneration/);
+assert.doesNotMatch(retryBlock, /\bgeneration\s*!==\s*connectionGeneration/);
 assert.match(retryBlock, /\.unref\?\.\(\)/);
 
 console.log('per-message reaction lock and bounded retry scheduling guardrails verified');
