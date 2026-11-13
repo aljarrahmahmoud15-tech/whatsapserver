@@ -11,6 +11,8 @@ const helperStart = source.indexOf("function createOrderRecord(");
 const helperEnd = source.indexOf("function brandedMessage(", helperStart);
 const messageHelperStart = source.indexOf("function serializedMessageId(");
 const messageHelperEnd = source.indexOf("function orderTraceKey(", messageHelperStart);
+const reactionEvidenceStart = source.indexOf("function reactionEvidenceSenderKey(");
+const reactionEvidenceEnd = source.indexOf("function isConnectedBotReactionIdentity(", reactionEvidenceStart);
 const incomingStart = source.indexOf("async function handleIncomingMessage(");
 const incomingEnd = source.indexOf("function reactionId(", incomingStart);
 const reactionStart = source.indexOf("async function handleMessageReaction(");
@@ -25,6 +27,7 @@ const equivalentStart = source.indexOf("function findEquivalentCandidate(");
 const equivalentEnd = source.indexOf("function orderTraceKey(", equivalentStart);
 assert(helperStart >= 0 && helperEnd > helperStart);
 assert(messageHelperStart >= 0 && messageHelperEnd > messageHelperStart);
+assert(reactionEvidenceStart >= 0 && reactionEvidenceEnd > reactionEvidenceStart);
 assert(incomingStart >= 0 && incomingEnd > incomingStart);
 assert(reactionStart >= 0 && reactionEnd > reactionStart);
 assert(settleStart >= 0 && settleEnd > settleStart);
@@ -49,6 +52,7 @@ const state = {
   settlement: null,
   archivedOrder: null,
   ledgers: [],
+  reactionEvidence: [],
   messages: new Set(),
   confirmations: [],
   cancellations: [],
@@ -64,6 +68,7 @@ function reset({ archived = false, executorBalance = 5000 } = {}) {
   state.settlement = null;
   state.archivedOrder = archived ? { id: 77, order_no: 77, source_message_id: "price-archived", group_id: GROUP, archive_state: "archived" } : null;
   state.ledgers = [];
+  state.reactionEvidence = [];
   state.messages = new Set();
   state.confirmations = [];
   state.cancellations = [];
@@ -113,19 +118,41 @@ const db = {
         if (query.startsWith("SELECT COALESCE(MAX(order_no),0)+1")) return { next: state.order ? state.order.order_no + 1 : 1 };
         if (query.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return userById(args[0]) ? { wallet_cents: userById(args[0]).wallet_cents } : null;
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
-        if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 50, producer_cents: 250, captain_fee_cents: 300, details_json: "{}" } : null;
+        if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 50, producer_cents: 250, captain_fee_cents: 300, approval_reaction_user_id: state.settlement.approval_reaction_user_id, approval_method: state.settlement.approval_method, applied_at: state.settlement.applied_at, details_json: "{}" } : null;
         if (query.startsWith("SELECT id FROM notifications WHERE event=?")) return null;
         if (query.startsWith("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=?")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, group_id: state.candidate.group_id, source_message_id: state.candidate.source_message_id } : null;
         if (query.startsWith("SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, order_kind: state.candidate.order_kind, group_id: state.candidate.group_id, producer_name: users.producer?.name || "المنتج" } : null;
         if (query.startsWith("SELECT * FROM orders WHERE group_id=?")) return state.order && state.order.accepted_message_id === args[1] ? { ...state.order } : null;
         throw new Error(`Unexpected get query: ${query}`);
       },
-      all() {
+      all(...args) {
+        if (query.startsWith("SELECT * FROM reaction_evidence WHERE message_id=? AND emoji=? AND active=1")) {
+          return state.reactionEvidence.filter((row) => row.message_id === args[0] && row.emoji === args[1] && row.active === 1).sort((a, b) => b.id - a.id).map((row) => ({ ...row }));
+        }
         if (query.includes("FROM order_candidates") && state.candidate) return [{ ...state.candidate }];
         if (query.includes("FROM orders") && (state.order || state.archivedOrder)) return [{ ...(state.order || state.archivedOrder) }];
         return [];
       },
       run(...args) {
+        if (query.startsWith("INSERT INTO reaction_evidence")) {
+          const [messageId, groupId, emoji, senderKey, senderId, senderPhone, source, capturedAt] = args;
+          const existing = state.reactionEvidence.find((row) => row.message_id === messageId && row.emoji === emoji && row.sender_key === senderKey);
+          const row = { id: existing?.id || state.reactionEvidence.length + 1, message_id: messageId, group_id: groupId, emoji, sender_key: senderKey, sender_id: senderId, sender_phone: senderPhone, active: 1, source, captured_at: capturedAt };
+          if (existing) Object.assign(existing, row); else state.reactionEvidence.push(row);
+          return { changes: 1 };
+        }
+        if (query.startsWith("UPDATE reaction_evidence SET active=0")) {
+          const [capturedAt, messageId, groupId, emoji, senderPhone] = args;
+          let changes = 0;
+          for (const row of state.reactionEvidence) {
+            if (row.message_id === messageId && row.group_id === groupId && row.emoji === emoji && row.sender_phone === senderPhone && row.active === 1) {
+              row.active = 0;
+              row.captured_at = capturedAt;
+              changes += 1;
+            }
+          }
+          return { changes };
+        }
         if (query.startsWith("INSERT OR IGNORE INTO messages")) {
           const id = String(args[0]);
           if (state.messages.has(id)) return { changes: 0 };
@@ -147,11 +174,11 @@ const db = {
         if (query.startsWith("UPDATE order_candidates SET status='pending'")) { state.candidate.status = "pending"; state.candidate.pending_captain_user_id = args[0]; state.candidate.pending_message_id = args[1]; state.candidate.lifecycle_stage = "acceptance_pending"; state.candidate.lifecycle_blocker = "awaiting_authorized_thumb"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidates SET lifecycle_stage='debt_limit'")) { state.candidate.lifecycle_stage = "debt_limit"; state.candidate.lifecycle_blocker = "debt_limit"; return { changes: 1 }; }
         if (query.startsWith("INSERT INTO orders")) { state.order = { id: 20, order_no: 1, source_message_id: state.candidate.source_message_id, group_id: GROUP, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, producer_user_id: users.producer.id, captain_user_id: users.executor.id, accepted_message_id: state.acceptance.acceptance_message_id, producer_name_snapshot: users.producer.name, captain_name_snapshot: users.executor.name, status: "accepted", settlement_state: "settled" }; return { changes: 1, lastInsertRowid: 20 }; }
-        if (query.startsWith("INSERT OR IGNORE INTO order_settlements")) { if (state.settlement) return { changes: 0 }; state.settlement = { status: "pending" }; return { changes: 1 }; }
+        if (query.startsWith("INSERT OR IGNORE INTO order_settlements")) { if (state.settlement) return { changes: 0 }; state.settlement = { status: "pending", approval_reaction_user_id: args[9], approval_method: args[10], details_json: args[11] }; return { changes: 1 }; }
         if (query.startsWith("UPDATE users SET wallet_cents=wallet_cents+?")) { userById(args[2]).wallet_cents += Number(args[0]); return { changes: 1 }; }
         if (query.startsWith("UPDATE users SET wallet_cents=wallet_cents-?")) { userById(args[2]).wallet_cents -= Number(args[0]); return { changes: 1 }; }
         if (query.startsWith("INSERT INTO wallet_ledger")) { state.ledgers.push(args); return { changes: 1 }; }
-        if (query.startsWith("UPDATE order_settlements SET status='applied'")) { state.settlement.status = "applied"; return { changes: 1 }; }
+        if (query.startsWith("UPDATE order_settlements SET status='applied'")) { state.settlement.status = "applied"; state.settlement.applied_at = args[0]; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_settlements SET status='reversed'")) { state.settlement.status = "reversed"; return { changes: 1 }; }
         if (query.startsWith("UPDATE orders SET status='cancelled',settlement_state='reversed'")) { state.order.status = "cancelled"; state.order.settlement_state = "reversed"; return { changes: 1 }; }
         if (query.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { state.candidate.pending_captain_user_id = args[0]; state.candidate.pending_message_id = args[1]; return { changes: 1 }; }
@@ -189,6 +216,7 @@ function message(id, body, sender, quoted = null) {
 	const context = {
 	  WHATSAPP_GROUP_ID: GROUP,
 	  db,
+	  withReactionMessageLock: async (_messageId, _kind, task) => task(),
 	  assignCandidatePublicTripNo: () => {
 	    if (state.candidate) state.candidate.public_trip_no = state.candidate.public_trip_no || 1;
 	    return state.candidate?.public_trip_no || 1;
@@ -271,7 +299,7 @@ function message(id, body, sender, quoted = null) {
   findPendingAcceptanceByMessage: null,
 };
 
-vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(equivalentStart, equivalentEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(reverseStart, reverseEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
+vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(reactionEvidenceStart, reactionEvidenceEnd)}\n${source.slice(equivalentStart, equivalentEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(reverseStart, reverseEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
 
 async function ingestPrice(sourceId = "price-1") {
   const price = message(sourceId, "السعر 20", PRODUCER);
@@ -297,6 +325,8 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   await approve();
   assert.equal(state.candidate.status, "finalized");
   assert.equal(state.ledgers.length, 3, "التسوية الذرية تسجل 3 حركات فقط");
+  assert.equal(state.settlement.approval_reaction_user_id, users.producer.id, "يحفظ سجل التسوية هوية الكابتن الذي اعتمدها بالإعجاب");
+  assert.equal(state.settlement.approval_method, "reaction", "يسجل أن التسوية اعتمدت بتفاعل 👍");
   assert.equal(users.producer.wallet_cents, 250, "يُضاف 12.5% للمنتج");
   assert.equal(users.company.wallet_cents, 50, "يُضاف 2.5% للشركة");
   assert.equal(users.executor.wallet_cents, 4700, "يُخصم 15% من المنفذ");
@@ -317,6 +347,15 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   await approve("done-remove-after-settlement");
   assert.equal(state.candidate.status, "finalized");
   state.targets = { [canonicalMessageId("done-remove-after-settlement", EXECUTOR)]: message("done-remove-after-settlement", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = EXECUTOR;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
+  assert.equal(state.order.status, "accepted", "كابتن آخر لا يستطيع إزالة إعجاب صاحب التسوية");
+  assert.equal(state.ledgers.length, 3, "محاولة كابتن آخر لا تعكس الحوالة");
+  await approve("done-remove-after-settlement", EXECUTOR);
+  state.reactionSender = EXECUTOR;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
+  assert.equal(state.order.status, "accepted", "حتى إعجاب لاحق من كابتن آخر لا يخوله عكس تسوية الأول");
+  assert.equal(state.ledgers.length, 3, "إزالة الإعجاب اللاحق لا تنشئ حركات عكسية");
   state.reactionSender = PRODUCER;
   await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
   assert.equal(state.order.status, "cancelled", "إزالة 👍 من المنزّل بعد التسوية تلغي الرحلة");
@@ -328,6 +367,46 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   assert.equal(users.executor.wallet_cents, 5000);
   await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-after-settlement", EXECUTOR) });
   assert.equal(state.ledgers.length, 6, "الإزالة المكررة لا تكرر العكس المالي");
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-legacy-reversal");
+  await approve("done-legacy-reversal");
+  const legacyApproverEvidence = state.reactionEvidence.find((row) => row.sender_phone === PRODUCER && row.active === 1);
+  assert.ok(legacyApproverEvidence, "يحفظ النظام دليل الإعجاب قبل تثبيت الطلب");
+  legacyApproverEvidence.captured_at = "2026-11-13T00:00:00.000Z";
+  state.settlement.approval_reaction_user_id = null;
+  state.settlement.approval_method = null;
+  state.settlement.applied_at = "2026-11-13T00:00:01.000Z";
+  await approve("done-legacy-reversal", EXECUTOR);
+  const laterCaptainEvidence = state.reactionEvidence.find((row) => row.sender_phone === EXECUTOR && row.active === 1);
+  assert.ok(laterCaptainEvidence, "يُسجل إعجاب الكابتن الآخر بعد التسوية");
+  laterCaptainEvidence.captured_at = "2026-11-13T00:00:02.000Z";
+  state.targets = { [canonicalMessageId("done-legacy-reversal", EXECUTOR)]: message("done-legacy-reversal", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = EXECUTOR;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-legacy-reversal", EXECUTOR) });
+  assert.equal(state.order.status, "accepted", "لا يعكس كابتن آخر تسوية قديمة بإعجاب أُضيف بعد تطبيقها");
+  assert.equal(state.ledgers.length, 3, "الإعجاب اللاحق لا ينشئ حركة عكسية للتسوية القديمة");
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-legacy-reversal", EXECUTOR) });
+  assert.equal(state.order.status, "cancelled", "يُقبل عكس السجل القديم عند إثبات إعجاب صاحبه قبل applied_at");
+  assert.equal(state.ledgers.length, 6, "عكس السجل القديم يسجل الحركات العكسية مرة واحدة");
+
+  reset();
+  await ingestPrice();
+  await ingestAcceptance("done-non-reaction-settlement");
+  await approve("done-non-reaction-settlement");
+  const nonReactionEvidence = state.reactionEvidence.find((row) => row.sender_phone === PRODUCER && row.active === 1);
+  assert.ok(nonReactionEvidence);
+  nonReactionEvidence.captured_at = "2026-11-13T00:00:00.000Z";
+  state.settlement.approval_reaction_user_id = null;
+  state.settlement.approval_method = "non_reaction";
+  state.settlement.applied_at = "2026-11-13T00:00:01.000Z";
+  state.targets = { [canonicalMessageId("done-non-reaction-settlement", EXECUTOR)]: message("done-non-reaction-settlement", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
+  state.reactionSender = PRODUCER;
+  await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-non-reaction-settlement", EXECUTOR) });
+  assert.equal(state.order.status, "accepted", "الإعجاب لا يعكس تسوية جديدة لم تعتمد على الإعجاب");
+  assert.equal(state.ledgers.length, 3, "التسوية غير التفاعلية تبقى بلا حركة عكسية عند إزالة 👍");
 
   reset();
   await ingestPrice();
@@ -396,9 +475,9 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   state.targets = { [canonicalMessageId("done-remove-thumb", EXECUTOR)]: message("done-remove-thumb", "تم جاهز الآن", EXECUTOR, message("price-1", "السعر 20", PRODUCER)) };
   state.reactionSender = PRODUCER;
   await context.handleMessageReaction({ reaction: "", msgId: canonicalMessageId("done-remove-thumb", EXECUTOR) });
-  assert.equal(state.candidate.status, "cancelled", "إزالة 👍 من صاحب السعر تلغي الطلب المعلق بالكامل");
+  assert.equal(state.candidate.status, "pending", "إزالة 👍 غير المثبتة بهوية صاحبها لا تلغي الطلب المعلق");
   assert.equal(state.ledgers.length, 0, "إزالة 👍 قبل التسوية لا تنشئ حركات مالية");
-  assert.equal(state.cancellations.length, 1, "إزالة 👍 ترسل بطاقة إلغاء واحدة");
+  assert.equal(state.cancellations.length, 0, "لا تُرسل بطاقة إلغاء عند عدم وجود دليل إعجاب من الفاعل");
 
   reset();
   await ingestPrice();

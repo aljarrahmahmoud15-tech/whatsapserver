@@ -1495,13 +1495,16 @@ CREATE TABLE IF NOT EXISTS order_settlements (
   company_cents INTEGER NOT NULL,
   producer_cents INTEGER NOT NULL,
   captain_fee_cents INTEGER NOT NULL,
+  approval_reaction_user_id INTEGER,
+  approval_method TEXT,
   details_json TEXT,
   created_at TEXT NOT NULL,
   applied_at TEXT,
   FOREIGN KEY(order_id) REFERENCES orders(id),
   FOREIGN KEY(captain_user_id) REFERENCES users(id),
   FOREIGN KEY(producer_user_id) REFERENCES users(id),
-  FOREIGN KEY(charged_user_id) REFERENCES users(id)
+  FOREIGN KEY(charged_user_id) REFERENCES users(id),
+  FOREIGN KEY(approval_reaction_user_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS captain_subscription_charges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1590,6 +1593,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user_created ON wallet_led
 db.exec("CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_created ON audit_logs(entity_type, entity_id, created_at DESC)");
 const existingSettlementColumns = db.prepare("PRAGMA table_info(order_settlements)").all().map((column) => column.name);
 if (!existingSettlementColumns.includes("charged_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN charged_user_id INTEGER REFERENCES users(id)");
+if (!existingSettlementColumns.includes("approval_reaction_user_id")) db.exec("ALTER TABLE order_settlements ADD COLUMN approval_reaction_user_id INTEGER REFERENCES users(id)");
+if (!existingSettlementColumns.includes("approval_method")) db.exec("ALTER TABLE order_settlements ADD COLUMN approval_method TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_settlements_charged_user ON order_settlements(charged_user_id)");
 const existingUserColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 if (!existingUserColumns.includes("registration_name")) db.exec("ALTER TABLE users ADD COLUMN registration_name TEXT");
@@ -9568,12 +9573,27 @@ function recordReactionEvidence({ messageId, groupId, emoji, reaction, senderPho
   }
 }
 
-function deactivateReactionEvidence(messageId, groupId, emoji = "👍") {
+function activeReactionEvidenceBySender(messageId, groupId, emoji = "👍", senderPhone = "") {
+  const normalizedGroupId = String(groupId || "").trim();
+  const normalizedPhone = phoneWithCountry(senderPhone || "");
+  if (!normalizedGroupId || !normalizedPhone) return null;
+  return storedReactionEvidence(messageId, emoji).find((row) =>
+    String(row.group_id || "").trim() === normalizedGroupId
+    && phoneWithCountry(row.sender_phone || "") === normalizedPhone
+  ) || null;
+}
+
+function hasActiveReactionEvidenceBySender(messageId, groupId, emoji = "👍", senderPhone = "") {
+  return Boolean(activeReactionEvidenceBySender(messageId, groupId, emoji, senderPhone));
+}
+
+function deactivateReactionEvidence(messageId, groupId, emoji = "👍", senderPhone = "") {
   const normalizedMessageId = reactionEvidenceMessageKey(messageId);
   const normalizedGroupId = String(groupId || "").trim();
-  if (!normalizedMessageId || !normalizedGroupId) return;
+  const normalizedPhone = phoneWithCountry(senderPhone || "");
+  if (!normalizedMessageId || !normalizedGroupId || !normalizedPhone) return;
   try {
-    db.prepare("UPDATE reaction_evidence SET active=0,captured_at=? WHERE message_id=? AND group_id=? AND emoji=? AND active=1").run(now(), normalizedMessageId, normalizedGroupId, emoji);
+    db.prepare("UPDATE reaction_evidence SET active=0,captured_at=? WHERE message_id=? AND group_id=? AND emoji=? AND sender_phone=? AND active=1").run(now(), normalizedMessageId, normalizedGroupId, emoji, normalizedPhone);
   } catch (error) {
     console.warn(`[WhatsApp] reaction evidence deactivation skipped: ${String(error?.message || error)}`);
   }
@@ -9676,7 +9696,7 @@ async function resolveReactionSenderPhone(reaction) {
   return "";
 }
 
-function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone, ownerAuthorized = false) {
+function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone, ownerAuthorized = false, requiredReactionActorId = null, requiredReactionEvidenceAt = "") {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current) return { state: "stale" };
@@ -9696,6 +9716,25 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
     const captain = current.captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.captain_user_id) : null;
     const company = companyUser();
     if (!settlement || !captain || !company) return { state: "stale" };
+    if (requiredReactionActorId !== null) {
+      const savedApprovalActorId = Number(settlement.approval_reaction_user_id || 0);
+      if (settlement.approval_method && settlement.approval_method !== "reaction") {
+        return { state: "unauthorized", reason: "settlement_not_reaction_approved" };
+      }
+      if (savedApprovalActorId && savedApprovalActorId !== Number(requiredReactionActorId)) {
+        return { state: "unauthorized", reason: "reaction_approver_mismatch" };
+      }
+      if (!savedApprovalActorId) {
+        if (settlement.approval_method) {
+          return { state: "unauthorized", reason: "reaction_approver_unavailable" };
+        }
+        const appliedAtMs = Date.parse(settlement.applied_at || "");
+        const reactionEvidenceAtMs = Date.parse(requiredReactionEvidenceAt || "");
+        if (!Number.isFinite(appliedAtMs) || !Number.isFinite(reactionEvidenceAtMs) || reactionEvidenceAtMs > appliedAtMs) {
+          return { state: "unauthorized", reason: "legacy_reaction_evidence_not_pre_settlement" };
+        }
+      }
+    }
     const reversalOperationKey = `ORDER-${current.order_no}-REACTION-REMOVAL`;
     db.prepare("UPDATE users SET wallet_cents=wallet_cents-?,updated_at=? WHERE id=?").run(settlement.company_cents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
@@ -9857,13 +9896,17 @@ async function resolveVisibleReactionSenderPhones(messageId, { emoji = "👍" } 
   return phones;
 }
 
-function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { adminApproval = false } = {}) {
+function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { adminApproval = false, approvalReactionUserId = null } = {}) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
     if (typeof groupPolicy === "function" && !groupPolicy(current.group_id)?.settlements) return { state: "settlements_disabled", groupId: current.group_id };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status IN ('pending','selected') LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
+    const normalizedApprovalReactionUserId = !adminApproval && Number.isSafeInteger(Number(approvalReactionUserId)) && Number(approvalReactionUserId) > 0
+      ? Number(approvalReactionUserId)
+      : null;
+    const settlementApprovalMethod = normalizedApprovalReactionUserId ? "reaction" : "non_reaction";
     const equivalentOrder = findEquivalentOrder(current.group_id, current.source_message_id);
     if (equivalentOrder?.archive_state === "archived") {
       const restored = settleHistoricalConfirmedOrder({
@@ -9874,6 +9917,8 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
         confirmedByPhone: adminApproval ? connectedBotPhone() : confirmerPhone,
         importSource: "admin_archived_candidate_recovery",
         allowArchivedRestore: true,
+        approvalReactionUserId: normalizedApprovalReactionUserId,
+        approvalMethod: settlementApprovalMethod,
       });
       if (restored.state === "accepted") {
         const stamp = now();
@@ -9923,7 +9968,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
     const orderInsert = db.prepare("INSERT INTO orders(order_no,source_message_id,group_id,raw_text,price_cents,origin,destination,trip_time,order_kind,producer_user_id,producer_phone_snapshot,producer_name_snapshot,status,captain_user_id,captain_phone_snapshot,captain_name_snapshot,accepted_message_id,accepted_at,confirmed_by_phone,company_cents,producer_cents,captain_cents,settlement_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(orderNo, current.source_message_id, current.group_id, current.raw_text, current.price_cents, current.origin, current.destination, current.trip_time, current.order_kind, producer.id, phoneWithCountry(producer.phone), producer.name || null, "accepted", captain.id, phoneWithCountry(captain.phone), captain.name || null, expectedMessageId, stamp, phoneWithCountry(confirmerPhone), settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, "settled", current.created_at || stamp, stamp);
     const orderId = orderInsert.lastInsertRowid;
     const settlementKey = `ORDER-${orderNo}-${orderId}`;
-    const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, ledgerDetails, stamp);
+    const settlementInsert = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,approval_reaction_user_id,approval_method,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, normalizedApprovalReactionUserId, settlementApprovalMethod, ledgerDetails, stamp);
     if (!settlementInsert.changes) throw new Error("Unable to create idempotent settlement record");
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, stamp, company.id);
     const companyBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(company.id).wallet_cents;
@@ -9963,7 +10008,7 @@ function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone, { ad
   })();
 }
 
-function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone, importSource = "group_history_24h", allowArchivedRestore = false }) {
+function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId, acceptedAt, confirmedByPhone, importSource = "group_history_24h", allowArchivedRestore = false, approvalReactionUserId = null, approvalMethod = "non_reaction" }) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     const captain = db.prepare("SELECT * FROM users WHERE id=? AND active=1 AND account_status='active' AND (role='captain' OR is_bot=1)").get(captainId);
@@ -9997,7 +10042,11 @@ function settleHistoricalConfirmedOrder({ orderId, captainId, acceptedMessageId,
     const details = JSON.stringify({ orderNo: current.order_no, historical: true, priceCents: current.price_cents, origin: current.origin, destination: current.destination, orderKind: current.order_kind, producerRateBps: policy.producerRateBps, companyRateBps: policy.companyRateBps });
     const ledgerNotes = settlementLedgerNotes(current.order_kind, policy);
     const settlementKey = `HISTORY-${current.order_no}-${orderId}`;
-    const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, details, now());
+    const normalizedApprovalMethod = approvalMethod === "reaction" ? "reaction" : "non_reaction";
+    const normalizedApprovalReactionUserId = normalizedApprovalMethod === "reaction" && Number.isSafeInteger(Number(approvalReactionUserId)) && Number(approvalReactionUserId) > 0
+      ? Number(approvalReactionUserId)
+      : null;
+    const inserted = db.prepare("INSERT OR IGNORE INTO order_settlements(order_id,status,idempotency_key,captain_user_id,producer_user_id,charged_user_id,price_cents,company_cents,producer_cents,captain_fee_cents,approval_reaction_user_id,approval_method,details_json,created_at) VALUES(?,'pending',?,?,?,?,?,?,?,?,?,?,?,?)").run(orderId, settlementKey, captain.id, producer.id, walletOwner.id, current.price_cents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, normalizedApprovalReactionUserId, normalizedApprovalMethod, details, now());
     if (!inserted.changes) return { state: "already_settled", order: current, captain };
     db.prepare("UPDATE orders SET status='accepted',archive_state='active',archived_at=NULL,archive_reason=NULL,captain_user_id=?,captain_phone_snapshot=?,captain_name_snapshot=?,accepted_message_id=?,accepted_at=?,confirmed_by_phone=?,company_cents=?,producer_cents=?,captain_cents=?,settlement_state='settled',import_source=?,pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL,updated_at=? WHERE id=?").run(captain.id, captain.phone, captain.name, acceptedMessageId, stamp, phoneWithCountry(confirmedByPhone) || null, settlement.companyCents, settlement.producerFeeCents, settlement.executorWalletCreditCents, importSource, now(), orderId);
     db.prepare("UPDATE users SET wallet_cents=wallet_cents+?,updated_at=? WHERE id=?").run(settlement.companyCents, now(), company.id);
@@ -10422,8 +10471,33 @@ async function handleMessageReactionUnlocked(reaction) {
       if (approverPhone) break;
     }
   }
+  let removedThumbEvidenceAt = "";
   if (removedThumb) {
-    if (typeof deactivateReactionEvidence === "function") deactivateReactionEvidence(messageId, target.from, "👍");
+    const removalActorPhone = phoneWithCountry(approverPhone || "");
+    const removalCaptain = removalActorPhone
+      ? (typeof findCaptainByPhone === "function"
+        ? findCaptainByPhone(removalActorPhone, { activeOnly: true })
+        : (typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(removalActorPhone) : null))
+      : null;
+    const activeHumanCaptain = Boolean(removalCaptain && removalCaptain.role === "captain" && removalCaptain.is_bot !== 1 && removalCaptain.active === 1 && removalCaptain.account_status === "active");
+    const actorReactionEvidence = activeHumanCaptain && typeof activeReactionEvidenceBySender === "function"
+      ? activeReactionEvidenceBySender(messageId, target.from, "👍", removalActorPhone)
+      : null;
+    const ownsActiveReaction = Boolean(actorReactionEvidence)
+      && typeof hasActiveReactionEvidenceBySender === "function"
+      && hasActiveReactionEvidenceBySender(messageId, target.from, "👍", removalActorPhone);
+    if (!ownsActiveReaction || isBlockedPhone(removalActorPhone)) {
+      logOrderTrace("reaction_removal_not_original_actor", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        actorKey: orderTraceKey(removalActorPhone),
+        activeHumanCaptain,
+        ownsActiveReaction: Boolean(ownsActiveReaction),
+      });
+      return;
+    }
+    removedThumbEvidenceAt = String(actorReactionEvidence?.captured_at || "");
+    if (typeof deactivateReactionEvidence === "function") deactivateReactionEvidence(messageId, target.from, "👍", removalActorPhone);
   } else if (typeof recordReactionEvidence === "function") {
     recordReactionEvidence({
       messageId,
@@ -10517,7 +10591,16 @@ async function handleMessageReactionUnlocked(reaction) {
     const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
     const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
     if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
-    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
+    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone, false, reactingCaptain.id, removedThumbEvidenceAt);
+    if (result.state === "unauthorized") {
+      logOrderTrace("reaction_removal_not_settlement_approver", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        orderId: order.id,
+        actorId: reactingCaptain.id,
+      });
+      return;
+    }
     if (result.state === "cancelled" && result.reversed && result.producer) {
       const producerBalance = db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(result.producer.id)?.wallet_cents;
       void enforceCaptainWalletThresholds({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
@@ -10624,7 +10707,7 @@ async function handleMessageReactionUnlocked(reaction) {
     return;
   }
   const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
-  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone);
+  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone, { approvalReactionUserId: approvingCaptain.id });
   if (result.state !== "accepted") {
     const blockedStage = result.state === "debt_limit" ? "debt_limit" : result.state === "archived" ? "archived" : "awaiting_authorized_thumb";
     updateOrderCandidateLifecycle(pending.candidate_id, blockedStage, result.state, { acceptanceMessageId: pending.acceptance_message_id });

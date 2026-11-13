@@ -34,6 +34,7 @@ const users = {
 };
 const ledgers = [];
 const messages = [];
+const reactionEvidence = [];
 let settlementRecord = null;
 
 const db = {
@@ -54,8 +55,25 @@ const db = {
         if (normalized.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return users[args[0]] ? { wallet_cents: users[args[0]].wallet_cents } : null;
         throw new Error(`Unexpected get query: ${normalized}`);
       },
-      all() { return []; },
+      all(...args) {
+        if (normalized.startsWith("SELECT * FROM reaction_evidence WHERE message_id=? AND emoji=? AND active=1")) {
+          return reactionEvidence.filter((row) => row.message_id === args[0] && row.emoji === args[1] && row.active === 1).map((row) => ({ ...row }));
+        }
+        return [];
+      },
       run(...args) {
+        if (normalized.startsWith("INSERT INTO reaction_evidence")) {
+          const [messageId, groupId, emoji, senderKey, senderId, senderPhone, source, capturedAt] = args;
+          const existing = reactionEvidence.find((row) => row.message_id === messageId && row.emoji === emoji && row.sender_key === senderKey);
+          const row = { message_id: messageId, group_id: groupId, emoji, sender_key: senderKey, sender_id: senderId, sender_phone: senderPhone, active: 1, source, captured_at: capturedAt };
+          if (existing) Object.assign(existing, row); else reactionEvidence.push(row);
+          return { changes: 1 };
+        }
+        if (normalized.startsWith("UPDATE reaction_evidence SET active=0")) {
+          const [capturedAt, messageId, groupId, emoji, senderPhone] = args;
+          for (const row of reactionEvidence) if (row.message_id === messageId && row.group_id === groupId && row.emoji === emoji && row.sender_phone === senderPhone && row.active === 1) { row.active = 0; row.captured_at = capturedAt; }
+          return { changes: 1 };
+        }
         if (normalized.startsWith("INSERT OR IGNORE INTO order_candidate_acceptances")) return { changes: 1 };
         if (normalized.startsWith("UPDATE order_candidates SET pending_captain_user_id")) { candidate.pending_captain_user_id = args[0]; candidate.pending_message_id = args[1]; return { changes: 1 }; }
         if (normalized.startsWith("UPDATE order_candidate_acceptances SET status='selected'")) { acceptance.status = "selected"; return { changes: 1 }; }
@@ -64,7 +82,7 @@ const db = {
         if (normalized.startsWith("INSERT INTO orders")) return { changes: 1, lastInsertRowid: order.id };
         if (normalized.startsWith("INSERT OR IGNORE INTO order_settlements")) {
           if (settlementRecord) return { changes: 0 };
-          settlementRecord = { id: 1, status: "pending" };
+          settlementRecord = { id: 1, status: "pending", approval_reaction_user_id: args[9], approval_method: args[10] };
           return { changes: 1 };
         }
         if (normalized.startsWith("UPDATE users SET wallet_cents=wallet_cents+?")) {
@@ -103,6 +121,7 @@ const context = {
   db,
   client: { async getMessageById(messageId) { return { from: "test-group@g.us", body: messageId === "captain-done-1" ? "تم" : "رسالة مختلفة", hasQuotedMsg: true, async getQuotedMessage() { return { id: { _serialized: "request-1" }, from: "test-group@g.us", body: "السعر 20" }; } }; } },
   isReady: true,
+  withReactionMessageLock: async (_messageId, _kind, task) => task(),
   withTimeout: async (value) => value,
   resolveReactionSenderPhone: async (reaction) => reaction.senderPhone,
   isConfiguredGroup: (groupId) => groupId === "test-group@g.us",
@@ -160,6 +179,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: users[3].phone });
   assert.strictEqual(candidate.status, "finalized", "إعجاب كابتن بشري نشط يعتمد الطلب");
   assert.strictEqual(ledgers.length, 3, "تُسجل التسوية عند أول إعجاب صالح");
+  assert.strictEqual(settlementRecord.approval_reaction_user_id, 3, "يُحفظ معرف الكابتن الذي اعتمد التسوية");
+  assert.strictEqual(settlementRecord.approval_method, "reaction", "تُسجل طريقة اعتماد التسوية كتفاعل");
   assert.strictEqual(messages.length, 1, "تُرسل رسالة تأكيد واحدة عند أول إعجاب صالح");
 
   await context.handleMessageReaction({ reaction: "👍", msgId: "captain-done-1", senderPhone: "0799999999" });

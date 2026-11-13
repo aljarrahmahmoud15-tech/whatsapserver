@@ -5,7 +5,9 @@ const source = fs.readFileSync('server.js', 'utf8');
 
 assert.match(source, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(source, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\);/);
-assert.match(source, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+assert.match(source, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
+assert.match(source, /approval_reaction_user_id INTEGER/);
+assert.match(source, /approval_method TEXT/);
 assert.match(source, /const captainApproved = Boolean\(/);
 assert.match(source, /approvingCaptain &&/);
 assert.match(source, /approvingCaptain\.role === "captain"/);

@@ -23,7 +23,7 @@ function reversalFixture() {
     CREATE TABLE order_settlements (
       id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, status TEXT NOT NULL, idempotency_key TEXT,
       producer_user_id INTEGER, captain_user_id INTEGER, charged_user_id INTEGER,
-      company_cents INTEGER, producer_cents INTEGER, captain_fee_cents INTEGER, details_json TEXT
+      company_cents INTEGER, producer_cents INTEGER, captain_fee_cents INTEGER, approval_reaction_user_id INTEGER, approval_method TEXT, details_json TEXT
     );
     CREATE TABLE wallet_ledger (
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, order_id INTEGER,
@@ -33,7 +33,7 @@ function reversalFixture() {
   `);
   db.prepare("INSERT INTO users(id,role,wallet_cents) VALUES(1,'company',50),(2,'captain',250),(3,'captain',4700)").run();
   db.prepare("INSERT INTO orders(id,order_no,status,settlement_state,producer_user_id,group_id) VALUES(10,77,'accepted','settled',2,'official@g.us')").run();
-  db.prepare("INSERT INTO order_settlements(id,order_id,status,idempotency_key,producer_user_id,captain_user_id,charged_user_id,company_cents,producer_cents,captain_fee_cents,details_json) VALUES(20,10,'applied','ORDER-77-10',2,3,3,50,250,300,'{}')").run();
+  db.prepare("INSERT INTO order_settlements(id,order_id,status,idempotency_key,producer_user_id,captain_user_id,charged_user_id,company_cents,producer_cents,captain_fee_cents,approval_reaction_user_id,approval_method,details_json) VALUES(20,10,'applied','ORDER-77-10',2,3,3,50,250,300,2,'reaction','{}')").run();
   return db;
 }
 
@@ -48,9 +48,11 @@ test("إعجاب الكابتن الأول يثبت مرة واحدة وإزال
   assert.match(reactionSource, /reactionValue !== "👍"/);
   assert.match(reactionSource, /const captainApproved = Boolean\(/);
   assert.match(reactionSource, /approvingCaptain\.is_bot !== 1/);
-  assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+  assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
   assert.match(reactionSource, /if \(removedThumb\)/);
-  assert.match(reactionSource, /cancelOrderForReactionRemoval\(/);
+  assert.match(reactionSource, /activeReactionEvidenceBySender\(messageId, target\.from, "👍", removalActorPhone\)/);
+  assert.match(reactionSource, /cancelOrderForReactionRemoval\(order\.id, messageId, approverPhone, false, reactingCaptain\.id, removedThumbEvidenceAt\)/);
+  assert.match(server, /approval_reaction_user_id INTEGER/);
   assert.match(reactionSource, /enforceCaptainWalletThresholds\(/);
 });
 

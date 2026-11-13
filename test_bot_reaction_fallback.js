@@ -9,7 +9,7 @@ assert.match(server, /async function approveBotOwnedAcceptance/);
 assert.doesNotMatch(server, /const result = settlePendingOrder\(candidate\.id, messageId, BOT_PHONE_INTL \|\| BOT_PHONE\)/);
 assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
-assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
 assert.match(server, /const captainApproved = Boolean\(/);
 assert.match(server, /reaction_approver_not_active_human_captain/);
 console.log('active human captain thumbs-up on the exact quoted تم reply settles once');

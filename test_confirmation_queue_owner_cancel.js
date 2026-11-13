@@ -14,5 +14,5 @@ assert.match(source, /const ownerAuthorized = Boolean\(typeof isProtectedOwnerId
 assert.match(source, /cancelPendingOrderForProducerReaction\(pendingAcceptance\.candidate_id, messageId, approverPhone, ownerAuthorized\)/);
 assert.match(source, /cancelOrderForReactionRemoval\(acceptedOrder\.id, messageId, approverPhone, ownerAuthorized\)/);
 assert.match(source, /function cancelPendingOrderForProducerReaction\(candidateId, expectedMessageId, producerPhone, ownerAuthorized = false\)/);
-assert.match(source, /function cancelOrderForReactionRemoval\(orderId, expectedMessageId, producerPhone, ownerAuthorized = false\)/);
+assert.match(source, /function cancelOrderForReactionRemoval\(orderId, expectedMessageId, producerPhone, ownerAuthorized = false, requiredReactionActorId = null, requiredReactionEvidenceAt = ""\)/);
 console.log('confirmation queue idempotency and owner cancellation guardrails verified');

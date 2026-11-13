@@ -19,6 +19,8 @@ assert.equal(settlement.companyCents, 125, '2.5% company share for 50 JOD');
 assert.equal(settlement.confirmingCaptainFeeCents, 750, '15% confirming debit for 50 JOD');
 
 assert.match(server, /charged_user_id INTEGER REFERENCES users\(id\)/);
+assert.match(server, /approval_reaction_user_id INTEGER/);
+assert.match(server, /approval_method TEXT/);
 assert.match(server, /charged_user_id=CASE WHEN captain_user_id IN \(SELECT id FROM users WHERE is_bot=1\)/);
 assert.match(server, /const BOT_FINANCIAL_MODE = "company"/);
 assert.match(server, /const botCompanyConfirmation = !adminApproval && isBotPhone\(confirmerPhone\) && BOT_FINANCIAL_MODE === "company"/);
@@ -34,7 +36,7 @@ assert.match(server, /companyWallet: companyWalletSummary\(\)/);
 assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
 assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /CREATE TABLE IF NOT EXISTS order_candidate_acceptances/);
-assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone\)/);
+assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
 assert.match(server, /company_bot_fee/);
 assert.match(server, /reaction approval blocked candidate=\$\{pending\.id\} state=\$\{result\.state\}/);
 
