@@ -169,7 +169,7 @@ const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
-const CAPTAIN_ORDER_VIEW_RESET_SETTING = "captain_order_view_reset_at_v1";
+const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
@@ -5899,38 +5899,36 @@ function archiveExpiredOrders() {
     orderArchiveSweepRunning = false;
   }
 }
-async function archiveExistingCaptainOrdersOnce() {
-  if (getSetting(CAPTAIN_ORDER_VIEW_RESET_SETTING, null)) return { skipped: true, reason: "already_applied" };
+async function initializeCaptainOrderVisibilityCutoffOnce() {
+  if (getSetting(CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING, null)) return { skipped: true, reason: "already_applied" };
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
-  const backupName = `pre-captain-order-view-reset-${Date.now()}.sqlite`;
-  const backupPath = path.join(backupDir, backupName);
-  await db.backup(backupPath);
-  const archivedAt = now();
-  const reason = "بدء قائمة جديدة لواجهة الكابتن — أرشفة بصرية للطلبات السابقة";
-  const result = db.transaction(() => {
-    const candidates = db.prepare(`UPDATE order_candidates
-      SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
-      WHERE COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt).changes;
-    const orders = db.prepare(`UPDATE orders
-      SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
-      WHERE COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt).changes;
-    setSetting(CAPTAIN_ORDER_VIEW_RESET_SETTING, archivedAt);
-    audit("captain.order_view.reset", "order_view", "captain", {
-      archivedOrders: orders,
-      archivedCandidates: candidates,
+  const backupName = `pre-captain-order-visibility-cutoff-${Date.now()}.sqlite`;
+  await db.backup(path.join(backupDir, backupName));
+  const cutoffAt = now();
+  db.transaction(() => {
+    setSetting(CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING, cutoffAt);
+    audit("captain.order_visibility_cutoff.initialized", "captain_portal", "all", {
+      visibleFrom: cutoffAt,
       backupName,
-      reason,
       financialMutation: false,
-      deletion: false,
+      orderStateMutation: false,
     });
-    return { archivedOrders: orders, archivedCandidates: candidates };
   })();
-  console.log(`[CaptainOrderView] reset complete archivedOrders=${result.archivedOrders} archivedCandidates=${result.archivedCandidates} backup=${backupName}`);
-  return { ...result, archivedAt, backupName, financialMutation: false, deletion: false };
+  console.log(`[CaptainOrderView] visibility cutoff initialized at=${cutoffAt} backup=${backupName}`);
+  return { cutoffAt, backupName, financialMutation: false, orderStateMutation: false };
 }
 function startOrderArchiveScheduler() {
-  void archiveExistingCaptainOrdersOnce().catch((error) => console.error("[CaptainOrderView] reset failed:", error.message));
+  const initializeCutoff = async () => {
+    try {
+      await initializeCaptainOrderVisibilityCutoffOnce();
+    } catch (error) {
+      console.error("[CaptainOrderView] cutoff initialization failed:", error.message);
+      const retry = setTimeout(() => { void initializeCutoff(); }, 30000);
+      retry.unref?.();
+    }
+  };
+  void initializeCutoff();
   try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] initial sweep failed:", error.message); }
   const timer = setInterval(() => {
     try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] sweep failed:", error.message); }
@@ -11619,19 +11617,22 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
+  const captainVisibilityCutoff = getSetting(CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING, null);
+  const tripRows = captainVisibilityCutoff ? db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
       p.name AS producer_name,c.name AS captain_name
     FROM orders o LEFT JOIN order_settlements s ON s.order_id=o.id LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
     WHERE (o.producer_user_id=? OR o.captain_user_id=? OR s.producer_user_id=? OR s.captain_user_id=?)
       AND COALESCE(o.archive_state,'active')<>'archived'
-    ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id, user.id, user.id).map((trip) => {
+      AND datetime(o.created_at)>=datetime(?)
+    ORDER BY o.id DESC LIMIT 100`).all(user.id, user.id, user.id, user.id, captainVisibilityCutoff).map((trip) => {
       const finalized = ['accepted', 'completed'].includes(trip.status) && trip.settlement_status === 'applied';
       const postedShareCents = finalized && Number(trip.producer_user_id || trip.settlement_producer_user_id) === Number(user.id) ? Number(trip.settlement_producer_cents ?? trip.producer_cents ?? 0) : 0;
       const executedDebitCents = finalized && Number(trip.captain_user_id || trip.settlement_captain_user_id) === Number(user.id) ? Number(trip.settlement_captain_fee_cents ?? ((trip.producer_cents || 0) + (trip.company_cents || 0))) : 0;
       const role = postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant';
       return { ...trip, ...settlementFinancials(trip), grossEarnings: money(postedShareCents), walletFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role, roleLabel: role === 'downloader' ? 'كابتن تنزيل الطلب' : role === 'executor' ? 'كابتن التنفيذ' : 'مشارك' };
-    });
+    }) : [];
+  const trips = tripRows;
   const totals = db.prepare(`SELECT
     COALESCE(SUM(CASE WHEN s.producer_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.producer_cents ELSE 0 END),0) AS posted_share_cents,
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.captain_fee_cents ELSE 0 END),0) AS executed_debit_cents,
