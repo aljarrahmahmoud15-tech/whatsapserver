@@ -1,0 +1,24 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+const server = fs.readFileSync('server.js', 'utf8');
+const start = server.indexOf('function addCaptainActivity');
+const end = server.indexOf('app.post("/api/admin/group/send-approved-guide-video"');
+assert.ok(start >= 0 && end > start, 'seven-day inactivity preview block exists');
+const block = server.slice(start, end);
+assert.match(block, /app\.get\("\/api\/admin\/captains\/inactivity-preview", requireAdmin/);
+assert.match(block, /Only the protected seven-day preview is supported/);
+assert.match(block, /reaction_evidence WHERE group_id=\? AND captured_at>=\?/);
+assert.match(block, /order_candidate_acceptances WHERE created_at>=\? OR updated_at>=\?/);
+assert.match(block, /audit_logs WHERE created_at>=\?/);
+assert.match(block, /whatsapp_message_receipts WHERE group_id=\?/);
+assert.match(block, /unresolved_order_messages WHERE group_id=\?/);
+assert.match(block, /configuredRuntimeGroupId\(\)/);
+assert.match(block, /isProtectedOwnerIdentity\(phone\)/);
+assert.match(block, /memberPhones\.has\(phone\)/);
+assert.match(block, /mutation: "none"/);
+assert.match(block, /executable: false/);
+assert.doesNotMatch(block, /removeParticipants/);
+assert.doesNotMatch(block, /UPDATE users SET/);
+assert.doesNotMatch(block, /wallet_ledger/);
+console.log('seven-day captain inactivity preview is read-only and fully guarded');

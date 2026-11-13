@@ -12948,6 +12948,71 @@ app.get("/api/admin/group-messages", requireAdmin, adminReadLimiter, v27AdminRea
   res.setHeader("Cache-Control", "no-store");
   res.json({ groupId, count: rows.length, messages: rows });
 });
+function addCaptainActivity(activityById, captainId, kind, occurredAt) {
+  const id = Number(captainId);
+  const stamp = String(occurredAt || "").trim();
+  if (!Number.isInteger(id) || id < 1 || !stamp) return;
+  const current = activityById.get(id) || { lastActivityAt: null, activityTypes: new Set() };
+  current.activityTypes.add(kind);
+  if (!current.lastActivityAt || Date.parse(stamp) > Date.parse(current.lastActivityAt)) current.lastActivityAt = stamp;
+  activityById.set(id, current);
+}
+function buildCaptainSevenDayActivityIndex({ groupId, cutoff }) {
+  const captains = db.prepare("SELECT id,phone FROM users WHERE role='captain' AND active=1 AND account_status='active' AND is_bot=0").all();
+  const byPhone = new Map(captains.map((captain) => [phoneWithCountry(captain.phone), captain.id]));
+  const activityById = new Map();
+  const messageRows = db.prepare("SELECT sender_phone,sent_at,created_at FROM messages WHERE group_id=? AND sent_at>=?").all(groupId, cutoff);
+  for (const row of messageRows) addCaptainActivity(activityById, byPhone.get(phoneWithCountry(row.sender_phone)), "message", row.sent_at || row.created_at);
+  const receiptRows = db.prepare("SELECT sender_phone,first_seen_at,last_seen_at FROM whatsapp_message_receipts WHERE group_id=? AND (first_seen_at>=? OR last_seen_at>=?)").all(groupId, cutoff, cutoff);
+  for (const row of receiptRows) addCaptainActivity(activityById, byPhone.get(phoneWithCountry(row.sender_phone)), "message_receipt", row.last_seen_at || row.first_seen_at);
+  const reactionRows = db.prepare("SELECT sender_phone,captured_at FROM reaction_evidence WHERE group_id=? AND captured_at>=?").all(groupId, cutoff);
+  for (const row of reactionRows) addCaptainActivity(activityById, byPhone.get(phoneWithCountry(row.sender_phone)), "reaction", row.captured_at);
+  const unresolvedRows = db.prepare("SELECT sender_phone,last_seen_at,first_seen_at FROM unresolved_order_messages WHERE group_id=? AND (first_seen_at>=? OR last_seen_at>=?)").all(groupId, cutoff, cutoff);
+  for (const row of unresolvedRows) addCaptainActivity(activityById, byPhone.get(phoneWithCountry(row.sender_phone)), "operational_message", row.last_seen_at || row.first_seen_at);
+  const acceptanceRows = db.prepare("SELECT captain_user_id,created_at,updated_at FROM order_candidate_acceptances WHERE created_at>=? OR updated_at>=?").all(cutoff, cutoff);
+  for (const row of acceptanceRows) addCaptainActivity(activityById, row.captain_user_id, "acceptance", row.updated_at || row.created_at);
+  const orderRows = db.prepare(`SELECT producer_user_id,captain_user_id,pending_captain_user_id,created_at,updated_at,accepted_at
+    FROM orders
+    WHERE created_at>=? OR updated_at>=? OR accepted_at>=?`).all(cutoff, cutoff, cutoff);
+  for (const row of orderRows) {
+    const occurredAt = row.accepted_at || row.updated_at || row.created_at;
+    addCaptainActivity(activityById, row.producer_user_id, "order", occurredAt);
+    addCaptainActivity(activityById, row.captain_user_id, "order", occurredAt);
+    addCaptainActivity(activityById, row.pending_captain_user_id, "order", occurredAt);
+  }
+  const auditRows = db.prepare("SELECT actor_user_id,action,created_at FROM audit_logs WHERE created_at>=?").all(cutoff);
+  for (const row of auditRows) addCaptainActivity(activityById, row.actor_user_id, `audit:${String(row.action || "activity").slice(0, 80)}`, row.created_at);
+  return { activityById, counts: { messages: messageRows.length, receipts: receiptRows.length, reactions: reactionRows.length, unresolved: unresolvedRows.length, acceptances: acceptanceRows.length, orders: orderRows.length, audit: auditRows.length } };
+}
+app.get("/api/admin/captains/inactivity-preview", requireAdmin, adminReadLimiter, async (req, res) => {
+  const days = Number(req.query.days || 7);
+  if (days !== 7) return res.status(400).json({ error: "Only the protected seven-day preview is supported" });
+  const groupId = configuredRuntimeGroupId();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured official group" });
+  if (!client || !isReady) return res.status(503).json({ error: "WhatsApp is not ready" });
+  const chat = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId);
+  if (!chat || !chat.isGroup) return res.status(404).json({ error: "Configured official chat is not a group" });
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { activityById, counts } = buildCaptainSevenDayActivityIndex({ groupId, cutoff });
+  const normalize = (value) => phoneWithCountry(String(value || "").replace(/@c\.us$/, "").split(":")[0]);
+  const memberPhones = new Set((chat.participants || []).map(groupParticipantPhone).map(normalize).filter(Boolean));
+  const rows = db.prepare("SELECT id,phone,name,registration_name,active,account_status,is_bot FROM users WHERE role='captain' AND active=1 AND account_status='active' AND is_bot=0 ORDER BY id").all();
+  const candidates = [];
+  const excluded = [];
+  for (const user of rows) {
+    const phone = normalize(user.phone);
+    const activity = activityById.get(Number(user.id));
+    const inGroup = memberPhones.has(phone);
+    const protectedIdentity = isProtectedOwnerIdentity(phone);
+    const row = { id: user.id, phone: user.phone, name: user.registration_name || user.name, inOfficialGroup: inGroup, protectedIdentity, lastActivityAt: activity?.lastActivityAt || null, activityTypes: activity ? [...activity.activityTypes].sort() : [] };
+    if (protectedIdentity) excluded.push({ ...row, exclusion: "protected_identity" });
+    else if (!inGroup) excluded.push({ ...row, exclusion: "not_current_group_member" });
+    else if (activity) excluded.push({ ...row, exclusion: "activity_within_seven_days" });
+    else candidates.push(row);
+  }
+  res.set("Cache-Control", "no-store");
+  res.json({ mutation: "none", executable: false, days, cutoff, generatedAt: now(), groupId, groupName: chat.name || null, memberCount: memberPhones.size, activeCaptainCount: rows.length, candidateCount: candidates.length, excludedCount: excluded.length, activityCounts: counts, candidates, excluded });
+});
 app.post("/api/admin/group/send-approved-guide-video", requireAdmin, async (req, res) => {
   const groupId = String(req.body?.groupId || "").trim();
   const videoUrl = String(req.body?.videoUrl || "").trim();
