@@ -167,6 +167,8 @@ const TOPUP_CARD_ARCHIVE_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.TOPUP_CARD_ARCHIVE_INTERVAL_MS || 5 * 60 * 1000));
 const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
+// الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
+const ORDER_DELETION_DISABLED = true;
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
@@ -11585,7 +11587,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const trips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
+  const allTrips = db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.archive_state,o.archived_at,o.archive_reason,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
       p.name AS producer_name,c.name AS captain_name
     FROM orders o LEFT JOIN order_settlements s ON s.order_id=o.id LEFT JOIN users p ON p.id=COALESCE(s.producer_user_id,o.producer_user_id) LEFT JOIN users c ON c.id=COALESCE(s.captain_user_id,o.captain_user_id)
@@ -11596,6 +11598,8 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
       const role = postedShareCents ? 'downloader' : executedDebitCents ? 'executor' : 'participant';
       return { ...trip, ...settlementFinancials(trip), grossEarnings: money(postedShareCents), walletFee: money(executedDebitCents), postedShare: money(postedShareCents), executedDebit: money(executedDebitCents), netEarnings: money(postedShareCents - executedDebitCents), role, roleLabel: role === 'downloader' ? 'كابتن تنزيل الطلب' : role === 'executor' ? 'كابتن التنفيذ' : 'مشارك' };
     });
+  const archivedTrips = allTrips.filter((trip) => String(trip.archive_state || "active") === "archived");
+  const trips = allTrips.filter((trip) => String(trip.archive_state || "active") !== "archived");
   const totals = db.prepare(`SELECT
     COALESCE(SUM(CASE WHEN s.producer_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.producer_cents ELSE 0 END),0) AS posted_share_cents,
     COALESCE(SUM(CASE WHEN s.captain_user_id=? AND s.status='applied' AND o.status IN ('accepted','completed') THEN s.captain_fee_cents ELSE 0 END),0) AS executed_debit_cents,
@@ -11611,6 +11615,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' }, order: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } } },
     entries,
     trips,
+    archivedTrips,
     topupCards,
     withdrawalRequests,
   });
@@ -17438,6 +17443,9 @@ app.post("/api/admin/orders/reconcile-captains", requireAdmin, (req, res) => {
   res.json({ success: true, applySettlement, linked, settled, skipped });
 });
 app.post("/api/admin/orders/remove-test", requireAdmin, async (req, res) => {
+  if (ORDER_DELETION_DISABLED) {
+    return res.status(423).json({ success: false, error: "حذف الطلبات متوقف؛ استخدم الأرشفة البصرية فقط.", code: "ORDER_DELETION_DISABLED", mutation: "none", financialMutation: false });
+  }
   if (String(req.body?.confirm || "") !== "TEST-3001") return res.status(400).json({ error: "Explicit TEST-3001 confirmation is required" });
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
