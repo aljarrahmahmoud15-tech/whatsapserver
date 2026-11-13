@@ -169,6 +169,7 @@ const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
+const CAPTAIN_ORDER_VIEW_RESET_SETTING = "captain_order_view_reset_at_v1";
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_POLICY_START_SETTING = "topup_card_archive_policy_started_at";
@@ -5898,7 +5899,38 @@ function archiveExpiredOrders() {
     orderArchiveSweepRunning = false;
   }
 }
+async function archiveExistingCaptainOrdersOnce() {
+  if (getSetting(CAPTAIN_ORDER_VIEW_RESET_SETTING, null)) return { skipped: true, reason: "already_applied" };
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-captain-order-view-reset-${Date.now()}.sqlite`;
+  const backupPath = path.join(backupDir, backupName);
+  await db.backup(backupPath);
+  const archivedAt = now();
+  const reason = "بدء قائمة جديدة لواجهة الكابتن — أرشفة بصرية للطلبات السابقة";
+  const result = db.transaction(() => {
+    const candidates = db.prepare(`UPDATE order_candidates
+      SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+      WHERE COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt).changes;
+    const orders = db.prepare(`UPDATE orders
+      SET archive_state='archived',archived_at=?,archive_reason=?,updated_at=?
+      WHERE COALESCE(archive_state,'active')='active'`).run(archivedAt, reason, archivedAt).changes;
+    setSetting(CAPTAIN_ORDER_VIEW_RESET_SETTING, archivedAt);
+    audit("captain.order_view.reset", "order_view", "captain", {
+      archivedOrders: orders,
+      archivedCandidates: candidates,
+      backupName,
+      reason,
+      financialMutation: false,
+      deletion: false,
+    });
+    return { archivedOrders: orders, archivedCandidates: candidates };
+  })();
+  console.log(`[CaptainOrderView] reset complete archivedOrders=${result.archivedOrders} archivedCandidates=${result.archivedCandidates} backup=${backupName}`);
+  return { ...result, archivedAt, backupName, financialMutation: false, deletion: false };
+}
 function startOrderArchiveScheduler() {
+  void archiveExistingCaptainOrdersOnce().catch((error) => console.error("[CaptainOrderView] reset failed:", error.message));
   try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] initial sweep failed:", error.message); }
   const timer = setInterval(() => {
     try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] sweep failed:", error.message); }
