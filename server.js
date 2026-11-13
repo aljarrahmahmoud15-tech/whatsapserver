@@ -8010,6 +8010,59 @@ async function scanPendingAcceptanceReactions() {
 const recentMessageEventKeys = new Map();
 const reactionVisibilityWarningAt = new Map();
 const MESSAGE_EVENT_DEDUP_TTL_MS = 10 * 60 * 1000;
+const reactionMessageLocks = new Map();
+const reactionRetrySchedules = new Map();
+const REACTION_MESSAGE_LOCK_TTL_MS = Math.max(30 * 1000, Number(process.env.REACTION_MESSAGE_LOCK_TTL_MS || 90 * 1000));
+const REACTION_MESSAGE_LOCK_MAX = Math.max(100, Math.min(5000, Number(process.env.REACTION_MESSAGE_LOCK_MAX || 1000)));
+function pruneReactionMessageState(atMs = Date.now()) {
+  for (const [key, entry] of reactionMessageLocks) {
+    if (atMs - Number(entry?.startedAt || 0) > REACTION_MESSAGE_LOCK_TTL_MS) reactionMessageLocks.delete(key);
+  }
+  for (const [key, expiresAt] of reactionRetrySchedules) {
+    if (Number(expiresAt || 0) <= atMs) reactionRetrySchedules.delete(key);
+  }
+  while (reactionMessageLocks.size > REACTION_MESSAGE_LOCK_MAX) reactionMessageLocks.delete(reactionMessageLocks.keys().next().value);
+  while (reactionRetrySchedules.size > REACTION_MESSAGE_LOCK_MAX) reactionRetrySchedules.delete(reactionRetrySchedules.keys().next().value);
+}
+async function withReactionMessageLock(messageId, kind, task) {
+  const normalizedMessageId = reactionId(messageId) || String(messageId || "").trim();
+  if (!normalizedMessageId) return task();
+  const nowMs = Date.now();
+  pruneReactionMessageState(nowMs);
+  const key = `${String(kind || "reaction")}:${normalizedMessageId}`;
+  const existing = reactionMessageLocks.get(key);
+  if (existing && nowMs - Number(existing.startedAt || 0) <= REACTION_MESSAGE_LOCK_TTL_MS) {
+    console.log(`[WhatsApp] duplicate ${kind || "reaction"} processing skipped message=${orderTraceKey(normalizedMessageId)}`);
+    return { state: "already_processing", messageId: normalizedMessageId };
+  }
+  const token = Symbol(key);
+  reactionMessageLocks.set(key, { token, startedAt: nowMs });
+  try {
+    return await task();
+  } finally {
+    const current = reactionMessageLocks.get(key);
+    if (current?.token === token) reactionMessageLocks.delete(key);
+  }
+}
+function scheduleReactionRetry(reaction, delays = [1500, 5000]) {
+  const messageId = reactionId(reaction?.msgId);
+  const reactionValue = String(reaction?.reaction || "").trim();
+  if (!messageId) return;
+  const key = `${messageId}:${reactionValue}`;
+  const retryDelays = Array.isArray(delays) && delays.length ? delays : [1500, 5000];
+  const expiresAt = Date.now() + Math.max(REACTION_MESSAGE_LOCK_TTL_MS, Number(retryDelays[retryDelays.length - 1] || 0) + 30 * 1000);
+  pruneReactionMessageState();
+  if (reactionRetrySchedules.has(key)) return;
+  reactionRetrySchedules.set(key, expiresAt);
+  retryDelays.forEach((delayMs, retryIndex) => {
+    setTimeout(() => {
+      if (retryIndex >= retryDelays.length - 1) reactionRetrySchedules.delete(key);
+      if (generation !== connectionGeneration || !isReady) return;
+      void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
+      void reconcileStoredThumbReaction(messageId).catch((error) => console.error("[WhatsApp] stored reaction retry:", error));
+    }, delayMs).unref?.();
+  });
+}
 function shouldHandleMessageEvent(msg, eventName) {
   const serializedId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || "").trim();
   if (!serializedId) return true;
@@ -8400,13 +8453,7 @@ function createClient() {
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
     const reactionValue = String(reaction?.reaction || "").trim();
     if (reactionValue === "👍" || reactionValue === "❌") {
-      for (const delay of [1500, 5000]) {
-        setTimeout(() => {
-          if (generation !== connectionGeneration || !isReady) return;
-          void handleMessageReaction(reaction).catch((error) => console.error("[WhatsApp] reaction retry:", error));
-          void reconcileStoredThumbReaction(reaction?.msgId).catch((error) => console.error("[WhatsApp] stored reaction retry:", error));
-        }, delay);
-      }
+      scheduleReactionRetry(reaction, [1500, 5000]);
     }
   });
   installWhatsAppStorageSendGuard(instance);
@@ -10273,6 +10320,11 @@ async function findAutomaticRecoveryEvidence({ groupId, hours = 168, limit = 100
 }
 
 async function handleMessageReaction(reaction) {
+  const messageId = reactionId(reaction?.msgId);
+  return withReactionMessageLock(messageId, "reaction", () => handleMessageReactionUnlocked(reaction));
+}
+
+async function handleMessageReactionUnlocked(reaction) {
   const reactionValue = String(reaction?.reaction || "").trim();
   const removedThumb = reactionValue === "";
   const cancellationReaction = reactionValue === "❌";
@@ -10550,6 +10602,10 @@ async function handleMessageReaction(reaction) {
 }
 
 async function reconcileStoredThumbReaction(messageId) {
+  return withReactionMessageLock(messageId, "reconcile", () => reconcileStoredThumbReactionUnlocked(messageId));
+}
+
+async function reconcileStoredThumbReactionUnlocked(messageId) {
   const normalizedMessageId = reactionId(messageId) || String(messageId || "").trim();
   if (!normalizedMessageId || !client || !isReady || typeof client.getMessageById !== "function") return;
   const target = await getWhatsAppMessageByIdVariants(normalizedMessageId, 5000) || buildStoredAcceptanceMessageById(normalizedMessageId);
