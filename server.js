@@ -169,6 +169,8 @@ const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
+const WHATSAPP_GROUP_CHAT_DELETION_DISABLED = true;
+const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol("low_balance_acceptance_delete_permit");
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
 const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
@@ -2285,43 +2287,17 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-const officialGroupInsufficientBalanceNotificationInFlight = new Set();
-async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, messageId, deletionResult, publicTripNo, captainName, deletionStatus }) {
+async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, deletionStatus }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || "").trim();
-  const acceptanceMessageId = String(messageId || "").trim();
-  const tripNo = String(publicTripNo || "غير محدد").trim();
-  const safeCaptainName = String(captainName || "الكابتن").trim().slice(0, 100) || "الكابتن";
-  if (!targetGroupId || !isOfficialGroupTarget(targetGroupId) || !sourceKey || !acceptanceMessageId) return { status: "invalid" };
-  const acceptanceMessageDeleted = Array.isArray(deletionResult?.results)
-    && deletionResult.results.some((entry) => entry?.ok && sourceMessageIdsEqual(entry.messageId, acceptanceMessageId));
-  if (!acceptanceMessageDeleted) return { status: "not_sent", reason: "acceptance_message_not_confirmed_deleted" };
-  const idempotencyKey = `GROUP-ACCEPTANCE-BALANCE-${sourceKey}`;
-  if (officialGroupInsufficientBalanceNotificationInFlight.has(idempotencyKey)) return { status: "already_in_flight", idempotencyKey };
-  const title = "رفض قبول لعدم كفاية رصيد المحفظة";
-  const message = `⚠️ تعذّر اعتماد الطلب رقم ${tripNo}: رصيد محفظة ${safeCaptainName} غير كافٍ لتغطية العمولة المخفّضة. تم حذف رسالة «تم»، ولم تُنفّذ تسوية مالية.`;
-  const existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing?.delivery_status === "sent" || existing?.delivery_status === "uncertain") return { status: "already_sent", notificationId: existing.id, messageId: existing.message_id || null };
-  const row = existing
-    ? { lastInsertRowid: existing.id }
-    : db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'official_group','official_group.acceptance.insufficient_balance',?,?, 'pending',?,?,?)").run(targetGroupId, title, message, sourceKey, idempotencyKey, now());
-  const notificationId = row.lastInsertRowid || existing?.id;
-  if (!notificationId) return { status: "duplicate" };
-  officialGroupInsufficientBalanceNotificationInFlight.add(idempotencyKey);
-  try {
-    const result = await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 30000);
-    const deliveryStatus = result.status === "sent" ? "sent" : result.status === "uncertain" ? "uncertain" : "failed";
-    const messageId = serializedMessageId(result?.message) || result?.message?.id?._serialized || null;
-    db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
-    audit("official_group.acceptance.insufficient_balance_notified", "chat", targetGroupId, { sourceMessageId: sourceKey, publicTripNo: tripNo, deletionStatus, deliveryStatus, idempotencyKey, financialMutation: false });
-    return { status: deliveryStatus, notificationId, messageId };
-  } catch (error) {
-    db.prepare("UPDATE notifications SET delivery_status='failed' WHERE id=?").run(notificationId);
-    audit("official_group.acceptance.insufficient_balance_notification_failed", "chat", targetGroupId, { sourceMessageId: sourceKey, publicTripNo: tripNo, error: String(error?.message || error).slice(0, 180), idempotencyKey, financialMutation: false });
-    return { status: "failed", notificationId };
-  } finally {
-    officialGroupInsufficientBalanceNotificationInFlight.delete(idempotencyKey);
-  }
+  audit("official_group.acceptance.insufficient_balance_suppressed", "chat", targetGroupId || "policy", {
+    sourceMessageId: sourceKey || null,
+    deletionStatus: String(deletionStatus || "unknown"),
+    groupNotification: false,
+    policy: "captain_private_only",
+    financialMutation: false,
+  });
+  return { status: "not_sent_by_policy" };
 }
 const cancellationPartyNotificationInFlight = new Set();
 async function notifyOrderCancellationParty({ order, recipient, role, reason = "producer_thumb_removed" }) {
@@ -2420,6 +2396,8 @@ async function deleteAcceptanceMessagesForInsufficientBalance({ groupId, message
         messageIdCandidates: acceptanceMessage ? messageIdCandidates(acceptanceMessage) : (Array.isArray(providedMessageIdCandidates) && providedMessageIdCandidates.length ? providedMessageIdCandidates : [acceptanceId]),
         reason,
         groupId: targetGroupId,
+        [LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT]: true,
+        policyAction: "low_balance_acceptance",
         candidateId: candidateKey || null,
         captainId: captainKey || null,
         balanceCents,
@@ -7958,7 +7936,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
         captainName: unquotedResult.captain?.name,
         deletionStatus,
       });
-      if (!["sent", "already_sent", "uncertain", "already_in_flight"].includes(correction.status)) {
+      if (!["sent", "already_sent", "uncertain", "already_in_flight", "not_sent_by_policy"].includes(correction.status)) {
         console.warn(`[Order] official-group insufficient-balance notification ${correction.status} message=${orderTraceKey(rowMessageId)}`);
       }
       const notification = await notifyCaptainInsufficientAcceptanceBalance({
@@ -9380,7 +9358,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       captainName: acceptanceResult.captain?.name,
       deletionStatus,
     });
-    if (!["sent", "already_sent", "uncertain", "already_in_flight"].includes(correction.status)) {
+    if (!["sent", "already_sent", "uncertain", "already_in_flight", "not_sent_by_policy"].includes(correction.status)) {
       console.warn(`[Order] official-group insufficient-balance notification ${correction.status} message=${orderTraceKey(messageId)}`);
     }
     const notification = await notifyCaptainInsufficientAcceptanceBalance({
@@ -13570,6 +13548,7 @@ async function finalizeCreatedGroupInBackground({ operationId, groupId, groupNam
 }
 
 function purgeExperimentalCaptains() {
+  if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED) throw new Error("Group reset and message-history purge are disabled by owner deletion policy.");
   if (CAPTAIN_REMOVAL_PAUSED) throw new Error("Captain removal is temporarily paused.");
   normalizeBotIdentity();
   const botPhones = new Set([phoneWithCountry(BOT_PHONE), phoneWithCountry(BOT_PHONE_INTL)]);
@@ -13594,6 +13573,7 @@ function purgeExperimentalCaptains() {
 
 async function resetGroupInBackground({ operationId, oldGroupId, groupName, backupPath, backupName }) {
   try {
+    if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED) throw new Error("Group reset is disabled by owner deletion policy.");
     const oldGroup = await readGroupSnapshot(oldGroupId);
     if (!oldGroup || !Array.isArray(oldGroup.participants) || oldGroup.participants.length < 1) {
       groupCreateState = { ...groupCreateState, status: "failed", finishedAt: now(), error: "Could not read members from the currently configured group" };
@@ -13622,6 +13602,7 @@ async function resetGroupInBackground({ operationId, oldGroupId, groupName, back
 }
 
 app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
+  if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED) return res.status(423).json({ success: false, error: "إعادة إنشاء المجموعة ومسح سجلها متوقفان حسب سياسة الحذف الحالية.", code: "WHATSAPP_GROUP_CHAT_DELETION_DISABLED", mutation: "none", financialMutation: false });
   if (rejectCaptainRemovalWhilePaused(res, "group_reset_recreate")) return;
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
@@ -14501,36 +14482,18 @@ app.post("/api/admin/captains/:id/merge", requireAdmin, async (req, res) => {
 });
 app.post("/api/admin/captains/resend-access-card", requireAdmin, async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || "").replace(/[^0-9]/g, ""));
-  const deletePreviousPlain = req.body?.deletePreviousPlain === true;
+  const previousCardDeletionRequested = req.body?.deletePreviousPlain === true;
   if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم كابتن أردني صحيح مطلوب" });
   const captain = db.prepare("SELECT id,phone,name,active,is_bot,account_status,captain_auth_method,captain_pin_hash FROM users WHERE phone=? AND role='captain' LIMIT 1").get(phone);
   if (!captain) return res.status(404).json({ error: "الكابتن غير مسجل في النظام" });
   if (!captain.active) return res.status(409).json({ error: "حساب الكابتن غير نشط" });
   if (!client || !isReady) return res.status(503).json({ error: "WhatsApp غير جاهز حاليًا" });
-  const chatId = `${phone}@c.us`;
-  let deletedPreviousPlain = false;
-  let deletedMessageId = null;
-  if (deletePreviousPlain) {
-    try {
-      const chat = await withTimeout(client.getChatById(chatId), 15000, null);
-      const messages = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 30 }), 20000, []) : [];
-      const previous = [...messages].reverse().find((message) => {
-        const body = String(message?.body || "");
-        return message?.fromMe && !message?.hasMedia && /(تمت الموافقة على طلبك|بوابة التشغيل الرسمية|تم تسجيل حسابك داخل شبكة وصلني الآن)/.test(body);
-      });
-      if (previous && typeof previous.delete === "function") {
-        const removed = await withTimeout(previous.delete(true), 20000, null);
-        deletedPreviousPlain = removed !== null;
-        deletedMessageId = previous.id?._serialized || null;
-      }
-    } catch (error) {
-      console.error("[WhatsApp] previous plain captain reply cleanup:", error.message);
-    }
-  }
+  const deletedPreviousPlain = false;
+  const deletedMessageId = null;
   const sent = await sendCaptainAppLink(captain, captainInviteBaseUrl(req));
   if (!sent) return res.status(502).json({ error: "تعذر إرسال بطاقة الدخول الرسمية" });
-  audit("captain.access_card.resent", "user", captain.id, { phone, deletedPreviousPlain, deletedMessageId });
-  res.json({ success: true, captain: { id: captain.id, name: captain.name, phone: captain.phone }, deletedPreviousPlain, cardSent: true });
+  audit("captain.access_card.resent", "user", captain.id, { phone, deletedPreviousPlain, deletedMessageId, previousCardDeletionSuppressed: previousCardDeletionRequested });
+  res.json({ success: true, captain: { id: captain.id, name: captain.name, phone: captain.phone }, deletedPreviousPlain, previousCardDeletionSuppressed: previousCardDeletionRequested, cardSent: true });
 });
 async function handleAdminWalletAdjustment(req, res) {
   const id = Number(req.params.id);
@@ -14886,6 +14849,10 @@ app.get("/api/admin/group/leave-unconfigured", requireAdmin, async (req, res) =>
 });
 
 app.get("/api/admin/group/delete-unapproved", requireAdmin, async (req, res) => {
+  if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED) {
+    audit("group.chat_deletion.blocked_by_owner_policy", "group", "policy", { mutation: "none", financialMutation: false });
+    return res.status(423).json({ success: false, error: "حذف محادثات WhatsApp متوقف؛ الحذف المسموح يقتصر على «تم» عند عدم كفاية الرصيد.", code: "WHATSAPP_GROUP_CHAT_DELETION_DISABLED", mutation: "none", financialMutation: false });
+  }
   const groupId = String(req.query.groupId || "").trim();
   const newGroupId = "";
   const originalGroupId = WHATSAPP_GROUP_ID;
@@ -15509,6 +15476,25 @@ async function verifyWhatsAppMessageDeletion(message, messageId, timeoutMs = 500
   };
 }
 
+function lowBalanceAcceptanceDeletePermitValid(context, groupId) {
+  const candidateId = Number(context?.candidateId || 0);
+  const captainId = Number(context?.captainId || 0);
+  const balanceCents = context?.balanceCents;
+  const requiredCents = context?.requiredCents;
+  const allowedReasons = ["insufficient_balance_acceptance", "insufficient_balance_acceptance_recovery"];
+  const configuredGroupId = String(configuredRuntimeGroupId() || "").trim();
+  return context?.[LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT] === true
+    && context?.policyAction === "low_balance_acceptance"
+    && allowedReasons.includes(String(context?.reason || ""))
+    && Boolean(configuredGroupId)
+    && String(groupId || "").trim() === configuredGroupId
+    && isConfiguredGroup(configuredGroupId)
+    && Number.isSafeInteger(candidateId) && candidateId > 0
+    && Number.isSafeInteger(captainId) && captainId > 0
+    && typeof balanceCents === "number" && Number.isFinite(balanceCents)
+    && typeof requiredCents === "number" && Number.isFinite(requiredCents)
+    && requiredCents > balanceCents;
+}
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionContext = {
     reason: String(context.reason || "unspecified").slice(0, 120),
@@ -15518,6 +15504,19 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     requiredCents: Number.isFinite(context.requiredCents) ? context.requiredCents : null,
   };
   const deletionKey = orderTraceKey(messageId);
+  if (!lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId)) {
+    const blocked = { ok: false, requested: false, revoked: false, paused: true, reason: "owner_policy_low_balance_acceptance_only" };
+    audit("whatsapp.message_deletion.blocked_by_low_balance_only_policy", "message", deletionKey, {
+      groupId: deletionContext.groupId,
+      reason: deletionContext.reason,
+      requested: false,
+      revoked: false,
+      financialMutation: false,
+      orderMutation: false,
+    });
+    console.log(`[WhatsApp][MessageDelete] blocked message=${deletionKey} reason=${deletionContext.reason} policy=low_balance_acceptance_only`);
+    return blocked;
+  }
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
   let searchFallbackMessageId = null;

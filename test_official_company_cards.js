@@ -11,8 +11,9 @@ assert(server.includes('return sendCompanyOperationsCard(to, `رسالة رسم�
 assert(server.includes('event: "captain.approval"'), 'captain approval uses the short notification helper');
 assert(server.includes('`${phoneWithCountry(invite.phone)}@c.us`'), 'captain approval has a direct phone recipient fallback');
 assert(server.includes('app.post("/api/admin/captains/resend-access-card", requireAdmin'), 'admin can safely resend the official captain access card');
-assert(server.includes('message?.fromMe && !message?.hasMedia'), 'cleanup targets only a previous outgoing plain-text reply');
-assert(server.includes('previous.delete(true)'), 'previous plain reply may be deleted for everyone when WhatsApp permits it');
+assert(server.includes('const previousCardDeletionRequested = req.body?.deletePreviousPlain === true'), 'legacy cleanup requests are recorded for audit');
+assert(server.includes('previousCardDeletionSuppressed: previousCardDeletionRequested'), 'previous access-card message deletion is suppressed by policy');
+assert(!server.includes('previous.delete(true)'), 'resending a card never deletes prior WhatsApp messages');
 assert(server.includes('CREATE TABLE IF NOT EXISTS notifications'), 'notification delivery state is persisted');
 assert(server.includes('async function notifyOperations'), 'owner and captain notification service exists');
 assert(server.includes('app.get("/api/admin/notifications", requireAdmin'), 'owner can read notification history');
@@ -109,6 +110,7 @@ assert(server.includes('const groupId = WHATSAPP_GROUP_ID'), 'original active gr
 assert(server.includes('UPDATE groups_config SET active=0,updated_at=? WHERE group_id<>?'), 'new or historical groups are deactivated without deletion');
 assert(server.includes('newGroupUnused: true'), 'relink response confirms the new group is unused');
 assert(server.includes('app.get("/api/admin/group/delete-unapproved", requireAdmin'), 'unapproved group deletion is admin protected');
+assert(server.includes('code: "WHATSAPP_GROUP_CHAT_DELETION_DISABLED"'), 'group chat deletion is rejected by the owner policy');
 assert(server.includes('const newGroupId = ""'), 'unapproved group deletion is disabled until an explicit target is configured');
 assert(server.includes('if (groupId === originalGroupId || groupId === getSetting("group_id", null))'), 'active original group is protected from deletion');
 assert(server.includes('originalGroupUntouched: true'), 'deletion response confirms original group remains untouched');
