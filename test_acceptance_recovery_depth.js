@@ -2,33 +2,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const source = fs.readFileSync('./server.js', 'utf8');
 
-// A busy group pushes the «تم» replies of pending bookings deeper than the old
-// 12h / 6-page / single-expansion window, which is why downloaded bookings never
-// settled. The recovery scan must stay bounded but reach far enough to find them.
-assert.match(source, /const WHATSAPP_RECOVERY_SCAN_HOURS = Math\.max\(1, Math\.min\(168,/);
-assert.match(source, /const WHATSAPP_RECOVERY_MAX_PAGES = Math\.max\(1, Math\.min\(40,/);
-assert.match(source, /const WHATSAPP_RECOVERY_EARLIER_LOADS = Math\.max\(1, Math\.min\(12,/);
+// Owner-approved background bounds preserve data while limiting automatic history.
+assert.match(source, /const WHATSAPP_RECOVERY_SCAN_HOURS = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_SCAN_HOURS", 6, 1, 6\);/);
+assert.match(source, /const WHATSAPP_RECOVERY_MAX_PAGES = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_MAX_PAGES", 5, 1, 5\);/);
+assert.match(source, /const WHATSAPP_RECOVERY_EARLIER_LOADS = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_EARLIER_LOADS", 3, 1, 3\);/);
 
-const hoursMatch = source.match(/WHATSAPP_RECOVERY_SCAN_HOURS \|\| (\d+)/);
-assert.ok(hoursMatch && Number(hoursMatch[1]) >= 24, 'default recovery window must cover at least a day');
-const pagesMatch = source.match(/WHATSAPP_RECOVERY_MAX_PAGES \|\| (\d+)/);
-assert.ok(pagesMatch && Number(pagesMatch[1]) >= 40, 'default page budget must cover the expanded 600-message recovery bound');
-const loadsMatch = source.match(/WHATSAPP_RECOVERY_EARLIER_LOADS \|\| (\d+)/);
-assert.ok(loadsMatch && Number(loadsMatch[1]) >= 12, 'default expansion must allow repeated bounded loads of older messages');
-
-// Every recovery path must use the shared bounds instead of the hard-coded 12h window.
+// Every automatic recovery path must use the shared window/page bounds.
 assert.doesNotMatch(source, /const cutoff = Date\.now\(\) - 12 \* 60 \* 60 \* 1000;/);
 assert.doesNotMatch(source, /const maxPages = 6;/);
 assert.doesNotMatch(source, /loads < 1 &&/);
 assert.doesNotMatch(source, /slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* 6\)/);
-assert.match(source, /Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\)/, 'each initial history fallback must stay within the response-time bound');
-assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/, 'pagination can still inspect up to 600 messages in bounded pages');
+assert.match(source, /Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\)/, 'each initial history fallback stays within the response bound');
+assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/, 'pagination remains bounded by the approved five-page budget');
 
-// The deeper in-page expansion still has to stay bounded and time-limited.
-assert.match(source, /earlierLoadLimit = Math\.max\(1, Math\.min\(12,/);
+// Background fallbacks share the fast page budget instead of granting more loads.
+assert.match(source, /async function fetchGroupHistory\(groupId, limit, \{ includeOutgoing = false, earlierLoadLimit = WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly = false \} = \{\}\)/);
+assert.match(source, /const boundedEarlierLoadLimit = cacheOnly \? 0 : Number\.isInteger\(requestedEarlierLoadLimit\)/);
+assert.match(source, /const earlierLoadLimit = Number\.isInteger\(Number\(requestedEarlierLoads\)\)\s*\?\s*Math\.max\(0, Math\.min\(12, Number\(requestedEarlierLoads\)\)\)\s*:\s*3;/, 'history callback permits cached-only fallback, manual cap 12 and default 3');
+assert.match(source, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: true \}\)/, 'background fallback cannot allocate a second load budget');
+assert.match(source, /fetchGroupHistory\(groupId, 200, \{ includeOutgoing: true, earlierLoadLimit: 12 \}\)/, 'manual exact evidence retains its explicit history allowance');
 assert.match(source, /Math\.max\(9000, WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS\)/);
 
-// Recovery must remain read-only until the owner confirms one booking.
+// Evidence-based previews and already-settled idempotency remain present.
 assert.match(source, /mutation: "none"/);
 assert.match(source, /already_settled/);
 

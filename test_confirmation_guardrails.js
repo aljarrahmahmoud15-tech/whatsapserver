@@ -59,20 +59,20 @@ assert.match(server, /whatsappHistoricalCandidateRecoveryAttempted/);
 assert.match(server, /WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
 assert.match(server, /Date\.now\(\) - whatsappHistoricalCandidateRecoveryAt < WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS/);
 assert.match(server, /await recoverHistoricalOrderCandidates\(groupId\)/);
-assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ cutoff, batch: 50, includeOutgoing: true \}\)/);
+assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ cutoff, batch: 50, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS \}\)/);
 // The historical recovery now reports the source it actually used, so a history fallback is no
 // longer mislabelled as an order-scan read. "order-scan" must remain the default when no fallback ran.
 assert.match(server, /recovery\.source = fastScan\.source \|\| "order-scan"/);
 assert.doesNotMatch(server, /await fetchGroupHistory\(groupId, 300, \{ includeOutgoing: true \}\)/);
 assert.match(server, /await recoverPendingAcceptanceMessages\(groupId\)/);
 assert.match(server, /const maxPages = WHATSAPP_RECOVERY_MAX_PAGES/);
-assert.match(server, /const WHATSAPP_RECOVERY_SCAN_HOURS = Math\.max\(1, Math\.min\(168,/);
-assert.match(server, /const WHATSAPP_RECOVERY_MAX_PAGES = Math\.max\(1, Math\.min\(40,/);
+assert.match(server, /const WHATSAPP_RECOVERY_SCAN_HOURS = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_SCAN_HOURS", 6, 1, 6\);/);
+assert.match(server, /const WHATSAPP_RECOVERY_MAX_PAGES = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_MAX_PAGES", 5, 1, 5\);/);
 assert.match(server, /cutoff = Date\.now\(\) - WHATSAPP_RECOVERY_SCAN_HOURS \* 60 \* 60 \* 1000/);
-assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
-assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true \}\)/);
+assert.match(server, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS \}\)/);
+assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: true \}\)/);
 assert.match(server, /chat\.fetchMessages\(includeOutgoing \? \{ limit \} : \{ limit, fromMe: false \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, \[\]\)/);
-assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 25000/);
+assert.match(server, /fetchGroupHistory\(groupId, Math\.min\(WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES, 200\), \{ includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: true \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 25000/);
 assert.match(server, /source: "history-fallback"/);
 assert.match(server, /if \(normalizedMessages\.length\) return \{ chat, messages: normalizedMessages \};/);
 assert.match(server, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/);

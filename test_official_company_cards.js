@@ -77,8 +77,8 @@ assert(server.includes('app.post("/api/admin/group/send-guide-videos", requireAd
 assert(server.includes('app.get("/api/admin/group/diagnostic", requireAdmin'), 'group diagnostic API is admin protected');
 assert(server.includes('app.get("/api/admin/group/live-messages", requireAdmin'), 'live group message inspection is admin protected');
 assert(server.includes('const groupSnapshot = await readGroupSnapshot(groupId);'), 'live group message inspection hydrates the configured group first');
-assert(server.includes('const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });'), 'live group message inspection retries group resolution through the shared history reader');
-assert(server.includes('fetchGroupHistory(groupId, limit)'), 'live group message inspection reads recent WhatsApp messages');
+assert(server.includes('const history = await fetchGroupHistory(groupId, limit, { includeOutgoing, earlierLoadLimit: 12 });'), 'live group message inspection retries group resolution through the shared history reader');
+assert(server.includes('fetchGroupHistory(groupId, limit, { includeOutgoing, earlierLoadLimit: 12 });'), 'live group message inspection reads recent WhatsApp messages with the manual history bound');
 assert(server.includes('const requestedMessageId = String(req.query.messageId || "").trim();'), 'live group message inspection supports exact message evidence lookup');
 assert(server.includes('getWhatsAppMessageByIdVariants(requestedMessageId, 5000)'), 'exact message evidence lookup reads the requested WhatsApp message');
 assert(server.includes('const bodyIncludes = String(req.query.bodyIncludes || "").trim().slice(0, 200);'), 'live group message inspection supports bounded text lookup');

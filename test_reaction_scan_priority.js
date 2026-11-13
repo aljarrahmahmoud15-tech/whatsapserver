@@ -13,6 +13,8 @@ assert.ok(rowsIndex >= 0, 'scanner reads pending acceptance rows');
 assert.ok(retryIndex > rowsIndex, 'confirmation retries run after reaction rows are selected');
 assert.ok(backgroundIndex > retryIndex, 'slow order recovery starts after reaction reconciliation');
 assert.match(source, /let whatsappRecoveryBackgroundRunning = false;/);
+assert.match(source, /const WHATSAPP_REACTION_SCAN_LIMIT = boundedEnvironmentInteger\("WHATSAPP_REACTION_SCAN_LIMIT", 30, 1, 30\);/, 'background reaction scans are capped at exactly 30 messages');
+assert.match(scanner, /\.slice\(0, WHATSAPP_REACTION_SCAN_LIMIT\)/, 'deduplication cannot expand the 30-message batch');
 assert.match(source, /function startBackgroundOrderRecovery\(groupId\)/);
 assert.match(source, /WHATSAPP_REACTION_WARNING_COOLDOWN_MS/);
 assert.match(source, /const reactionVisibilityWarningAt = new Map\(\);/);

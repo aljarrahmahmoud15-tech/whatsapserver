@@ -9,14 +9,16 @@ assert.match(source, /async function recoverUnresolvedOrderMessages\(groupId\)/)
 assert.match(source, /recordUnresolvedOrderMessage\(\{\n        messageId,/);
 assert.match(source, /lastUnresolvedOrderRecovery = \{ startedAt/);
 assert.match(source, /unresolvedOrderRecovery: lastUnresolvedOrderRecovery/);
+assert.match(source, /const WHATSAPP_RECOVERY_SCAN_HOURS = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_SCAN_HOURS", 6, 1, 6\);/);
+assert.match(source, /const WHATSAPP_RECOVERY_MAX_PAGES = boundedEnvironmentInteger\("WHATSAPP_RECOVERY_MAX_PAGES", 5, 1, 5\);/);
 assert.match(source, /Math\.min\(200, Math\.max\(WHATSAPP_REACTION_SCAN_LIMIT, WHATSAPP_RECOVERY_BATCH_LIMIT\)\)/);
 assert.match(source, /pagesScanned: 0/);
 assert.match(source, /messagesFetched: 0/);
 assert.match(source, /const maxPages = WHATSAPP_RECOVERY_MAX_PAGES/);
 assert.match(source, /const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS =/);
 assert.match(source, /withTimeout\(resolveReadableGroupChat\(groupId\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, null\)/);
-assert.match(source, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\)/);
-assert.match(source, /withTimeout\(fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 10000/);
+assert.match(source, /fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS \}\)/);
+assert.match(source, /withTimeout\(fetchGroupOrderScanBatch\(groupId, \{ before, cutoff, batch: 10, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS \}\), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS \+ 10000/);
 assert.match(source, /if \(!fastScan\.nextCursor \|\| !pageMessages\.length\) break/);
 assert.match(source, /lastAcceptanceRecovery\.lastStage = "group_scan_timeout"/);
 assert.match(source, /scanMessages\.slice\(0, WHATSAPP_RECOVERY_BATCH_LIMIT \* WHATSAPP_RECOVERY_MAX_PAGES\)/);

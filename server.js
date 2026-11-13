@@ -270,22 +270,25 @@ const WHATSAPP_RECONNECT_MAX_DELAY_MS = Number(process.env.WHATSAPP_RECONNECT_MA
 const WHATSAPP_RECONNECT_MAX_ATTEMPTS = Number(process.env.WHATSAPP_RECONNECT_MAX_ATTEMPTS || 20);
 const GROUP_HYDRATION_READY_DELAY_MS = 30000;
 const WHATSAPP_WATCHDOG_INTERVAL_MS = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 300000);
-// Render kills an instance that exceeds the plan memory limit (repeated "Ran out of
-// memory (used over 2GB)" events), and every kill restarts the container and loses the
-// WhatsApp pairing. The scan cadence below is deliberately conservative: it keeps order
-// pickup responsive while avoiding the accumulation that pushed the instance over 2GB.
+function boundedEnvironmentInteger(name, fallback, minimum, maximum) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return fallback;
+  return Math.max(minimum, Math.min(maximum, value));
+}
+// Render has reported container memory failures. Bound background history work while
+// leaving direct live reactions immediate; the dominant memory source is not yet proven.
 const WHATSAPP_REACTION_SCAN_INTERVAL_MS = Number(process.env.WHATSAPP_REACTION_SCAN_INTERVAL_MS || 30000);
-const WHATSAPP_REACTION_SCAN_LIMIT = Number(process.env.WHATSAPP_REACTION_SCAN_LIMIT || 100);
+const WHATSAPP_REACTION_SCAN_LIMIT = boundedEnvironmentInteger("WHATSAPP_REACTION_SCAN_LIMIT", 30, 1, 30);
 const WHATSAPP_REACTION_WARNING_COOLDOWN_MS = Math.max(60000, Number(process.env.WHATSAPP_REACTION_WARNING_COOLDOWN_MS || 10 * 60 * 1000));
-const WHATSAPP_RECOVERY_BATCH_LIMIT = Math.max(5, Math.min(25, Number(process.env.WHATSAPP_RECOVERY_BATCH_LIMIT || 15)));
+const WHATSAPP_RECOVERY_BATCH_LIMIT = boundedEnvironmentInteger("WHATSAPP_RECOVERY_BATCH_LIMIT", 15, 5, 25);
 const WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS = Math.max(8000, Math.min(30000, Number(process.env.WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS || 12000)));
-// The acceptance scan used to look back only 12 hours over 6 pages and expanded the
-// in-page WhatsApp collection a single time per page. In a busy group the «تم» replies
-// of pending bookings sit deeper than that window, so the scan reported zero matches and
-// the bookings stayed unconfirmed. These bounds keep the scan cheap but reach far enough.
-const WHATSAPP_RECOVERY_SCAN_HOURS = Math.max(1, Math.min(168, Number(process.env.WHATSAPP_RECOVERY_SCAN_HOURS || 72)));
-const WHATSAPP_RECOVERY_MAX_PAGES = Math.max(1, Math.min(40, Number(process.env.WHATSAPP_RECOVERY_MAX_PAGES || 40)));
-const WHATSAPP_RECOVERY_EARLIER_LOADS = Math.max(1, Math.min(12, Number(process.env.WHATSAPP_RECOVERY_EARLIER_LOADS || 12)));
+// Owner-approved background budgets preserve stored evidence but reduce automatic
+// historical coverage. Exact-evidence/manual history callers retain their own budget.
+const WHATSAPP_RECOVERY_SCAN_HOURS = boundedEnvironmentInteger("WHATSAPP_RECOVERY_SCAN_HOURS", 6, 1, 6);
+const WHATSAPP_RECOVERY_MAX_PAGES = boundedEnvironmentInteger("WHATSAPP_RECOVERY_MAX_PAGES", 5, 1, 5);
+const WHATSAPP_RECOVERY_EARLIER_LOADS = boundedEnvironmentInteger("WHATSAPP_RECOVERY_EARLIER_LOADS", 3, 1, 3);
 const UNRESOLVED_ORDER_BACKLOG_LIMIT = Math.max(10, Math.min(100, Number(process.env.UNRESOLVED_ORDER_BACKLOG_LIMIT || 25)));
 const WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS = Math.max(15000, Number(process.env.WHATSAPP_HISTORICAL_CANDIDATE_RECOVERY_INTERVAL_MS || 180000));
 const WHATSAPP_LID_CACHE_TTL_MS = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.WHATSAPP_LID_CACHE_TTL_MS || 24 * 60 * 60 * 1000)));
@@ -3972,6 +3975,7 @@ function runtimeHealth() {
       pruneTriggerMb: MEMORY_PRUNE_TRIGGER_MB,
       recycleTriggerMb: MEMORY_RECYCLE_TRIGGER_MB,
       lastSample: lastMemoryUsageMb,
+      recentSamples: memoryUsageSamples.slice(-MEMORY_USAGE_SAMPLE_LOG_MAX),
       lastPruneAt: lastMemoryPruneAt,
       lastRecycleAt: lastMemoryRecycleAt,
       // Live reading of the whole process tree (Node + Chromium). This is what the
@@ -5036,9 +5040,15 @@ async function resolveReadableGroupChat(groupId) {
   chat = (Array.isArray(chats) ? chats : []).find((candidate) => String(candidate?.id?._serialized || "") === groupId && candidate.isGroup) || null;
   return chat && typeof chat.fetchMessages === "function" ? chat : null;
 }
-async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {}) {
-  let chat = await resolveReadableGroupChat(groupId);
-  if (!chat) chat = await resolveGroupChat(groupId);
+async function fetchGroupHistory(groupId, limit, { includeOutgoing = false, earlierLoadLimit = WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly = false } = {}) {
+  const requestedEarlierLoadLimit = Number(earlierLoadLimit);
+  const boundedEarlierLoadLimit = cacheOnly ? 0 : Number.isInteger(requestedEarlierLoadLimit)
+    ? Math.max(1, Math.min(12, requestedEarlierLoadLimit))
+    : WHATSAPP_RECOVERY_EARLIER_LOADS;
+  // whatsapp-web.js fetchMessages has its own unbounded earlier-history loop.
+  // Background callers must use our page loader with its explicit three-load budget.
+  let chat = boundedEarlierLoadLimit <= 3 ? null : await resolveReadableGroupChat(groupId);
+  if (!chat && boundedEarlierLoadLimit > 3) chat = await resolveGroupChat(groupId);
   if (chat) {
     const messages = await withTimeout(chat.fetchMessages(includeOutgoing ? { limit } : { limit, fromMe: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, []);
     const normalizedMessages = Array.isArray(messages) ? messages : [];
@@ -5047,7 +5057,7 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
     // immediately after reconnect. Fall through to the in-page collection loader.
   }
   if (!client?.pupPage) return { chat: null, messages: [] };
-  const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit, includeOutgoingMessages) => {
+  const messages = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedLimit, includeOutgoingMessages, requestedEarlierLoads) => {
     try {
       const wid = window.require("WAWebWidFactory").createWid(requestedId);
       const collections = window.require("WAWebCollections");
@@ -5057,8 +5067,13 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
       let models = chat.msgs.getModelsArray().filter(filter);
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
-      while (models.length < requestedLimit && loader?.loadEarlierMsgs) {
+      const earlierLoadLimit = Number.isInteger(Number(requestedEarlierLoads))
+        ? Math.max(0, Math.min(12, Number(requestedEarlierLoads)))
+        : 3;
+      let loads = 0;
+      while (models.length < requestedLimit && loader?.loadEarlierMsgs && loads < earlierLoadLimit) {
         const earlier = await loader.loadEarlierMsgs({ chat });
+        loads += 1;
         if (!earlier?.length) break;
         models = [...earlier.filter(filter), ...models];
       }
@@ -5105,12 +5120,17 @@ async function fetchGroupHistory(groupId, limit, { includeOutgoing = false } = {
     } catch (error) {
       return { chat: null, messages: [], error: String(error?.message || error) };
     }
-  }, groupId, limit, includeOutgoing), 20000, { chat: null, messages: [] });
+  }, groupId, limit, includeOutgoing, boundedEarlierLoadLimit), 20000, { chat: null, messages: [] });
   return messages;
 }
-async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false } = {}) {
+async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 25, includeOutgoing = false, earlierLoadLimit = WHATSAPP_RECOVERY_EARLIER_LOADS } = {}) {
   if (!client || !groupId) return { chat: null, messages: [], nextCursor: null, exhausted: true };
-  const chat = await withTimeout(resolveReadableGroupChat(groupId), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, null);
+  const requestedEarlierLoadLimit = Number(earlierLoadLimit);
+  const boundedEarlierLoadLimit = Number.isInteger(requestedEarlierLoadLimit)
+    ? Math.max(1, Math.min(12, requestedEarlierLoadLimit))
+    : WHATSAPP_RECOVERY_EARLIER_LOADS;
+  const chat = boundedEarlierLoadLimit <= 3 ? null
+    : await withTimeout(resolveReadableGroupChat(groupId), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS, null);
   if (chat && !before) {
     const messages = await withTimeout(chat.fetchMessages({ limit: Math.min(batch, 10), ...(includeOutgoing ? {} : { fromMe: false }) }), 8000, []);
       const rows = (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -5146,7 +5166,10 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
       let loader = null;
       try { loader = window.require("WAWebChatLoadMessages"); } catch (_) { loader = null; }
       let loads = 0;
-      const earlierLoadLimit = Math.max(1, Math.min(12, Number(options.earlierLoadLimit || WHATSAPP_RECOVERY_EARLIER_LOADS || 6)));
+      const requestedEarlierLoadLimit = Number(options.earlierLoadLimit);
+      const earlierLoadLimit = Number.isInteger(requestedEarlierLoadLimit)
+        ? Math.max(1, Math.min(12, requestedEarlierLoadLimit))
+        : 3;
       const eligible = () => models.filter((message) => {
         const timestamp = Number(message.t || 0);
         return timestamp > 0 && timestamp * 1000 >= cutoffTs && (!beforeTs || timestamp < beforeTs);
@@ -5180,7 +5203,7 @@ async function fetchGroupOrderScanBatch(groupId, { before = 0, cutoff, batch = 2
     } catch (error) {
       return { chat: null, messages: [], nextCursor: null, exhausted: true, error: String(error?.message || error) };
     }
-  }, groupId, { before, cutoff, batch, includeOutgoing }), Math.max(9000, WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS), { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  }, groupId, { before, cutoff, batch, includeOutgoing, earlierLoadLimit: boundedEarlierLoadLimit }), Math.max(9000, WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS), { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   return result || { chat: null, messages: [], nextCursor: null, exhausted: true };
 }
 async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId) {
@@ -5266,7 +5289,7 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
     }, ids), 15000, []);
     if (Array.isArray(rows) && rows.length) return linkSourceToAcceptance(rows);
   }
-  const history = await fetchGroupHistory(groupId, 200, { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, 200, { includeOutgoing: true, earlierLoadLimit: 12 });
   return linkSourceToAcceptance(history.messages);
 }
 function createCaptainPin() {
@@ -6840,7 +6863,7 @@ async function retryFailedBookingConfirmations() {
 async function findFinalBookingConfirmationInGroup(groupId, orderNo) {
   if (!client || !isReady || !groupId || !Number(orderNo)) return null;
   try {
-    const { chat, messages } = await fetchGroupHistory(groupId, 100, { includeOutgoing: true });
+    const { chat, messages } = await fetchGroupHistory(groupId, 100, { includeOutgoing: true, earlierLoadLimit: 12 });
     if (!chat) return null;
     const match = (Array.isArray(messages) ? messages : []).find((message) => {
       if (!message?.fromMe) return false;
@@ -6920,6 +6943,8 @@ let whatsappState = "starting";
 let whatsappLastEvent = null;
 let whatsappLastError = null;
 let qrCodeData = null;
+const clientDisposalStates = new WeakMap();
+let clientCleanupBarrier = Promise.resolve();
 let lastQrTime = null;
 let temporaryQrGrant = null;
 let reconnectTimer = null;
@@ -7546,37 +7571,86 @@ async function forceTerminateChromiumProcess(browserProcess, label = "client") {
   if (!pid || pid <= 1 || pid === process.pid || !executable || !/(?:chrome|chromium)/i.test(executable)) return cleanupOwnedChromiumProcesses(label);
   return terminateChromiumPids([pid, ...descendantPids(pid), ...listOwnedChromiumPids()], label);
 }
-async function disposeClientInstance(instance, label = "client") {
-  if (!instance) return;
-  const browserProcess = getChromiumBrowserProcess(instance);
-  const destroyTimeoutMarker = Symbol("whatsapp_destroy_timeout");
-  let destroyFailed = false;
-  try {
-    const destroyed = await withTimeoutStrict(instance.destroy(), 12000, destroyTimeoutMarker);
-    if (destroyed === destroyTimeoutMarker) {
-      destroyFailed = true;
-      console.warn(`[WhatsApp] ${label} cleanup timed out; continuing with controlled reconnect`);
-    }
-  } catch (error) {
-    destroyFailed = true;
-    // whatsapp-web.js may already have closed Chromium after LOGOUT.
-    console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
+async function assertClientCleanupComplete() {
+  // SIGKILL delivery can be asynchronous. Do not release an occupied profile.
+  for (let attempt = 0; attempt <= 20; attempt += 1) {
+    if (!listOwnedChromiumPids().length) return;
+    if (attempt === 20) throw new Error("WhatsApp client cleanup incomplete; successor start blocked");
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (destroyFailed) await forceTerminateChromiumProcess(browserProcess, label);
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  clearChromiumProfileLocks();
+}
+function enqueueClientCleanup(task) {
+  const previous = clientCleanupBarrier;
+  const next = previous.catch(() => {}).then(task);
+  clientCleanupBarrier = next;
+  void next.catch((error) => {
+    console.warn(`[WhatsApp] cleanup barrier failed: ${String(error?.message || error).slice(0, 180)}`);
+  });
+  return next;
+}
+async function waitForClientCleanup() {
+  let pending;
+  do {
+    pending = clientCleanupBarrier;
+    await pending;
+  } while (pending !== clientCleanupBarrier);
+}
+function disposeClientInstance(instance, label = "client") {
+  if (!instance) return waitForClientCleanup();
+  const existing = clientDisposalStates.get(instance);
+  if (existing) return existing;
+  const disposal = enqueueClientCleanup(async () => {
+    const browserProcess = getChromiumBrowserProcess(instance);
+    const destroyTimeoutMarker = Symbol("whatsapp_destroy_timeout");
+    let destroyFailed = false;
+    try {
+      const destroyed = await withTimeoutStrict(instance.destroy(), 12000, destroyTimeoutMarker);
+      if (destroyed === destroyTimeoutMarker) {
+        destroyFailed = true;
+        console.warn(`[WhatsApp] ${label} cleanup timed out; continuing with controlled reconnect`);
+      }
+    } catch (error) {
+      destroyFailed = true;
+      // whatsapp-web.js may already have closed Chromium after LOGOUT.
+      console.warn(`[WhatsApp] ${label} cleanup:`, error.message);
+    }
+    if (destroyFailed) await forceTerminateChromiumProcess(browserProcess, label);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await cleanupOwnedChromiumProcesses(`${label} orphan cleanup`);
+    await assertClientCleanupComplete();
+    clearChromiumProfileLocks();
+  });
+  clientDisposalStates.set(instance, disposal);
+  return disposal;
 }
 async function destroyClient() {
   stopWhatsAppStorageMonitor();
   const current = client;
   client = null;
   isReady = false;
-  if (!current) {
-    await cleanupOwnedChromiumProcesses("orphan cleanup");
-    clearChromiumProfileLocks();
-    return;
+  if (current) {
+    await disposeClientInstance(current, "destroy");
+  } else {
+    await enqueueClientCleanup(async () => {
+      await cleanupOwnedChromiumProcesses("orphan cleanup");
+      await assertClientCleanupComplete();
+      clearChromiumProfileLocks();
+    });
   }
-  await disposeClientInstance(current, "destroy");
+  await waitForClientCleanup();
+}
+function disposeAndScheduleReconnect(instance, label) {
+  const generation = connectionGeneration;
+  const runId = initializationRunId;
+  const scheduleIfCurrent = () => {
+    if (generation === connectionGeneration && runId === initializationRunId && !client && !isReady) scheduleReconnect();
+  };
+  void disposeClientInstance(instance, label)
+    .then(scheduleIfCurrent)
+    .catch((error) => {
+      console.error(`[WhatsApp] ${label} cleanup barrier:`, String(error?.message || error).slice(0, 180));
+      scheduleIfCurrent();
+    });
 }
 
 function archiveWhatsAppSessionDirectories() {
@@ -7598,7 +7672,7 @@ function archiveWhatsAppSessionDirectories() {
 }
 
 async function stopAndArchiveOldWhatsAppSession() {
-  await withTimeout(destroyClient(), 15000, null);
+  await destroyClient();
   qrCodeData = null;
   const result = archiveWhatsAppSessionDirectories();
   whatsappState = "session_archived";
@@ -7608,7 +7682,7 @@ async function stopAndArchiveOldWhatsAppSession() {
   return result;
 }
 
-async function restartWhatsApp(reason = "manual restart") {
+function restartWhatsApp(reason = "manual restart") {
   if (whatsappRestartInFlight) return whatsappRestartInFlight;
   whatsappRestartInFlight = (async () => {
     connectionGeneration += 1;
@@ -7623,7 +7697,7 @@ async function restartWhatsApp(reason = "manual restart") {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    await withTimeout(destroyClient(), 15000, null);
+    await destroyClient();
     qrCodeData = null;
     lastQrTime = null;
     initializing = false;
@@ -7746,13 +7820,14 @@ async function recoverHistoricalOrderCandidates(groupId) {
   const cutoff = Date.now() - WHATSAPP_RECOVERY_SCAN_HOURS * 60 * 60 * 1000;
   const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, orderMessages: 0, candidatesCreated: 0, unresolved: 0, skipped: 0, source: null, finishedAt: null };
   lastHistoricalRecovery = recovery;
-  let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+  let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { cutoff, batch: 50, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
   let recoveredMessages = Array.isArray(fastScan.messages) ? fastScan.messages : [];
   // Same reconnect gap as the acceptance recovery: the lightweight scanner can return nothing
   // while the in-page history loader still reads the group. Without this fallback the function
   // scanned zero messages on every run and still reported a silent success.
   if (!recoveredMessages.length) {
-    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
+    // The fast page already owns the three earlier loads; fallback only reads cache.
+    const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
     if (Array.isArray(history?.messages) && history.messages.length) {
       fastScan = { ...history, source: "history-fallback" };
       recoveredMessages = history.messages;
@@ -7830,7 +7905,7 @@ async function recoverPendingAcceptanceMessages(groupId) {
   let before = 0;
   const maxPages = WHATSAPP_RECOVERY_MAX_PAGES;
   for (let page = 0; page < maxPages; page += 1) {
-    let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
+    let fastScan = await withTimeout(fetchGroupOrderScanBatch(groupId, { before, cutoff, batch: 10, includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 10000, { chat: null, messages: [], nextCursor: null, exhausted: true, timedOut: true });
     // Surface a fast-path timeout before any fallback replaces the object; otherwise the
     // failure is silently relabelled as a successful history_fallback and never diagnosed.
     if (fastScan?.timedOut) {
@@ -7843,7 +7918,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
     // and keep paging from its oldest message so recovery depth is not capped at one page.
     const fastMessages = Array.isArray(fastScan?.messages) ? fastScan.messages : [];
     if (!before && fastMessages.length === 0) {
-      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
+      // Do not grant a second earlier-load budget to the same background page.
+      const history = await withTimeout(fetchGroupHistory(groupId, Math.min(WHATSAPP_RECOVERY_BATCH_LIMIT * WHATSAPP_RECOVERY_MAX_PAGES, 200), { includeOutgoing: true, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: true }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
       if (Array.isArray(history?.messages) && history.messages.length) {
         const historyOldest = history.messages.reduce((oldest, message) => {
           const timestamp = Number(message?.timestamp || message?.__timestamp || 0);
@@ -8220,6 +8296,8 @@ let lastMemoryRecycleAt = null;
 let lastMemoryUsageMb = null;
 let lastMemoryPruneAt = null;
 let memoryRecycleAboveThresholdSamples = 0;
+const MEMORY_USAGE_SAMPLE_LOG_MAX = 120;
+const memoryUsageSamples = [];
 async function recycleBrowserForMemory(reason) {
   if (runtimeMemoryWatchdogRunning) return;
   runtimeMemoryWatchdogRunning = true;
@@ -8308,7 +8386,11 @@ function startRuntimeMemoryWatchdog() {
     const heapMb = Math.round(usage.heapUsed / (1024 * 1024));
     const treeRssMb = processTreeRssMb();
     const rssMb = treeRssMb || nodeRssMb;
-    lastMemoryUsageMb = { rssMb, nodeRssMb, treeRssMb, heapMb, at: new Date().toISOString() };
+    const sample = { rssMb, nodeRssMb, treeRssMb, heapMb, at: new Date().toISOString() };
+    lastMemoryUsageMb = sample;
+    memoryUsageSamples.push(sample);
+    if (memoryUsageSamples.length > MEMORY_USAGE_SAMPLE_LOG_MAX) memoryUsageSamples.splice(0, memoryUsageSamples.length - MEMORY_USAGE_SAMPLE_LOG_MAX);
+    console.info("[Runtime] memory sample:", JSON.stringify(sample));
     if (rssMb >= MEMORY_PRUNE_TRIGGER_MB && Date.now() - Number(lastMemoryPruneAt || 0) >= MEMORY_PRUNE_COOLDOWN_MS) {
       try {
         pruneRuntimeMemoryCaches();
@@ -8356,9 +8438,9 @@ function createClient() {
     puppeteer: puppeteerConfig,
   });
   instance.on("qr", (qr) => {
+    if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "qr";
     whatsappLastEvent = "qr";
-    if (generation !== connectionGeneration) return;
     qrCodeData = qr;
     lastQrTime = new Date();
     isReady = false;
@@ -8366,6 +8448,7 @@ function createClient() {
     recordOwnerControlCheckpoint("whatsapp.qr", { force: true });
   });
   instance.on("authenticated", () => {
+    if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "authenticated";
     whatsappLastEvent = "authenticated";
     whatsappLastError = null;
@@ -8387,8 +8470,7 @@ function createClient() {
       isReady = false;
       if (client === instance) client = null;
       console.error(`[WhatsApp] refusing unexpected account: ${connectedPhone}; expected configured bot phone`);
-      void disposeClientInstance(instance, "wrong_account");
-      scheduleReconnect();
+      disposeAndScheduleReconnect(instance, "wrong_account");
       return;
     }
     isReady = true;
@@ -8435,23 +8517,22 @@ function createClient() {
     }, GROUP_HYDRATION_READY_DELAY_MS);
   });
   instance.on("auth_failure", (message) => {
+    if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "auth_failure";
     whatsappLastEvent = "auth_failure";
     whatsappLastError = String(message || "authentication failure");
-    if (generation !== connectionGeneration) return;
     stopWhatsAppStorageMonitor();
     isReady = false;
     if (client === instance) client = null;
     console.error("[WhatsApp] auth_failure:", message);
     recordOwnerControlCheckpoint("whatsapp.auth_failure", { force: true });
-    void disposeClientInstance(instance, "auth_failure");
-    scheduleReconnect();
+    disposeAndScheduleReconnect(instance, "auth_failure");
   });
   instance.on("disconnected", (reason) => {
+    if (generation !== connectionGeneration || client !== instance) return;
     whatsappState = "disconnected";
     whatsappLastEvent = "disconnected";
     whatsappLastError = String(reason || "disconnected");
-    if (generation !== connectionGeneration) return;
     stopWhatsAppStorageMonitor();
     isReady = false;
     lastDisconnectAt = new Date().toISOString();
@@ -8460,8 +8541,7 @@ function createClient() {
     console.warn("[WhatsApp] disconnected:", reason);
     recordOwnerControlCheckpoint("whatsapp.disconnected", { force: true });
     // Do not leave the old Chromium process alive while the retry starts.
-    void disposeClientInstance(instance, "disconnected");
-    scheduleReconnect();
+    disposeAndScheduleReconnect(instance, "disconnected");
   });
   instance.on("loading_screen", (percent, message) => {
     console.log(`[WhatsApp] loading ${percent}%${message ? `: ${message}` : ""}`);
@@ -8530,8 +8610,8 @@ async function initializeWhatsApp() {
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
     const initialized = await withTimeoutStrict(currentClient.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
     if (runId !== initializationRunId) {
-      await withTimeout(disposeClientInstance(currentClient, "stale_initialize"), 15000, null);
       if (client === currentClient) client = null;
+      await disposeClientInstance(currentClient, "stale_initialize");
       return;
     }
     if (initialized === initTimeoutMarker) {
@@ -8542,11 +8622,17 @@ async function initializeWhatsApp() {
       whatsappLastEvent = "initialize_timeout";
       whatsappLastError = "WhatsApp initialization timed out; controlled retry scheduled";
       recordOwnerControlCheckpoint("whatsapp.initialize_timeout", { force: true });
-      await withTimeout(disposeClientInstance(currentClient, "initialize_timeout"), 15000, null);
       if (client === currentClient) client = null;
+      await disposeClientInstance(currentClient, "initialize_timeout");
       scheduleReconnect();
     }
   } catch (error) {
+    if (runId !== initializationRunId) {
+      // A prior initialize may reject after a manual restart installed a successor.
+      await disposeClientInstance(currentClient, "stale_initialize")
+        .catch(() => console.warn("[WhatsApp] stale initialization cleanup remains blocked"));
+      return;
+    }
     whatsappState = "initialize_error";
     whatsappLastEvent = "initialize_error";
     whatsappLastError = String(error?.message || error);
@@ -8554,8 +8640,9 @@ async function initializeWhatsApp() {
     isReady = false;
     recordOwnerControlCheckpoint("whatsapp.initialize_error", { force: true });
     if (client === currentClient) client = null;
-    await withTimeout(disposeClientInstance(currentClient, "initialize_error"), 15000, null);
-    scheduleReconnect();
+    await disposeClientInstance(currentClient, "initialize_error")
+      .catch(() => console.warn("[WhatsApp] initialization retry must recheck blocked cleanup"));
+    if (runId === initializationRunId) scheduleReconnect();
   } finally {
     if (runId === initializationRunId) {
       initializing = false;
@@ -10387,7 +10474,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
 async function findAutomaticRecoveryEvidence({ groupId, hours = 168, limit = 1000, downloaderPhone, executorPhone, price, origin = "", destination = "" }) {
   const safeHours = Math.max(1, Math.min(Number(hours || 168), 168));
   const safeLimit = Number.isInteger(Number(limit)) ? Math.max(1, Math.min(Number(limit), 2000)) : 1000;
-  const history = await fetchGroupHistory(groupId, safeLimit, { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, safeLimit, { includeOutgoing: true, earlierLoadLimit: 12 });
   if (!history.chat) return { state: "unavailable", groupId, hours: safeHours, messages: [], matches: [] };
   const cutoff = Date.now() - safeHours * 60 * 60 * 1000;
   const expected = { downloaderPhone, executorPhone, price: Number(price), origin: String(origin || "").trim(), destination: String(destination || "").trim() };
@@ -15370,7 +15457,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       messages = [liveMessage];
     }
   } else {
-    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing });
+    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing, earlierLoadLimit: 12 });
     chat = history.chat;
     messages = history.messages;
   }
@@ -15409,7 +15496,7 @@ app.get("/api/admin/group/order-scan", requireAdmin, async (req, res) => {
   const includeOutgoing = String(req.query.includeOutgoing || "") === "1";
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing });
+  const result = await fetchGroupOrderScanBatch(groupId, { before, cutoff, batch, includeOutgoing, earlierLoadLimit: 12 });
   if (!result.chat) return res.status(result.timedOut ? 504 : 502).json({ error: result.timedOut ? "Group scan timed out; retry with the returned batch size" : "Configured group is not readable", mutation: "none", retryable: true });
   const messages = (Array.isArray(result.messages) ? result.messages : []).map((message) => ({
     ...message,
@@ -15471,7 +15558,7 @@ app.post("/api/admin/group/import-order-history", requireAdmin, async (req, res)
   const requestedLimit = Number(req.body?.limit || 100);
   const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 100;
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  const { chat, messages } = await fetchGroupHistory(groupId, limit);
+  const { chat, messages } = await fetchGroupHistory(groupId, limit, { earlierLoadLimit: 12 });
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidates = (Array.isArray(messages) ? messages : [])
     .filter((message) => message && !message.fromMe && String(message?.from?._serialized || message.from || "") === groupId && parseOrder(message.body).isOrder)
@@ -15522,7 +15609,7 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     chat = exactMessages.length ? { id: groupId, isGroup: true } : null;
     messages = exactMessages;
   } else {
-    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+    const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true, earlierLoadLimit: 12 });
     if (history.chat && Array.isArray(history.messages) && history.messages.length) {
       chat = history.chat;
       messages = history.messages;
@@ -15954,7 +16041,7 @@ app.post("/api/admin/group/delete-single-member-message", requireAdmin, async (r
   }
   let message = await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!message) {
-    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true, earlierLoadLimit: 12 });
     message = (history.messages || []).find((candidate) => sourceMessageIdsEqual(serializedMessageId(candidate), messageId)) || null;
   }
   const body = String(message?.body || message?.text || "").trim();
@@ -15976,7 +16063,7 @@ app.post("/api/admin/group/delete-single-test-message", requireAdmin, async (req
   if (!groupId || !isConfiguredGroup(groupId) || !messageId || !expectedBody.startsWith("🧪 SERVER2-DELETE-TEST ")) return res.status(400).json({ error: "configured groupId, messageId, and a unique SERVER2-DELETE-TEST body are required", mutation: "none" });
   let message = await getWhatsAppMessageByIdVariants(messageId, 5000);
   if (!message) {
-    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+    const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true, earlierLoadLimit: 12 });
     message = (history.messages || []).find((candidate) => sourceMessageIdsEqual(serializedMessageId(candidate), messageId)) || null;
   }
   const body = String(message?.body || message?.text || "").trim();
@@ -15990,7 +16077,7 @@ app.get("/api/admin/group/rejected-acceptance-notices", requireAdmin, async (req
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready", mutation: "none" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
-  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true, earlierLoadLimit: 12 });
   const marker = "تعذّر حذف رسالة «تم» تلقائيًا";
   const notices = (history.messages || []).filter((message) => message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").includes(marker));
   res.setHeader("Cache-Control", "no-store");
@@ -16001,7 +16088,7 @@ app.post("/api/admin/group/rejected-acceptance-notices/delete", requireAdmin, as
   const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
   const requestedIds = Array.isArray(req.body?.messageIds) ? req.body.messageIds.map((value) => String(value || "").trim()).filter(Boolean) : [];
   if (!groupId || !isConfiguredGroup(groupId) || !requestedIds.length || requestedIds.length > 100) return res.status(400).json({ error: "configured groupId and messageIds (1-100) are required", mutation: "none" });
-  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, 500, { includeOutgoing: true, earlierLoadLimit: 12 });
   const marker = "تعذّر حذف رسالة «تم» تلقائيًا";
   const requested = new Set(requestedIds);
   const matches = (history.messages || []).filter((message) => requested.has(serializedMessageId(message)) && message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").includes(marker));
@@ -16033,7 +16120,7 @@ app.all("/api/admin/group/delete-duplicate-confirmations", requireAdmin, async (
   if (!groupId || !isConfiguredGroup(groupId) || !Number.isInteger(orderNo) || orderNo < 1) {
     return res.status(400).json({ error: "configured groupId and positive integer orderNo are required", mutation: "none" });
   }
-  const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, limit, { includeOutgoing: true, earlierLoadLimit: 12 });
   if (!history.chat) return res.status(504).json({ error: "Unable to read configured group", mutation: "none" });
   const matches = history.messages
     .filter((message) => {
@@ -16078,7 +16165,7 @@ app.post("/api/admin/group/delete-duplicate-text", requireBotWalletOwner, async 
   if (!groupId || !isConfiguredGroup(groupId) || !expectedBody || !messageIds.length || messageIds.length > 50 || !keepMessageId || messageIds.includes(keepMessageId)) {
     return res.status(400).json({ error: "configured groupId, expectedBody, messageIds, and a distinct keepMessageId are required", mutation: "none" });
   }
-  const history = await fetchGroupHistory(groupId, Math.max(50, Math.min(Number(req.body?.limit || 200), 500)), { includeOutgoing: true });
+  const history = await fetchGroupHistory(groupId, Math.max(50, Math.min(Number(req.body?.limit || 200), 500)), { includeOutgoing: true, earlierLoadLimit: 12 });
   if (!history.chat) return res.status(504).json({ error: "Unable to read configured group", mutation: "none" });
   const requested = new Set(messageIds);
   const isMatchingOutgoingText = (message) => message?.fromMe === true && resolveGroupChatId(message) === groupId && String(message?.body || "").trim() === expectedBody;
@@ -16261,7 +16348,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     await withTimeout(client.interface.openChatWindow(groupId), 15000, null);
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true });
+  const { chat, messages } = await fetchGroupHistory(groupId, limit, { includeOutgoing: true, earlierLoadLimit: 12 });
   if (!chat) return res.status(504).json({ error: "Unable to read configured group", backupName });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
@@ -16345,7 +16432,7 @@ app.post("/api/admin/group/recover-latest-order", requireAdmin, async (req, res)
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = getSetting("group_id", null);
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ error: "No configured production group" });
-  const { chat, messages } = await fetchGroupHistory(groupId, 100);
+  const { chat, messages } = await fetchGroupHistory(groupId, 100, { earlierLoadLimit: 12 });
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const candidate = latestEligibleGroupOrderMessage(messages, groupId);
   if (!candidate || !candidate.id || !candidate.id._serialized) return res.status(404).json({ error: "No eligible order message found in recent group messages" });
