@@ -2295,17 +2295,94 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
     return { status: "failed", notificationId };
   }
 }
-async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, deletionStatus }) {
+const insufficientBalanceGroupNotificationInFlight = new Set();
+async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, messageId, deletionStatus, deletionResult, publicTripNo, captainName }) {
   const targetGroupId = String(groupId || "").trim();
-  const sourceKey = String(sourceMessageId || "").trim();
-  audit("official_group.acceptance.insufficient_balance_suppressed", "chat", targetGroupId || "policy", {
-    sourceMessageId: sourceKey || null,
-    deletionStatus: String(deletionStatus || "unknown"),
-    groupNotification: false,
-    policy: "captain_private_only",
-    financialMutation: false,
-  });
-  return { status: "not_sent_by_policy" };
+  const sourceKey = String(sourceMessageId || messageId || "").trim();
+  const sourceCore = messageIdCore(sourceKey);
+  const deletedCount = Number(deletionResult?.deletedCount);
+  const deletionEvidence = Array.isArray(deletionResult?.results) && deletionResult.results.some((entry) => (
+    entry?.ok === true && entry?.result?.ok === true && sourceMessageIdsEqual(entry?.messageId, sourceKey)
+  ));
+  if (
+    deletionStatus !== "deleted"
+    || deletionResult?.ok !== true
+    || deletionResult?.revoked !== true
+    || !Number.isFinite(deletedCount)
+    || deletedCount <= 0
+    || deletionResult?.paused === true
+    || !sourceCore
+    || !deletionEvidence
+  ) {
+    return { status: "not_confirmed", reason: "acceptance_deletion_not_fully_confirmed" };
+  }
+  if (!isOfficialGroupTarget(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+    return { status: "blocked", reason: "official_group_target_not_allowed" };
+  }
+  const idempotencyKey = `GROUP-ACCEPTANCE-INSUFFICIENT-BALANCE-${targetGroupId}-${sourceCore}`;
+  if (insufficientBalanceGroupNotificationInFlight.has(idempotencyKey)) return { status: "already_in_flight", idempotencyKey };
+  let existing;
+  try {
+    existing = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  } catch (error) {
+    return { status: "receipt_error", reason: String(error?.message || error).slice(0, 180), idempotencyKey };
+  }
+  if (existing) {
+    const existingStatus = ["sent", "delivered"].includes(existing.delivery_status) ? "already_sent" : existing.delivery_status || "already_attempted";
+    return { status: existingStatus, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null, idempotencyKey };
+  }
+  const title = "حذف قبول «تم» لعدم كفاية الرصيد";
+  const message = `تم حذف رسالة «تم» للكابتن ${String(captainName || "غير محدد")} لعدم كفاية الرصيد. رقم الرحلة: ${String(publicTripNo || "غير محدد")}.`;
+  let inserted;
+  let receipt;
+  try {
+    inserted = db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)")
+      .run(targetGroupId, "group.acceptance.insufficient_balance_deleted", title, message, sourceKey, idempotencyKey, now());
+    receipt = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  } catch (error) {
+    return { status: "receipt_error", reason: String(error?.message || error).slice(0, 180), idempotencyKey };
+  }
+  if (!receipt) return { status: "receipt_error", reason: "notification_receipt_missing", idempotencyKey };
+  if (inserted?.changes !== 1 || receipt.delivery_status !== "pending") {
+    const receiptStatus = ["sent", "delivered"].includes(receipt.delivery_status) ? "already_sent" : receipt.delivery_status || "already_attempted";
+    return { status: receiptStatus, duplicate: true, notificationId: receipt.id, messageId: receipt.message_id || null, idempotencyKey };
+  }
+  const notificationId = receipt.id;
+  insufficientBalanceGroupNotificationInFlight.add(idempotencyKey);
+  try {
+    let result;
+    try {
+      result = !client || !isReady || typeof client.sendMessage !== "function"
+        ? { status: "unavailable", message: null, error: "whatsapp_not_ready" }
+        : await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 30000);
+    } catch (error) {
+      let failedUpdate;
+      try { failedUpdate = db.prepare("UPDATE notifications SET delivery_status='failed',message_id=NULL WHERE id=?").run(notificationId); } catch (_) {}
+      if (!failedUpdate || failedUpdate.changes !== 1) return { status: "receipt_update_error", reason: "notification_failure_receipt_update_failed", notificationId, idempotencyKey };
+      return { status: "failed", notificationId, idempotencyKey, error: String(error?.message || error).slice(0, 180) };
+    }
+    const deliveryStatus = result?.status === "sent" ? "sent" : result?.status === "uncertain" ? "uncertain" : "failed";
+    const messageId = result?.message?.id?._serialized || result?.message?.id?.id || null;
+    let updated;
+    try {
+      updated = db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=? AND idempotency_key=? AND delivery_status='pending'").run(deliveryStatus, messageId, notificationId, idempotencyKey);
+    } catch (_) {}
+    if (!updated || updated.changes !== 1) return { status: "receipt_update_error", reason: "notification_delivery_receipt_update_failed", notificationId, idempotencyKey };
+    try {
+      audit("official_group.acceptance.insufficient_balance_deleted", "chat", targetGroupId, {
+        sourceMessageId: sourceKey,
+        deletionStatus,
+        deletedCount,
+        deliveryStatus,
+        idempotencyKey,
+        groupNotification: deliveryStatus === "sent" || deliveryStatus === "uncertain",
+        financialMutation: false,
+      });
+    } catch (_) {}
+    return { status: result?.status === "unavailable" ? "unavailable" : deliveryStatus, notificationId, messageId, idempotencyKey };
+  } finally {
+    insufficientBalanceGroupNotificationInFlight.delete(idempotencyKey);
+  }
 }
 const cancellationPartyNotificationInFlight = new Set();
 async function notifyOrderCancellationParty({ order, recipient, role, reason = "producer_thumb_removed" }) {
@@ -8052,16 +8129,9 @@ async function recoverPendingAcceptanceMessages(groupId) {
         captainName: unquotedResult.captain?.name,
         deletionStatus,
       });
-      if (!["sent", "already_sent", "uncertain", "already_in_flight", "not_sent_by_policy"].includes(correction.status)) {
+      if (!["sent", "already_sent", "uncertain", "already_in_flight", "pending", "not_confirmed"].includes(correction.status)) {
         console.warn(`[Order] official-group insufficient-balance notification ${correction.status} message=${orderTraceKey(rowMessageId)}`);
       }
-      const notification = await notifyCaptainInsufficientAcceptanceBalance({
-        captain: unquotedResult.captain,
-        balanceCents: unquotedResult.balanceCents,
-        requiredCents: unquotedResult.requiredCents,
-        sourceMessageId: rowMessageId,
-        publicTripNo: unquoted.candidate.public_trip_no,
-      });
       const reopened = await reopenOrderAfterInsufficientBalance({
         groupId,
         candidate: unquoted.candidate,
@@ -8084,7 +8154,6 @@ async function recoverPendingAcceptanceMessages(groupId) {
         deletionResult: deletionResult || null,
         acceptanceMode: "unquoted",
         correctionStatus: correction.status,
-        notificationStatus: notification.status,
         reopenStatus: reopened.status,
         reopenMessageId: reopened.messageId || null,
         recoveryMode: "unquoted",
@@ -9485,18 +9554,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       captainName: acceptanceResult.captain?.name,
       deletionStatus,
     });
-    if (!["sent", "already_sent", "uncertain", "already_in_flight", "not_sent_by_policy"].includes(correction.status)) {
+    if (!["sent", "already_sent", "uncertain", "already_in_flight", "pending", "not_confirmed"].includes(correction.status)) {
       console.warn(`[Order] official-group insufficient-balance notification ${correction.status} message=${orderTraceKey(messageId)}`);
-    }
-    const notification = await notifyCaptainInsufficientAcceptanceBalance({
-      captain: acceptanceResult.captain,
-      balanceCents: acceptanceResult.balanceCents,
-      requiredCents: acceptanceResult.requiredCents,
-      sourceMessageId: messageId,
-      publicTripNo: candidate.public_trip_no,
-    });
-    if (!["sent", "already_sent", "uncertain"].includes(notification.status)) {
-      console.warn(`[Order] insufficient-balance captain notification ${notification.status} message=${orderTraceKey(messageId)}`);
     }
     const reopened = await reopenOrderAfterInsufficientBalance({
       groupId,
@@ -9520,7 +9579,6 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       deletionResult: deletionResult || null,
       acceptanceMode,
       correctionStatus: correction.status,
-      notificationStatus: notification.status,
       reopenStatus: reopened.status,
       reopenMessageId: reopened.messageId || null,
       acceptanceSource,
