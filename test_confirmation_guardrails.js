@@ -44,8 +44,10 @@ assert.match(server, /reaction_approver_not_active_human_captain/);
 // booking must be resolved locally before the fetch, and the handler must use
 // the resolver instead of the old expression that returned silently.
 assert.match(server, /const resolvedReactionTarget = await resolveReactionTarget\(messageId\);\n\s*const target = resolvedReactionTarget\.target;/);
-assert.match(server, /async function resolveReactionTarget\(messageId\) \{[\s\S]*?pendingAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"[\s\S]*?\n\s*if \(pendingAcceptanceTarget\) return \{ target: pendingAcceptanceTarget, source: "stored_pending_acceptance" \};[\s\S]*?settledOrderTarget = typeof buildSettledOrderAcceptanceTarget === "function"[\s\S]*?\n\s*if \(settledOrderTarget\) return \{ target: settledOrderTarget, source: "stored_settled_order" \};\n\s*const fetched = await getWhatsAppMessageByIdVariants\(messageId, 5000\);/);
+assert.match(server, /async function resolveStoredReactionTarget\(messageId\) \{[\s\S]*?pendingAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"[\s\S]*?\n\s*if \(pendingAcceptanceTarget\) return \{ target: pendingAcceptanceTarget, source: "stored_pending_acceptance" \};[\s\S]*?settledOrderTarget = typeof buildSettledOrderAcceptanceTarget === "function"[\s\S]*?\n\s*if \(settledOrderTarget\) return \{ target: settledOrderTarget, source: "stored_settled_order" \};[\s\S]*?\n\s*return \{ target: null, source: null \};\n\}/);
 assert.doesNotMatch(server, /const target = storedAcceptanceTarget \|\| await getWhatsAppMessageByIdVariants/);
+assert.match(server, /async function resolveReactionTarget\(messageId\) \{\n\s*const stored = await resolveStoredReactionTarget\(messageId\);\n\s*if \(stored\.target\) return stored;\n\s*const fetched = await getWhatsAppMessageByIdVariants\(messageId, 5000\);/);
+assert.match(server, /async function resolveReconcileReactionTarget\(messageId\) \{\n\s*const fetched = await getWhatsAppMessageByIdVariants\(messageId, 5000\);/);
 assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
 assert.match(server, /function reactionSenderValues\(reaction\)/);

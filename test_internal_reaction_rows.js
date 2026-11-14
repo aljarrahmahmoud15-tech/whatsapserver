@@ -27,6 +27,11 @@ assert.match(reconcileSource, /let reactions = typeof target\.getReactions === "
 assert.match(reconcileSource, /const internalReactions = await fetchInternalReactionRows\(normalizedMessageId\)/);
 assert.match(reconcileSource, /reactions = internalReactions/);
 assert.match(source, /function buildStoredAcceptanceMessageById\(messageId\)/);
-assert.match(source, /getWhatsAppMessageByIdVariants\(normalizedMessageId, 5000\) \|\| buildStoredAcceptanceMessageById\(normalizedMessageId\)/);
+// Reconciliation must read the live message first and fall back to stored evidence
+// only when WhatsApp cannot answer, so a real thumb removal is never masked.
+assert.match(source, /async function resolveReconcileReactionTarget\(messageId\) \{\n\s*const fetched = await getWhatsAppMessageByIdVariants\(messageId, 5000\);\n\s*if \(fetched\) return \{ target: fetched, source: "live_message_fetch" \};\n\s*const stored = await resolveStoredReactionTarget\(messageId\);/);
+assert.match(source, /const resolvedReconcileTarget = await resolveReconcileReactionTarget\(normalizedMessageId\);/);
+assert.doesNotMatch(reconcileSource, /const target = await getWhatsAppMessageByIdVariants\(normalizedMessageId, 5000\) \|\| buildStoredAcceptanceMessageById\(normalizedMessageId\);/);
+assert.match(reconcileSource, /reaction_scan_target_unresolved/);
 assert.match(reconcileSource, /Array\.isArray\(target\.__reactions\) \? target\.__reactions : \[\]/);
 console.log('internal reaction rows guard: ok');

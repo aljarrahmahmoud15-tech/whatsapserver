@@ -84,6 +84,8 @@ function makeContext({ db, configuredGroups = [FIXTURE_GROUP], pendingTarget = n
       };
       return Boolean(core(a) && core(b)) && core(a) === core(b);
     },
+    orderTraceKey: (value) => "trace:" + String(value).slice(-6),
+    console,
     buildStoredAcceptanceMessageById: () => pendingTarget,
     getWhatsAppMessageByIdVariants: async (messageId) => {
       liveCalls.push(messageId);
@@ -94,7 +96,7 @@ function makeContext({ db, configuredGroups = [FIXTURE_GROUP], pendingTarget = n
 }
 
 function loadResolution(context) {
-  return vm.runInNewContext(`${resolutionSource}\n;({ buildSettledOrderAcceptanceTarget, resolveReactionTarget })`, context, {
+  return vm.runInNewContext(`${resolutionSource}\n;({ buildSettledOrderAcceptanceTarget, resolveReactionTarget, resolveStoredReactionTarget, resolveReconcileReactionTarget })`, context, {
     filename: path.join(root, "server.js"),
   });
 }
@@ -236,4 +238,65 @@ test("منطق التسوية والعكس نفسه لم يُمسّ", () => {
   assert.ok(reversalHead.includes("ownerAuthorized"), "شرط تفويض المالك محفوظ");
   assert.ok(reversalHead.includes("reactingCaptain.is_bot === 1"), "رفض الحسابات الآلية محفوظ");
   assert.ok(reversalHead.includes("isBlockedPhone(producerPhone)"), "حظر الأرقام محفوظ");
+});
+
+test("مصالحة الخلفية تحترم الجلب الحي أولًا ولا تختلق حالة تفاعل", async () => {
+  const db = createFixtureDb();
+  const liveMessage = { from: FIXTURE_GROUP, body: "تم", __live: true, getReactions: async () => [] };
+  const liveCalls = [];
+  const ctx = loadResolution(makeContext({ db, pendingTarget: null, liveMessage, liveCalls }));
+  const resolved = await ctx.resolveReconcileReactionTarget(FIXTURE_ACCEPTANCE_MESSAGE_ID);
+  assert.equal(resolved.source, "live_message_fetch", "الحالة الحيّة هي المصدر الأول في المصالحة");
+  assert.equal(resolved.target.__live, true, "الهدف هو رسالة واتساب الحيّة");
+  assert.deepEqual(liveCalls, [FIXTURE_ACCEPTANCE_MESSAGE_ID], "استدعاء حي واحد فقط");
+  assert.equal(typeof ctx.resolveReconcileReactionTarget, "function", "حلّاد المصالحة مُصدَّر للاختبار المعزول");
+  assert.equal(Object.getPrototypeOf(ctx.resolveReconcileReactionTarget(FIXTURE_ACCEPTANCE_MESSAGE_ID)).constructor.name, "Promise", "المصالحة غير متزامنة");
+  db.close();
+});
+
+test("مصالحة الخلفية تسقط إلى الدليل المحلي عند فشل واتساب فقط", async () => {
+  const db = createFixtureDb();
+  const calls = [];
+  const ctx = loadResolution(makeContext({ db, pendingTarget: null, liveMessage: null, liveCalls: calls }));
+  const settled = await ctx.resolveReconcileReactionTarget(FIXTURE_ACCEPTANCE_MESSAGE_ID);
+  assert.equal(settled.source, "stored_settled_order", "الدليل المحلي يحل عند تعذر القراءة الحيّة");
+  assert.equal(settled.target.__settledOrderId, 510, "هدف الحجز المكتمل للمصالحة");
+  assert.deepEqual(calls, [FIXTURE_ACCEPTANCE_MESSAGE_ID], "جربة حيّة واحدة ثم سقوط محلي");
+
+  const pendingOnly = loadResolution(makeContext({ db, pendingTarget: { from: FIXTURE_GROUP, body: "تم", __storedPending: true }, liveMessage: null, liveCalls: [] }));
+  const viaPending = await pendingOnly.resolveReconcileReactionTarget(FIXTURE_ACCEPTANCE_MESSAGE_ID);
+  assert.equal(viaPending.source, "stored_pending_acceptance", "المرشح المعلّق يسبق الحجز المكتمل");
+
+  const unmatched = "false_" + FIXTURE_GROUP + "_UNKNOWNCORE_9@lid";
+  const none = await ctx.resolveReconcileReactionTarget(unmatched);
+  assert.equal(none.target, null, "بلا هدف عند فشل كل المصادر");
+  assert.equal(none.source, "none", "المصدر none يفتح التسجيل التشخيصي");
+  db.close();
+});
+
+test("المصالحة لم تعد تخرج بصمت وتُسجّل مصدر الحل", () => {
+  const start = serverSource.indexOf("async function reconcileStoredThumbReactionUnlocked(");
+  assert.ok(start >= 0, "دالة المصالحة موجودة");
+  const body = serverSource.slice(start, serverSource.indexOf("\n}\n", start + 10));
+  assert.ok(body.includes("await resolveReconcileReactionTarget(normalizedMessageId)"), "المصالحة تستخدم حلّاد المصالحة");
+  assert.ok(!body.includes("|| buildStoredAcceptanceMessageById(normalizedMessageId)"),
+    "لا عودة إلى التعبير الصامت القديم في المصالحة");
+  assert.ok(body.includes("reaction_scan_target_unresolved"), "الخروج بلا هدف يُسجّل");
+  const call = serverSource.match(/logOrderTrace\("reaction_scan_target_unresolved",\s*\{[\s\S]*?\}\);/);
+  assert.ok(call, "سطر تشخيص المصالحة موجود");
+  assert.ok(call[0].includes("orderTraceKey(normalizedMessageId)"), "المعرّف مُقفَل قبل التسجيل");
+  assert.ok(!/[0-9]{6,}/.test(call[0]), "لا أرقام خام في سطر المصالحة");
+  for (const forbidden of ["sender_phone", "approverPhone", "qrCodeData", "ADMIN_TOKEN", "JWT_SECRET"]) {
+    assert.ok(!call[0].includes(forbidden), `سطر المصالحة خالٍ من ${forbidden}`);
+  }
+});
+
+test("الحل المحلي لا يُستدعى مرتين ولا يطلب الشبكة عند وجود هدف", async () => {
+  const db = createFixtureDb();
+  const calls = [];
+  const ctx = loadResolution(makeContext({ db, pendingTarget: null, liveMessage: null, liveCalls: calls }));
+  const stored = await ctx.resolveStoredReactionTarget(FIXTURE_ACCEPTANCE_MESSAGE_ID);
+  assert.equal(stored.source, "stored_settled_order", "الحل المحلي يعمل وحده");
+  assert.deepEqual(calls, [], "الحل المحلي لا يلمس الشبكة إطلاقًا");
+  db.close();
 });

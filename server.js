@@ -9683,11 +9683,11 @@ function buildSettledOrderAcceptanceTarget(messageId) {
   };
 }
 
-// Resolve the reaction target from local database evidence first, and only then ask
-// WhatsApp Web. Pending candidates keep the original resolution order; settled
-// bookings now resolve locally so a late 👍 removal is never lost to an unfetched
-// message. The returned source makes the outcome observable in the logs.
-async function resolveReactionTarget(messageId) {
+// Resolve the reaction target from local database evidence only: pending
+// acceptance rows first, then the acceptance message of a settled booking. Local
+// evidence is best effort and every failure is logged with a trace key, so a
+// broken builder can never stop reaction intake.
+async function resolveStoredReactionTarget(messageId) {
   let pendingAcceptanceTarget = null;
   let settledOrderTarget = null;
   // Local evidence is a convenience, never a dependency: if either builder fails,
@@ -9709,8 +9709,30 @@ async function resolveReactionTarget(messageId) {
     console.warn(`[WhatsApp] settled order target resolution failed: ${orderTraceKey(messageId)} ${String(error?.message || error).slice(0, 120)}`);
   }
   if (settledOrderTarget) return { target: settledOrderTarget, source: "stored_settled_order" };
+  return { target: null, source: null };
+}
+
+// Resolve the reaction target for the live reaction event. Local evidence is
+// authoritative here: a settled booking must resolve without waiting for WhatsApp
+// Web history hydration, otherwise a late 👍 removal is dropped silently.
+async function resolveReactionTarget(messageId) {
+  const stored = await resolveStoredReactionTarget(messageId);
+  if (stored.target) return stored;
   const fetched = await getWhatsAppMessageByIdVariants(messageId, 5000);
   return { target: fetched || null, source: fetched ? "live_message_fetch" : null };
+}
+
+// Resolve the reaction target for background reconciliation. The live read must
+// stay first: reconciliation exists to observe the real reaction state, so an
+// empty-but-successful live answer may never be masked by stale local evidence.
+// Local evidence is only the fallback when WhatsApp cannot answer at all, and the
+// fallback is recorded so the scan never exits silently.
+async function resolveReconcileReactionTarget(messageId) {
+  const fetched = await getWhatsAppMessageByIdVariants(messageId, 5000);
+  if (fetched) return { target: fetched, source: "live_message_fetch" };
+  const stored = await resolveStoredReactionTarget(messageId);
+  if (stored.target) return stored;
+  return { target: null, source: "none" };
 }
 
 function reactionEvidenceSenderKey(reaction, senderPhone = "") {
@@ -10931,8 +10953,17 @@ async function reconcileStoredThumbReaction(messageId) {
 async function reconcileStoredThumbReactionUnlocked(messageId) {
   const normalizedMessageId = reactionId(messageId) || String(messageId || "").trim();
   if (!normalizedMessageId || !client || !isReady || typeof client.getMessageById !== "function") return;
-  const target = await getWhatsAppMessageByIdVariants(normalizedMessageId, 5000) || buildStoredAcceptanceMessageById(normalizedMessageId);
-  if (!target) return;
+  const resolvedReconcileTarget = await resolveReconcileReactionTarget(normalizedMessageId);
+  const target = resolvedReconcileTarget.target;
+  if (!target) {
+    // A stored booking whose acceptance message cannot be read at all used to end
+    // this scan silently; keep it observable without inferring anything from that.
+    logOrderTrace("reaction_scan_target_unresolved", {
+      reactionKey: orderTraceKey(normalizedMessageId),
+      resolutionSource: resolvedReconcileTarget.source || "none",
+    });
+    return;
+  }
   const targetGroupId = String(target.from || target._data?.from || "").trim();
   if (!targetGroupId.endsWith("@g.us") || !isConfiguredGroup(targetGroupId)) {
     logOrderTrace("reaction_scan_ignored_unconfigured_group", {
