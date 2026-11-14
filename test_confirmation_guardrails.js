@@ -39,8 +39,13 @@ assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(accepta
 assert.match(server, /const result = settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
 assert.match(server, /const captainApproved = Boolean\(/);
 assert.match(server, /reaction_approver_not_active_human_captain/);
-assert.match(server, /const storedAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"/);
-assert.match(server, /const target = storedAcceptanceTarget \|\| await getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
+// Target resolution now lives in resolveReactionTarget(): the stored pending
+// acceptance must still be tried before the live WhatsApp fetch, the settled
+// booking must be resolved locally before the fetch, and the handler must use
+// the resolver instead of the old expression that returned silently.
+assert.match(server, /const resolvedReactionTarget = await resolveReactionTarget\(messageId\);\n\s*const target = resolvedReactionTarget\.target;/);
+assert.match(server, /async function resolveReactionTarget\(messageId\) \{[\s\S]*?pendingAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"[\s\S]*?\n\s*if \(pendingAcceptanceTarget\) return \{ target: pendingAcceptanceTarget, source: "stored_pending_acceptance" \};[\s\S]*?settledOrderTarget = typeof buildSettledOrderAcceptanceTarget === "function"[\s\S]*?\n\s*if \(settledOrderTarget\) return \{ target: settledOrderTarget, source: "stored_settled_order" \};\n\s*const fetched = await getWhatsAppMessageByIdVariants\(messageId, 5000\);/);
+assert.doesNotMatch(server, /const target = storedAcceptanceTarget \|\| await getWhatsAppMessageByIdVariants/);
 assert.match(server, /reactionIsByCurrentAccount/);
 assert.match(server, /reaction sender mapped to connected bot from self-reaction evidence/);
 assert.match(server, /function reactionSenderValues\(reaction\)/);

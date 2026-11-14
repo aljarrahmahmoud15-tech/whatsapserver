@@ -9623,6 +9623,96 @@ function buildStoredAcceptanceMessageById(messageId) {
     __storedRecovery: true,
   };
 }
+// Once a booking is confirmed the candidate row becomes `finalized`, so
+// buildStoredAcceptanceMessageById (which only matches status='pending') can no
+// longer resolve the «تم» message that carries the approving 👍. Without a local
+// target the removal handler waits on WhatsApp Web hydration, silently returns, and
+// the settlement is never reversed. The order row itself keeps the exact acceptance
+// message id, its group and the executor, so rebuild the target from that evidence.
+// This restores resolution only; every authorization, ownership and idempotency
+// guard downstream is untouched, and no settlement rule is changed.
+function buildSettledOrderAcceptanceTarget(messageId) {
+  if (!messageId) return null;
+  const settledOrderSql = `SELECT id,group_id,captain_user_id,producer_user_id,accepted_message_id,source_message_id,accepted_at,settlement_state
+    FROM orders
+    WHERE status IN ('accepted','completed') AND settlement_state IN ('settled','reversed')`;
+  const exact = db.prepare(`${settledOrderSql} AND accepted_message_id=? ORDER BY id DESC LIMIT 1`).get(messageId);
+  const order = exact || db.prepare(`${settledOrderSql} AND accepted_message_id IS NOT NULL
+    ORDER BY COALESCE(accepted_at,updated_at) DESC,id DESC LIMIT 200`).all()
+    .find((row) => sourceMessageIdsEqual(row.accepted_message_id, messageId));
+  if (!order || !order.group_id || !order.accepted_message_id) return null;
+  if (typeof isConfiguredGroup === "function" && !isConfiguredGroup(order.group_id)) return null;
+  const acceptanceMessage = db.prepare("SELECT body,sent_at FROM messages WHERE message_id=? AND group_id=? LIMIT 1")
+    .get(order.accepted_message_id, order.group_id);
+  const acceptanceRow = db.prepare("SELECT acceptance_mode FROM order_candidate_acceptances WHERE acceptance_message_id=? ORDER BY id DESC LIMIT 1")
+    .get(order.accepted_message_id);
+  const captain = order.captain_user_id ? db.prepare("SELECT phone FROM users WHERE id=? LIMIT 1").get(order.captain_user_id) : null;
+  const sourceMessage = order.source_message_id
+    ? db.prepare("SELECT body,sent_at FROM messages WHERE message_id=? AND group_id=? LIMIT 1").get(order.source_message_id, order.group_id)
+    : null;
+  const quotedSource = order.source_message_id ? {
+    id: { _serialized: order.source_message_id },
+    __serializedId: order.source_message_id,
+    from: order.group_id,
+    to: order.group_id,
+    fromMe: String(order.source_message_id).startsWith("true_"),
+    body: String(sourceMessage?.body || ""),
+    timestamp: Number.isFinite(Date.parse(String(sourceMessage?.sent_at || "")))
+      ? Math.floor(Date.parse(sourceMessage.sent_at) / 1000)
+      : Math.floor(Date.now() / 1000),
+  } : null;
+  return {
+    id: { _serialized: order.accepted_message_id },
+    __serializedId: order.accepted_message_id,
+    from: order.group_id,
+    to: order.group_id,
+    fromMe: false,
+    body: String(acceptanceMessage?.body || "تم"),
+    author: { _serialized: String(captain?.phone || "") + "@c.us" },
+    __authorPhone: captain?.phone || null,
+    timestamp: Number.isFinite(Date.parse(String(acceptanceMessage?.sent_at || "")))
+      ? Math.floor(Date.parse(acceptanceMessage.sent_at) / 1000)
+      : Math.floor(Date.now() / 1000),
+    __acceptanceMode: acceptanceRow?.acceptance_mode === "unquoted" ? "unquoted" : "quoted",
+    __settledOrderTarget: true,
+    __settledOrderId: Number(order.id) || null,
+    ...(quotedSource
+      ? { __quoted: quotedSource, __quotedMessageId: order.source_message_id }
+      : {}),
+    __storedRecovery: true,
+  };
+}
+
+// Resolve the reaction target from local database evidence first, and only then ask
+// WhatsApp Web. Pending candidates keep the original resolution order; settled
+// bookings now resolve locally so a late 👍 removal is never lost to an unfetched
+// message. The returned source makes the outcome observable in the logs.
+async function resolveReactionTarget(messageId) {
+  let pendingAcceptanceTarget = null;
+  let settledOrderTarget = null;
+  // Local evidence is a convenience, never a dependency: if either builder fails,
+  // live reaction intake must still fall back to the WhatsApp fetch instead of
+  // dropping the event with an exception.
+  try {
+    pendingAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"
+      ? buildStoredAcceptanceMessageById(messageId)
+      : null;
+  } catch (error) {
+    console.warn(`[WhatsApp] pending acceptance target resolution failed: ${orderTraceKey(messageId)} ${String(error?.message || error).slice(0, 120)}`);
+  }
+  if (pendingAcceptanceTarget) return { target: pendingAcceptanceTarget, source: "stored_pending_acceptance" };
+  try {
+    settledOrderTarget = typeof buildSettledOrderAcceptanceTarget === "function"
+      ? buildSettledOrderAcceptanceTarget(messageId)
+      : null;
+  } catch (error) {
+    console.warn(`[WhatsApp] settled order target resolution failed: ${orderTraceKey(messageId)} ${String(error?.message || error).slice(0, 120)}`);
+  }
+  if (settledOrderTarget) return { target: settledOrderTarget, source: "stored_settled_order" };
+  const fetched = await getWhatsAppMessageByIdVariants(messageId, 5000);
+  return { target: fetched || null, source: fetched ? "live_message_fetch" : null };
+}
+
 function reactionEvidenceSenderKey(reaction, senderPhone = "") {
   const values = reactionSenderValues(reaction);
   return String(values[0] || senderPhone || "anonymous").trim() || "anonymous";
@@ -10517,11 +10607,19 @@ async function handleMessageReactionUnlocked(reaction) {
   if (!messageId || !client || !isReady) return;
   // The acceptance row and its quoted source are already persisted when «تم» arrives.
   // Use that local evidence first so a live 👍 never waits for WhatsApp Web hydration.
-  const storedAcceptanceTarget = typeof buildStoredAcceptanceMessageById === "function"
-    ? buildStoredAcceptanceMessageById(messageId)
-    : null;
-  const target = storedAcceptanceTarget || await getWhatsAppMessageByIdVariants(messageId, 5000);
-  if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
+  const resolvedReactionTarget = await resolveReactionTarget(messageId);
+  const target = resolvedReactionTarget.target;
+  if (!target || !target.from || !String(target.from).endsWith("@g.us")) {
+    // Never leave a 👍 removal unexplained: this was the silent exit that kept a
+    // settled booking reversed-nowhere while the logs stayed empty.
+    if (removedThumb) {
+      logOrderTrace("reaction_removal_target_unresolved", {
+        reactionKey: orderTraceKey(messageId),
+        resolutionSource: resolvedReactionTarget.source || "none",
+      });
+    }
+    return;
+  }
   if (!isConfiguredGroup(target.from)) return;
   if (typeof groupPolicy === "function" && !groupPolicy(target.from)?.reactions) return;
   const targetIsCaptainAcceptance = isCaptainAcceptance(target.body);
@@ -10673,7 +10771,14 @@ async function handleMessageReactionUnlocked(reaction) {
       return;
     }
     const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
-    if (!order) return;
+    if (!order) {
+      logOrderTrace("reaction_removal_no_settled_order", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        targetSource: resolvedReactionTarget.source || "none",
+      });
+      return;
+    }
     const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
     const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
     const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");

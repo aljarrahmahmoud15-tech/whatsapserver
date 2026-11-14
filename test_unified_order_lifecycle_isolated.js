@@ -13,6 +13,10 @@ const messageHelperStart = source.indexOf("function serializedMessageId(");
 const messageHelperEnd = source.indexOf("function orderTraceKey(", messageHelperStart);
 const reactionEvidenceStart = source.indexOf("function reactionEvidenceSenderKey(");
 const reactionEvidenceEnd = source.indexOf("function isConnectedBotReactionIdentity(", reactionEvidenceStart);
+// The reaction handler now resolves targets through two new local helpers, so the
+// extracted slice must contain them or the handler throws ReferenceError.
+const resolutionStart = source.indexOf("function buildSettledOrderAcceptanceTarget(");
+const resolutionEnd = source.indexOf("function reactionEvidenceSenderKey(", resolutionStart);
 const incomingStart = source.indexOf("async function handleIncomingMessage(");
 const incomingEnd = source.indexOf("function reactionId(", incomingStart);
 const reactionStart = source.indexOf("async function handleMessageReaction(");
@@ -28,6 +32,7 @@ const equivalentEnd = source.indexOf("function orderTraceKey(", equivalentStart)
 assert(helperStart >= 0 && helperEnd > helperStart);
 assert(messageHelperStart >= 0 && messageHelperEnd > messageHelperStart);
 assert(reactionEvidenceStart >= 0 && reactionEvidenceEnd > reactionEvidenceStart);
+assert(resolutionStart >= 0 && resolutionEnd > resolutionStart);
 assert(incomingStart >= 0 && incomingEnd > incomingStart);
 assert(reactionStart >= 0 && reactionEnd > reactionStart);
 assert(settleStart >= 0 && settleEnd > settleStart);
@@ -120,12 +125,18 @@ const db = {
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
         if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 50, producer_cents: 250, captain_fee_cents: 300, approval_reaction_user_id: state.settlement.approval_reaction_user_id, approval_method: state.settlement.approval_method, applied_at: state.settlement.applied_at, details_json: "{}" } : null;
         if (query.startsWith("SELECT id FROM notifications WHERE event=?")) return null;
+        // The settled-order target lookup is answered as "no local settled evidence"
+        // so these lifecycle tests keep resolving targets through the live fetch stub.
+        if (query.startsWith("SELECT id,group_id,captain_user_id,producer_user_id,accepted_message_id")) return null;
         if (query.startsWith("SELECT id,price_cents,group_id,source_message_id FROM order_candidates WHERE id=?")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, group_id: state.candidate.group_id, source_message_id: state.candidate.source_message_id } : null;
         if (query.startsWith("SELECT c.id,c.price_cents,c.origin,c.destination,c.trip_time,c.order_kind,c.group_id")) return state.candidate ? { id: state.candidate.id, price_cents: state.candidate.price_cents, origin: state.candidate.origin, destination: state.candidate.destination, trip_time: state.candidate.trip_time, order_kind: state.candidate.order_kind, group_id: state.candidate.group_id, producer_name: users.producer?.name || "المنتج" } : null;
         if (query.startsWith("SELECT * FROM orders WHERE group_id=?")) return state.order && state.order.accepted_message_id === args[1] ? { ...state.order } : null;
         throw new Error(`Unexpected get query: ${query}`);
       },
       all(...args) {
+        // The settled-order target lookup is answered as "no local settled evidence"
+        // so these lifecycle tests keep resolving targets through the live fetch stub.
+        if (query.startsWith("SELECT id,group_id,captain_user_id,producer_user_id,accepted_message_id")) return [];
         if (query.startsWith("SELECT * FROM reaction_evidence WHERE message_id=? AND emoji=? AND active=1")) {
           return state.reactionEvidence.filter((row) => row.message_id === args[0] && row.emoji === args[1] && row.active === 1).sort((a, b) => b.id - a.id).map((row) => ({ ...row }));
         }
@@ -299,7 +310,7 @@ function message(id, body, sender, quoted = null) {
   findPendingAcceptanceByMessage: null,
 };
 
-vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(reactionEvidenceStart, reactionEvidenceEnd)}\n${source.slice(equivalentStart, equivalentEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(reverseStart, reverseEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
+vm.runInNewContext(`${source.slice(messageHelperStart, messageHelperEnd)}\n${source.slice(resolutionStart, resolutionEnd)}\n${source.slice(reactionEvidenceStart, reactionEvidenceEnd)}\n${source.slice(equivalentStart, equivalentEnd)}\n${source.slice(helperStart, helperEnd)}\n${source.slice(incomingStart, incomingEnd)}\n${source.slice(reactionStart, reactionEnd)}\n${source.slice(settleStart, settleEnd)}\n${source.slice(reverseStart, reverseEnd)}\n${source.slice(cancelStart, cancelEnd)}\nthis.handleIncomingMessage=handleIncomingMessage;this.handleMessageReaction=handleMessageReaction;this.cancelPendingOrderForProducerReaction=cancelPendingOrderForProducerReaction;`, context);
 
 async function ingestPrice(sourceId = "price-1") {
   const price = message(sourceId, "السعر 20", PRODUCER);
