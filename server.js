@@ -37,6 +37,7 @@ const { createWhatsAppIdentityHandler } = require("./whatsapp-identity-route");
 const { canDeleteAccount } = require("./account-deletion-policy");
 const { createCaptainBalanceImportService } = require("./captain-balance-import");
 const { createNegativeBalanceSettlementService } = require("./negative-balance-settlement");
+const { createRepeatingBroadcastScheduler } = require("./repeating-broadcast-scheduler");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -990,6 +991,22 @@ db.pragma("foreign_keys = ON");
 // This is a separate, non-authoritative owner-control projection. It never replaces
 // or mutates the production database, WhatsApp auth folders, or group configuration.
 const ownerControlStore = createOwnerControlStore({ dataDir: DATA_DIR });
+const repeatingBroadcastScheduler = createRepeatingBroadcastScheduler({
+  dataDir: DATA_DIR,
+  getOfficialGroupId: () => configuredRuntimeGroupId(),
+  isReady: () => Boolean(client && isReady),
+  isStorageBlocked: () => isWhatsAppStorageSendBlocked(),
+  isAllowedGroup: (groupId) => isConfiguredGroup(groupId) && isServer2OutboundTargetAllowed(groupId),
+  validateMessage: (message) => !ownerBroadcastMessageIsOperational(message),
+  send: async (groupId, message) => {
+    if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
+    const timeoutMarker = Symbol("repeating_broadcast_timeout");
+    const sent = await withTimeoutStrict(Promise.resolve().then(() => client.sendMessage(groupId, message)), ADMIN_SEND_TIMEOUT_MS, timeoutMarker);
+    if (sent === timeoutMarker) throw new Error("broadcast_send_timeout");
+    return sent;
+  },
+  audit,
+});
 // Encrypted owner decisions live in a separate persistent store. No arbitrary
 // code, raw secret, WhatsApp session material, or financial mutation is stored here.
 const ownerVault = createOwnerVault({ dataDir: DATA_DIR, secret: OWNER_VAULT_SECRET });
@@ -12414,6 +12431,24 @@ function ownerBroadcastMessageIsOperational(message) {
     || /^#(?:تسجيل|استرداد|اعتماد|ربط|اعتمد)\b/i.test(text);
 }
 
+app.get("/api/admin/owner-control/repeating-broadcast", requireBotWalletOwner, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({ success: true, mutation: "none", schedule: repeatingBroadcastScheduler.status() });
+});
+app.post("/api/admin/owner-control/repeating-broadcast", requireBotWalletOwner, async (req, res) => {
+  if (!consumeRateLimit(adminActionRate, `repeating-broadcast:${clientAddress(req)}`, 10)) return res.status(429).json({ success: false, mutation: "none", error: "محاولات جدولة كثيرة؛ حاول لاحقًا" });
+  const action = String(req.body?.action || "").trim().toLowerCase();
+  try {
+    if (action === "stop") { const schedule = repeatingBroadcastScheduler.stop(); const auditRow = recordOwnerCommand("group.broadcast", "accepted", { mutation: "repeating_broadcast.stop", executed: true }); return res.json({ success: true, mutation: "repeating_broadcast.stop", executed: true, schedule, audit: auditRow }); }
+    if (action !== "start") return res.status(400).json({ success: false, mutation: "none", error: "action must be start or stop" });
+    const groupId = String(req.body?.groupId || configuredRuntimeGroupId() || "").trim();
+    const message = String(req.body?.message || "").trim();
+    const schedule = repeatingBroadcastScheduler.start({ groupId, message });
+    const auditRow = recordOwnerCommand("group.broadcast", "accepted", { mutation: "repeating_broadcast.start", executed: true, groupId, intervalMs: schedule.intervalMs, messageLength: message.length });
+    return res.status(202).json({ success: true, mutation: "repeating_broadcast.start", accepted: true, executed: true, schedule, audit: auditRow });
+  } catch (error) { const reason = String(error?.message || error).slice(0, 120); const auditRow = recordOwnerCommand("group.broadcast", "rejected", { mutation: "none", executed: false, reason }); return res.status(reason === "official_group_mismatch" ? 403 : 400).json({ success: false, mutation: "none", executed: false, error: reason === "official_group_mismatch" ? "يسمح بالجدولة للقروب الرسمي المكوّن فقط" : "رسالة أو إعدادات الجدولة غير صالحة", audit: auditRow }); }
+});
+
 app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, res) => {
   const command = String(req.body?.command || "").trim();
   if (!consumeRateLimit(adminActionRate, `owner-command:${clientAddress(req)}`, 10)) {
@@ -18588,6 +18623,7 @@ reconcileConfiguredGroupFromEnvironment();
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE_INTL || BOT_PHONE} data=${DATA_DIR}`);
+  repeatingBroadcastScheduler.startLoop();
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
@@ -18634,5 +18670,5 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); repeatingBroadcastScheduler.close(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); repeatingBroadcastScheduler.close(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
