@@ -12173,7 +12173,9 @@ app.delete("/api/admin/staff/:id", requireAdmin, (req, res) => {
   audit("staff.account.deleted", "staff_account", id, { username: account.username, phone: account.phone, role: account.role, financialRefs });
   res.json({ success: true, deleted: id, financialRefs });
 });
-app.get("/api/public/operations-feed", (req, res) => {
+// This feed contains owner notifications and settlement amounts. Keep the
+// legacy route for compatibility, but never expose its financial payload publicly.
+app.get("/api/public/operations-feed", requireOwnerAdmin, (req, res) => {
   const redact = (value) => String(value || "")
     .replace(/(?:\+?962|0)?7\d{8,9}/g, "رقم مخفي")
     .replace(/Bearer\s+\S+/gi, "Bearer مخفي")
@@ -12315,7 +12317,10 @@ function startPublicStatusCacheRefresh() {
   if (typeof publicStatusRefreshTimer.unref === "function") publicStatusRefreshTimer.unref();
 }
 
-app.get("/status", (req, res) => {
+// Detailed runtime status includes WhatsApp, group, storage, recovery, and
+// wallet metrics. Public liveness is provided by /health; this endpoint is
+// restricted to authenticated administrators.
+app.get("/status", requireAdmin, (req, res) => {
   const startedAt = process.hrtime.bigint();
   const currentTime = Date.now();
   const hasFreshSnapshot = Boolean(publicStatusCache.payload && publicStatusCache.expiresAt > currentTime);
