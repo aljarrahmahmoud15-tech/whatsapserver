@@ -8264,6 +8264,30 @@ function scheduleReactionRetry(reaction, delays = [1500, 5000]) {
     }, delayMs).unref?.();
   });
 }
+function logReactionRemovalPayloadDiagnostics(reaction) {
+  const messageId = reactionId(reaction?.msgId);
+  const senderValues = [
+    reaction?.__senderPhone, reaction?._data?.__senderPhone,
+    reaction?.senderId, reaction?._data?.senderId,
+    reaction?.senderUserJid, reaction?._data?.senderUserJid,
+    reaction?.author, reaction?._data?.author,
+    reaction?.sender, reaction?._data?.sender,
+    reaction?.id?.participant, reaction?._data?.id?.participant,
+  ].filter(Boolean);
+  logOrderTrace("reaction_removal_payload_received", {
+    reactionKey: orderTraceKey(messageId),
+    messageIdPresent: Boolean(messageId),
+    reactionFieldPresent: Object.prototype.hasOwnProperty.call(reaction || {}, "reaction") || Object.prototype.hasOwnProperty.call(reaction?._data || {}, "reaction"),
+    reactionIsEmpty: String(reaction?.reaction ?? reaction?._data?.reaction ?? "") === "",
+    senderIdPresent: Boolean(reaction?.senderId || reaction?._data?.senderId),
+    senderUserJidPresent: Boolean(reaction?.senderUserJid || reaction?._data?.senderUserJid),
+    authorPresent: Boolean(reaction?.author || reaction?._data?.author),
+    participantPresent: Boolean(reaction?.id?.participant || reaction?._data?.id?.participant),
+    senderCandidateCount: senderValues.length,
+    hasReactionByMe: Boolean(reaction?.hasReactionByMe || reaction?._data?.hasReactionByMe),
+    topLevelKeys: Object.keys(reaction || {}).filter((key) => !["body", "text"].includes(key)).slice(0, 30),
+  });
+}
 function shouldHandleMessageEvent(msg, eventName) {
   const serializedId = serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || "").trim();
   if (!serializedId) return true;
@@ -8657,7 +8681,7 @@ function createClient() {
     if (generation !== connectionGeneration) return;
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
     const reactionValue = String(reaction?.reaction || "").trim();
-    if (reactionValue === "👍" || reactionValue === "❌") {
+    if (reactionValue === "" || reactionValue === "👍" || reactionValue === "❌") {
       scheduleReactionRetry(reaction, [1500, 5000]);
     }
   });
