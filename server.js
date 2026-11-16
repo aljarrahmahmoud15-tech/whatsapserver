@@ -14821,8 +14821,9 @@ app.delete("/api/admin/captains/:id", requireOwnerAdmin, (req, res) => {
   if (!captain) return res.status(404).json({ error: "Captain not found" });
   if (captain.is_bot) return res.status(403).json({ error: "حساب البوت محمي ولا يمكن أرشفته" });
   if (captain.archived_at || captain.account_status === "merged") return res.status(409).json({ error: "الحساب مؤرشف مسبقًا", archived: true });
-  if (rejectCaptainRemovalWhilePaused(res, "captain_archive", id)) return;
-  const reason = String(req.body?.reason || "حذف من واجهة المالك").trim().slice(0, 240) || "حذف من واجهة المالك";
+  // Owner-only archive is intentionally available from the admin panel.
+  // It never changes wallets, settlements, orders, or the historical record.
+  const reason = String(req.body?.reason || "أرشفة من واجهة المالك").trim().slice(0, 240) || "أرشفة من واجهة المالك";
   const stamp = now();
   const result = db.prepare("UPDATE users SET active=0,account_status='suspended',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND archived_at IS NULL").run(stamp, reason, stamp, id);
   if (!result.changes) return res.status(409).json({ error: "تعذر أرشفة الحساب؛ أعد تحميل القائمة" });
