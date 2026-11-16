@@ -570,7 +570,7 @@ if (!activeAdminToken) {
   } catch {}
 }
 app.disable("x-powered-by");
-app.use(compression({ threshold: 1024, level: 6 }));
+app.use(compression({ threshold: 1024, level: 1 }));
 const publicStatusCors = cors({
   credentials: false,
   methods: ["GET", "HEAD", "OPTIONS"],
