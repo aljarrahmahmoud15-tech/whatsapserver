@@ -44,8 +44,8 @@ assert.ok(
   'owner approval is required to create and activate the captain account'
 );
 assert.ok(
-  server.includes('confirmingCaptainWalletRate: "-16%"'),
-  'the order 15% plus 5% accounting rule is exposed'
+  server.includes('confirmingCaptainWalletRate: "-15%"'),
+  'the full 15% executor debit is exposed'
 );
 assert.ok(
   server.includes('posted_share_cents') &&
@@ -56,8 +56,8 @@ assert.ok(
 assert.ok(
   server.includes('const PRODUCER_RATE_BPS = 1200;') &&
   server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
-  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 400;'),
-  'the approved 12%/4% rates for both order kinds are policy constants'
+  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 300;'),
+  'the approved 12%/3% rates for both order kinds are policy constants'
 );
 assert.ok(
   server.includes('if (getSetting(key) === null) setSetting(key, value);') &&

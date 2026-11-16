@@ -123,7 +123,7 @@ const db = {
         if (query.startsWith("SELECT COALESCE(MAX(order_no),0)+1")) return { next: state.order ? state.order.order_no + 1 : 1 };
         if (query.startsWith("SELECT wallet_cents FROM users WHERE id=?")) return userById(args[0]) ? { wallet_cents: userById(args[0]).wallet_cents } : null;
         if (query.startsWith("SELECT id,status FROM order_settlements WHERE order_id=?")) return state.settlement ? { id: 1, status: state.settlement.status } : null;
-        if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 50, producer_cents: 250, captain_fee_cents: 300, approval_reaction_user_id: state.settlement.approval_reaction_user_id, approval_method: state.settlement.approval_method, applied_at: state.settlement.applied_at, details_json: "{}" } : null;
+        if (query.startsWith("SELECT * FROM order_settlements WHERE order_id=? AND status='applied'")) return state.settlement?.status === "applied" ? { company_cents: 60, producer_cents: 240, captain_fee_cents: 300, approval_reaction_user_id: state.settlement.approval_reaction_user_id, approval_method: state.settlement.approval_method, applied_at: state.settlement.applied_at, details_json: "{}" } : null;
         if (query.startsWith("SELECT id FROM notifications WHERE event=?")) return null;
         // The settled-order target lookup is answered as "no local settled evidence"
         // so these lifecycle tests keep resolving targets through the live fetch stub.
@@ -274,13 +274,13 @@ function message(id, body, sender, quoted = null) {
   calculateSettlement,
   evaluateBalance,
   settlementLedgerNotes,
-  PRODUCER_RATE_BPS: 1250,
+  PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1500,
   SPECIAL_ORDER_PRODUCER_RATE_BPS: 1500,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 250,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 500,
-  currentSettlementPolicy: () => ({ producerRateBps: 1250, companyRateBps: 250, totalRateBps: 1500, regularProducerRateBps: 1250, specialOrderProducerRateBps: 1250, companyFromProducerRateBps: 250, specialOrderCompanyFromProducerRateBps: 250 }),
-  calculateConfiguredSettlement: (input = {}) => ({ ...calculateSettlement({ ...input, regularProducerRateBps: 1250, specialOrderProducerRateBps: 1250, companyFromProducerRateBps: 250, specialOrderCompanyFromProducerRateBps: 250 }), companyRateBps: 250 }),
+  currentSettlementPolicy: () => ({ producerRateBps: 1200, companyRateBps: 300, totalRateBps: 1500, regularProducerRateBps: 1200, specialOrderProducerRateBps: 1200, companyFromProducerRateBps: 300, specialOrderCompanyFromProducerRateBps: 300 }),
+  calculateConfiguredSettlement: (input = {}) => ({ ...calculateSettlement({ ...input, regularProducerRateBps: 1200, specialOrderProducerRateBps: 1200, companyFromProducerRateBps: 300, specialOrderCompanyFromProducerRateBps: 300 }), companyRateBps: 300 }),
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   serializedMessageId: (msg) => msg?.id?._serialized || msg?.id || null,
@@ -338,8 +338,8 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   assert.equal(state.ledgers.length, 3, "التسوية الذرية تسجل 3 حركات فقط");
   assert.equal(state.settlement.approval_reaction_user_id, users.producer.id, "يحفظ سجل التسوية هوية الكابتن الذي اعتمدها بالإعجاب");
   assert.equal(state.settlement.approval_method, "reaction", "يسجل أن التسوية اعتمدت بتفاعل 👍");
-  assert.equal(users.producer.wallet_cents, 250, "يُضاف 12.5% للمنتج");
-  assert.equal(users.company.wallet_cents, 50, "يُضاف 2.5% للشركة");
+  assert.equal(users.producer.wallet_cents, 240, "يُضاف 12% للمنتج");
+  assert.equal(users.company.wallet_cents, 60, "يُضاف 3% للشركة");
   assert.equal(users.executor.wallet_cents, 4700, "يُخصم 15% من المنفذ");
   await approve();
   assert.equal(state.ledgers.length, 3, "التفاعل المكرر لا يكرر التسوية");
@@ -444,8 +444,8 @@ async function approve(doneId = "done-1", approverPhone = PRODUCER) {
   await context.handleMessageReaction({ reaction: "👍", msgId: canonicalMessageId("done-lid", EXECUTOR) });
   assert.equal(state.candidate.status, "finalized", "بعد حل هوية صاحب 👍 الأصلي يتم التثبيت");
   assert.equal(state.ledgers.length, 3);
-  assert.equal(users.producer.wallet_cents, 250);
-  assert.equal(users.company.wallet_cents, 50);
+  assert.equal(users.producer.wallet_cents, 240);
+  assert.equal(users.company.wallet_cents, 60);
   assert.equal(users.executor.wallet_cents, 4700);
 
   reset({ executorBalance: 300 });

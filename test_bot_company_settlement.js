@@ -16,7 +16,7 @@ const companyFinalBalance = companyAfterCompanyShare + settlement.producerNetCen
 assert.equal(settlement.producerFeeCents, 250);
 assert.equal(settlement.companyCents, 50);
 assert.equal(settlement.producerNetCents, 250);
-assert.equal(companyFinalBalance, 300, "حصة المنتج 12.5% وعمولة الشركة 2.5% تذهبان معًا لرصيد الشركة");
+assert.equal(companyFinalBalance, 300, "حصة المنتج 12.5% وعمولة الشركة 3% تذهبان معًا لرصيد الشركة");
 assert.equal(settlement.producerNetCents > 0, true);
 assert.equal("botWallet" in {}, false, "لا توجد محفظة مستقلة للبوت");
 

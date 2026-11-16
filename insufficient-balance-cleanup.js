@@ -1,9 +1,9 @@
 "use strict";
 
 // Shared low-balance policy. Wallet values are integer cents and rates are basis points.
-const TOTAL_COMMISSION_BPS = 1_600; // 16% = 12% producer + 4% company
+const TOTAL_COMMISSION_BPS = 1_500; // 15% = 12% producer + 3% company
 const PRODUCER_COMMISSION_BPS = 1_200;
-const COMPANY_COMMISSION_BPS = 400;
+const COMPANY_COMMISSION_BPS = 300;
 
 function requiredCommissionCents(fareCents, totalCommissionBps = TOTAL_COMMISSION_BPS) {
   const fare = Number(fareCents);

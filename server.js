@@ -37,7 +37,6 @@ const { createWhatsAppIdentityHandler } = require("./whatsapp-identity-route");
 const { canDeleteAccount } = require("./account-deletion-policy");
 const { createCaptainBalanceImportService } = require("./captain-balance-import");
 const { createNegativeBalanceSettlementService } = require("./negative-balance-settlement");
-const { createRepeatingBroadcastScheduler } = require("./repeating-broadcast-scheduler");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -193,12 +192,12 @@ const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Settlement policy: the value after the fare marker is external and never credits the executor.
-// Normal and «أوردر» orders use 12% downloader + 4% company = 16% executor debit.
-const COMPANY_RATE_BPS = 400;
+// Normal and «أوردر» orders use 12% downloader + 3% company = 15% executor debit.
+const COMPANY_RATE_BPS = 300;
 const PRODUCER_RATE_BPS = 1200;
 const SPECIAL_ORDER_RATE_BPS = 1200;
-const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 400;
-const COMPANY_FROM_PRODUCER_RATE_BPS = 400;
+const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 300;
+const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 const DIRECT_RIDE_LIVE_DISPATCH = process.env.DIRECT_RIDE_LIVE_DISPATCH === "true";
 const DIRECT_RIDE_ROUTE_TIMEOUT_MS = Math.max(3000, Math.min(15000, Number(process.env.DIRECT_RIDE_ROUTE_TIMEOUT_MS || 8000)));
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
@@ -991,22 +990,6 @@ db.pragma("foreign_keys = ON");
 // This is a separate, non-authoritative owner-control projection. It never replaces
 // or mutates the production database, WhatsApp auth folders, or group configuration.
 const ownerControlStore = createOwnerControlStore({ dataDir: DATA_DIR });
-const repeatingBroadcastScheduler = createRepeatingBroadcastScheduler({
-  dataDir: DATA_DIR,
-  getOfficialGroupId: () => configuredRuntimeGroupId(),
-  isReady: () => Boolean(client && isReady),
-  isStorageBlocked: () => isWhatsAppStorageSendBlocked(),
-  isAllowedGroup: (groupId) => isConfiguredGroup(groupId) && isServer2OutboundTargetAllowed(groupId),
-  validateMessage: (message) => !ownerBroadcastMessageIsOperational(message),
-  send: async (groupId, message) => {
-    if (!client || !isReady || typeof client.sendMessage !== "function") throw new Error("whatsapp_not_ready");
-    const timeoutMarker = Symbol("repeating_broadcast_timeout");
-    const sent = await withTimeoutStrict(Promise.resolve().then(() => client.sendMessage(groupId, message)), ADMIN_SEND_TIMEOUT_MS, timeoutMarker);
-    if (sent === timeoutMarker) throw new Error("broadcast_send_timeout");
-    return sent;
-  },
-  audit,
-});
 // Encrypted owner decisions live in a separate persistent store. No arbitrary
 // code, raw secret, WhatsApp session material, or financial mutation is stored here.
 const ownerVault = createOwnerVault({ dataDir: DATA_DIR, secret: OWNER_VAULT_SECRET });
@@ -4124,8 +4107,8 @@ function ensureSystemUsers() {
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
-  // Initialize defaults once, then migrate the explicitly approved 12%/4% policy once.
-  // Later owner edits are preserved because the migration is versioned.
+  // Initialize defaults once. Migrate only the prior approved 12%/4% policy;
+  // later owner edits are preserved and historical settlements are untouched.
   const settlementDefaults = [
     ["company_rate_bps", COMPANY_RATE_BPS],
     ["producer_rate_bps", PRODUCER_RATE_BPS],
@@ -4138,14 +4121,17 @@ function ensureSystemUsers() {
   for (const [key, value] of settlementDefaults) {
     if (getSetting(key) === null) setSetting(key, value);
   }
-  if (getSetting("settlement_policy_version") !== "12_4_all_order_kinds_v1") {
+  const settlementPolicyVersion = getSetting("settlement_policy_version");
+  if (settlementPolicyVersion === "12_4_all_order_kinds_v1") {
     const approvedRates = [
-      ["producer_rate_bps", 1200], ["company_rate_bps", 400],
-      ["special_order_rate_bps", 1200], ["special_order_company_from_producer_rate_bps", 400],
-      ["order_producer_rate_bps", 1200], ["order_company_rate_bps", 400],
+      ["producer_rate_bps", 1200], ["company_rate_bps", 300],
+      ["special_order_rate_bps", 1200], ["special_order_company_from_producer_rate_bps", 300],
+      ["order_producer_rate_bps", 1200], ["order_company_rate_bps", 300],
     ];
     for (const [key, value] of approvedRates) setSetting(key, value);
-    setSetting("settlement_policy_version", "12_4_all_order_kinds_v1");
+    setSetting("settlement_policy_version", "12_3_all_order_kinds_v2");
+  } else if (settlementPolicyVersion === null) {
+    setSetting("settlement_policy_version", "12_3_all_order_kinds_v2");
   }
   for (const definition of Object.values(OWNER_NOTIFICATION_DEFINITIONS)) {
     if (getSetting(definition.key) === null) setSetting(definition.key, definition.defaultValue ? "1" : "0");
@@ -6193,7 +6179,7 @@ function parseOrder(text) {
   const requestKind = Boolean(requestKindMatch);
   return {
     // الصيغة التشغيلية المعتمدة: تُستخرج الأجرة قبل فحص قبول الكابتن؛ ثم يستخدم
-    // acceptanceBalanceGuard السعر المحفوظ لحساب عمولة 16% وحد الرصيد.
+    // acceptanceBalanceGuard السعر المحفوظ لحساب عمولة 15% وحد الرصيد.
     isOrder: price !== null,
     price,
     priceCents: price === null ? null : Math.round(price * 100),
@@ -7007,7 +6993,7 @@ function formatAcceptance(order, captain, producer) {
     `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 16% (12% للمنزل + 4% للشركة)" : "طلب عادي وأوردر · خصم 16% (12% للمنزّل + 4% للشركة)"}`,
+    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 15% (12% للمنزّل + 3% للشركة)" : "طلب عادي وأوردر · خصم 15% (12% للمنزّل + 3% للشركة)"}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 حصة المنزل: ${money(order.producer_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
     "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
@@ -12054,7 +12040,7 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at, uiDesign },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
-    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' }, order: { postedRate: '12%', companyRate: '4%', executorDebit: '16%' } } },
+    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '3%', executorDebit: '15%' }, order: { postedRate: '12%', companyRate: '3%', executorDebit: '15%' } } },
     entries,
     trips,
     activeOrders,
@@ -12230,7 +12216,7 @@ app.get("/api/public/operations-feed", requireOwnerAdmin, (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { normalOrder: { producerWalletRate: "12%", companyWalletRate: "4%", confirmingCaptainWalletRate: "-16%" }, order: { producerWalletRate: "12%", companyWalletRate: "4%", confirmingCaptainWalletRate: "-16%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "projected balances below 0.00 JOD are rejected; normal and order debit 16%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "negative balance is rejected; captain remains active and is never removed or disabled for insufficient balance", idempotent: true },
+    policy: { normalOrder: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15%" }, order: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "projected balances below 0.00 JOD are rejected; normal and order debit 15%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "negative balance is rejected; captain remains active and is never removed or disabled for insufficient balance", idempotent: true },
   });
 });
 
@@ -12430,24 +12416,6 @@ function ownerBroadcastMessageIsOperational(message) {
     || isCaptainAcceptance(text)
     || /^#(?:تسجيل|استرداد|اعتماد|ربط|اعتمد)\b/i.test(text);
 }
-
-app.get("/api/admin/owner-control/repeating-broadcast", requireBotWalletOwner, (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  return res.json({ success: true, mutation: "none", schedule: repeatingBroadcastScheduler.status() });
-});
-app.post("/api/admin/owner-control/repeating-broadcast", requireBotWalletOwner, async (req, res) => {
-  if (!consumeRateLimit(adminActionRate, `repeating-broadcast:${clientAddress(req)}`, 10)) return res.status(429).json({ success: false, mutation: "none", error: "محاولات جدولة كثيرة؛ حاول لاحقًا" });
-  const action = String(req.body?.action || "").trim().toLowerCase();
-  try {
-    if (action === "stop") { const schedule = repeatingBroadcastScheduler.stop(); const auditRow = recordOwnerCommand("group.broadcast", "accepted", { mutation: "repeating_broadcast.stop", executed: true }); return res.json({ success: true, mutation: "repeating_broadcast.stop", executed: true, schedule, audit: auditRow }); }
-    if (action !== "start") return res.status(400).json({ success: false, mutation: "none", error: "action must be start or stop" });
-    const groupId = String(req.body?.groupId || configuredRuntimeGroupId() || "").trim();
-    const message = String(req.body?.message || "").trim();
-    const schedule = repeatingBroadcastScheduler.start({ groupId, message });
-    const auditRow = recordOwnerCommand("group.broadcast", "accepted", { mutation: "repeating_broadcast.start", executed: true, groupId, intervalMs: schedule.intervalMs, messageLength: message.length });
-    return res.status(202).json({ success: true, mutation: "repeating_broadcast.start", accepted: true, executed: true, schedule, audit: auditRow });
-  } catch (error) { const reason = String(error?.message || error).slice(0, 120); const auditRow = recordOwnerCommand("group.broadcast", "rejected", { mutation: "none", executed: false, reason }); return res.status(reason === "official_group_mismatch" ? 403 : 400).json({ success: false, mutation: "none", executed: false, error: reason === "official_group_mismatch" ? "يسمح بالجدولة للقروب الرسمي المكوّن فقط" : "رسالة أو إعدادات الجدولة غير صالحة", audit: auditRow }); }
-});
 
 app.post("/api/admin/owner-control/command", requireBotWalletOwner, async (req, res) => {
   const command = String(req.body?.command || "").trim();
@@ -12981,7 +12949,7 @@ app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
       audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps, specialOrderProducerRateBps: before.specialOrderProducerRateBps, specialOrderCompanyRateBps: before.specialOrderCompanyRateBps }, after: { ...next, specialOrderProducerRateBps: next.producerRateBps, specialOrderCompanyRateBps: next.companyRateBps }, appliesTo: "normal_and_order_orders" });
     })();
     res.setHeader("Cache-Control", "no-store, max-age=0");
-    res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية 12% للكابتن و4% للشركة للطلب العادي والأوردر الجديد فقط؛ السجلات السابقة لا تتغير." });
+    res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية 12% للمنزّل و3% للشركة، بإجمالي خصم 15% من المنفّذ للطلب العادي والأوردر الجديد فقط؛ السجلات السابقة لا تتغير." });
   } catch (error) {
     console.error("[Settings] settlement policy update failed:", error.message);
     res.status(500).json({ error: "تعذر حفظ إعدادات التسوية" });
@@ -17446,7 +17414,7 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "16%", companyWalletCredit: "4%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "16%", companyWalletCredit: "4%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0.00 دينار؛ الطلب العادي والأوردر يخصمان 16%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "يُرفض الرصيد السالب، مع إبقاء الكابتن نشطًا ومنع الإزالة أو التعطيل بسبب نقص الرصيد", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "3%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "3%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0.00 دينار؛ الطلب العادي والأوردر يخصمان 15%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "يُرفض الرصيد السالب، مع إبقاء الكابتن نشطًا ومنع الإزالة أو التعطيل بسبب نقص الرصيد", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();
@@ -18623,7 +18591,6 @@ reconcileConfiguredGroupFromEnvironment();
 app.listen(PORT, () => {
   console.log(`[HTTP] listening on ${PORT}`);
   console.log(`[Config] phone=${BOT_PHONE_INTL || BOT_PHONE} data=${DATA_DIR}`);
-  repeatingBroadcastScheduler.startLoop();
   startRuntimeMemoryCleanup();
   startRuntimeMemoryWatchdog();
   startTopupCardArchiveScheduler();
@@ -18670,5 +18637,5 @@ process.on("uncaughtException", (error) => {
   console.warn("[Process] recoverable WhatsApp browser lifecycle error; keeping server alive");
   scheduleReconnect();
 });
-process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); repeatingBroadcastScheduler.close(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
-process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); repeatingBroadcastScheduler.close(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGTERM", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });
+process.on("SIGINT", async () => { stopRuntimeMemoryWatchdog(); stopRuntimeMemoryCleanup(); await destroyClient(); ownerVault.close(); ownerControlStore.close(); db.close(); process.exit(0); });

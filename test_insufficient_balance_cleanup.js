@@ -11,16 +11,16 @@ const {
 } = require("./insufficient-balance-cleanup");
 
 assert.equal(PRODUCER_COMMISSION_BPS + COMPANY_COMMISSION_BPS, TOTAL_COMMISSION_BPS);
-assert.equal(requiredCommissionCents(1_000), 160);
-assert.equal(requiredCommissionCents(10_000), 1_600);
-assert.deepEqual(evaluateBalance({ balanceCents: 100, requiredCents: 160 }), {
+assert.equal(requiredCommissionCents(1_000), 150);
+assert.equal(requiredCommissionCents(10_000), 1_500);
+assert.deepEqual(evaluateBalance({ balanceCents: 100, requiredCents: 150 }), {
   allowed: false,
   state: "insufficient_balance",
   balanceCents: 100,
-  requiredCents: 160,
-  projectedBalanceCents: -60,
+  requiredCents: 150,
+  projectedBalanceCents: -50,
 });
-assert.equal(evaluateBalance({ balanceCents: 160, requiredCents: 160 }).allowed, true);
+assert.equal(evaluateBalance({ balanceCents: 160, requiredCents: 150 }).allowed, true);
 assert.equal(evaluateBalance({ balanceCents: 0, requiredCents: 1, minimumBalanceCents: -100 }).allowed, true);
 assert.equal(isDoneMessage(" تم "), true);
 assert.equal(isDoneMessage("تم جاهز الآن"), true);

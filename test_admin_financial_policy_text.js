@@ -17,12 +17,12 @@ assert.match(admin, /التعديل يؤثر على الطلبات التي تُ
 assert.match(admin, /الشركة/);
 assert.match(admin, /التعديل يؤثر على الطلبات التي تُثبت بعد الحفظ فقط/);
 assert.equal(REGULAR_PRODUCER_RATE_BPS, 1200);
-assert.equal(COMPANY_FROM_PRODUCER_RATE_BPS, 400);
+assert.equal(COMPANY_FROM_PRODUCER_RATE_BPS, 300);
 assert.equal(settlement.producerFeeCents, 60);
-assert.equal(settlement.companyCents, 20);
-assert.equal(settlement.confirmingCaptainFeeCents, 80);
+assert.equal(settlement.companyCents, 15);
+assert.equal(settlement.confirmingCaptainFeeCents, 75);
 assert.equal(settlement.executorWalletCreditCents, 0);
 assert.equal(ORDER_PRODUCER_RATE_BPS, 1200);
-assert.equal(ORDER_COMPANY_RATE_BPS, 400);
+assert.equal(ORDER_COMPANY_RATE_BPS, 300);
 
-console.log('admin financial policy text guard passed: normal and order 12% + 4%');
+console.log('admin financial policy text guard passed: normal and order 12% + 3%');

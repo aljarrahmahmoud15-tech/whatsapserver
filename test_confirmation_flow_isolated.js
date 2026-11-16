@@ -141,11 +141,11 @@ const context = {
   connectedBotPhone: () => "0771111111",
   findActiveRegisteredUser: (phone) => Object.values(users).find((user) => user.phone === phone && user.active === 1 && user.account_status === "active") || null,
   getSetting: (_key, fallback) => fallback,
-  PRODUCER_RATE_BPS: 1250,
+  PRODUCER_RATE_BPS: 1200,
   SPECIAL_ORDER_RATE_BPS: 1500,
-  COMPANY_FROM_PRODUCER_RATE_BPS: 250,
+  COMPANY_FROM_PRODUCER_RATE_BPS: 300,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS: 500,
-  currentSettlementPolicy: () => ({ producerRateBps: 1250, companyRateBps: 250, totalRateBps: 1500, regularProducerRateBps: 1250, specialOrderProducerRateBps: 1250, companyFromProducerRateBps: 250, specialOrderCompanyFromProducerRateBps: 250 }),
+  currentSettlementPolicy: () => ({ producerRateBps: 1200, companyRateBps: 300, totalRateBps: 1500, regularProducerRateBps: 1200, specialOrderProducerRateBps: 1200, companyFromProducerRateBps: 300, specialOrderCompanyFromProducerRateBps: 300 }),
   BOT_FINANCIAL_MODE: "company",
   CAPTAIN_MIN_BALANCE_CENTS: -300,
   calculateSettlement,
@@ -202,8 +202,8 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(candidate.status, "finalized", "تفاعل المالك المكرر يبقى idempotent");
   assert.strictEqual(ledgers.length, 3, "تسجل الحركات الثلاث فقط بعد التثبيت");
   assert.strictEqual(users[3].wallet_cents, 100, "يُخصم 15% من محفظة الكابتن المنفذ");
-  assert.strictEqual(users[2].wallet_cents, 250, "تضاف 12.5% لمحفظة كابتن تنزيل الطلب");
-  assert.strictEqual(users[1].wallet_cents, 50, "تضاف 2.5% لمحفظة الشركة");
+  assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
+  assert.strictEqual(users[1].wallet_cents, 60, "تضاف 3% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
   assert.match(messages[0].text, /🟢 تثبيت الطلب #7/);
   assert.match(messages[0].text, /🚕 المنفذ: الكابتن/);
