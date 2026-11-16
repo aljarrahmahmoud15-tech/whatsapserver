@@ -9956,13 +9956,14 @@ async function resolveReactionSenderPhone(reaction) {
   return "";
 }
 
-function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone, ownerAuthorized = false, requiredReactionActorId = null, requiredReactionEvidenceAt = "") {
+function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone, ownerAuthorized = false, requiredReactionActorId = null, requiredReactionEvidenceAt = "", producerAuthorized = false) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
     if (!current) return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     const reactingCaptain = producerPhone ? findCaptainByPhone(producerPhone, { activeOnly: true }) : null;
-    if (!producer || (!ownerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone)))) return { state: "unauthorized" };
+    const producerPhoneMatches = Boolean(producer && producer.phone && producerPhone && phoneWithCountry(producer.phone) === phoneWithCountry(producerPhone));
+    if (!producer || (!ownerAuthorized && !producerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone))) || (producerAuthorized && !producerPhoneMatches)) return { state: "unauthorized" };
     const stamp = now();
     const pendingCaptain = current.pending_captain_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.pending_captain_user_id) : null;
     if (current.status === "open" && current.pending_message_id === expectedMessageId) {
@@ -10740,6 +10741,8 @@ async function handleMessageReactionUnlocked(reaction) {
     }
   }
   let removedThumbEvidenceAt = "";
+  let removedThumbActorRole = "";
+  let removedThumbActorId = null;
   if (removedThumb) {
     const removalActorPhone = phoneWithCountry(approverPhone || "");
     const removalCaptain = removalActorPhone
@@ -10748,18 +10751,34 @@ async function handleMessageReactionUnlocked(reaction) {
         : (typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(removalActorPhone) : null))
       : null;
     const activeHumanCaptain = Boolean(removalCaptain && removalCaptain.role === "captain" && removalCaptain.is_bot !== 1 && removalCaptain.active === 1 && removalCaptain.account_status === "active");
-    const actorReactionEvidence = activeHumanCaptain && typeof activeReactionEvidenceBySender === "function"
+    const removalOrder = typeof findEquivalentOrder === "function" ? findEquivalentOrder(target.from, messageId) : null;
+    const removalProducer = removalOrder?.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(removalOrder.producer_user_id) : null;
+    const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(removalActorPhone));
+    const producerAuthorized = Boolean(removalProducer && removalProducer.active === 1 && removalProducer.account_status === "active" && removalActorPhone && phoneWithCountry(removalProducer.phone) === removalActorPhone);
+    const actorAuthorized = activeHumanCaptain || producerAuthorized || ownerAuthorized;
+    if (activeHumanCaptain) {
+      removedThumbActorRole = "captain";
+      removedThumbActorId = removalCaptain.id;
+    } else if (producerAuthorized) {
+      removedThumbActorRole = "producer";
+      removedThumbActorId = removalProducer.id;
+    } else if (ownerAuthorized) {
+      removedThumbActorRole = "owner";
+    }
+    const actorReactionEvidence = actorAuthorized && typeof activeReactionEvidenceBySender === "function"
       ? activeReactionEvidenceBySender(messageId, target.from, "👍", removalActorPhone)
       : null;
     const ownsActiveReaction = Boolean(actorReactionEvidence)
       && typeof hasActiveReactionEvidenceBySender === "function"
       && hasActiveReactionEvidenceBySender(messageId, target.from, "👍", removalActorPhone);
-    if (!ownsActiveReaction || isBlockedPhone(removalActorPhone)) {
+    if (!actorAuthorized || !ownsActiveReaction || isBlockedPhone(removalActorPhone)) {
       logOrderTrace("reaction_removal_not_original_actor", {
         groupKey: orderTraceKey(target.from),
         reactionKey: orderTraceKey(messageId),
         actorKey: orderTraceKey(removalActorPhone),
         activeHumanCaptain,
+        producerAuthorized,
+        ownerAuthorized,
         ownsActiveReaction: Boolean(ownsActiveReaction),
       });
       return;
@@ -10866,7 +10885,10 @@ async function handleMessageReactionUnlocked(reaction) {
     const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
     const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
     if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
-    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone, false, reactingCaptain.id, removedThumbEvidenceAt);
+    const producerAuthorized = removedThumbActorRole === "producer" && removedThumbActorId === Number(order.producer_user_id);
+    const ownerAuthorized = removedThumbActorRole === "owner";
+    const requiredReactionActorId = removedThumbActorRole === "captain" ? reactingCaptain.id : (removedThumbActorId || null);
+    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized);
     if (result.state === "unauthorized") {
       logOrderTrace("reaction_removal_not_settlement_approver", {
         groupKey: orderTraceKey(target.from),
