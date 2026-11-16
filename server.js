@@ -9189,40 +9189,6 @@ async function reactToCaptainAcceptance(message, messageId, emoji = "👍") {
   return false;
 }
 
-async function approveBotOwnedAcceptance({ groupId, message, candidateId, acceptanceMessageId }) {
-  // A booking published by the bot is approved by the bot itself. The app/dashboard
-  // is only an observer here; settlement remains atomic and idempotent in the DB.
-  const result = settlePendingOrder(candidateId, acceptanceMessageId, connectedBotPhone());
-  if (result.state === "accepted") {
-    const confirmationDetails = {
-      orderNo: result.order?.order_no,
-      orderId: result.order?.id,
-      executorName: result.captain?.name,
-      downloaderName: result.producer?.name,
-      priceCents: result.order?.price_cents,
-      origin: result.order?.origin,
-      destination: result.order?.destination,
-      tripTime: result.order?.trip_time,
-    };
-    void sendFinalBookingConfirmation(groupId, confirmationDetails, { deliveryMode: "direct" }).catch((error) => {
-      console.warn(`[Order] bot-owned confirmation card failed: ${String(error?.message || error)}`);
-    });
-    audit("order.bot_owned.accepted_directly", "order", result.order?.id, {
-      candidateId,
-      acceptanceMessageId,
-      confirmedBy: connectedBotPhone(),
-      confirmationText: finalBookingConfirmationText(confirmationDetails),
-    });
-    console.log(`[Order] bot-owned booking accepted directly #${result.order?.order_no || "?"}`);
-  } else if (result.state !== "stale") {
-    console.warn(`[Order] bot-owned booking approval blocked candidate=${candidateId} state=${result.state}`);
-  }
-
-  // Presentation only: failure to add 👍 must never undo or block an accepted settlement.
-  if (result.state === "accepted") await reactToCaptainAcceptance(message, acceptanceMessageId);
-  return result;
-}
-
 async function getQuotedMessageWithFallback(message) {
   const quotedMessageIdHint = String(
       message?.quotedStanzaID ||
@@ -9648,12 +9614,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     captainId: captain.id,
     producerId: producer.id,
   });
-  if (producer.is_bot === 1 || producer.role === "company") {
-    void approveBotOwnedAcceptance({ groupId, message: msg, candidateId: candidate.id, acceptanceMessageId })
-      .catch((error) => console.error(`[WhatsApp] bot-owned acceptance settlement failed: ${error.message}`));
-    return;
-  }
-  // Human-owned bookings still use the producer's 👍 on this exact «تم» reply.
+  // Bot/company-owned bookings use the same 👍 gate as human-owned bookings.
+  // The «تم» reply only records the candidate; it must not settle the booking.
   if (msg.hasReaction || msg.__hasReaction || msg._data?.hasReaction) {
     void reconcileStoredThumbReaction(messageId);
   }
@@ -10630,10 +10592,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  // Policy: human-owned bookings require a 👍 on the selected «تم» reply.
-  // Bot/company-owned bookings are approved by the valid «تم» itself;
-  // any bot 👍 is presentation-only and never becomes a settlement gate.
-  const authorizedThumb = botProducer ? true : Boolean(reactionPresentOnAcceptance);
+  // Policy: every producer, including the bot/company producer, requires a 👍
+  // on the selected «تم» reply before the booking can be settled.
+  const authorizedThumb = Boolean(reactionPresentOnAcceptance);
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
