@@ -10038,13 +10038,14 @@ function cancelOrderForReactionRemoval(orderId, expectedMessageId, producerPhone
   })();
 }
 
-function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, producerPhone, ownerAuthorized = false) {
+function cancelPendingOrderForProducerReaction(candidateId, expectedMessageId, producerPhone, ownerAuthorized = false, producerAuthorized = false) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
     if (!current || current.status !== "pending") return { state: "stale" };
     const producer = current.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(current.producer_user_id) : null;
     const reactingCaptain = producerPhone ? findCaptainByPhone(producerPhone, { activeOnly: true }) : null;
-    if (!producer || (!ownerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone)))) return { state: "unauthorized" };
+    const producerPhoneMatches = Boolean(producer && producer.phone && producerPhone && phoneWithCountry(producer.phone) === phoneWithCountry(producerPhone));
+    if (!producer || (!ownerAuthorized && !producerAuthorized && (!reactingCaptain || reactingCaptain.is_bot === 1 || isBlockedPhone(producerPhone))) || (producerAuthorized && !producerPhoneMatches)) return { state: "unauthorized" };
     const acceptance = db.prepare("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=? AND status='pending' LIMIT 1").get(candidateId, expectedMessageId);
     if (!acceptance) return { state: "stale" };
     const stamp = now();
@@ -10891,8 +10892,10 @@ async function handleMessageReactionUnlocked(reaction) {
       const producer = acceptance.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.producer_user_id) : null;
       const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
       const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
-      if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
-      const cancelled = cancelPendingOrderForProducerReaction(acceptance.candidate_id, messageId, approverPhone);
+      const producerAuthorized = removedThumbActorRole === "producer" && removedThumbActorId === Number(acceptance.producer_user_id);
+      const ownerAuthorized = removedThumbActorRole === "owner";
+      if (!producer || (!captainAuthorized && !producerAuthorized && !ownerAuthorized) || isBlockedPhone(approverPhone)) return;
+      const cancelled = cancelPendingOrderForProducerReaction(acceptance.candidate_id, messageId, approverPhone, ownerAuthorized, producerAuthorized);
       if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
     }
@@ -10908,9 +10911,10 @@ async function handleMessageReactionUnlocked(reaction) {
     const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
     const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
     const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
-    if (!producer || !captainAuthorized || isBlockedPhone(approverPhone)) return;
     const producerAuthorized = removedThumbActorRole === "producer" && removedThumbActorId === Number(order.producer_user_id);
     const ownerAuthorized = removedThumbActorRole === "owner";
+    const authorizedActor = captainAuthorized || producerAuthorized || ownerAuthorized;
+    if (!producer || !authorizedActor || isBlockedPhone(approverPhone)) return;
     const requiredReactionActorId = removedThumbActorRole === "captain" ? reactingCaptain.id : (removedThumbActorId || null);
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized);
     if (result.state === "unauthorized") {
@@ -10918,7 +10922,7 @@ async function handleMessageReactionUnlocked(reaction) {
         groupKey: orderTraceKey(target.from),
         reactionKey: orderTraceKey(messageId),
         orderId: order.id,
-        actorId: reactingCaptain.id,
+        actorId: reactingCaptain?.id || removedThumbActorId || null,
       });
       return;
     }
