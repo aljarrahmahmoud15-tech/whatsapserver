@@ -1411,6 +1411,23 @@ CREATE TABLE IF NOT EXISTS notifications (
   idempotency_key TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS whatsapp_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  operation_type TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','sent','failed','uncertain')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  message_id TEXT,
+  last_error TEXT,
+  available_at TEXT NOT NULL,
+  locked_until TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_outbox_ready ON whatsapp_outbox(status, available_at, id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_outbox_locked ON whatsapp_outbox(status, locked_until);
 CREATE TABLE IF NOT EXISTS captain_invites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_hash TEXT NOT NULL UNIQUE,
@@ -1737,6 +1754,56 @@ db.exec(`
   WHERE status IN ('accepted','completed') AND EXISTS(SELECT 1 FROM wallet_ledger WHERE wallet_ledger.order_id=orders.id);
 `);
 const now = () => new Date().toISOString();
+const WHATSAPP_OUTBOX_LOCK_MS = Math.max(15_000, Number(process.env.WHATSAPP_OUTBOX_LOCK_MS || 60_000));
+const WHATSAPP_OUTBOX_MAX_ATTEMPTS = Math.max(1, Number(process.env.WHATSAPP_OUTBOX_MAX_ATTEMPTS || 5));
+function enqueueWhatsAppOutbox({ idempotencyKey, operationType, recipient, payload, availableAt = now() }) {
+  const key = String(idempotencyKey || '').trim();
+  const type = String(operationType || '').trim();
+  const target = String(recipient || '').trim();
+  if (!key || !type || !target || payload === undefined) return { created: false, status: 'invalid' };
+  const timestamp = now();
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO whatsapp_outbox
+      (idempotency_key, operation_type, recipient, payload_json, status, attempts, available_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+  `).run(key, type, target, JSON.stringify(payload), String(availableAt || timestamp), timestamp, timestamp);
+  const row = db.prepare(`SELECT id,idempotency_key,status,attempts,message_id,last_error,available_at FROM whatsapp_outbox WHERE idempotency_key=?`).get(key);
+  return { created: result.changes === 1, status: row?.status || 'pending', row };
+}
+const claimWhatsAppOutboxBatch = db.transaction((limit = 10) => {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 10));
+  const timestamp = now();
+  const lockUntil = new Date(Date.now() + WHATSAPP_OUTBOX_LOCK_MS).toISOString();
+  db.prepare(`
+    UPDATE whatsapp_outbox SET status='pending', locked_until=NULL, updated_at=?
+    WHERE status='processing' AND locked_until IS NOT NULL AND locked_until<=?
+  `).run(timestamp, timestamp);
+  const rows = db.prepare(`
+    SELECT id,idempotency_key,operation_type,recipient,payload_json,attempts
+    FROM whatsapp_outbox
+    WHERE status='pending' AND available_at<=? AND attempts<?
+    ORDER BY id ASC LIMIT ?
+  `).all(timestamp, WHATSAPP_OUTBOX_MAX_ATTEMPTS, safeLimit);
+  const claim = db.prepare(`
+    UPDATE whatsapp_outbox SET status='processing', attempts=attempts+1, locked_until=?, updated_at=?
+    WHERE id=? AND status='pending'
+  `);
+  const claimed = [];
+  for (const row of rows) {
+    if (claim.run(lockUntil, timestamp, row.id).changes !== 1) continue;
+    let payload = null;
+    try { payload = JSON.parse(row.payload_json); } catch (_) { payload = null; }
+    claimed.push({ ...row, attempts: Number(row.attempts || 0) + 1, payload });
+  }
+  return claimed;
+});
+function markWhatsAppOutboxSent(id, messageId = null) {
+  return db.prepare(`UPDATE whatsapp_outbox SET status='sent',message_id=?,locked_until=NULL,last_error=NULL,updated_at=? WHERE id=? AND status='processing'`).run(messageId ? String(messageId) : null, now(), Number(id));
+}
+function markWhatsAppOutboxFailed(id, error, { uncertain = false, retryAt = null } = {}) {
+  const status = uncertain ? 'uncertain' : 'failed';
+  return db.prepare(`UPDATE whatsapp_outbox SET status=?,locked_until=NULL,last_error=?,available_at=COALESCE(?,available_at),updated_at=? WHERE id=? AND status='processing'`).run(status, String(error || 'whatsapp_outbox_failed').slice(0, 500), retryAt, now(), Number(id));
+}
 const assignCandidatePublicTripNo = db.transaction((candidateId) => {
   const id = Number(candidateId || 0);
   if (!Number.isInteger(id) || id < 1) return null;
