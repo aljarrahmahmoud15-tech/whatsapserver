@@ -11,7 +11,8 @@ test('V27 mobile rehabilitation keeps group operations delegated and reads fresh
   assert.match(html, /id="v27ReadinessPanel" class="panel v27-readiness-panel hidden/);
   assert.match(html, /إدارة القروب ضمن مركز التشغيل V26/);
   assert.match(html, /function freshApi\(url,options=\{\}\)/);
-  assert.match(html, /prefetched\|\|await freshApi\('\/api\/admin\/v27\/bootstrap'\)/);
+  assert.match(html, /const \[data,liveStatus\]=await Promise\.all\(\[prefetched\?Promise\.resolve\(prefetched\):freshApi\('\/api\/admin\/v27\/bootstrap'\),publicJson\('\/status\?fresh=1'\)\]\)/);
+  assert.match(html, /Promise\.resolve\(state\.groupSummary\|\|null\)/);
   assert.match(html, /document\.querySelectorAll\('\[data-screen\]'\)/);
   assert.match(html, /if\(screen!==\'admin\'\)void ensureFullData\(\)/);
   assert.match(html, /state\.leads=Array\.isArray\(r\[12\]\.leads\)/);
