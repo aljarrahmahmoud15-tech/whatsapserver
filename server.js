@@ -597,6 +597,20 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: false }));
+const HTTP_SLOW_REQUEST_THRESHOLD_MS = 1000;
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  res.once("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    if (durationMs < HTTP_SLOW_REQUEST_THRESHOLD_MS) return;
+    const routePath = typeof req.route?.path === "string"
+      ? `${req.baseUrl || ""}${req.route.path}`
+      : (req.path === "/" ? "/" : "<unmatched-or-static>");
+    const safeRoute = String(routePath).replace(/[\r\n]/g, "").slice(0, 160);
+    console.warn(`[HttpPerf] method=${String(req.method || "GET").slice(0, 12)} route=${safeRoute} status=${Number(res.statusCode) || 0} durationMs=${Math.round(durationMs)}`);
+  });
+  next();
+});
 app.use("/api", (req, res, next) => {
   const readOnlyRequest = ["GET", "HEAD", "OPTIONS"].includes(String(req.method || "").toUpperCase());
   if (!readOnlyRequest && !consumeRateLimit(apiRate, clientAddress(req), API_RATE_LIMIT_MAX)) {
