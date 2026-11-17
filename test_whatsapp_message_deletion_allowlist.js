@@ -58,6 +58,19 @@ assert.ok(groupDeleteRoute >= 0 && groupDeleteGuard > groupDeleteRoute && chatDe
 const resetRoute = server.indexOf('app.post("/api/admin/group/reset-recreate"');
 const resetGuard = server.indexOf("if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED)", resetRoute);
 assert.ok(resetRoute >= 0 && resetGuard > resetRoute, "group reset route must be disabled");
+const resetRouteEnd = server.indexOf('app.post("/api/admin/group/finalize-created"', resetRoute);
+const resetHandler = server.slice(resetRoute, resetRouteEnd);
+assert.match(server, /const GROUP_RESET_CONFIRMATION = "RESET_GROUP_AND_PURGE_ALL_HISTORY"/);
+assert.match(resetHandler, /requireOwnerAdmin/);
+assert.match(resetHandler, /req\.body\?\.confirmation !== GROUP_RESET_CONFIRMATION/);
+const mainHtml = fs.readFileSync("public/index.html", "utf8");
+assert.doesNotMatch(mainHtml, /get\('reset'\)==='execute'/, "a URL must never trigger a destructive group reset");
+assert.doesNotMatch(mainHtml, /api\('\/api\/admin\/group\/reset-recreate'/, "the main page must not invoke the bulk-purge reset route");
+assert.doesNotMatch(mainHtml, /ops-reset-group/, "the destructive reset control must not appear on the main page");
+assert.match(mainHtml, /resendCaptainPhone&&window\.confirm/);
+assert.match(mainHtml, /relinkRequested&&params\.get\('invite'\)[\s\S]*?window\.confirm/);
+assert.match(mainHtml, /registrationRequested[\s\S]*?window\.confirm/);
+assert.match(mainHtml, /sendGuides[\s\S]*?window\.confirm/);
 assert.match(server, /function purgeExperimentalCaptains\(\) \{\s*if \(WHATSAPP_GROUP_CHAT_DELETION_DISABLED\)/);
 assert.doesNotMatch(server, /previous\.delete\(true\)/,
   "re-sending a captain access card must not delete prior private chat messages");

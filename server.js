@@ -170,6 +170,9 @@ const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.OR
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
 const WHATSAPP_GROUP_CHAT_DELETION_DISABLED = true;
+const GROUP_RESET_CONFIRMATION = "RESET_GROUP_AND_PURGE_ALL_HISTORY";
+const WHATSAPP_SESSION_CLEAR_CONFIRMATION = "CLEAR_WHATSAPP_SESSION_AND_RECONNECT";
+const WHATSAPP_SESSION_ARCHIVE_CONFIRMATION = "ARCHIVE_WHATSAPP_SESSION_AND_RECONNECT";
 const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol("low_balance_acceptance_delete_permit");
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
 const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
@@ -14113,8 +14116,9 @@ async function resetGroupInBackground({ operationId, oldGroupId, groupName, back
   }
 }
 
-app.post("/api/admin/group/reset-recreate", requireAdmin, async (req, res) => {
+app.post("/api/admin/group/reset-recreate", requireOwnerAdmin, async (req, res) => {
   if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED) return res.status(423).json({ success: false, error: "إعادة إنشاء المجموعة ومسح سجلها متوقفان حسب سياسة الحذف الحالية.", code: "WHATSAPP_GROUP_CHAT_DELETION_DISABLED", mutation: "none", financialMutation: false });
+  if (req.body?.confirmation !== GROUP_RESET_CONFIRMATION) return res.status(400).json({ success: false, error: "تأكيد المالك الصريح لإعادة إنشاء القروب ومسح كل السجل مطلوب.", code: "GROUP_RESET_CONFIRMATION_REQUIRED", mutation: "none", financialMutation: false });
   if (rejectCaptainRemovalWhilePaused(res, "group_reset_recreate")) return;
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   if (groupCreateInFlight) return res.status(409).json({ error: "A group operation is already in progress", operationId: groupCreateState.operationId });
@@ -18436,7 +18440,8 @@ app.get("/api/staff/settlements", requireStaffPermission("settlements"), (req, r
   res.json({ success: true, count: rows.length, settlements: rows });
 });
 
-app.post("/api/admin/logout", requireAdmin, async (req, res) => {
+app.post("/api/admin/logout", requireOwnerAdmin, async (req, res) => {
+  if (req.body?.confirmation !== WHATSAPP_SESSION_CLEAR_CONFIRMATION) return res.status(400).json({ error: "Owner confirmation is required to clear and reconnect the WhatsApp session", code: "WHATSAPP_SESSION_CLEAR_CONFIRMATION_REQUIRED", mutation: "none" });
   try {
     await destroyClient();
     qrCodeData = null;
@@ -18445,18 +18450,12 @@ app.post("/api/admin/logout", requireAdmin, async (req, res) => {
     res.json({ success: true, message: "Session cleared; a new QR will be generated" });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
-app.get("/api/admin/whatsapp/clear-session", requireAdmin, async (req, res) => {
-  if (String(req.query.execute || "") !== "1") return res.status(405).json({ error: "Explicit execute=1 is required" });
-  try {
-    await withTimeout(destroyClient(), 15000, null);
-    qrCodeData = null;
-    if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true });
-    scheduleReconnect();
-    res.redirect(303, "/qr?session=cleared");
-  } catch (error) { res.status(500).json({ error: "Unable to clear WhatsApp session" }); }
+app.get("/api/admin/whatsapp/clear-session", requireAdmin, (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(405).json({ error: "GET cannot clear the WhatsApp session; use POST /api/admin/logout with owner confirmation", code: "WHATSAPP_SESSION_CLEAR_POST_REQUIRED", mutation: "none" });
 });
-app.post("/api/admin/whatsapp/archive-session", requireAdmin, async (req, res) => {
-  if (req.body?.confirm !== true) return res.status(400).json({ error: "Owner confirmation is required" });
+app.post("/api/admin/whatsapp/archive-session", requireOwnerAdmin, async (req, res) => {
+  if (req.body?.confirmation !== WHATSAPP_SESSION_ARCHIVE_CONFIRMATION) return res.status(400).json({ error: "Owner confirmation is required to archive and reconnect the WhatsApp session", code: "WHATSAPP_SESSION_ARCHIVE_CONFIRMATION_REQUIRED", mutation: "none" });
   try {
     const result = await stopAndArchiveOldWhatsAppSession();
     scheduleReconnect();
