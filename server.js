@@ -14887,6 +14887,7 @@ app.post("/api/admin/captains/:id/suspend-and-remove", requireOwnerAdmin, async 
   res.json({ success: true, state: "suspended_and_removed", mutation: "captain_suspended_and_removed", id, removed: true, statusChanged: Boolean(updated.changes), notificationSent: false, financialMutation: false });
 });
 app.delete("/api/admin/captains/:id", requireOwnerAdmin, (req, res) => {
+  if (rejectCaptainRemovalWhilePaused(res)) return;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid captain id" });
   const captain = db.prepare("SELECT id,phone,name,role,wallet_cents,active,is_bot,account_status,archived_at FROM users WHERE id=? AND role='captain'").get(id);
@@ -15543,6 +15544,29 @@ app.get("/api/admin/group/members", requireAdmin, adminReadLimiter, v27AdminRead
   }
   res.json({ success: true, groupId, groupName: chat.name || null, members, participantSource: chat.participantSource || null, participantRawCount: chat.participantRawCount ?? null });
 });
+const { registerZeroBalanceGroupRemovalRoutes } = require("./zero-balance-group-removal");
+registerZeroBalanceGroupRemovalRoutes(app, {
+  db,
+  requireOwnerAdmin,
+  adminMutationLimiter,
+  adminReadLimiter,
+  configuredRuntimeGroupId,
+  isConfiguredGroup,
+  isReady: () => isReady,
+  getConnectionGeneration: () => connectionGeneration,
+  readGroupRemovalContext,
+  readGroupSnapshot,
+  connectedBotPhone,
+  serializedWhatsappUserId,
+  phoneWithCountry,
+  isValidJordanPhone,
+  isBlockedPhone,
+  isProtectedOwnerIdentity,
+  audit,
+  now,
+  withTimeout,
+});
+
 app.post("/api/admin/group/send-balance-notifications", requireAdmin, async (req, res) => {
   const confirmation = String(req.body?.confirmation || "");
   const runKey = String(req.body?.runKey || "").trim();
