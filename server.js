@@ -987,6 +987,9 @@ app.use(
 const db = new Database(path.join(DATA_DIR, "aljarah.sqlite"));
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+// Keep short-lived HTTP reads from failing during a concurrent WhatsApp write.
+// WAL remains authoritative; this only bounds SQLite lock waiting.
+db.pragma("busy_timeout = 2500");
 // This is a separate, non-authoritative owner-control projection. It never replaces
 // or mutates the production database, WhatsApp auth folders, or group configuration.
 const ownerControlStore = createOwnerControlStore({ dataDir: DATA_DIR });
@@ -1699,6 +1702,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_orders_pending_message ON orders(pending
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_pending_message ON order_candidates(pending_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_source_message ON order_candidates(source_message_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_order_candidates_lifecycle ON order_candidates(lifecycle_stage,updated_at)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_orders_unconfirmed_archive ON orders(group_id,status,archive_state,created_at)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_candidates_unconfirmed_archive ON order_candidates(group_id,status,archive_state,created_at)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_orders_captain_phone_snapshot ON orders(captain_phone_snapshot)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_captain_auth_challenges_phone ON captain_auth_challenges(phone,created_at)");
 const existingCaptainAuthChallengeColumns = db.prepare("PRAGMA table_info(captain_auth_challenges)").all().map((column) => column.name);
@@ -17887,9 +17892,15 @@ app.post("/api/admin/unconfirmed-bookings/archive-before", requireAdmin, (req, r
   if (!keepSince || !Number.isFinite(keepSinceMs) || keepSinceMs > Date.now()) {
     return res.status(400).json({ error: "A valid past keepSince boundary is required", mutation: "none", financialMutation: false });
   }
+  const windowHours = Number(req.body?.windowHours || 0);
+  const rolling24HourWindow = windowHours === 24;
   const jordanToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Amman" }).format(new Date());
-  const expectedKeepSinceMs = Date.parse(`${jordanToday}T00:00:00+03:00`);
-  if (keepSinceMs !== expectedKeepSinceMs) {
+  const expectedKeepSinceMs = rolling24HourWindow ? Date.now() - 24 * 60 * 60 * 1000 : Date.parse(`${jordanToday}T00:00:00+03:00`);
+  if (rolling24HourWindow) {
+    if (Math.abs(keepSinceMs - expectedKeepSinceMs) > 60 * 1000) {
+      return res.status(400).json({ error: "The 24-hour boundary is stale; refresh and retry", mutation: "none", financialMutation: false, expectedKeepSince: new Date(expectedKeepSinceMs).toISOString() });
+    }
+  } else if (keepSinceMs !== expectedKeepSinceMs) {
     return res.status(400).json({ error: "Only the start of the current Jordan day may be used; today's bookings are protected", mutation: "none", financialMutation: false, expectedKeepSince: new Date(expectedKeepSinceMs).toISOString() });
   }
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
