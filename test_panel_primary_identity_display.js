@@ -23,7 +23,7 @@ assert.doesNotMatch(v27, retired);
 const index = fs.readFileSync('public/index.html', 'utf8');
 assert.match(index, /function internationalPhone\(value\)/);
 assert.match(index, /const phone=internationalPhone\(data\?\.phone\)/);
-assert.match(index, /api\('\/status\?fresh=1'\)/);
+assert.match(index, /api\(authenticated\?'\/status\?fresh=1':'\/health'\)/, 'public polling uses liveness until the admin is authenticated');
 assert.match(index, /id="ops-bot-phone"/, 'لوحة الإدارة تعرض رقم البوت ديناميكيًا من /status');
 assert.doesNotMatch(index, /function localPhone\(/);
 const server = fs.readFileSync('server.js', 'utf8');
