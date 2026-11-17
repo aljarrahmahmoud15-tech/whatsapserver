@@ -10,6 +10,9 @@ const logger = server.slice(start, end);
 
 assert.match(logger, /res\.once\("finish"/);
 assert.match(logger, /durationMs < HTTP_SLOW_REQUEST_THRESHOLD_MS/);
+assert.match(logger, /const originalWriteHead = res\.writeHead/);
+assert.match(logger, /res\.setHeader\("Server-Timing", `app;dur=/);
+assert.match(logger, /res\.hasHeader\("Server-Timing"\)/);
 assert.match(logger, /req\.route\?\.path/);
 assert.match(logger, /\[HttpPerf\]/);
 assert.doesNotMatch(logger, /req\.(?:query|body|headers)/, 'logger must not record query strings, request bodies, or headers');

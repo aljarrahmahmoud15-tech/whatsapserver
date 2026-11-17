@@ -600,6 +600,14 @@ app.use(express.urlencoded({ extended: false }));
 const HTTP_SLOW_REQUEST_THRESHOLD_MS = 1000;
 app.use((req, res, next) => {
   const startedAt = process.hrtime.bigint();
+  const originalWriteHead = res.writeHead;
+  res.writeHead = function (...args) {
+    if (!res.headersSent && !res.hasHeader("Server-Timing")) {
+      const appDurationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      res.setHeader("Server-Timing", `app;dur=${appDurationMs.toFixed(2)}`);
+    }
+    return originalWriteHead.apply(this, args);
+  };
   res.once("finish", () => {
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
     if (durationMs < HTTP_SLOW_REQUEST_THRESHOLD_MS) return;
