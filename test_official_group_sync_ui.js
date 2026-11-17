@@ -6,7 +6,9 @@ assert.match(admin, /id="officialGroupSyncCard"/, 'official group sync card exis
 assert.doesNotMatch(admin, /const OFFICIAL_GROUP_ID='[0-9]+@g\.us'/, 'official group id is never hardcoded in the panel');
 assert.match(admin, /\/api\/admin\/diagnostics\/last-group-event/, 'official telemetry is read');
 assert.match(admin, /\/api\/admin\/group-messages\?limit=40/, 'official group messages are read with a bounded limit');
-assert.match(admin, /setInterval\(\(\)=>void loadOfficialGroupSync\(\),30000\)/, 'official group sync polls every 30 seconds');
+assert.match(admin, /startVisiblePanelPolling\('officialGroupSyncCard',\(\)=>loadOfficialGroupSync\(\),30000/, 'official group sync starts through a visible-panel scheduler');
+assert.match(admin, /function startVisiblePanelPolling\(/, 'group polling is delayed until its section is near view');
+assert.match(admin, /if\(isVisible\(\)\)void loader\(\)/, 'background polling pauses while the section is offscreen or the page is hidden');
 assert.match(admin, /لا يوجد فيها إرسال أو تعديل أو حركة مالية/, 'UI declares read-only behavior');
 const start = admin.indexOf('async function loadOfficialGroupSync()');
 const end = admin.indexOf('\nfunction startOfficialGroupSync', start);

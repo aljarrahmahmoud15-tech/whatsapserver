@@ -11,7 +11,8 @@ assert.match(admin, /محفظة الخدمات/, 'service wallet item is present
 assert.match(admin, /\/api\/admin\/company-wallet/, 'company wallet data is read from the bot API');
 assert.match(admin, /\/api\/admin\/captains/, 'captain/entity data is read from the bot API');
 assert.match(admin, /\/api\/admin\/subscriptions\?compact=1/, 'subscription data is read from the bot API');
-assert.match(admin, /setInterval\(\(\)=>void loadFinanceV26\(\),30000\)/, 'financial data polls every 30 seconds');
+assert.match(admin, /startVisiblePanelPolling\('financeV26Msg',\(\)=>loadFinanceV26\(\),30000/, 'financial data retains its 30-second refresh while the panel is visible');
+assert.match(admin, /if\(isVisible\(\)\)void loader\(\)/, 'financial polling pauses while the panel is offscreen or the page is hidden');
 assert.match(admin, /لا توجد حركة مالية أو رسالة WhatsApp من هذه الشاشة/, 'hub declares read-only behavior');
 assert.match(admin, /محرك البوت الحالي يعمل بدورة 7 أيام/, 'UI discloses the current seven-day backend policy');
 assert.ok(admin.includes("String(c.account_status||'')!=='merged'"), 'merged accounts are excluded from the entity summary');
