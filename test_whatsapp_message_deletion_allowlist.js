@@ -7,7 +7,9 @@ const server = fs.readFileSync("server.js", "utf8");
 
 assert.match(server, /const WHATSAPP_GROUP_CHAT_DELETION_DISABLED = true/);
 assert.match(server, /const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol\(/);
+assert.match(server, /const GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT = Symbol\(/);
 assert.match(server, /\[LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT\]: true/);
+assert.match(server, /\[GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT\]: true/);
 assert.match(server, /policyAction: "low_balance_acceptance"/);
 
 const permitStart = server.indexOf("function lowBalanceAcceptanceDeletePermitValid(context, groupId)");
@@ -40,7 +42,7 @@ assert.equal(sandbox.validatePermit({ ...valid, requiredCents: 100 }, "official-
 assert.equal(sandbox.validatePermit(valid, "other-group@g.us"), false);
 
 const deletionStart = server.indexOf("async function deleteWhatsAppMessageForEveryone(messageId, context = {})");
-const policyCheck = server.indexOf("if (!lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId))", deletionStart);
+const policyCheck = server.indexOf("const permitted = lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId)", deletionStart);
 const firstLookup = server.indexOf("const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId)", deletionStart);
 assert.ok(deletionStart >= 0 && policyCheck > deletionStart && firstLookup > policyCheck,
   "central policy check must run before message lookup or deletion");
@@ -48,6 +50,7 @@ const deletionRoute = server.slice(deletionStart, firstLookup);
 assert.match(deletionRoute, /requested: false/);
 assert.match(deletionRoute, /owner_policy_low_balance_acceptance_only/);
 assert.match(deletionRoute, /whatsapp\.message_deletion\.blocked_by_low_balance_only_policy/);
+assert.match(deletionRoute, /generalUnapprovedMessageDeletePermitValid\(context, deletionContext\.groupId\)/);
 
 const groupDeleteRoute = server.indexOf('app.get("/api/admin/group/delete-unapproved"');
 const groupDeleteGuard = server.indexOf("if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED)", groupDeleteRoute);

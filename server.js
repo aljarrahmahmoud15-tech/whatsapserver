@@ -174,6 +174,7 @@ const GROUP_RESET_CONFIRMATION = "RESET_GROUP_AND_PURGE_ALL_HISTORY";
 const WHATSAPP_SESSION_CLEAR_CONFIRMATION = "CLEAR_WHATSAPP_SESSION_AND_RECONNECT";
 const WHATSAPP_SESSION_ARCHIVE_CONFIRMATION = "ARCHIVE_WHATSAPP_SESSION_AND_RECONNECT";
 const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol("low_balance_acceptance_delete_permit");
+const GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT = Symbol("general_unapproved_message_delete_permit");
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
 const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
@@ -5034,7 +5035,10 @@ async function handleIncomingGeneralMessageDeletionPolicy(message, { groupId, se
     audit("general_message_deletion.skipped_image_visual_price_unverified", "message", messageId, { groupId, financialMutation: false, orderMutation: false });
     return { status: "skipped", reason: "image_visual_price_unverified" };
   }
-  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_general_message", groupId });
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_general_message", groupId,
+    policyAction: "general_unapproved_message",
+    [GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT]: true,
+  });
   audit("general_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
@@ -16058,6 +16062,17 @@ function lowBalanceAcceptanceDeletePermitValid(context, groupId) {
     && typeof requiredCents === "number" && Number.isFinite(requiredCents)
     && requiredCents > balanceCents;
 }
+function generalUnapprovedMessageDeletePermitValid(context, groupId) {
+  const configuredGroupId = String(configuredRuntimeGroupId() || "").trim();
+  return context?.[GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT] === true
+    && context?.policyAction === "general_unapproved_message"
+    && context?.reason === "unapproved_general_message"
+    && Boolean(configuredGroupId)
+    && String(groupId || "").trim() === configuredGroupId
+    && isConfiguredGroup(configuredGroupId)
+    && generalMessageDeletionEnabled()
+    && !generalMessageDeletionEmergencyStopped();
+}
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionContext = {
     reason: String(context.reason || "unspecified").slice(0, 120),
@@ -16067,7 +16082,9 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     requiredCents: Number.isFinite(context.requiredCents) ? context.requiredCents : null,
   };
   const deletionKey = orderTraceKey(messageId);
-  if (!lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId)) {
+  const permitted = lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId)
+    || generalUnapprovedMessageDeletePermitValid(context, deletionContext.groupId);
+  if (!permitted) {
     const blocked = { ok: false, requested: false, revoked: false, paused: true, reason: "owner_policy_low_balance_acceptance_only" };
     audit("whatsapp.message_deletion.blocked_by_low_balance_only_policy", "message", deletionKey, {
       groupId: deletionContext.groupId,
