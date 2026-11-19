@@ -1177,16 +1177,6 @@ CREATE TABLE IF NOT EXISTS voice_booking_intakes (
 );
 CREATE INDEX IF NOT EXISTS idx_voice_booking_intakes_group_seen
   ON voice_booking_intakes(group_id, last_seen_at DESC);
-for (const migration of [
-  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript TEXT",
-  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_language TEXT",
-  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_confidence REAL",
-  "ALTER TABLE voice_booking_intakes ADD COLUMN stt_provider TEXT",
-]) {
-  try { db.exec(migration); } catch (error) {
-    if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
-  }
-}
 CREATE TABLE IF NOT EXISTS unresolved_order_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -1654,7 +1644,18 @@ CREATE TABLE IF NOT EXISTS captain_wallet_pool_operations (
   completed_at TEXT NOT NULL
 );
 `);
-	const existingStaffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all().map((column) => column.name);
+
+for (const migration of [
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_language TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_confidence REAL",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN stt_provider TEXT",
+]) {
+  try { db.exec(migration); } catch (error) {
+    if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
+  }
+}
+		const existingStaffColumns = db.prepare("PRAGMA table_info(staff_accounts)").all().map((column) => column.name);
 	if (!existingStaffColumns.includes("permissions_json")) db.exec("ALTER TABLE staff_accounts ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
 	if (!existingStaffColumns.includes("phone")) db.exec("ALTER TABLE staff_accounts ADD COLUMN phone TEXT");
 	db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_accounts_phone ON staff_accounts(phone) WHERE phone IS NOT NULL AND phone <> ''");
