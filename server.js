@@ -5209,9 +5209,21 @@ function officialGroupSnapshotReady() {
 function isOfficialGroupAdminPhone(phone) {
   return officialGroupAdminSnapshotReady() && officialGroupAdminPhones.has(phoneWithCountry(phone));
 }
+function incomingMessageMediaClassification(message) {
+  const rawType = String(message?.type || "").trim().toLowerCase();
+  const mimeType = String(
+    message?.mimetype
+      || message?._data?.mimetype
+      || message?._data?.mediaData?.mimetype
+      || ""
+  ).trim().toLowerCase();
+  const isPtt = message?.isPtt === true || message?._data?.isPtt === true;
+  const hasMedia = message?.hasMedia === true || message?._data?.hasMedia === true || Boolean(mimeType);
+  const voice = rawType === "audio" || rawType === "ptt" || isPtt || /^audio\//.test(mimeType);
+  return { rawType, mimeType, isPtt, hasMedia, voice };
+}
 function isIncomingVoiceMessage(message) {
-  const type = String(message?.type || "").trim().toLowerCase();
-  return type === "audio" || type === "ptt";
+  return incomingMessageMediaClassification(message).voice;
 }
 async function handleIncomingVoiceMessagePolicy(message, { groupId, senderPhone }) {
   if (!isIncomingVoiceMessage(message) || !groupId || groupId !== configuredRuntimeGroupId() || message.fromMe) return { status: "not_applicable" };
@@ -9417,11 +9429,17 @@ function recordGroupMessageTelemetry(event, msg) {
   const groupId = resolveGroupChatId(msg);
   if (!groupId) return;
   const configured = isConfiguredGroup(groupId);
+  const mediaClassification = incomingMessageMediaClassification(msg);
   const telemetry = {
     at: now(),
     event,
     fromMe: Boolean(msg.fromMe),
     configured,
+    rawType: mediaClassification.rawType || null,
+    mimeType: mediaClassification.mimeType || null,
+    hasMedia: mediaClassification.hasMedia,
+    isPtt: mediaClassification.isPtt,
+    voiceDetected: mediaClassification.voice,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
     messageId: serializedMessageId(msg) || String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null,
     quotedMessageId: String(msg?.quotedMsg?.id?._serialized || msg?._data?.quotedMsg?.id?._serialized || "").trim() || null,
