@@ -23,7 +23,8 @@ const messageGuard = server.indexOf("const botGenerated = isBotGeneratedMessage(
 const messageInsert = server.indexOf("INSERT OR IGNORE INTO messages", server.indexOf("async function handleIncomingMessage("));
 assert.ok(messageGuard > -1 && messageGuard < messageInsert, "bot message guard must run before message persistence");
 assert.match(server, /const acceptanceCaptain = pending\.captain_user_id/);
-assert.match(server, /const settlementConfirmerPhone = phoneWithCountry\(acceptanceCaptain\.phone\)/);
+assert.match(server, /const voiceBooking = Boolean\(/);
+assert.match(server, /const settlementConfirmerPhone = voiceBooking \? phoneWithCountry\(producer\.phone\) : phoneWithCountry\(acceptanceCaptain\.phone\)/);
 assert.match(server, /const captainApproved = Boolean\(/);
 assert.match(server, /isBotFinancialRole\(normalized, BOT_PHONE, role\)/);
 

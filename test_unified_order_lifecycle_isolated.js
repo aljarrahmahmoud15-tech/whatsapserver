@@ -117,6 +117,7 @@ const db = {
         }
         if (query.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return state.acceptance && state.acceptance.id === Number(args[0]) && ["pending", "selected"].includes(state.acceptance.status) ? { ...state.acceptance } : null;
         if (query.startsWith("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=?")) return state.archivedOrder && state.archivedOrder.source_message_id === args[0] ? { ...state.archivedOrder } : null;
+        if (query.startsWith("SELECT 1 FROM voice_booking_intakes WHERE candidate_id=? AND group_id=?")) return null;
         if (query.startsWith("SELECT * FROM orders WHERE id=?")) return state.order && state.order.id === Number(args[0]) ? { ...state.order } : null;
         if (query.startsWith("SELECT * FROM users WHERE id=?")) return userById(args[0]) ? { ...userById(args[0]) } : null;
         if (query.startsWith("SELECT whatsapp_lid FROM whatsapp_identities")) return null;

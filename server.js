@@ -1656,6 +1656,7 @@ for (const migration of [
   "ALTER TABLE voice_booking_intakes ADD COLUMN extracted_fields_json TEXT",
   "ALTER TABLE voice_booking_intakes ADD COLUMN extraction_confidence REAL",
   "ALTER TABLE voice_booking_intakes ADD COLUMN extraction_status TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN candidate_id INTEGER",
 ]) {
   try { db.exec(migration); } catch (error) {
     if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
@@ -4038,7 +4039,7 @@ async function transcribeVoiceBookingAudio(filePath, mimeType) {
     clearTimeout(timeout);
   }
 }
-async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone }) {
+async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
   const normalizedPhone = phoneWithCountry(senderPhone);
   if (!normalizedPhone || isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) return { status: "skipped", reason: "protected_sender" };
@@ -4080,6 +4081,8 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone 
       const transcribedAt = now();
       db.prepare("UPDATE voice_booking_intakes SET status='downloaded',transcript=?,transcript_language=?,transcript_confidence=?,stt_provider=?,error_code=NULL,last_seen_at=?,updated_at=? WHERE message_id=?")
         .run(result.transcript, result.language, result.confidence, result.provider, transcribedAt, transcribedAt, messageId);
+      db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)")
+        .run(messageId, groupId, normalizedPhone, senderName || displayPhone(normalizedPhone), result.transcript, String(message.type || "audio"), new Date(Number(message.timestamp || Date.now() / 1000) * 1000).toISOString(), transcribedAt);
       audit("voice_booking_intake.transcribed", "message", messageId, { groupId, provider: result.provider, language: result.language, confidence: result.confidence, financialMutation: false, orderMutation: false });
       let extraction = null;
       if (voiceBookingFieldExtractionEffective()) {
@@ -4087,6 +4090,29 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone 
         db.prepare("UPDATE voice_booking_intakes SET extracted_fields_json=?,extraction_confidence=?,extraction_status=?,last_seen_at=?,updated_at=? WHERE message_id=?")
           .run(JSON.stringify(extraction.fields), extraction.confidence, extraction.status, transcribedAt, transcribedAt, messageId);
         audit("voice_booking_intake.fields_extracted", "message", messageId, { groupId, confidence: extraction.confidence, status: extraction.status, financialMutation: false, orderMutation: false });
+        if (extraction.status === "needs_review" && Number.isFinite(Number(extraction.fields?.priceCents)) && Number(extraction.fields.priceCents) > 0) {
+          const producer = ensureProducerUser(normalizedPhone, senderName || displayPhone(normalizedPhone));
+          const parsed = {
+            ...extraction.fields,
+            isOrder: true,
+            price: Number(extraction.fields.priceCents) / 100,
+            priceCents: Number(extraction.fields.priceCents),
+          };
+          const candidate = producer && producer.active !== 0
+            ? createOrderCandidate({ messageId, groupId, body: result.transcript, producer, parsed })
+            : null;
+          if (candidate) {
+            db.prepare("UPDATE voice_booking_intakes SET candidate_id=?,last_seen_at=?,updated_at=? WHERE message_id=?")
+              .run(candidate.id, transcribedAt, transcribedAt, messageId);
+            audit("voice_booking_intake.candidate_created", "order_candidate", candidate.id, {
+              sourceMessageId: messageId,
+              groupId,
+              extractionStatus: extraction.status,
+              financialMutation: false,
+              settlementMutation: false,
+            });
+          }
+        }
       }
       return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence, extraction };
     } catch (error) {
@@ -9633,7 +9659,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   }
   if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg)) {
     if (typeof handleIncomingVoiceBookingIntake === "function" && voiceBookingIntakeEnabled()) {
-      await handleIncomingVoiceBookingIntake(msg, { groupId, senderPhone }).catch((error) => {
+      await handleIncomingVoiceBookingIntake(msg, { groupId, senderPhone, senderName: (contact && (contact.pushname || contact.name)) || msg._data?.notifyName || displayPhone(senderPhone) }).catch((error) => {
         audit("voice_booking_intake.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
       });
     }
@@ -11302,12 +11328,17 @@ async function handleMessageReactionUnlocked(reaction) {
     notifyOrderLifecycleBlocker(pending.candidate_id, "captain_identity_unresolved", { acceptanceMessageId: messageId });
     return;
   }
-  // Final settlement is authorized when any active human captain reacts with
-  // 👍 on the selected «تم» reply. The bot identity never performs approval.
+  const voiceBooking = Boolean(db.prepare("SELECT 1 FROM voice_booking_intakes WHERE candidate_id=? AND group_id=? LIMIT 1").get(pending.candidate_id, target.from));
+  // Voice bookings are approved only by the home/producer who sent the voice
+  // request. Existing text bookings retain their established active-captain
+  // approval rule. The bot identity never performs approval.
   const approvingCaptain = approverPhone
     ? (typeof findCaptainByPhone === "function"
       ? findCaptainByPhone(approverPhone, { activeOnly: true })
       : (typeof findActiveRegisteredUser === "function" ? findActiveRegisteredUser(approverPhone) : null))
+    : null;
+  const approvingProducer = approverPhone && producer.phone && phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone)
+    ? producer
     : null;
   const captainApproved = Boolean(
     approvingCaptain &&
@@ -11316,10 +11347,12 @@ async function handleMessageReactionUnlocked(reaction) {
     approvingCaptain.active === 1 &&
     approvingCaptain.account_status === "active"
   );
-  if (!captainApproved || isBlockedPhone(approverPhone)) {
+  const approvalAuthorized = voiceBooking ? Boolean(approvingProducer && approvingProducer.active === 1 && approvingProducer.account_status === "active") : captainApproved;
+  if (!approvalAuthorized || isBlockedPhone(approverPhone)) {
     updateOrderCandidateLifecycle(pending.candidate_id, "awaiting_authorized_thumb", "producer_authorization", {
       acceptanceMessageId: pending.acceptance_message_id,
       reaction: "👍",
+      voiceBooking,
       reactionOwnerResolved: Boolean(approverPhone),
     });
     logOrderTrace("reaction_approver_not_active_human_captain", {
@@ -11332,8 +11365,8 @@ async function handleMessageReactionUnlocked(reaction) {
     if (typeof notifyGroupActivityAnomaly === "function") notifyGroupActivityAnomaly({ kind: "unauthorized_reaction_attempt", title: "تنبيه تفاعل غير مصرح به", lines: [`معرّف الرسالة: ${messageId}`, `هوية المتفاعل: ${approverPhone || "غير محددة"}`, "تم رفض الاعتماد ولم تُنفّذ تسوية."], groupId: target.from, senderPhone: approverPhone, messageId });
     return;
   }
-  const settlementConfirmerPhone = phoneWithCountry(acceptanceCaptain.phone);
-  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone, { approvalReactionUserId: approvingCaptain.id });
+  const settlementConfirmerPhone = voiceBooking ? phoneWithCountry(producer.phone) : phoneWithCountry(acceptanceCaptain.phone);
+  const result = settlePendingOrder(pending.candidate_id, pending.acceptance_message_id, settlementConfirmerPhone, { approvalReactionUserId: voiceBooking ? approvingProducer.id : approvingCaptain.id });
   if (result.state !== "accepted") {
     const blockedStage = result.state === "debt_limit" ? "debt_limit" : result.state === "archived" ? "archived" : "awaiting_authorized_thumb";
     updateOrderCandidateLifecycle(pending.candidate_id, blockedStage, result.state, { acceptanceMessageId: pending.acceptance_message_id });

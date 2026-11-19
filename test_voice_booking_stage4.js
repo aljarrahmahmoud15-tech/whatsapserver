@@ -1,0 +1,15 @@
+"use strict";
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const source = fs.readFileSync("server.js", "utf8");
+assert.match(source, /ALTER TABLE voice_booking_intakes ADD COLUMN candidate_id INTEGER/);
+assert.match(source, /voice_booking_intake\.candidate_created/);
+assert.match(source, /INSERT OR IGNORE INTO messages\(message_id,group_id,sender_phone,sender_name,body,message_type/);
+assert.match(source, /const voiceBooking = Boolean\(db\.prepare\("SELECT 1 FROM voice_booking_intakes WHERE candidate_id=\? AND group_id=\? LIMIT 1"\)/);
+assert.match(source, /const approvalAuthorized = voiceBooking \? Boolean\(approvingProducer/);
+assert.match(source, /const settlementConfirmerPhone = voiceBooking \? phoneWithCountry\(producer\.phone\)/);
+assert.match(source, /approvalReactionUserId: voiceBooking \? approvingProducer\.id : approvingCaptain\.id/);
+assert.match(source, /createOrderCandidate\(\{ messageId, groupId, body: result\.transcript, producer, parsed \}\)/);
+assert.match(source, /financialMutation: false/);
+assert.match(source, /settlementMutation: false/);
+console.log("voice booking Stage 4 guardrails passed");

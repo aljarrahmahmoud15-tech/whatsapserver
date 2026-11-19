@@ -47,6 +47,7 @@ const db = {
         if (normalized.startsWith("SELECT * FROM order_candidate_acceptances WHERE candidate_id=? AND acceptance_message_id=?")) return args[0] === candidate.id && args[1] === acceptance.acceptance_message_id && ["pending", "selected"].includes(acceptance.status) ? { ...acceptance } : null;
         if (normalized.startsWith("SELECT * FROM order_candidate_acceptances WHERE id=?")) return acceptance.status === "pending" ? { ...acceptance } : null;
         if (normalized.startsWith("SELECT id,order_no,archive_state FROM orders WHERE source_message_id=?")) return null;
+        if (normalized.startsWith("SELECT 1 FROM voice_booking_intakes WHERE candidate_id=? AND group_id=?")) return null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE group_id=?")) return candidate.group_id === args[0] && candidate.status === "pending" && candidate.pending_message_id === args[1] ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM order_candidates WHERE id=?")) return args[0] === candidate.id ? { ...candidate } : null;
         if (normalized.startsWith("SELECT * FROM users WHERE id=?")) return users[args[0]] ? { ...users[args[0]] } : null;

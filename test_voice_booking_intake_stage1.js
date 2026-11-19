@@ -11,7 +11,7 @@ assert.match(source, /CREATE TABLE IF NOT EXISTS voice_booking_intakes/);
 assert.match(source, /message_id TEXT NOT NULL UNIQUE/);
 assert.match(source, /status TEXT NOT NULL CHECK\(status IN \('received','downloaded','failed','skipped'\)\)/);
 
-const intakeStart = source.indexOf("async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone })");
+const intakeStart = source.indexOf("async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = \"\" })");
 const intakeEnd = source.indexOf("\nfunction generalMessageDeletionEnabled", intakeStart);
 assert.ok(intakeStart >= 0 && intakeEnd > intakeStart, "voice intake handler exists");
 const intake = source.slice(intakeStart, intakeEnd);
@@ -27,7 +27,7 @@ assert.match(intake, /fs\.rmSync\(tempPath, \{ force: true \}\)/);
 assert.match(intake, /fs\.rmSync\(tempDir, \{ recursive: false, force: true \}\)/);
 assert.match(intake, /financialMutation: false/);
 assert.match(intake, /orderMutation: false/);
-assert.doesNotMatch(intake, /createOrder|settlePendingOrder|wallet_ledger|draftBooking\s*[:=]\s*true/);
+assert.doesNotMatch(intake, /INSERT INTO orders|settlePendingOrder|wallet_ledger|draftBooking\s*[:=]\s*true/);
 
 const messageHandler = source.indexOf('if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg))');
 const deletionCall = source.indexOf("handleIncomingVoiceMessagePolicy(msg", messageHandler);

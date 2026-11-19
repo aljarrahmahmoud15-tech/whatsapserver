@@ -20,7 +20,7 @@ assert.match(intake, /transcript_confidence/);
 assert.match(intake, /stt_provider/);
 assert.match(intake, /financialMutation: false/);
 assert.match(intake, /orderMutation: false/);
-assert.doesNotMatch(intake, /createOrder|settlePendingOrder|wallet_ledger|draftBooking\s*[:=]\s*true/);
+assert.doesNotMatch(intake, /INSERT INTO orders|settlePendingOrder|wallet_ledger|draftBooking\s*[:=]\s*true/);
 assert.match(source, /body\.speechToText/);
 assert.match(source, /setSetting\(VOICE_BOOKING_STT_SETTING_KEY/);
 assert.match(source, /app\.patch\("\/api\/admin\/settings\/voice-booking-intake", requireOwnerAdmin/);
