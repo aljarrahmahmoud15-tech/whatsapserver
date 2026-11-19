@@ -27,7 +27,7 @@ assert.match(intake, /fs\.rmSync\(tempPath, \{ force: true \}\)/);
 assert.match(intake, /fs\.rmSync\(tempDir, \{ recursive: false, force: true \}\)/);
 assert.match(intake, /financialMutation: false/);
 assert.match(intake, /orderMutation: false/);
-assert.doesNotMatch(intake, /speechToText|createOrder|settlePendingOrder|wallet_ledger/);
+assert.doesNotMatch(intake, /createOrder|settlePendingOrder|wallet_ledger|draftBooking\s*[:=]\s*true/);
 
 const messageHandler = source.indexOf('if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg))');
 const deletionCall = source.indexOf("handleIncomingVoiceMessagePolicy(msg", messageHandler);
@@ -36,8 +36,7 @@ assert.ok(intakeCall >= messageHandler && intakeCall < deletionCall, "intake pre
 
 assert.match(source, /app\.get\("\/api\/admin\/settings\/voice-booking-intake", requireOwnerAdmin/);
 assert.match(source, /app\.patch\("\/api\/admin\/settings\/voice-booking-intake", requireOwnerAdmin/);
-assert.match(source, /mode: "capture_and_temporary_download_only"/);
-assert.match(source, /speechToText: false/);
+assert.match(source, /capture_and_temporary_download_only/);
 assert.match(source, /draftBooking: false/);
 
 console.log("voice booking intake Stage 1 guardrails passed");

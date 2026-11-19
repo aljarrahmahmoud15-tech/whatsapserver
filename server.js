@@ -1164,6 +1164,10 @@ CREATE TABLE IF NOT EXISTS voice_booking_intakes (
   media_mime_type TEXT,
   media_size_bytes INTEGER,
   media_sha256 TEXT,
+  transcript TEXT,
+  transcript_language TEXT,
+  transcript_confidence REAL,
+  stt_provider TEXT,
   error_code TEXT,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -1173,6 +1177,16 @@ CREATE TABLE IF NOT EXISTS voice_booking_intakes (
 );
 CREATE INDEX IF NOT EXISTS idx_voice_booking_intakes_group_seen
   ON voice_booking_intakes(group_id, last_seen_at DESC);
+for (const migration of [
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_language TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_confidence REAL",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN stt_provider TEXT",
+]) {
+  try { db.exec(migration); } catch (error) {
+    if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
+  }
+}
 CREATE TABLE IF NOT EXISTS unresolved_order_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -3892,6 +3906,8 @@ const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
 const VOICE_MESSAGE_DELETION_SETTING_KEY = "official_group_voice_message_deletion_enabled";
 const VOICE_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_voice_message_deletion_emergency_stop";
 const VOICE_BOOKING_INTAKE_SETTING_KEY = "official_group_voice_booking_intake_enabled";
+const VOICE_BOOKING_STT_SETTING_KEY = "official_group_voice_booking_speech_to_text_enabled";
+const VOICE_BOOKING_STT_MAX_TRANSCRIPT_CHARS = 12000;
 const VOICE_BOOKING_INTAKE_MAX_BYTES = Math.max(256 * 1024, Math.min(15 * 1024 * 1024, Number(process.env.VOICE_BOOKING_INTAKE_MAX_BYTES || 15 * 1024 * 1024)));
 const GENERAL_MESSAGE_DELETION_SETTING_KEY = "official_group_unapproved_message_deletion_enabled";
 const GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_unapproved_message_deletion_emergency_stop";
@@ -3918,19 +3934,71 @@ function voiceMessageDeletionPolicyResponse() {
 function voiceBookingIntakeEnabled() {
   return readBooleanSetting(VOICE_BOOKING_INTAKE_SETTING_KEY, false);
 }
+function voiceBookingSpeechToTextEnabled() {
+  return readBooleanSetting(VOICE_BOOKING_STT_SETTING_KEY, false);
+}
+function voiceBookingSpeechToTextProviderConfigured() {
+  const provider = String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase();
+  const apiKey = String(process.env.VOICE_BOOKING_STT_API_KEY || process.env.OPENAI_API_KEY || "").trim();
+  return provider === "openai" && Boolean(apiKey);
+}
+function voiceBookingSpeechToTextEffective() {
+  return voiceBookingIntakeEnabled() && voiceBookingSpeechToTextEnabled() && voiceBookingSpeechToTextProviderConfigured();
+}
 function voiceBookingIntakePolicyResponse() {
   const enabled = voiceBookingIntakeEnabled();
+  const speechToText = voiceBookingSpeechToTextEnabled();
   return {
     enabled,
     effective: enabled,
     scope: "official_group_only",
     appliesTo: "new_incoming_audio_and_ptt_messages",
-    mode: "capture_and_temporary_download_only",
-    speechToText: false,
+    mode: speechToText ? "capture_temporary_download_and_arabic_transcription" : "capture_and_temporary_download_only",
+    speechToText,
+    speechToTextEffective: voiceBookingSpeechToTextEffective(),
+    speechToTextProvider: String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase(),
+    providerConfigured: voiceBookingSpeechToTextProviderConfigured(),
+    transcriptLanguage: "ar",
     draftBooking: false,
     financialMutation: false,
     orderMutation: false,
   };
+}
+function boundedVoiceTranscript(value) {
+  return String(value || "").replace(/\u0000/g, "").trim().slice(0, VOICE_BOOKING_STT_MAX_TRANSCRIPT_CHARS);
+}
+function voiceTranscriptConfidence(payload) {
+  const segments = Array.isArray(payload?.segments) ? payload.segments : [];
+  const probabilities = segments.map((segment) => Number(segment?.no_speech_prob)).filter((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+  if (!probabilities.length) return null;
+  const averageNoSpeech = probabilities.reduce((sum, value) => sum + value, 0) / probabilities.length;
+  return Math.max(0, Math.min(1, Number((1 - averageNoSpeech).toFixed(4))));
+}
+async function transcribeVoiceBookingAudio(filePath, mimeType) {
+  const provider = String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase();
+  const apiKey = String(process.env.VOICE_BOOKING_STT_API_KEY || process.env.OPENAI_API_KEY || "").trim();
+  if (provider !== "openai" || !apiKey) throw new Error("speech_to_text_provider_not_configured");
+  const endpoint = String(process.env.VOICE_BOOKING_STT_URL || "https://api.openai.com/v1/audio/transcriptions").trim();
+  const model = String(process.env.VOICE_BOOKING_STT_MODEL || "gpt-4o-mini-transcribe").trim();
+  const fileBuffer = fs.readFileSync(filePath);
+  const extension = /ogg|opus/i.test(mimeType) ? "audio.ogg" : (/mpeg|mp3/i.test(mimeType) ? "audio.mp3" : "audio.bin");
+  const form = new FormData();
+  form.append("file", new Blob([fileBuffer], { type: mimeType || "application/octet-stream" }), extension);
+  form.append("model", model);
+  form.append("language", "ar");
+  form.append("response_format", "verbose_json");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal: controller.signal });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload) throw new Error(`speech_to_text_http_${response.status}`);
+    const transcript = boundedVoiceTranscript(payload.text);
+    if (!transcript) throw new Error("speech_to_text_empty_transcript");
+    return { provider, transcript, language: String(payload.language || "ar").slice(0, 16), confidence: voiceTranscriptConfidence(payload) };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone }) {
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
@@ -3968,7 +4036,20 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone 
     db.prepare("UPDATE voice_booking_intakes SET status='downloaded',media_mime_type=?,media_size_bytes=?,media_sha256=?,downloaded_at=?,last_seen_at=?,updated_at=? WHERE message_id=?")
       .run(mimeType, buffer.length, sha256, downloadedAt, downloadedAt, downloadedAt, messageId);
     audit("voice_booking_intake.downloaded", "message", messageId, { groupId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length, financialMutation: false, orderMutation: false });
-    return { status: "downloaded", messageId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length };
+    if (!voiceBookingSpeechToTextEffective()) return { status: "downloaded", messageId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length };
+    try {
+      const result = await transcribeVoiceBookingAudio(tempPath, mimeType);
+      const transcribedAt = now();
+      db.prepare("UPDATE voice_booking_intakes SET status='downloaded',transcript=?,transcript_language=?,transcript_confidence=?,stt_provider=?,error_code=NULL,last_seen_at=?,updated_at=? WHERE message_id=?")
+        .run(result.transcript, result.language, result.confidence, result.provider, transcribedAt, transcribedAt, messageId);
+      audit("voice_booking_intake.transcribed", "message", messageId, { groupId, provider: result.provider, language: result.language, confidence: result.confidence, financialMutation: false, orderMutation: false });
+      return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence };
+    } catch (error) {
+      const errorCode = String(error?.message || error).slice(0, 120);
+      db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
+      audit("voice_booking_intake.transcription_failed", "message", messageId, { groupId, errorCode, financialMutation: false, orderMutation: false });
+      return { status: "failed", reason: errorCode, messageId };
+    }
   } catch (error) {
     const errorCode = String(error?.message || error).slice(0, 120);
     db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
@@ -13033,9 +13114,12 @@ app.patch("/api/admin/settings/voice-booking-intake", requireOwnerAdmin, adminMu
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled يجب أن يكون true أو false" });
   const before = voiceBookingIntakePolicyResponse();
   const enabled = body.enabled === undefined ? before.enabled : body.enabled;
+  if (body.speechToText !== undefined && typeof body.speechToText !== "boolean") return res.status(400).json({ error: "speechToText يجب أن يكون true أو false" });
+  const speechToText = body.speechToText === undefined ? before.speechToText : body.speechToText;
   try {
     setSetting(VOICE_BOOKING_INTAKE_SETTING_KEY, enabled ? "1" : "0");
-    audit("admin.voice_booking_intake_policy.changed", "system", "voice_booking_intake", { before, after: { ...voiceBookingIntakePolicyResponse(), enabled }, financialMutation: false, orderMutation: false });
+    setSetting(VOICE_BOOKING_STT_SETTING_KEY, speechToText ? "1" : "0");
+    audit("admin.voice_booking_intake_policy.changed", "system", "voice_booking_intake", { before, after: { ...voiceBookingIntakePolicyResponse(), enabled, speechToText }, financialMutation: false, orderMutation: false });
     invalidateV27AdminReadCache();
     res.setHeader("Cache-Control", "no-store, max-age=0");
     return res.json({ success: true, policy: voiceBookingIntakePolicyResponse(), ownerOnly: true, mutation: "none" });
