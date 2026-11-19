@@ -1153,6 +1153,26 @@ CREATE TABLE IF NOT EXISTS whatsapp_message_receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_whatsapp_message_receipts_group_seen
   ON whatsapp_message_receipts(group_id, last_seen_at DESC);
+CREATE TABLE IF NOT EXISTS voice_booking_intakes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL UNIQUE,
+  group_id TEXT NOT NULL,
+  sender_phone TEXT,
+  message_type TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('received','downloaded','failed','skipped')) DEFAULT 'received',
+  attempts INTEGER NOT NULL DEFAULT 1,
+  media_mime_type TEXT,
+  media_size_bytes INTEGER,
+  media_sha256 TEXT,
+  error_code TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  downloaded_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_voice_booking_intakes_group_seen
+  ON voice_booking_intakes(group_id, last_seen_at DESC);
 CREATE TABLE IF NOT EXISTS unresolved_order_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id TEXT NOT NULL UNIQUE,
@@ -3871,6 +3891,8 @@ const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
 });
 const VOICE_MESSAGE_DELETION_SETTING_KEY = "official_group_voice_message_deletion_enabled";
 const VOICE_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_voice_message_deletion_emergency_stop";
+const VOICE_BOOKING_INTAKE_SETTING_KEY = "official_group_voice_booking_intake_enabled";
+const VOICE_BOOKING_INTAKE_MAX_BYTES = Math.max(256 * 1024, Math.min(15 * 1024 * 1024, Number(process.env.VOICE_BOOKING_INTAKE_MAX_BYTES || 15 * 1024 * 1024)));
 const GENERAL_MESSAGE_DELETION_SETTING_KEY = "official_group_unapproved_message_deletion_enabled";
 const GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_unapproved_message_deletion_emergency_stop";
 function voiceMessageDeletionEnabled() {
@@ -3892,6 +3914,70 @@ function voiceMessageDeletionPolicyResponse() {
     financialMutation: false,
     orderMutation: false,
   };
+}
+function voiceBookingIntakeEnabled() {
+  return readBooleanSetting(VOICE_BOOKING_INTAKE_SETTING_KEY, false);
+}
+function voiceBookingIntakePolicyResponse() {
+  const enabled = voiceBookingIntakeEnabled();
+  return {
+    enabled,
+    effective: enabled,
+    scope: "official_group_only",
+    appliesTo: "new_incoming_audio_and_ptt_messages",
+    mode: "capture_and_temporary_download_only",
+    speechToText: false,
+    draftBooking: false,
+    financialMutation: false,
+    orderMutation: false,
+  };
+}
+async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone }) {
+  if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
+  const normalizedPhone = phoneWithCountry(senderPhone);
+  if (!normalizedPhone || isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) return { status: "skipped", reason: "protected_sender" };
+  if (!officialGroupAdminSnapshotReady()) return { status: "skipped", reason: "admin_snapshot_unavailable" };
+  const messageId = serializedMessageId(message);
+  if (!messageId) return { status: "skipped", reason: "missing_message_id" };
+  const stamp = now();
+  const existing = db.prepare("SELECT id,status,attempts FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
+  if (existing) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts };
+  let row;
+  try {
+    row = db.prepare("INSERT OR IGNORE INTO voice_booking_intakes(message_id,group_id,sender_phone,message_type,status,attempts,first_seen_at,last_seen_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(messageId, groupId, normalizedPhone, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
+  } catch (error) {
+    audit("voice_booking_intake.receipt_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+    return { status: "failed", reason: "receipt_failed" };
+  }
+  if (!row || row.changes !== 1) return { status: "duplicate", messageId };
+  let tempDir = "";
+  let tempPath = "";
+  try {
+    if (typeof message.downloadMedia !== "function") throw new Error("media_download_unavailable");
+    const media = await withTimeout(message.downloadMedia(), 30000, null);
+    const mimeType = String(media?.mimetype || "").trim().toLowerCase();
+    if (!media?.data || !/^audio\//.test(mimeType)) throw new Error("audio_media_required");
+    const buffer = Buffer.from(String(media.data), "base64");
+    if (!buffer.length || buffer.length > VOICE_BOOKING_INTAKE_MAX_BYTES) throw new Error("audio_media_too_large_or_empty");
+    tempDir = fs.mkdtempSync(path.join("/tmp", "voice-booking-intake-"));
+    tempPath = path.join(tempDir, "audio.bin");
+    fs.writeFileSync(tempPath, buffer, { mode: 0o600 });
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    const downloadedAt = now();
+    db.prepare("UPDATE voice_booking_intakes SET status='downloaded',media_mime_type=?,media_size_bytes=?,media_sha256=?,downloaded_at=?,last_seen_at=?,updated_at=? WHERE message_id=?")
+      .run(mimeType, buffer.length, sha256, downloadedAt, downloadedAt, downloadedAt, messageId);
+    audit("voice_booking_intake.downloaded", "message", messageId, { groupId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length, financialMutation: false, orderMutation: false });
+    return { status: "downloaded", messageId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length };
+  } catch (error) {
+    const errorCode = String(error?.message || error).slice(0, 120);
+    db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
+    audit("voice_booking_intake.failed", "message", messageId, { groupId, errorCode, financialMutation: false, orderMutation: false });
+    return { status: "failed", reason: errorCode, messageId };
+  } finally {
+    try { if (tempPath) fs.rmSync(tempPath, { force: true }); } catch (_) {}
+    try { if (tempDir) fs.rmSync(tempDir, { recursive: false, force: true }); } catch (_) {}
+  }
 }
 function generalMessageDeletionEnabled() {
   return readBooleanSetting(GENERAL_MESSAGE_DELETION_SETTING_KEY, false);
@@ -9420,6 +9506,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (typeof isIncomingVoiceMessage === "function" && isIncomingVoiceMessage(msg)) {
+    if (typeof handleIncomingVoiceBookingIntake === "function" && voiceBookingIntakeEnabled()) {
+      await handleIncomingVoiceBookingIntake(msg, { groupId, senderPhone }).catch((error) => {
+        audit("voice_booking_intake.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+      });
+    }
     if (typeof handleIncomingVoiceMessagePolicy !== "function") return;
     const voiceDeletionResult = await handleIncomingVoiceMessagePolicy(msg, { groupId, senderPhone }).catch((error) => {
       audit("voice_message_deletion.handler_failed", "message", serializedMessageId(msg) || "unknown", { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
@@ -12913,7 +13004,7 @@ app.get("/api/admin/whatsapp/send-diagnostics", requireAdmin, adminReadLimiter, 
 });
 app.get("/api/admin/settings", requireOwnerAdmin, adminReadLimiter, v27AdminReadCache("owner-settings", 2000), (req, res) => {
   res.setHeader("Cache-Control", "private, max-age=2, stale-while-revalidate=2");
-  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), voiceMessageDeletion: voiceMessageDeletionPolicyResponse(), generalMessageDeletion: generalMessageDeletionPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
+  res.json({ success: true, policy: settlementPolicyResponse(), farePricing: farePolicyResponse(), specialBooking: specialBookingPolicyResponse(currentSpecialBookingPolicy()), customerBooking: customerBookingPolicyResponse(currentCustomerBookingPolicy()), notifications: notificationSettingsResponse(), acceptanceDeletion: insufficientBalanceAcceptanceDeletionResponse(), voiceMessageDeletion: voiceMessageDeletionPolicyResponse(), voiceBookingIntake: voiceBookingIntakePolicyResponse(), generalMessageDeletion: generalMessageDeletionPolicyResponse(), ownerOnly: true, passwordPolicy: { minLength: 16, requiresUppercase: true, requiresLowercase: true, requiresNumber: true, requiresSymbol: true } });
 });
 app.get("/api/admin/group-discovery-candidates", requireOwnerAdmin, adminReadLimiter, (req, res) => {
   const candidates = db.prepare(`
@@ -12932,6 +13023,25 @@ app.get("/api/admin/settings/customer-booking", requireOwnerAdmin, adminReadLimi
 app.get("/api/admin/settings/voice-message-deletion", requireOwnerAdmin, adminReadLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.json({ success: true, policy: voiceMessageDeletionPolicyResponse(), ownerOnly: true, mutation: "none" });
+});
+app.get("/api/admin/settings/voice-booking-intake", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.json({ success: true, policy: voiceBookingIntakePolicyResponse(), ownerOnly: true, mutation: "none" });
+});
+app.patch("/api/admin/settings/voice-booking-intake", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (body.enabled !== undefined && typeof body.enabled !== "boolean") return res.status(400).json({ error: "enabled يجب أن يكون true أو false" });
+  const before = voiceBookingIntakePolicyResponse();
+  const enabled = body.enabled === undefined ? before.enabled : body.enabled;
+  try {
+    setSetting(VOICE_BOOKING_INTAKE_SETTING_KEY, enabled ? "1" : "0");
+    audit("admin.voice_booking_intake_policy.changed", "system", "voice_booking_intake", { before, after: { ...voiceBookingIntakePolicyResponse(), enabled }, financialMutation: false, orderMutation: false });
+    invalidateV27AdminReadCache();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    return res.json({ success: true, policy: voiceBookingIntakePolicyResponse(), ownerOnly: true, mutation: "none" });
+  } catch (error) {
+    return res.status(500).json({ error: "تعذر حفظ إعداد استقبال الرسائل الصوتية", detail: String(error?.message || error).slice(0, 180) });
+  }
 });
 app.patch("/api/admin/settings/voice-message-deletion", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
