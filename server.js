@@ -1168,6 +1168,9 @@ CREATE TABLE IF NOT EXISTS voice_booking_intakes (
   transcript_language TEXT,
   transcript_confidence REAL,
   stt_provider TEXT,
+  extracted_fields_json TEXT,
+  extraction_confidence REAL,
+  extraction_status TEXT,
   error_code TEXT,
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -1650,6 +1653,9 @@ for (const migration of [
   "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_language TEXT",
   "ALTER TABLE voice_booking_intakes ADD COLUMN transcript_confidence REAL",
   "ALTER TABLE voice_booking_intakes ADD COLUMN stt_provider TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN extracted_fields_json TEXT",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN extraction_confidence REAL",
+  "ALTER TABLE voice_booking_intakes ADD COLUMN extraction_status TEXT",
 ]) {
   try { db.exec(migration); } catch (error) {
     if (!/duplicate column name/i.test(String(error?.message || error))) throw error;
@@ -3908,6 +3914,7 @@ const VOICE_MESSAGE_DELETION_SETTING_KEY = "official_group_voice_message_deletio
 const VOICE_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_voice_message_deletion_emergency_stop";
 const VOICE_BOOKING_INTAKE_SETTING_KEY = "official_group_voice_booking_intake_enabled";
 const VOICE_BOOKING_STT_SETTING_KEY = "official_group_voice_booking_speech_to_text_enabled";
+const VOICE_BOOKING_EXTRACTION_SETTING_KEY = "official_group_voice_booking_field_extraction_enabled";
 const VOICE_BOOKING_STT_MAX_TRANSCRIPT_CHARS = 12000;
 const VOICE_BOOKING_INTAKE_MAX_BYTES = Math.max(256 * 1024, Math.min(15 * 1024 * 1024, Number(process.env.VOICE_BOOKING_INTAKE_MAX_BYTES || 15 * 1024 * 1024)));
 const GENERAL_MESSAGE_DELETION_SETTING_KEY = "official_group_unapproved_message_deletion_enabled";
@@ -3938,6 +3945,9 @@ function voiceBookingIntakeEnabled() {
 function voiceBookingSpeechToTextEnabled() {
   return readBooleanSetting(VOICE_BOOKING_STT_SETTING_KEY, false);
 }
+function voiceBookingFieldExtractionEnabled() {
+  return readBooleanSetting(VOICE_BOOKING_EXTRACTION_SETTING_KEY, false);
+}
 function voiceBookingSpeechToTextProviderConfigured() {
   const provider = String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase();
   const apiKey = String(process.env.VOICE_BOOKING_STT_API_KEY || process.env.OPENAI_API_KEY || "").trim();
@@ -3946,9 +3956,13 @@ function voiceBookingSpeechToTextProviderConfigured() {
 function voiceBookingSpeechToTextEffective() {
   return voiceBookingIntakeEnabled() && voiceBookingSpeechToTextEnabled() && voiceBookingSpeechToTextProviderConfigured();
 }
+function voiceBookingFieldExtractionEffective() {
+  return voiceBookingSpeechToTextEffective() && voiceBookingFieldExtractionEnabled();
+}
 function voiceBookingIntakePolicyResponse() {
   const enabled = voiceBookingIntakeEnabled();
   const speechToText = voiceBookingSpeechToTextEnabled();
+  const extractFields = voiceBookingFieldExtractionEnabled();
   return {
     enabled,
     effective: enabled,
@@ -3960,6 +3974,9 @@ function voiceBookingIntakePolicyResponse() {
     speechToTextProvider: String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase(),
     providerConfigured: voiceBookingSpeechToTextProviderConfigured(),
     transcriptLanguage: "ar",
+    extractFields,
+    extractFieldsEffective: voiceBookingFieldExtractionEffective(),
+    extractionStatus: "needs_review",
     draftBooking: false,
     financialMutation: false,
     orderMutation: false,
@@ -3967,6 +3984,26 @@ function voiceBookingIntakePolicyResponse() {
 }
 function boundedVoiceTranscript(value) {
   return String(value || "").replace(/\u0000/g, "").trim().slice(0, VOICE_BOOKING_STT_MAX_TRANSCRIPT_CHARS);
+}
+function extractVoiceBookingFields(transcript) {
+  const parsed = parseOrder(transcript);
+  const fields = {
+    priceCents: parsed.priceCents,
+    priceMin: parsed.priceMin,
+    priceMax: parsed.priceMax,
+    origin: parsed.origin,
+    destination: parsed.destination,
+    tripTime: parsed.tripTime,
+    requestKind: parsed.requestKind,
+    orderKind: parsed.orderKind,
+  };
+  const evidenceCount = [fields.priceCents, fields.origin, fields.destination, fields.requestKind]
+    .filter((value) => value !== null && value !== undefined && value !== "").length;
+  return {
+    fields,
+    confidence: Number((evidenceCount / 4).toFixed(4)),
+    status: "needs_review",
+  };
 }
 function voiceTranscriptConfidence(payload) {
   const segments = Array.isArray(payload?.segments) ? payload.segments : [];
@@ -4044,7 +4081,14 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone 
       db.prepare("UPDATE voice_booking_intakes SET status='downloaded',transcript=?,transcript_language=?,transcript_confidence=?,stt_provider=?,error_code=NULL,last_seen_at=?,updated_at=? WHERE message_id=?")
         .run(result.transcript, result.language, result.confidence, result.provider, transcribedAt, transcribedAt, messageId);
       audit("voice_booking_intake.transcribed", "message", messageId, { groupId, provider: result.provider, language: result.language, confidence: result.confidence, financialMutation: false, orderMutation: false });
-      return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence };
+      let extraction = null;
+      if (voiceBookingFieldExtractionEffective()) {
+        extraction = extractVoiceBookingFields(result.transcript);
+        db.prepare("UPDATE voice_booking_intakes SET extracted_fields_json=?,extraction_confidence=?,extraction_status=?,last_seen_at=?,updated_at=? WHERE message_id=?")
+          .run(JSON.stringify(extraction.fields), extraction.confidence, extraction.status, transcribedAt, transcribedAt, messageId);
+        audit("voice_booking_intake.fields_extracted", "message", messageId, { groupId, confidence: extraction.confidence, status: extraction.status, financialMutation: false, orderMutation: false });
+      }
+      return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence, extraction };
     } catch (error) {
       const errorCode = String(error?.message || error).slice(0, 120);
       db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
@@ -13117,10 +13161,13 @@ app.patch("/api/admin/settings/voice-booking-intake", requireOwnerAdmin, adminMu
   const enabled = body.enabled === undefined ? before.enabled : body.enabled;
   if (body.speechToText !== undefined && typeof body.speechToText !== "boolean") return res.status(400).json({ error: "speechToText يجب أن يكون true أو false" });
   const speechToText = body.speechToText === undefined ? before.speechToText : body.speechToText;
+  if (body.extractFields !== undefined && typeof body.extractFields !== "boolean") return res.status(400).json({ error: "extractFields يجب أن يكون true أو false" });
+  const extractFields = body.extractFields === undefined ? before.extractFields : body.extractFields;
   try {
     setSetting(VOICE_BOOKING_INTAKE_SETTING_KEY, enabled ? "1" : "0");
     setSetting(VOICE_BOOKING_STT_SETTING_KEY, speechToText ? "1" : "0");
-    audit("admin.voice_booking_intake_policy.changed", "system", "voice_booking_intake", { before, after: { ...voiceBookingIntakePolicyResponse(), enabled, speechToText }, financialMutation: false, orderMutation: false });
+    setSetting(VOICE_BOOKING_EXTRACTION_SETTING_KEY, extractFields ? "1" : "0");
+    audit("admin.voice_booking_intake_policy.changed", "system", "voice_booking_intake", { before, after: { ...voiceBookingIntakePolicyResponse(), enabled, speechToText, extractFields }, financialMutation: false, orderMutation: false });
     invalidateV27AdminReadCache();
     res.setHeader("Cache-Control", "no-store, max-age=0");
     return res.json({ success: true, policy: voiceBookingIntakePolicyResponse(), ownerOnly: true, mutation: "none" });
