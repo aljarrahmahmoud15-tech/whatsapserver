@@ -8342,7 +8342,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverHistoricalVoiceBookingIntakes(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, recovered: 0, skipped: 0, failed: 0, source: null, finishedAt: null };
+  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, liveLookupAttempts: 0, liveLookupHits: 0, liveLookupMisses: 0, recovered: 0, skipped: 0, failed: 0, source: null, finishedAt: null };
   lastVoiceBookingRecovery = recovery;
   const history = await withTimeout(fetchGroupHistory(groupId, 200, { includeOutgoing: false, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
   recovery.source = history?.chat ? "chat.fetchMessages" : "history-fallback";
@@ -8357,8 +8357,16 @@ async function recoverHistoricalVoiceBookingIntakes(groupId) {
     const existing = db.prepare("SELECT id FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
     if (existing) { recovery.skipped += 1; continue; }
     try {
-      const senderPhone = await resolveMessageSenderPhone(message).catch(() => "");
-      const result = await handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName: String(message.__notifyName || message.notifyName || message.author?.pushname || message.author?.name || displayPhone(senderPhone)).trim() });
+      // History serialization can expose a ptt row without the live whatsapp-web.js
+      // media methods. Re-fetch the exact message before intake so downloadMedia()
+      // runs on a real Message object; keep the historical object as a bounded fallback.
+      recovery.liveLookupAttempts += 1;
+      const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000).catch(() => null);
+      const intakeMessage = liveMessage || message;
+      if (liveMessage) recovery.liveLookupHits += 1;
+      else recovery.liveLookupMisses += 1;
+      const senderPhone = await resolveMessageSenderPhone(intakeMessage).catch(() => "");
+      const result = await handleIncomingVoiceBookingIntake(intakeMessage, { groupId, senderPhone, senderName: String(intakeMessage.__notifyName || intakeMessage.notifyName || intakeMessage.author?.pushname || intakeMessage.author?.name || displayPhone(senderPhone)).trim() });
       if (["downloaded", "duplicate"].includes(result?.status)) recovery.recovered += 1;
       else if (result?.status === "failed") recovery.failed += 1;
       else recovery.skipped += 1;
@@ -8368,7 +8376,7 @@ async function recoverHistoricalVoiceBookingIntakes(groupId) {
     }
   }
   recovery.finishedAt = new Date().toISOString();
-  if (recovery.voiceMessages) console.log(`[WhatsApp] historical voice intake recovery: voice=${recovery.voiceMessages} recovered=${recovery.recovered} failed=${recovery.failed}`);
+  if (recovery.voiceMessages) console.log(`[WhatsApp] historical voice intake recovery: voice=${recovery.voiceMessages} liveHits=${recovery.liveLookupHits} liveMisses=${recovery.liveLookupMisses} recovered=${recovery.recovered} failed=${recovery.failed}`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;

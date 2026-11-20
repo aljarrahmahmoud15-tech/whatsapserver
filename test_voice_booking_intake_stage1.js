@@ -49,7 +49,10 @@ assert.match(source, /draftBooking: false/);
 assert.match(source, /async function recoverHistoricalVoiceBookingIntakes\(groupId\)/);
 assert.match(source, /fetchGroupHistory\(groupId, 200/);
 assert.match(source, /24 \* 60 \* 60 \* 1000/);
-assert.match(source, /await handleIncomingVoiceBookingIntake\(message/);
+assert.match(source, /getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
+assert.match(source, /const intakeMessage = liveMessage \|\| message/);
+assert.match(source, /liveLookupHits/);
+assert.match(source, /await handleIncomingVoiceBookingIntake\(intakeMessage/);
 assert.doesNotMatch(source.slice(source.indexOf("async function recoverHistoricalVoiceBookingIntakes"), source.indexOf("async function recoverPendingAcceptanceMessages")), /settlePendingOrder|INSERT INTO orders|wallet_ledger/);
 
 console.log("voice booking intake Stage 1 guardrails passed");
