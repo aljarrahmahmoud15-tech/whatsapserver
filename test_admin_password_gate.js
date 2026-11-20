@@ -3,6 +3,7 @@ const fs = require('node:fs');
 
 const v26 = fs.readFileSync('./public/admin-v26.html', 'utf8');
 const v27 = fs.readFileSync('./public/admin-v27.html', 'utf8');
+const root = fs.readFileSync('./public/index.html', 'utf8');
 
 assert.match(v26, /async function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);/,
   'V26 must clear only the legacy local token marker');
@@ -16,4 +17,10 @@ assert.match(v27, /async function bootstrap\(\)\{state\.token='';localStorage\.r
   'V27 must restore a valid server cookie session through a read-only endpoint');
 assert.doesNotMatch(v27, /async function login\(\)[\s\S]*?localStorage\.setItem\(['"]adminToken/,
   'V27 login must not persist an admin token in localStorage');
-console.log('V26 and V27 cookie-session restore guards verified');
+assert.match(root, /const restoreAdminSession=async\(\)=>\{[\s\S]*?fetch\('\/api\/staff\/me',\{credentials:'same-origin',cache:'no-store'\}\)[\s\S]*?await refreshOverview\(true\)/,
+  'Root dashboard must restore a valid server cookie session through a read-only endpoint');
+assert.match(root, /lockAdminApp\(\);modal\.hidden=true;void restoreAdminSession\(\)/,
+  'Root dashboard must not show the password modal before checking the server session');
+assert.doesNotMatch(root, /localStorage\.setItem\(['"](?:adminToken|adminPassword|password)/,
+  'Root dashboard must not persist an admin token or password locally');
+console.log('Root, V26, and V27 cookie-session restore guards verified');
