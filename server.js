@@ -10243,6 +10243,8 @@ function reactionSenderValues(reaction) {
   const values = [
     reaction?.__senderPhone,
     reaction?._data?.__senderPhone,
+    reaction?.senderPhone,
+    reaction?._data?.senderPhone,
     reaction?.senderId,
     reaction?._data?.senderId,
     reaction?.senderUserJid,
@@ -10259,6 +10261,8 @@ function reactionSenderValues(reaction) {
     if (typeof value === "string") return [value.trim()];
     if (Array.isArray(value)) return value.flatMap(flatten);
     return [
+      value.phone,
+      value.phoneNumber,
       value.senderId,
       value.senderUserJid,
       value.author,
@@ -16117,7 +16121,7 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
     messages = history.messages;
   }
   if (!chat) return res.status(404).json({ error: "Configured chat is not readable through WhatsApp" });
-  const rows = (Array.isArray(messages) ? messages : []).map((message) => {
+  const rows = await Promise.all((Array.isArray(messages) ? messages : []).map(async (message) => {
     const body = String(message?.body || "").trim();
     return {
       id: serializedMessageId(message),
@@ -16133,11 +16137,15 @@ app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
       hasQuotedMessage: Boolean(message?.hasQuotedMsg || message?.__quoted),
       quotedMessageId: serializedMessageId(message?.__quoted),
       hasReaction: Boolean(message?.hasReaction || message?.__hasReaction),
-      reactions: (Array.isArray(message?.__reactions) ? message.__reactions : []).map((reaction) => ({ emoji: reaction.aggregateEmoji || reaction.reaction || null, hasReactionByMe: Boolean(reaction.hasReactionByMe), senderPhones: (Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => sender.__senderPhone || null).filter(Boolean) })),
+      reactions: await Promise.all((Array.isArray(message?.__reactions) ? message.__reactions : []).map(async (reaction) => ({
+        emoji: reaction.aggregateEmoji || reaction.reaction || null,
+        hasReactionByMe: Boolean(reaction.hasReactionByMe),
+        senderPhones: [...new Set((await Promise.all((Array.isArray(reaction.senders) ? reaction.senders : []).map((sender) => resolveReactionSenderPhone(sender).catch(() => "")))).filter(Boolean))],
+      }))),
       parsedOrder: parseOrder(body),
       captainAcceptance: isCaptainAcceptance(body),
     };
-  });
+  }));
   const filteredRows = bodyIncludes ? rows.filter((row) => row.body.includes(bodyIncludes)) : rows;
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, includeOutgoing, bodyIncludes: bodyIncludes || null, count: filteredRows.length, messages: filteredRows });
@@ -17958,6 +17966,86 @@ app.get("/api/admin/order-lifecycle", requireAdmin, adminReadLimiter, v27AdminRe
     ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(...(groupId ? [groupId, limit] : [limit]));
   res.setHeader("Cache-Control", "no-store");
   res.json({ lifecycle: rows.map((row) => ({ ...row, price: money(row.price_cents), producer_name: row.producer_name || "غير مسجل", producer_phone: row.producer_phone || null })) });
+});
+app.get("/api/admin/group/voice-booking-evidence", requireAdmin, adminReadLimiter, (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  const messageId = String(req.query.messageId || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
+  if (!messageId) return res.status(400).json({ error: "messageId is required", mutation: "none" });
+  const core = messageIdCore(messageId);
+  const likePattern = `%${String(core || messageId).replace(/[\\%_]/g, "\\$&")}%`;
+  const intake = db.prepare(`SELECT vi.*,c.id AS candidate_id,c.source_message_id,c.raw_text,c.price_cents,c.status AS candidate_status,
+      c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,c.lifecycle_updated_at,
+      p.name AS producer_name,p.phone AS producer_phone
+    FROM voice_booking_intakes vi
+    LEFT JOIN order_candidates c ON c.id=vi.candidate_id
+    LEFT JOIN users p ON p.id=c.producer_user_id
+    WHERE vi.group_id=? AND (vi.message_id=? OR vi.message_id LIKE ? ESCAPE '\\')
+    ORDER BY vi.id DESC LIMIT 1`).get(groupId, messageId, likePattern);
+  const candidate = intake?.candidate_id
+    ? db.prepare(`SELECT c.id,c.source_message_id,c.raw_text,c.price_cents,c.status,c.pending_message_id,c.pending_at,c.lifecycle_stage,c.lifecycle_blocker,
+        a.acceptance_message_id,a.acceptance_mode,a.status AS acceptance_status,e.name AS executor_name,e.phone AS executor_phone,
+        e.active AS executor_active,e.account_status AS executor_account_status
+      FROM order_candidates c
+      LEFT JOIN order_candidate_acceptances a ON a.id=(SELECT a2.id FROM order_candidate_acceptances a2 WHERE a2.candidate_id=c.id ORDER BY a2.created_at DESC,a2.id DESC LIMIT 1)
+      LEFT JOIN users e ON e.id=a.captain_user_id WHERE c.id=? LIMIT 1`).get(intake.candidate_id)
+    : null;
+  const acceptanceMessageId = candidate?.acceptance_message_id || null;
+  const reactionEvidence = acceptanceMessageId ? storedReactionEvidence(acceptanceMessageId, "👍").map((row) => ({
+    emoji: row.emoji,
+    senderId: row.sender_id || row.sender_key || null,
+    senderPhone: row.sender_phone || null,
+    source: row.source || null,
+    capturedAt: row.captured_at || null,
+  })) : [];
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({
+    success: true,
+    mutation: "none",
+    readOnly: true,
+    groupId,
+    sourceMessageId: intake?.message_id || messageId,
+    intake: intake ? {
+      id: intake.id,
+      messageId: intake.message_id,
+      senderPhone: intake.sender_phone || null,
+      messageType: intake.message_type,
+      status: intake.status,
+      attempts: intake.attempts,
+      mediaMimeType: intake.media_mime_type || null,
+      mediaSizeBytes: intake.media_size_bytes || null,
+      transcript: intake.transcript || null,
+      transcriptLanguage: intake.transcript_language || null,
+      transcriptConfidence: intake.transcript_confidence ?? null,
+      sttProvider: intake.stt_provider || null,
+      extractedFields: intake.extracted_fields_json ? JSON.parse(intake.extracted_fields_json) : null,
+      extractionConfidence: intake.extraction_confidence ?? null,
+      extractionStatus: intake.extraction_status || null,
+      errorCode: intake.error_code || null,
+      candidateId: intake.candidate_id || null,
+      firstSeenAt: intake.first_seen_at,
+      updatedAt: intake.updated_at,
+    } : null,
+    candidate: candidate ? {
+      id: candidate.id,
+      sourceMessageId: candidate.source_message_id,
+      rawText: candidate.raw_text,
+      price: money(candidate.price_cents),
+      status: candidate.status,
+      pendingMessageId: candidate.pending_message_id || null,
+      pendingAt: candidate.pending_at || null,
+      lifecycleStage: candidate.lifecycle_stage || null,
+      lifecycleBlocker: candidate.lifecycle_blocker || null,
+      acceptanceMessageId,
+      acceptanceMode: candidate.acceptance_mode || null,
+      acceptanceStatus: candidate.acceptance_status || null,
+      producerPhone: intake?.producer_phone || null,
+      executorPhone: candidate.executor_phone || null,
+      executorActive: Number(candidate.executor_active) === 1 && candidate.executor_account_status === "active",
+    } : null,
+    reactionEvidence,
+    financialMutation: false,
+  });
 });
 app.get("/api/admin/unconfirmed-bookings", requireAdmin, adminReadLimiter, v27AdminReadCache("unconfirmed-bookings", 1000), (req, res) => {
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
