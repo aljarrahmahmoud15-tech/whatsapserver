@@ -8351,7 +8351,9 @@ async function recoverHistoricalVoiceBookingIntakes(groupId) {
     recovery.scanned += 1;
     const messageId = serializedMessageId(message) || String(message?.id || "").trim();
     const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
-    if (!messageId || seen.has(messageId) || timestamp < cutoff || message?.fromMe || resolveGroupChatId(message) !== groupId || !isIncomingVoiceMessage(message)) continue;
+    const idGroupId = String(messageId).match(/^(?:true|false)_([^_]+@g\.us)_/i)?.[1] || "";
+    const messageGroupId = resolveGroupChatId(message) || idGroupId;
+    if (!messageId || seen.has(messageId) || timestamp < cutoff || message?.fromMe || messageGroupId !== groupId || !isIncomingVoiceMessage(message)) continue;
     seen.add(messageId);
     recovery.voiceMessages += 1;
     const existing = db.prepare("SELECT id FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);

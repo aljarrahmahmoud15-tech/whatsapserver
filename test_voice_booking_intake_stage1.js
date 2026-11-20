@@ -51,6 +51,8 @@ assert.match(source, /fetchGroupHistory\(groupId, 200/);
 assert.match(source, /24 \* 60 \* 60 \* 1000/);
 assert.match(source, /getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
 assert.match(source, /const intakeMessage = liveMessage \|\| message/);
+assert.match(source, /const idGroupId = String\(messageId\)\.match/);
+assert.match(source, /const messageGroupId = resolveGroupChatId\(message\) \|\| idGroupId/);
 assert.match(source, /liveLookupHits/);
 assert.match(source, /await handleIncomingVoiceBookingIntake\(intakeMessage/);
 const backgroundRecoveryStart = source.indexOf("function startBackgroundOrderRecovery(groupId)");
