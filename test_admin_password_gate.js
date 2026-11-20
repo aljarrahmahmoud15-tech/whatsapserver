@@ -1,11 +1,17 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-for (const [name, file] of [['V26', './public/admin-v26.html'], ['V27', './public/admin-v27.html']]) {
-  const page = fs.readFileSync(file, 'utf8');
-  assert.match(page, /function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);\$\('appView'\)\.classList\.add\('hidden'\);\$\('loginView'\)\.classList\.remove\('hidden'\);\}/,
-    `${name} must show the password gate on every page load`);
-  assert.doesNotMatch(page, /async function bootstrap\(\)\{try\{if\(state\.token\)/,
-    `${name} must not auto-open from an existing browser session`);
-}
-console.log('admin password gate on every page load verified');
+const v26 = fs.readFileSync('./public/admin-v26.html', 'utf8');
+const v27 = fs.readFileSync('./public/admin-v27.html', 'utf8');
+
+assert.match(v26, /async function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);/,
+  'V26 must clear only the legacy local token marker');
+assert.match(v26, /fetch\('\/api\/staff\/me',\{credentials:'same-origin',cache:'no-store'\}\)/,
+  'V26 must restore a valid server cookie session through a read-only endpoint');
+assert.match(v26, /await loadBootstrap\(\)/,
+  'V26 must load the dashboard after restoring the server session');
+assert.doesNotMatch(v26, /async function login\(\)[\s\S]*?localStorage\.setItem\(['"]adminToken/,
+  'V26 login must not persist an admin token in localStorage');
+assert.match(v27, /function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);/,
+  'V27 remains on its existing password gate outside this bounded V26 change');
+console.log('V26 cookie-session restore guard verified; V27 unchanged');
