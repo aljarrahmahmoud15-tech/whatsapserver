@@ -4059,7 +4059,13 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   }
   if (!row || row.changes !== 1) return { status: "duplicate", messageId };
   if (!normalizedPhone) {
-    normalizedPhone = await resolveMessageSenderPhone(message).catch(() => "");
+    const identityAttempts = 3;
+    for (let attempt = 1; attempt <= identityAttempts && !normalizedPhone; attempt += 1) {
+      normalizedPhone = await resolveMessageSenderPhone(message).catch(() => "");
+      db.prepare("UPDATE voice_booking_intakes SET attempts=?,last_seen_at=?,updated_at=? WHERE message_id=?")
+        .run(attempt + 1, now(), now(), messageId);
+      if (!normalizedPhone && attempt < identityAttempts) await new Promise((resolve) => setTimeout(resolve, 750));
+    }
     if (!normalizedPhone) {
       const errorCode = "sender_identity_unresolved";
       db.prepare("UPDATE voice_booking_intakes SET status='skipped',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
