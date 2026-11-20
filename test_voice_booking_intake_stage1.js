@@ -53,6 +53,10 @@ assert.match(source, /getWhatsAppMessageByIdVariants\(messageId, 5000\)/);
 assert.match(source, /const intakeMessage = liveMessage \|\| message/);
 assert.match(source, /liveLookupHits/);
 assert.match(source, /await handleIncomingVoiceBookingIntake\(intakeMessage/);
+const backgroundRecoveryStart = source.indexOf("function startBackgroundOrderRecovery(groupId)");
+const backgroundRecoveryEnd = source.indexOf("async function recoverPendingAcceptanceMessages", backgroundRecoveryStart);
+const backgroundRecovery = source.slice(backgroundRecoveryStart, backgroundRecoveryEnd);
+assert.ok(backgroundRecovery.indexOf("await recoverHistoricalVoiceBookingIntakes(groupId)") < backgroundRecovery.indexOf("await recoverHistoricalOrderCandidates(groupId)"), "voice recovery runs before broad order recovery");
 assert.doesNotMatch(source.slice(source.indexOf("async function recoverHistoricalVoiceBookingIntakes"), source.indexOf("async function recoverPendingAcceptanceMessages")), /settlePendingOrder|INSERT INTO orders|wallet_ledger/);
 
 console.log("voice booking intake Stage 1 guardrails passed");

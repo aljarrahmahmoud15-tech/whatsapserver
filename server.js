@@ -8590,8 +8590,8 @@ function startBackgroundOrderRecovery(groupId) {
   void (async () => {
     try {
       lastUnresolvedOrderRecovery = { startedAt: new Date().toISOString(), ...(await recoverUnresolvedOrderMessages(groupId)), finishedAt: new Date().toISOString() };
-      await recoverHistoricalOrderCandidates(groupId);
       await recoverHistoricalVoiceBookingIntakes(groupId);
+      await recoverHistoricalOrderCandidates(groupId);
       await recoverPendingAcceptanceMessages(groupId);
     } catch (error) {
       console.warn(`[WhatsApp] background order recovery failed: ${String(error?.message || error).slice(0, 240)}`);
