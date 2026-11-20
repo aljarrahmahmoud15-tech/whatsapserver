@@ -4040,24 +4040,24 @@ async function transcribeVoiceBookingAudio(filePath, mimeType) {
   }
 }
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
-  if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
+  if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
   let normalizedPhone = phoneWithCountry(senderPhone);
   const senderIdentityHint = normalizedPhone || serializedWhatsappUserId(message?.author || message?._data?.author || message?.id?.participant || message?._data?.participant) || null;
-  if (normalizedPhone && (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone))) return { status: "skipped", reason: "protected_sender" };
+  if (normalizedPhone && (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone))) return { status: "skipped", reason: "protected_sender", stage: "identity_guard" };
   const messageId = serializedMessageId(message);
-  if (!messageId) return { status: "skipped", reason: "missing_message_id" };
+  if (!messageId) return { status: "skipped", reason: "missing_message_id", stage: "message_id" };
   const stamp = now();
   const existing = db.prepare("SELECT id,status,attempts FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
-  if (existing) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts };
+  if (existing) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts, stage: "idempotency" };
   let row;
   try {
     row = db.prepare("INSERT OR IGNORE INTO voice_booking_intakes(message_id,group_id,sender_phone,message_type,status,attempts,first_seen_at,last_seen_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
       .run(messageId, groupId, normalizedPhone || senderIdentityHint, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
   } catch (error) {
     audit("voice_booking_intake.receipt_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
-    return { status: "failed", reason: "receipt_failed" };
+    return { status: "failed", reason: "receipt_failed", stage: "intake_receipt" };
   }
-  if (!row || row.changes !== 1) return { status: "duplicate", messageId };
+  if (!row || row.changes !== 1) return { status: "duplicate", messageId, stage: "idempotency" };
   if (!normalizedPhone) {
     const identityAttempts = 3;
     for (let attempt = 1; attempt <= identityAttempts && !normalizedPhone; attempt += 1) {
@@ -4070,14 +4070,15 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
       const errorCode = "sender_identity_unresolved";
       db.prepare("UPDATE voice_booking_intakes SET status='skipped',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
       audit("voice_booking_intake.identity_deferred", "message", messageId, { groupId, senderIdentityHint, errorCode, financialMutation: false, orderMutation: false });
-      return { status: "skipped", reason: errorCode, messageId };
+      return { status: "skipped", reason: errorCode, messageId, stage: "identity_resolution" };
     }
     if (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) {
       db.prepare("UPDATE voice_booking_intakes SET status='skipped',sender_phone=?,error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, "protected_sender", now(), now(), messageId);
-      return { status: "skipped", reason: "protected_sender", messageId };
+      return { status: "skipped", reason: "protected_sender", messageId, stage: "identity_guard" };
     }
     db.prepare("UPDATE voice_booking_intakes SET sender_phone=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, now(), now(), messageId);
   }
+  let diagnosticStage = "media_download";
   let tempDir = "";
   let tempPath = "";
   try {
@@ -4095,7 +4096,8 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
     db.prepare("UPDATE voice_booking_intakes SET status='downloaded',media_mime_type=?,media_size_bytes=?,media_sha256=?,downloaded_at=?,last_seen_at=?,updated_at=? WHERE message_id=?")
       .run(mimeType, buffer.length, sha256, downloadedAt, downloadedAt, downloadedAt, messageId);
     audit("voice_booking_intake.downloaded", "message", messageId, { groupId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length, financialMutation: false, orderMutation: false });
-    if (!voiceBookingSpeechToTextEffective()) return { status: "downloaded", messageId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length };
+    if (!voiceBookingSpeechToTextEffective()) return { status: "downloaded", messageId, mediaMimeType: mimeType, mediaSizeBytes: buffer.length, stage: "media_download" };
+    diagnosticStage = "transcription_or_extraction";
     try {
       const result = await transcribeVoiceBookingAudio(tempPath, mimeType);
       const transcribedAt = now();
@@ -4134,18 +4136,18 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
           }
         }
       }
-      return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence, extraction };
+      return { status: "downloaded", messageId, transcript: result.transcript, language: result.language, confidence: result.confidence, extraction, stage: "transcription_or_extraction" };
     } catch (error) {
       const errorCode = String(error?.message || error).slice(0, 120);
       db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
       audit("voice_booking_intake.transcription_failed", "message", messageId, { groupId, errorCode, financialMutation: false, orderMutation: false });
-      return { status: "failed", reason: errorCode, messageId };
+      return { status: "failed", reason: errorCode, messageId, stage: diagnosticStage };
     }
   } catch (error) {
     const errorCode = String(error?.message || error).slice(0, 120);
     db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
     audit("voice_booking_intake.failed", "message", messageId, { groupId, errorCode, financialMutation: false, orderMutation: false });
-    return { status: "failed", reason: errorCode, messageId };
+    return { status: "failed", reason: errorCode, messageId, stage: diagnosticStage };
   } finally {
     try { if (tempPath) fs.rmSync(tempPath, { force: true }); } catch (_) {}
     try { if (tempDir) fs.rmSync(tempDir, { recursive: false, force: true }); } catch (_) {}
@@ -8342,10 +8344,11 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverHistoricalVoiceBookingIntakes(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, liveLookupAttempts: 0, liveLookupHits: 0, liveLookupMisses: 0, recovered: 0, skipped: 0, failed: 0, source: null, finishedAt: null };
+  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, liveLookupAttempts: 0, liveLookupHits: 0, liveLookupMisses: 0, recovered: 0, skipped: 0, failed: 0, source: null, lastStage: "history_fetch", lastResultStatus: null, lastFailureStage: null, lastFailureReason: null, finishedAt: null };
   lastVoiceBookingRecovery = recovery;
   const history = await withTimeout(fetchGroupHistory(groupId, 200, { includeOutgoing: false, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
   recovery.source = history?.chat ? "chat.fetchMessages" : "history-fallback";
+  recovery.lastStage = "history_scanned";
   const seen = new Set();
   for (const message of Array.isArray(history?.messages) ? history.messages : []) {
     recovery.scanned += 1;
@@ -8357,23 +8360,34 @@ async function recoverHistoricalVoiceBookingIntakes(groupId) {
     seen.add(messageId);
     recovery.voiceMessages += 1;
     const existing = db.prepare("SELECT id FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
-    if (existing) { recovery.skipped += 1; continue; }
+    if (existing) { recovery.skipped += 1; recovery.lastStage = "idempotency"; recovery.lastResultStatus = "duplicate"; continue; }
     try {
       // History serialization can expose a ptt row without the live whatsapp-web.js
       // media methods. Re-fetch the exact message before intake so downloadMedia()
       // runs on a real Message object; keep the historical object as a bounded fallback.
       recovery.liveLookupAttempts += 1;
+      recovery.lastStage = "live_lookup";
       const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000).catch(() => null);
       const intakeMessage = liveMessage || message;
       if (liveMessage) recovery.liveLookupHits += 1;
       else recovery.liveLookupMisses += 1;
       const senderPhone = await resolveMessageSenderPhone(intakeMessage).catch(() => "");
+      recovery.lastStage = "intake_processing";
       const result = await handleIncomingVoiceBookingIntake(intakeMessage, { groupId, senderPhone, senderName: String(intakeMessage.__notifyName || intakeMessage.notifyName || intakeMessage.author?.pushname || intakeMessage.author?.name || displayPhone(senderPhone)).trim() });
+      recovery.lastResultStatus = result?.status || null;
+      if (result?.stage) recovery.lastStage = result.stage;
+      if (result?.status === "failed" || result?.status === "skipped") {
+        recovery.lastFailureStage = result.stage || recovery.lastStage;
+        recovery.lastFailureReason = String(result.reason || "unspecified").slice(0, 180);
+      }
       if (["downloaded", "duplicate"].includes(result?.status)) recovery.recovered += 1;
       else if (result?.status === "failed") recovery.failed += 1;
       else recovery.skipped += 1;
     } catch (error) {
       recovery.failed += 1;
+      recovery.lastStage = "recovery_exception";
+      recovery.lastFailureStage = "recovery_exception";
+      recovery.lastFailureReason = String(error?.message || error).slice(0, 180);
       audit("voice_booking_intake.recovery_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
     }
   }
@@ -18029,6 +18043,38 @@ app.get("/api/admin/order-lifecycle", requireAdmin, adminReadLimiter, v27AdminRe
     ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`).all(...(groupId ? [groupId, limit] : [limit]));
   res.setHeader("Cache-Control", "no-store");
   res.json({ lifecycle: rows.map((row) => ({ ...row, price: money(row.price_cents), producer_name: row.producer_name || "غير مسجل", producer_phone: row.producer_phone || null })) });
+});
+app.get("/api/admin/group/voice-booking-recovery-status", requireAdmin, adminReadLimiter, (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, error: "Configured group not found", mutation: "none" });
+  const recovery = lastVoiceBookingRecovery;
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({
+    success: true,
+    mutation: "none",
+    financialMutation: false,
+    orderMutation: false,
+    readOnly: true,
+    groupId,
+    recovery: recovery ? {
+      startedAt: recovery.startedAt || null,
+      finishedAt: recovery.finishedAt || null,
+      groupKey: recovery.groupKey || orderTraceKey(groupId),
+      source: recovery.source || null,
+      scanned: Number(recovery.scanned || 0),
+      voiceMessages: Number(recovery.voiceMessages || 0),
+      liveLookupAttempts: Number(recovery.liveLookupAttempts || 0),
+      liveLookupHits: Number(recovery.liveLookupHits || 0),
+      liveLookupMisses: Number(recovery.liveLookupMisses || 0),
+      recovered: Number(recovery.recovered || 0),
+      skipped: Number(recovery.skipped || 0),
+      failed: Number(recovery.failed || 0),
+      lastStage: recovery.lastStage || null,
+      lastResultStatus: recovery.lastResultStatus || null,
+      lastFailureStage: recovery.lastFailureStage || null,
+      lastFailureReason: recovery.lastFailureReason || null,
+    } : null,
+  });
 });
 app.get("/api/admin/group/voice-booking-evidence", requireAdmin, adminReadLimiter, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();

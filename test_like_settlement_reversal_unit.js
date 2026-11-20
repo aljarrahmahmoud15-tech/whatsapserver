@@ -48,10 +48,10 @@ test("إعجاب الكابتن الأول يثبت مرة واحدة وإزال
   assert.match(reactionSource, /reactionValue !== "👍"/);
   assert.match(reactionSource, /const captainApproved = Boolean\(/);
   assert.match(reactionSource, /approvingCaptain\.is_bot !== 1/);
-  assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: approvingCaptain\.id \}\)/);
+  assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: voiceBooking \? approvingProducer\.id : approvingCaptain\.id \}\)/);
   assert.match(reactionSource, /if \(removedThumb\)/);
   assert.match(reactionSource, /activeReactionEvidenceBySender\(messageId, target\.from, "👍", removalActorPhone\)/);
-  assert.match(reactionSource, /cancelOrderForReactionRemoval\(order\.id, messageId, approverPhone, false, reactingCaptain\.id, removedThumbEvidenceAt\)/);
+  assert.match(reactionSource, /cancelOrderForReactionRemoval\(order\.id, messageId, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized\)/);
   assert.match(server, /approval_reaction_user_id INTEGER/);
   assert.match(reactionSource, /enforceCaptainWalletThresholds\(/);
 });

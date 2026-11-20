@@ -130,6 +130,13 @@ const context = {
   isProtectedOwnerIdentity: (phone) => String(phone) === "962771111111",
   phoneWithCountry: (value) => String(value),
   isBotReactionSender,
+  serializedWhatsappUserId: (value) => {
+    if (value == null) return "";
+    if (typeof value === "string") return value.trim();
+    if (value._serialized) return String(value._serialized).trim();
+    if (value.id) return typeof value.id === "string" ? value.id.trim() : String(value.id._serialized || "").trim();
+    return "";
+  },
   serializedMessageId: (message) => message?.id?._serialized || message?.id || null,
   parseOrder: (body) => ({ isOrder: /^السعر\s*\d+/i.test(String(body || "")) }),
   isCaptainAcceptance: (body) => String(body || "").trim() === "تم",
