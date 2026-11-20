@@ -4041,8 +4041,9 @@ async function transcribeVoiceBookingAudio(filePath, mimeType) {
 }
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
-  const normalizedPhone = phoneWithCountry(senderPhone);
-  if (!normalizedPhone || isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) return { status: "skipped", reason: "protected_sender" };
+  let normalizedPhone = phoneWithCountry(senderPhone);
+  const senderIdentityHint = normalizedPhone || serializedWhatsappUserId(message?.author || message?._data?.author || message?.id?.participant || message?._data?.participant) || null;
+  if (normalizedPhone && (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone))) return { status: "skipped", reason: "protected_sender" };
   const messageId = serializedMessageId(message);
   if (!messageId) return { status: "skipped", reason: "missing_message_id" };
   const stamp = now();
@@ -4051,12 +4052,26 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   let row;
   try {
     row = db.prepare("INSERT OR IGNORE INTO voice_booking_intakes(message_id,group_id,sender_phone,message_type,status,attempts,first_seen_at,last_seen_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
-      .run(messageId, groupId, normalizedPhone, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
+      .run(messageId, groupId, normalizedPhone || senderIdentityHint, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
   } catch (error) {
     audit("voice_booking_intake.receipt_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
     return { status: "failed", reason: "receipt_failed" };
   }
   if (!row || row.changes !== 1) return { status: "duplicate", messageId };
+  if (!normalizedPhone) {
+    normalizedPhone = await resolveMessageSenderPhone(message).catch(() => "");
+    if (!normalizedPhone) {
+      const errorCode = "sender_identity_unresolved";
+      db.prepare("UPDATE voice_booking_intakes SET status='skipped',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
+      audit("voice_booking_intake.identity_deferred", "message", messageId, { groupId, senderIdentityHint, errorCode, financialMutation: false, orderMutation: false });
+      return { status: "skipped", reason: errorCode, messageId };
+    }
+    if (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) {
+      db.prepare("UPDATE voice_booking_intakes SET status='skipped',sender_phone=?,error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, "protected_sender", now(), now(), messageId);
+      return { status: "skipped", reason: "protected_sender", messageId };
+    }
+    db.prepare("UPDATE voice_booking_intakes SET sender_phone=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, now(), now(), messageId);
+  }
   let tempDir = "";
   let tempPath = "";
   try {
