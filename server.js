@@ -4043,7 +4043,6 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable" };
   const normalizedPhone = phoneWithCountry(senderPhone);
   if (!normalizedPhone || isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) return { status: "skipped", reason: "protected_sender" };
-  if (!officialGroupAdminSnapshotReady()) return { status: "skipped", reason: "admin_snapshot_unavailable" };
   const messageId = serializedMessageId(message);
   if (!messageId) return { status: "skipped", reason: "missing_message_id" };
   const stamp = now();
