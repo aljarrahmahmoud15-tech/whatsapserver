@@ -12,6 +12,8 @@ assert.match(v26, /await loadBootstrap\(\)/,
   'V26 must load the dashboard after restoring the server session');
 assert.doesNotMatch(v26, /async function login\(\)[\s\S]*?localStorage\.setItem\(['"]adminToken/,
   'V26 login must not persist an admin token in localStorage');
-assert.match(v27, /function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);/,
-  'V27 remains on its existing password gate outside this bounded V26 change');
-console.log('V26 cookie-session restore guard verified; V27 unchanged');
+assert.match(v27, /async function bootstrap\(\)\{state\.token='';localStorage\.removeItem\('adminToken'\);[\s\S]*?fetch\('\/api\/staff\/me',\{credentials:'same-origin',cache:'no-store'\}\)[\s\S]*?await loadBootstrap\(\)/,
+  'V27 must restore a valid server cookie session through a read-only endpoint');
+assert.doesNotMatch(v27, /async function login\(\)[\s\S]*?localStorage\.setItem\(['"]adminToken/,
+  'V27 login must not persist an admin token in localStorage');
+console.log('V26 and V27 cookie-session restore guards verified');
