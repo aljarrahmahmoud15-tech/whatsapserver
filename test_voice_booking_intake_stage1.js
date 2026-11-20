@@ -46,5 +46,10 @@ assert.match(source, /app\.get\("\/api\/admin\/settings\/voice-booking-intake", 
 assert.match(source, /app\.patch\("\/api\/admin\/settings\/voice-booking-intake", requireOwnerAdmin/);
 assert.match(source, /capture_and_temporary_download_only/);
 assert.match(source, /draftBooking: false/);
+assert.match(source, /async function recoverHistoricalVoiceBookingIntakes\(groupId\)/);
+assert.match(source, /fetchGroupHistory\(groupId, 200/);
+assert.match(source, /24 \* 60 \* 60 \* 1000/);
+assert.match(source, /await handleIncomingVoiceBookingIntake\(message/);
+assert.doesNotMatch(source.slice(source.indexOf("async function recoverHistoricalVoiceBookingIntakes"), source.indexOf("async function recoverPendingAcceptanceMessages")), /settlePendingOrder|INSERT INTO orders|wallet_ledger/);
 
 console.log("voice booking intake Stage 1 guardrails passed");

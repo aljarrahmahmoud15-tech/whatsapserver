@@ -8254,6 +8254,7 @@ let whatsappHistoricalCandidateRecoveryAt = 0;
 let lastHistoricalRecovery = null;
 let lastUnresolvedOrderRecovery = null;
 let lastAcceptanceRecovery = null;
+let lastVoiceBookingRecovery = null;
 let whatsappRecoveryBackgroundRunning = false;
 function setAcceptanceRecoveryStage(stage) {
   if (lastAcceptanceRecovery) lastAcceptanceRecovery.lastStage = String(stage || "");
@@ -8337,6 +8338,37 @@ async function recoverHistoricalOrderCandidates(groupId) {
   }
   recovery.finishedAt = new Date().toISOString();
   if (recovered || unresolved) console.log(`[WhatsApp] historical order recovery: recovered=${recovered} unresolved=${unresolved} source=${fastScan.chat ? "order-scan" : "history"}`);
+}
+async function recoverHistoricalVoiceBookingIntakes(groupId) {
+  if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, recovered: 0, skipped: 0, failed: 0, source: null, finishedAt: null };
+  lastVoiceBookingRecovery = recovery;
+  const history = await withTimeout(fetchGroupHistory(groupId, 200, { includeOutgoing: false, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
+  recovery.source = history?.chat ? "chat.fetchMessages" : "history-fallback";
+  const seen = new Set();
+  for (const message of Array.isArray(history?.messages) ? history.messages : []) {
+    recovery.scanned += 1;
+    const messageId = serializedMessageId(message) || String(message?.id || "").trim();
+    const timestamp = Number(message?.timestamp || message?.__timestamp || 0) * 1000;
+    if (!messageId || seen.has(messageId) || timestamp < cutoff || message?.fromMe || resolveGroupChatId(message) !== groupId || !isIncomingVoiceMessage(message)) continue;
+    seen.add(messageId);
+    recovery.voiceMessages += 1;
+    const existing = db.prepare("SELECT id FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
+    if (existing) { recovery.skipped += 1; continue; }
+    try {
+      const senderPhone = await resolveMessageSenderPhone(message).catch(() => "");
+      const result = await handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName: String(message.__notifyName || message.notifyName || message.author?.pushname || message.author?.name || displayPhone(senderPhone)).trim() });
+      if (["downloaded", "duplicate"].includes(result?.status)) recovery.recovered += 1;
+      else if (result?.status === "failed") recovery.failed += 1;
+      else recovery.skipped += 1;
+    } catch (error) {
+      recovery.failed += 1;
+      audit("voice_booking_intake.recovery_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+    }
+  }
+  recovery.finishedAt = new Date().toISOString();
+  if (recovery.voiceMessages) console.log(`[WhatsApp] historical voice intake recovery: voice=${recovery.voiceMessages} recovered=${recovery.recovered} failed=${recovery.failed}`);
 }
 async function recoverPendingAcceptanceMessages(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
@@ -8551,6 +8583,7 @@ function startBackgroundOrderRecovery(groupId) {
     try {
       lastUnresolvedOrderRecovery = { startedAt: new Date().toISOString(), ...(await recoverUnresolvedOrderMessages(groupId)), finishedAt: new Date().toISOString() };
       await recoverHistoricalOrderCandidates(groupId);
+      await recoverHistoricalVoiceBookingIntakes(groupId);
       await recoverPendingAcceptanceMessages(groupId);
     } catch (error) {
       console.warn(`[WhatsApp] background order recovery failed: ${String(error?.message || error).slice(0, 240)}`);
