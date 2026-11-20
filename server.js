@@ -4043,7 +4043,6 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
   let normalizedPhone = phoneWithCountry(senderPhone);
   const senderIdentityHint = normalizedPhone || serializedWhatsappUserId(message?.author || message?._data?.author || message?.id?.participant || message?._data?.participant) || null;
-  if (normalizedPhone && (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone))) return { status: "skipped", reason: "protected_sender", stage: "identity_guard" };
   const messageId = serializedMessageId(message);
   if (!messageId) return { status: "skipped", reason: "missing_message_id", stage: "message_id" };
   const stamp = now();
@@ -4071,10 +4070,6 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
       db.prepare("UPDATE voice_booking_intakes SET status='skipped',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
       audit("voice_booking_intake.identity_deferred", "message", messageId, { groupId, senderIdentityHint, errorCode, financialMutation: false, orderMutation: false });
       return { status: "skipped", reason: errorCode, messageId, stage: "identity_resolution" };
-    }
-    if (isGroupSetupOwner(normalizedPhone) || isOfficialGroupAdminPhone(normalizedPhone)) {
-      db.prepare("UPDATE voice_booking_intakes SET status='skipped',sender_phone=?,error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, "protected_sender", now(), now(), messageId);
-      return { status: "skipped", reason: "protected_sender", messageId, stage: "identity_guard" };
     }
     db.prepare("UPDATE voice_booking_intakes SET sender_phone=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(normalizedPhone, now(), now(), messageId);
   }

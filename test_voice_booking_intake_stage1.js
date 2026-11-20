@@ -17,8 +17,8 @@ assert.ok(intakeStart >= 0 && intakeEnd > intakeStart, "voice intake handler exi
 const intake = source.slice(intakeStart, intakeEnd);
 assert.match(intake, /groupId !== configuredRuntimeGroupId\(\)/);
 assert.match(intake, /message\?\.fromMe/);
-assert.match(intake, /isGroupSetupOwner\(normalizedPhone\)/);
-assert.match(intake, /isOfficialGroupAdminPhone\(normalizedPhone\)/);
+assert.doesNotMatch(intake, /reason:\s*"protected_sender"/);
+assert.doesNotMatch(intake, /isGroupSetupOwner\(normalizedPhone\)\s*\|\|\s*isOfficialGroupAdminPhone\(normalizedPhone\)/);
 assert.match(intake, /senderIdentityHint = normalizedPhone \|\| serializedWhatsappUserId/);
 assert.match(intake, /INSERT OR IGNORE INTO voice_booking_intakes\(message_id,group_id,sender_phone/);
 assert.match(intake, /resolveMessageSenderPhone\(message\)/);
@@ -27,6 +27,7 @@ assert.match(intake, /setTimeout\(resolve, 750\)/);
 assert.match(intake, /UPDATE voice_booking_intakes SET attempts=/);
 assert.match(intake, /sender_identity_unresolved/);
 assert.match(intake, /UPDATE voice_booking_intakes SET sender_phone=/);
+assert.match(intake, /if \(!normalizedPhone\) \{/);
 assert.match(intake, /INSERT OR IGNORE INTO voice_booking_intakes/);
 assert.match(intake, /message\.downloadMedia\(\)/);
 assert.match(intake, /fs\.mkdtempSync\(path\.join\("\/tmp", "voice-booking-intake-"\)\)/);
