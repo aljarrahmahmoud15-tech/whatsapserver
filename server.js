@@ -4039,6 +4039,27 @@ async function transcribeVoiceBookingAudio(filePath, mimeType) {
     clearTimeout(timeout);
   }
 }
+async function downloadIncomingVoiceMediaWithRecovery(message, messageId) {
+  const retryDelays = [0, 750, 1500];
+  let target = message;
+  let lastReason = "audio_media_required";
+  for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+    if (retryDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+    if (attempt > 0 && client && isReady && messageId) {
+      const liveMessage = await getWhatsAppMessageByIdVariants(messageId, 5000).catch(() => null);
+      if (liveMessage) target = liveMessage;
+    }
+    if (!target || typeof target.downloadMedia !== "function") {
+      lastReason = "media_download_unavailable";
+      continue;
+    }
+    const media = await withTimeout(target.downloadMedia(), 30000, null).catch(() => null);
+    const mimeType = String(media?.mimetype || "").trim().toLowerCase();
+    if (media?.data && /^audio\//.test(mimeType)) return { media, mimeType, target, attempt: attempt + 1 };
+    lastReason = media?.data ? "audio_media_required" : "audio_media_pending";
+  }
+  throw new Error(lastReason);
+}
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
   let normalizedPhone = phoneWithCountry(senderPhone);
@@ -4077,10 +4098,9 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   let tempDir = "";
   let tempPath = "";
   try {
-    if (typeof message.downloadMedia !== "function") throw new Error("media_download_unavailable");
-    const media = await withTimeout(message.downloadMedia(), 30000, null);
-    const mimeType = String(media?.mimetype || "").trim().toLowerCase();
-    if (!media?.data || !/^audio\//.test(mimeType)) throw new Error("audio_media_required");
+    const downloaded = await downloadIncomingVoiceMediaWithRecovery(message, messageId);
+    const media = downloaded.media;
+    const mimeType = downloaded.mimeType;
     const buffer = Buffer.from(String(media.data), "base64");
     if (!buffer.length || buffer.length > VOICE_BOOKING_INTAKE_MAX_BYTES) throw new Error("audio_media_too_large_or_empty");
     tempDir = fs.mkdtempSync(path.join("/tmp", "voice-booking-intake-"));
