@@ -2976,8 +2976,7 @@ function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
 }
 const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = [
-  "لشحن محفظتك، يرجى التحويل إلى الحساب المعتمد:",
-  "Orange Money: 0779110123",
+  "لشحن محفظتك، تواصل مع الإدارة للحصول على بيانات الحساب المعتمد قبل التحويل.",
   "بعد التحويل، أرسل صورة الإيصال أو رقم العملية والمبلغ ورقم حسابك إلى الإدارة للمطابقة.",
   "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
 ].join("\n");

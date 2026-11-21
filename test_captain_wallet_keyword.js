@@ -1,12 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const vm = require('node:vm');
 
 const source = fs.readFileSync('server.js', 'utf8');
 
-test('captain wallet keyword replies with approved Orange Money instructions', () => {
+test('captain wallet keyword requests approved payment details without a payment number', () => {
   assert.match(source, /const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = \[/);
-  assert.match(source, /Orange Money: 0779110123/);
+  const instructionsStart = source.indexOf('const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = [');
+  const instructionsEnd = source.indexOf('const captainWalletInstructionInFlight', instructionsStart);
+  const instructions = vm.runInNewContext(`${source.slice(instructionsStart, instructionsEnd)}\nCAPTAIN_WALLET_TOPUP_INSTRUCTIONS;`, Object.create(null), { timeout: 1000 });
+  assert.match(instructions, /تواصل مع الإدارة للحصول على بيانات الحساب المعتمد قبل التحويل/);
+  assert.doesNotMatch(instructions, /Orange Money/i);
+  assert.doesNotMatch(instructions, /\d/);
   assert.match(source, /بعد التحويل، أرسل صورة الإيصال أو رقم العملية والمبلغ ورقم حسابك إلى الإدارة للمطابقة/);
   assert.match(source, /لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة/);
   assert.match(source, /sendCaptainWalletTopupInstructions\(\{ phone, sourceMessageId:/);
