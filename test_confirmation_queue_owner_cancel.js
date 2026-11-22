@@ -12,7 +12,9 @@ assert.doesNotMatch(source, /!immediateReaction && deliveryAgeMs < CONFIRMATION_
 assert.match(source, /await sendFinalBookingConfirmation\(target\.from, confirmationDetails, \{ deliveryMode: "direct", immediateReaction: true \}\)/);
 assert.match(source, /const ownerAuthorized = Boolean\(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity\(approverPhone\)\);/);
 assert.match(source, /cancelPendingOrderForProducerReaction\(pendingAcceptance\.candidate_id, messageId, approverPhone, ownerAuthorized\)/);
-assert.match(source, /cancelOrderForReactionRemoval\(acceptedOrder\.id, messageId, approverPhone, ownerAuthorized\)/);
+assert.match(source, /const acceptedOrder = findSettledOrderByAcceptanceMessage\(target\.from, messageId\)/);
+assert.match(source, /cancelOrderForReactionRemoval\(acceptedOrder\.id, acceptedOrder\.accepted_message_id, approverPhone, ownerAuthorized\)/);
+assert.doesNotMatch(source, /cancelOrderForReactionRemoval\(acceptedOrder\.id, messageId,/);
 assert.match(source, /function cancelPendingOrderForProducerReaction\(candidateId, expectedMessageId, producerPhone, ownerAuthorized = false, producerAuthorized = false\)/);
 assert.match(source, /function cancelOrderForReactionRemoval\(orderId, expectedMessageId, producerPhone, ownerAuthorized = false, requiredReactionActorId = null, requiredReactionEvidenceAt = "", producerAuthorized = false\)/);
 console.log('confirmation queue idempotency and owner cancellation guardrails verified');

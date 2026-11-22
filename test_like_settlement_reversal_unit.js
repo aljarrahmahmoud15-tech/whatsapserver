@@ -51,7 +51,11 @@ test("إعجاب الكابتن الأول يثبت مرة واحدة وإزال
   assert.match(reactionSource, /settlePendingOrder\(pending\.candidate_id, pending\.acceptance_message_id, settlementConfirmerPhone, \{ approvalReactionUserId: voiceBooking \? approvingProducer\.id : approvingCaptain\.id \}\)/);
   assert.match(reactionSource, /if \(removedThumb\)/);
   assert.match(reactionSource, /activeReactionEvidenceBySender\(messageId, target\.from, "👍", removalActorPhone\)/);
-  assert.match(reactionSource, /cancelOrderForReactionRemoval\(order\.id, messageId, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized\)/);
+  // A settled booking is located through the variant-tolerant resolver, and the
+  // reversal receives the acceptance id stored on the order (never the raw event id).
+  assert.match(reactionSource, /const order = findSettledOrderByAcceptanceMessage\(target\.from, messageId\)/);
+  assert.match(reactionSource, /cancelOrderForReactionRemoval\(order\.id, order\.accepted_message_id, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized\)/);
+  assert.doesNotMatch(reactionSource, /cancelOrderForReactionRemoval\([^)]*\bmessageId,/);
   assert.match(server, /approval_reaction_user_id INTEGER/);
   assert.match(reactionSource, /enforceCaptainWalletThresholds\(/);
 });

@@ -9352,6 +9352,20 @@ function findEquivalentOrder(groupId, messageId) {
   const rows = db.prepare("SELECT * FROM orders WHERE group_id=? AND source_message_id LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 100").all(groupId, `%${escapedCore}%`);
   return rows.find((row) => sourceMessageIdsEqual(row.source_message_id, messageId)) || null;
 }
+// A settled booking stores the «تم» message id exactly as it arrived, while a live
+// reaction event may identify the same message by its bare id or by another
+// participant identity (@lid vs @c.us). Matching those events with exact equality
+// alone let a producer thumb removal pass every authorization guard and then return
+// without cancelling or reversing anything. Resolve the booking the same tolerant
+// way the stored-target builders do; the caller must then hand the STORED id to the
+// reversal so its own message-id guards compare like with like.
+function findSettledOrderByAcceptanceMessage(groupId, messageId) {
+  if (!groupId || !messageId) return null;
+  const exact = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(groupId, messageId);
+  if (exact) return exact;
+  const rows = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id IS NOT NULL ORDER BY COALESCE(accepted_at,updated_at) DESC,id DESC LIMIT 200").all(groupId);
+  return rows.find((row) => sourceMessageIdsEqual(row.accepted_message_id, messageId)) || null;
+}
 
 function orderTraceKey(value) {
   const normalized = String(value || "").trim();
@@ -11314,12 +11328,37 @@ async function handleMessageReactionUnlocked(reaction) {
       if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
     }
-    const acceptedOrder = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
-    if (!acceptedOrder) return;
+    const acceptedOrder = findSettledOrderByAcceptanceMessage(target.from, messageId);
+    if (!acceptedOrder) {
+      logOrderTrace("reaction_cancellation_no_settled_order", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        targetSource: resolvedReactionTarget.source || "none",
+      });
+      return;
+    }
     const producer = acceptedOrder.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(acceptedOrder.producer_user_id) : null;
     const ownerAuthorized = Boolean(typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(approverPhone));
-    if (!producer || !approverPhone || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone))) return;
-    const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, messageId, approverPhone, ownerAuthorized);
+    if (!producer || !approverPhone || (!ownerAuthorized && phoneWithCountry(producer.phone) !== phoneWithCountry(approverPhone))) {
+      logOrderTrace("reaction_cancellation_actor_unauthorized", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        orderId: acceptedOrder.id,
+        hasProducer: Boolean(producer),
+        approverResolved: Boolean(approverPhone),
+        ownerAuthorized,
+      });
+      return;
+    }
+    // The reversal guard compares the stored acceptance id, so pass the stored value.
+    const cancelled = cancelOrderForReactionRemoval(acceptedOrder.id, acceptedOrder.accepted_message_id, approverPhone, ownerAuthorized);
+    if (cancelled.state === "stale") {
+      logOrderTrace("reaction_cancellation_stale", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        orderId: acceptedOrder.id,
+      });
+    }
     if (cancelled.state === "cancelled" && cancelled.reversed) {
       void notifyOrderCancellationParties({ order: cancelled.order || acceptedOrder, producer: cancelled.producer, captain: cancelled.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
     }
@@ -11339,7 +11378,7 @@ async function handleMessageReactionUnlocked(reaction) {
       if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
       return;
     }
-    const order = db.prepare("SELECT * FROM orders WHERE group_id=? AND status IN ('accepted','completed') AND accepted_message_id=? ORDER BY id DESC LIMIT 1").get(target.from, messageId);
+    const order = findSettledOrderByAcceptanceMessage(target.from, messageId);
     if (!order) {
       logOrderTrace("reaction_removal_no_settled_order", {
         groupKey: orderTraceKey(target.from),
@@ -11348,15 +11387,44 @@ async function handleMessageReactionUnlocked(reaction) {
       });
       return;
     }
+    if (order.accepted_message_id !== messageId) {
+      // Recorded so an identifier-variant removal is never invisible again: the
+      // booking was matched by message core, not by the exact event id.
+      logOrderTrace("reaction_removal_acceptance_id_variant_resolved", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        storedKey: orderTraceKey(order.accepted_message_id),
+        orderId: order.id,
+      });
+    }
     const producer = order.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(order.producer_user_id) : null;
     const reactingCaptain = approverPhone ? findCaptainByPhone(approverPhone, { activeOnly: true }) : null;
     const captainAuthorized = Boolean(reactingCaptain && reactingCaptain.role === "captain" && reactingCaptain.is_bot !== 1 && reactingCaptain.active === 1 && reactingCaptain.account_status === "active");
     const producerAuthorized = removedThumbActorRole === "producer" && removedThumbActorId === Number(order.producer_user_id);
     const ownerAuthorized = removedThumbActorRole === "owner";
     const authorizedActor = captainAuthorized || producerAuthorized || ownerAuthorized;
-    if (!producer || !authorizedActor || isBlockedPhone(approverPhone)) return;
+    if (!producer || !authorizedActor || isBlockedPhone(approverPhone)) {
+      logOrderTrace("reaction_removal_actor_unauthorized", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        orderId: order.id,
+        hasProducer: Boolean(producer),
+        authorizedActor,
+        blockedActor: isBlockedPhone(approverPhone),
+      });
+      return;
+    }
     const requiredReactionActorId = removedThumbActorRole === "captain" ? reactingCaptain.id : (removedThumbActorId || null);
-    const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized);
+    // The reversal guard compares the acceptance id stored on the order, so the
+    // stored value must be passed, never the raw event identifier.
+    const result = cancelOrderForReactionRemoval(order.id, order.accepted_message_id, approverPhone, ownerAuthorized, requiredReactionActorId, removedThumbEvidenceAt, producerAuthorized);
+    if (result.state === "stale") {
+      logOrderTrace("reaction_removal_stale", {
+        groupKey: orderTraceKey(target.from),
+        reactionKey: orderTraceKey(messageId),
+        orderId: order.id,
+      });
+    }
     if (result.state === "unauthorized") {
       logOrderTrace("reaction_removal_not_settlement_approver", {
         groupKey: orderTraceKey(target.from),
