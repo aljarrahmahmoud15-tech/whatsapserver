@@ -10,6 +10,11 @@ const start = source.indexOf("async function handleIncomingVoiceBookingIntake");
 const end = source.indexOf("\nfunction generalMessageDeletionEnabled", start);
 assert.ok(start >= 0 && end > start, "voice intake handler slice exists");
 const intakeSlice = source.slice(start, end);
+// Both retry decision points must read last_seen_at, otherwise the 24h window silently fails
+// closed and every failed row stays sealed as a duplicate.
+const windowReads = source.match(/SELECT id,status,attempts,last_seen_at FROM voice_booking_intakes WHERE message_id=\? LIMIT 1/g) || [];
+assert.equal(windowReads.length, 2, "intake handler and recovery scan both read the retry window column");
+assert.doesNotMatch(source, /SELECT id,status,attempts FROM voice_booking_intakes/);
 
 function buildContext(existingRow) {
   const statements = [];

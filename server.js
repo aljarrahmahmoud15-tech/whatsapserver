@@ -4106,7 +4106,9 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   const messageId = serializedMessageId(message);
   if (!messageId) return { status: "skipped", reason: "missing_message_id", stage: "message_id" };
   const stamp = now();
-  const existing = db.prepare("SELECT id,status,attempts FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
+  // last_seen_at is part of the retry window decision; omitting it made every failed row look
+  // ineligible and returned the intake to the old sealed-duplicate behaviour.
+  const existing = db.prepare("SELECT id,status,attempts,last_seen_at FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
   const retryFailedIntake = Boolean(existing && voiceBookingIntakeFailedRetryEligible(existing));
   if (existing && !retryFailedIntake) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts, stage: "idempotency" };
   if (retryFailedIntake) {
