@@ -4267,6 +4267,32 @@ async function probeWhatsAppVoiceMediaState(messageId) {
     reason: normalized.reason || null,
   };
 }
+// Opt-in diagnostic fetch: runs exactly the same download call the voice intake uses and
+// reports only byte counts and reasons. It writes nothing, never sends or reacts, and never
+// creates or updates an intake row, so it can prove whether the media path works on a row
+// whose intake attempts are already sealed.
+const VOICE_MEDIA_FETCH_DIAGNOSTIC_TIMEOUT_MS = 12000;
+async function attemptVoiceMediaFetchForDiagnostics(messageId) {
+  if (!client || !isReady || !messageId) return { attempted: false, reason: "client_not_ready" };
+  const target = await getWhatsAppMessageByIdVariants(messageId, 8000).catch(() => null);
+  if (!target || typeof target.downloadMedia !== "function") return { attempted: false, reason: "message_or_download_unavailable" };
+  let downloadError = null;
+  let media = null;
+  try {
+    media = await withTimeout(target.downloadMedia(), VOICE_MEDIA_FETCH_DIAGNOSTIC_TIMEOUT_MS, null);
+  } catch (error) {
+    downloadError = String(error?.message || error).replace(/\s+/g, " ").trim().slice(0, 180) || "media_fetch_threw";
+  }
+  const acceptance = voiceMediaAcceptance(media);
+  return {
+    attempted: true,
+    ok: acceptance.accepted,
+    reason: downloadError && !acceptance.accepted ? "media_fetch_error" : acceptance.reason,
+    downloadError,
+    diagnostic: acceptance.diagnostic,
+    approxBytes: acceptance.accepted ? Math.floor(acceptance.diagnostic.dataChars * 3 / 4) : 0,
+  };
+}
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   const isBotSourceVoice = Boolean(message?.fromMe);
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || (isBotSourceVoice && !voiceBookingBotSourceCaptureEnabled()) || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
@@ -18494,9 +18520,15 @@ app.get("/api/admin/group/voice-media-diagnostics", requireAdmin, adminReadLimit
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, error: "Configured group not found", mutation: "none" });
   const limit = Math.max(1, Math.min(VOICE_MEDIA_PROBE_ROW_LIMIT, Number(req.query.limit || 5) || 5));
   const requestedMessageId = String(req.query.messageId || "").trim();
+  // Sealed rows are often older than the newest limit rows and their raw message id is never
+  // echoed by this route, so the intake row number is the only practical way for the owner to
+  // point a read-only probe (or the opt-in fetch) at one specific row.
+  const requestedIntakeId = Number(req.query.intakeId || 0) || 0;
   const columns = "id,message_id,status,attempts,error_code,media_mime_type,media_size_bytes,message_type,last_seen_at";
   let rows = [];
-  if (requestedMessageId) {
+  if (requestedIntakeId > 0) {
+    rows = db.prepare(`SELECT ${columns} FROM voice_booking_intakes WHERE group_id=? AND id=? ORDER BY id DESC LIMIT 1`).all(groupId, requestedIntakeId);
+  } else if (requestedMessageId) {
     const core = messageIdCore(requestedMessageId);
     const likePattern = `%${String(core || requestedMessageId).replace(/[\\%_]/g, "\\\\$&")}%`;
     rows = db.prepare(`SELECT ${columns} FROM voice_booking_intakes WHERE group_id=? AND (message_id=? OR message_id LIKE ? ESCAPE '\\\\') ORDER BY id DESC LIMIT 1`).all(groupId, requestedMessageId, likePattern);
@@ -18504,13 +18536,17 @@ app.get("/api/admin/group/voice-media-diagnostics", requireAdmin, adminReadLimit
     rows = db.prepare(`SELECT ${columns} FROM voice_booking_intakes WHERE group_id=? ORDER BY last_seen_at DESC LIMIT ?`).all(groupId, limit);
   }
   if (!rows.length) return res.json({ success: true, mutation: "none", readOnly: true, financialMutation: false, orderMutation: false, groupId, libraryVersion: WHATSAPP_WEBJS_LIBRARY_VERSION, probed: 0, rows: [], note: "no_voice_intake_rows" });
+  const attemptFetch = req.query.attemptFetch === "1" || req.query.attemptFetch === "true";
+  const fetchCap = attemptFetch ? Math.min(rows.length, 2) : 0;
   const results = [];
   const branchCounts = {};
+  const fetchSummary = { attempted: 0, accepted: 0 };
   try {
-    for (const row of rows) {
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
       const probe = await probeWhatsAppVoiceMediaState(row.message_id);
       branchCounts[probe.branch] = (branchCounts[probe.branch] || 0) + 1;
-      results.push({
+      const entry = {
         intakeId: row.id,
         messageIdMasked: maskVoiceMessageReference(row.message_id),
         source: String(row.message_id || "").startsWith("true_") ? "bot_number" : "captain",
@@ -18525,7 +18561,25 @@ app.get("/api/admin/group/voice-media-diagnostics", requireAdmin, adminReadLimit
         nextStep: VOICE_MEDIA_PROBE_NEXT_STEP[probe.branch] || "unknown",
         reason: probe.reason || null,
         live: probe.detail,
-      });
+      };
+      if (index < fetchCap) {
+        const fetched = await attemptVoiceMediaFetchForDiagnostics(row.message_id);
+        fetchSummary.attempted += 1;
+        if (fetched.ok) fetchSummary.accepted += 1;
+        entry.fetchAttempt = {
+          attempted: Boolean(fetched.attempted),
+          ok: Boolean(fetched.ok),
+          reason: fetched.reason || null,
+          approxBytes: Number(fetched.approxBytes || 0),
+          mimeType: fetched.diagnostic?.mimeType || null,
+          dataChars: Number(fetched.diagnostic?.dataChars || 0),
+          downloadError: fetched.downloadError || null,
+        };
+        const after = await probeWhatsAppVoiceMediaState(row.message_id);
+        entry.branchAfterFetch = after.branch;
+        entry.liveAfterFetch = after.detail;
+      }
+      results.push(entry);
     }
   } catch (error) {
     return res.status(502).json({ success: false, mutation: "none", readOnly: true, error: String(error?.message || error).slice(0, 160), probed: results.length, rows: results });
@@ -18540,6 +18594,9 @@ app.get("/api/admin/group/voice-media-diagnostics", requireAdmin, adminReadLimit
     groupId,
     libraryVersion: WHATSAPP_WEBJS_LIBRARY_VERSION,
     probeTimeoutMs: VOICE_MEDIA_PROBE_TIMEOUT_MS,
+    fetchRequested: attemptFetch,
+    fetchTimeoutMs: VOICE_MEDIA_FETCH_DIAGNOSTIC_TIMEOUT_MS,
+    fetchSummary,
     probed: results.length,
     branchCounts,
     rows: results,
