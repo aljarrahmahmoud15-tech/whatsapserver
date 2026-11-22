@@ -16,8 +16,10 @@ assert.equal(order15.companyCents, 45, 'order 15 JOD: 3% to the company');
 assert.equal(order15.executorWalletCreditCents, 0, 'the external fare never credits the executor');
 
 // 2) The owner route can store order rates separately from normal rates.
-assert.ok(server.includes('const orderProducerPercent = optionalPercent(req.body?.orderProducerRatePercent, producerPercent);'), 'route reads an order downloader percent');
-assert.ok(server.includes('const orderCompanyPercent = optionalPercent(req.body?.orderCompanyRatePercent, companyPercent);'), 'route reads an order company percent');
+assert.ok(server.includes('const orderProducerPercent = optionalPercent(req.body?.orderProducerRatePercent, before.specialOrderProducerRateBps / 100);'), 'route reads an order downloader percent and falls back to the saved order rate');
+assert.ok(server.includes('const orderCompanyPercent = optionalPercent(req.body?.orderCompanyRatePercent, before.specialOrderCompanyRateBps / 100);'), 'route reads an order company percent and falls back to the saved order rate');
+assert.ok(!server.includes('optionalPercent(req.body?.orderProducerRatePercent, producerPercent)'), 'order downloader rate must never mirror the normal rate');
+assert.ok(!server.includes('optionalPercent(req.body?.orderCompanyRatePercent, companyPercent)'), 'order company rate must never mirror the normal company rate');
 assert.ok(server.includes('setSetting("order_producer_rate_bps", next.orderProducerRateBps);'), 'order downloader rate is stored separately');
 assert.ok(server.includes('setSetting("order_company_rate_bps", next.orderCompanyRateBps);'), 'order company rate is stored separately');
 assert.ok(!server.includes('setSetting("order_producer_rate_bps", next.producerRateBps);'), 'order rate must not reuse the normal rate');

@@ -13894,16 +13894,21 @@ app.patch("/api/admin/settings/acceptance-deletion", requireOwnerAdmin, adminMut
   }
 });
 app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
-  const producerPercent = Number(req.body?.producerRatePercent);
-  const companyPercent = Number(req.body?.companyRatePercent);
-  const optionalPercent = (value, fallback) => (value === undefined || value === null || value === "") ? fallback : Number(value);
-  const orderProducerPercent = optionalPercent(req.body?.orderProducerRatePercent, producerPercent);
-  const orderCompanyPercent = optionalPercent(req.body?.orderCompanyRatePercent, companyPercent);
+  // Each kind falls back to its own saved rate, never to the other kind: a window that edits only
+  // the normal rates must not copy them onto «أوردر» (the cause of the 13%+3% order overwrite).
+  const before = currentSettlementPolicy();
+  const suppliedPercent = (value) => !(value === undefined || value === null || value === "");
+  const optionalPercent = (value, fallback) => suppliedPercent(value) ? Number(value) : fallback;
+  const ratePercentInputs = [req.body?.producerRatePercent, req.body?.companyRatePercent, req.body?.orderProducerRatePercent, req.body?.orderCompanyRatePercent];
+  if (!ratePercentInputs.some(suppliedPercent)) return res.status(400).json({ error: "أرسل نسب الطلب العادي أو نسب الأوردر على الأقل." });
+  const producerPercent = optionalPercent(req.body?.producerRatePercent, before.producerRateBps / 100);
+  const companyPercent = optionalPercent(req.body?.companyRatePercent, before.companyRateBps / 100);
+  const orderProducerPercent = optionalPercent(req.body?.orderProducerRatePercent, before.specialOrderProducerRateBps / 100);
+  const orderCompanyPercent = optionalPercent(req.body?.orderCompanyRatePercent, before.specialOrderCompanyRateBps / 100);
   const validPercent = (value) => Number.isFinite(value) && value >= 0 && value <= 100 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
   if (!validPercent(producerPercent) || !validPercent(companyPercent) || producerPercent + companyPercent > 100) return res.status(400).json({ error: "أدخل نسبًا من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
   if (!validPercent(orderProducerPercent) || !validPercent(orderCompanyPercent) || orderProducerPercent + orderCompanyPercent > 100) return res.status(400).json({ error: "أدخل نسب الأوردر من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
   const next = { producerRateBps: Math.round(producerPercent * 100), companyRateBps: Math.round(companyPercent * 100), orderProducerRateBps: Math.round(orderProducerPercent * 100), orderCompanyRateBps: Math.round(orderCompanyPercent * 100) };
-  const before = currentSettlementPolicy();
   try {
     db.transaction(() => {
       setSetting("producer_rate_bps", next.producerRateBps);
