@@ -9,7 +9,7 @@ assert.match(server, /policy: "no_debt_no_removal"/);
 assert.match(server, /balance < CAPTAIN_MIN_BALANCE_CENTS/);
 assert.match(server, /wallet_cents < 0/);
 assert.match(server, /negativeBalanceAction: "negative balance is rejected/);
-assert.match(server, /orderSettlementDebtPolicy: "projected balances below 0\.00 JOD are rejected/);
+assert.match(server, /orderSettlementDebtPolicy: `projected balances below 0\.00 JOD are rejected; normal debit \$\{sp\.totalRatePercent\}% and order debit \$\{sp\.specialOrderTotalRatePercent\}%`/);
 assert.match(server, /error: "الرصيد غير كافٍ"/);
 const classify = (balanceCents, feeCents) => balanceCents - feeCents < 0 ? 'insufficient_balance' : 'allowed';
 assert.equal(classify(99, 100), 'insufficient_balance');

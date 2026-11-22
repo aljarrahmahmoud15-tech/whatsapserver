@@ -1,11 +1,13 @@
-// Settlement policy by order kind:
+// Settlement policy by order kind (owner-approved 2026-11-22):
 // - The numeric value after "السعر" is the external order value.
 // - It is never credited to the executor wallet.
-// - Normal and "order" / "اوردر" orders use 12% to the captain who posted the order and 3% to the company,
-//   with a 15% total debit from the confirming executor wallet.
-const REGULAR_PRODUCER_RATE_BPS = 1200;
+// - A normal request uses 13% for the captain who posted the order and 3% for the company,
+//   with a 16% total debit from the confirming executor wallet.
+// - An "order" / "اوردر" request uses 17% for the posting captain and 3% for the company,
+//   with a 20% total debit from the confirming executor wallet.
+const REGULAR_PRODUCER_RATE_BPS = 1300;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
-const ORDER_PRODUCER_RATE_BPS = 1200;
+const ORDER_PRODUCER_RATE_BPS = 1700;
 const ORDER_COMPANY_RATE_BPS = 300;
 // Legacy exports retained for callers that still pass the former percentage knobs.
 const SPECIAL_ORDER_PRODUCER_RATE_BPS = ORDER_PRODUCER_RATE_BPS;

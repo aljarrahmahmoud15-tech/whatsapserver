@@ -196,12 +196,15 @@ const COMPANY_BRAND_ENGLISH = "WASLNI NOW";
 const BOT_FINANCIAL_MODE = "company";
 const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${WHATSAPP_IDENTITY_SCOPE}`;
 // Settlement policy: the value after the fare marker is external and never credits the executor.
-// Normal and «أوردر» orders use 12% downloader + 3% company = 15% executor debit.
+// Owner-approved 2026-11-22: a normal request debits 13% downloader + 3% company = 16% of the executor wallet.
+// An «أوردر» request debits 17% downloader + 3% company = 20%. The company share is 3.00% for both kinds.
 const COMPANY_RATE_BPS = 300;
-const PRODUCER_RATE_BPS = 1200;
-const SPECIAL_ORDER_RATE_BPS = 1200;
+const PRODUCER_RATE_BPS = 1300;
+const SPECIAL_ORDER_RATE_BPS = 1700;
 const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
+const APPROVED_SETTLEMENT_POLICY_VERSION = "13_3_normal_17_3_order_v3";
+const OWNER_CUSTOM_SETTLEMENT_POLICY_VERSION = "owner_custom_after_v3";
 const DIRECT_RIDE_LIVE_DISPATCH = process.env.DIRECT_RIDE_LIVE_DISPATCH === "true";
 const DIRECT_RIDE_ROUTE_TIMEOUT_MS = Math.max(3000, Math.min(15000, Number(process.env.DIRECT_RIDE_ROUTE_TIMEOUT_MS || 8000)));
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
@@ -4418,6 +4421,31 @@ function settlementPolicyResponse() {
     automaticDebtIsolationEnabled: CAPTAIN_DEBT_POLICY_ENABLED,
   };
 }
+function runtimeSettlementPolicyDisplay() {
+  const sp = settlementPolicyResponse();
+  const kindRates = (producer, company, total) => ({ producerWalletRate: `${producer}%`, companyWalletRate: `${company}%`, confirmingCaptainWalletRate: `-${total}%` });
+  return {
+    normalOrder: kindRates(sp.producerRatePercent, sp.companyRatePercent, sp.totalRatePercent),
+    order: kindRates(sp.specialOrderProducerRatePercent, sp.specialOrderCompanyRatePercent, sp.specialOrderTotalRatePercent),
+    captainCashRate: "100%",
+    debtPolicyEnabled: sp.debtPolicyEnabled,
+    manualWalletDebitsEnabled: sp.manualWalletDebitsEnabled,
+    debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`,
+    orderSettlementDebtPolicy: `projected balances below 0.00 JOD are rejected; normal debit ${sp.totalRatePercent}% and order debit ${sp.specialOrderTotalRatePercent}%`,
+    lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`,
+    negativeBalanceAction: "negative balance is rejected; captain remains active and is never removed or disabled for insufficient balance",
+    idempotent: true,
+  };
+}
+function orderKindSettlementLabel(orderKind) {
+  const policy = currentSettlementPolicy();
+  const isOrderKind = orderKind === "order";
+  const producerBps = Number(isOrderKind ? policy.specialOrderProducerRateBps : policy.producerRateBps);
+  const companyBps = Number(isOrderKind ? policy.specialOrderCompanyRateBps : policy.companyRateBps);
+  const safeProducer = Number.isFinite(producerBps) ? producerBps : (isOrderKind ? SPECIAL_ORDER_RATE_BPS : PRODUCER_RATE_BPS);
+  const safeCompany = Number.isFinite(companyBps) ? companyBps : (isOrderKind ? SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS : COMPANY_FROM_PRODUCER_RATE_BPS);
+  return `${isOrderKind ? "أوردر محدد" : "طلب عادي"} · خصم ${ratePercentFromBps(safeProducer + safeCompany)}% (${ratePercentFromBps(safeProducer)}% للمنزّل + ${ratePercentFromBps(safeCompany)}% للشركة)`;
+}
 function calculateConfiguredSettlement(input = {}) {
   const policy = currentSettlementPolicy();
   return {
@@ -4583,8 +4611,8 @@ function ensureSystemUsers() {
     db.prepare("UPDATE users SET wallet_cents=COALESCE(wallet_cents,0) WHERE role IN ('company','captain','producer')").run();
     db.prepare("UPDATE order_settlements SET charged_user_id=CASE WHEN captain_user_id IN (SELECT id FROM users WHERE is_bot=1) THEN ? ELSE captain_user_id END WHERE charged_user_id IS NULL").run(companyAccount.id);
   }
-  // Initialize defaults once. Migrate only the prior approved 12%/4% policy;
-  // later owner edits are preserved and historical settlements are untouched.
+  // Initialize defaults once. Legacy approved policies migrate forward, then the owner-approved
+  // 13%+3% normal and 17%+3% order split is applied once; later owner edits are preserved.
   const settlementDefaults = [
     ["company_rate_bps", COMPANY_RATE_BPS],
     ["producer_rate_bps", PRODUCER_RATE_BPS],
@@ -4608,6 +4636,19 @@ function ensureSystemUsers() {
     setSetting("settlement_policy_version", "12_3_all_order_kinds_v2");
   } else if (settlementPolicyVersion === null) {
     setSetting("settlement_policy_version", "12_3_all_order_kinds_v2");
+  }
+  // Owner-approved split policy: normal 13%+3%, «أوردر» 17%+3%. Applied once to every pre-split
+  // version (including the old two-field "owner_custom"). Owner edits saved after this point carry
+  // OWNER_CUSTOM_SETTLEMENT_POLICY_VERSION and are never overwritten by a restart.
+  const splitPolicyVersion = getSetting("settlement_policy_version");
+  if (splitPolicyVersion !== APPROVED_SETTLEMENT_POLICY_VERSION && splitPolicyVersion !== OWNER_CUSTOM_SETTLEMENT_POLICY_VERSION) {
+    const splitRates = [
+      ["producer_rate_bps", PRODUCER_RATE_BPS], ["company_rate_bps", COMPANY_FROM_PRODUCER_RATE_BPS],
+      ["special_order_rate_bps", SPECIAL_ORDER_RATE_BPS], ["special_order_company_from_producer_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
+      ["order_producer_rate_bps", SPECIAL_ORDER_RATE_BPS], ["order_company_rate_bps", SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS],
+    ];
+    for (const [key, value] of splitRates) setSetting(key, value);
+    setSetting("settlement_policy_version", APPROVED_SETTLEMENT_POLICY_VERSION);
   }
   for (const definition of Object.values(OWNER_NOTIFICATION_DEFINITIONS)) {
     if (getSetting(definition.key) === null) setSetting(definition.key, definition.defaultValue ? "1" : "0");
@@ -6670,7 +6711,7 @@ function parseOrder(text) {
   const requestKind = Boolean(requestKindMatch);
   return {
     // الصيغة التشغيلية المعتمدة: تُستخرج الأجرة قبل فحص قبول الكابتن؛ ثم يستخدم
-    // acceptanceBalanceGuard السعر المحفوظ لحساب عمولة 15% وحد الرصيد.
+    // acceptanceBalanceGuard السعر المحفوظ لحساب عمولة النوع المعتمدة وحد الرصيد.
     isOrder: price !== null,
     price,
     priceCents: price === null ? null : Math.round(price * 100),
@@ -7484,7 +7525,7 @@ function formatAcceptance(order, captain, producer) {
     `👤 المنتج المعتمد: ${producer ? producer.name : "غير محدد"}`,
     `🚕 الكابتن المنفّذ: ${captain.name}`,
     `💰 القيمة الكاملة للرحلة: ${money(order.price_cents)} JOD`,
-    `🧾 نوع الطلب: ${order.order_kind === "order" ? "أوردر محدد · خصم 15% (12% للمنزّل + 3% للشركة)" : "طلب عادي وأوردر · خصم 15% (12% للمنزّل + 3% للشركة)"}`,
+    `🧾 نوع الطلب: ${orderKindSettlementLabel(order.order_kind)}`,
     `💼 المخصوم من رصيد المنفّذ: ${money(order.producer_cents)} JOD`,
     `📊 حصة المنزل: ${money(order.producer_cents)} JOD | حصة الشركة: ${money(order.company_cents)} JOD`,
     "✅ تم اعتماد الرحلة بإعجاب كابتن تنزيل الطلب، وتم تسجيل التسوية.",
@@ -12901,7 +12942,7 @@ app.get("/api/public/operations-feed", requireOwnerAdmin, (req, res) => {
     status: { ready: Boolean(isReady), groupReceiverReady, groupConfigured: Boolean(groupId && isConfiguredGroup(groupId)), groupSuffix: groupId ? `…${groupId.replace(/\D/g, "").slice(-4)}` : null, whatsappState },
     updates: recentNotifications,
     settlements: recentSettlements,
-    policy: { normalOrder: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15%" }, order: { producerWalletRate: "12%", companyWalletRate: "3%", confirmingCaptainWalletRate: "-15%" }, captainCashRate: "100%", debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD for manual debits/subscriptions only`, orderSettlementDebtPolicy: "projected balances below 0.00 JOD are rejected; normal and order debit 15%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "negative balance is rejected; captain remains active and is never removed or disabled for insufficient balance", idempotent: true },
+    policy: runtimeSettlementPolicyDisplay(),
   });
 });
 
@@ -13646,23 +13687,28 @@ app.patch("/api/admin/settings/acceptance-deletion", requireOwnerAdmin, adminMut
 app.patch("/api/admin/settings/settlement", requireOwnerAdmin, (req, res) => {
   const producerPercent = Number(req.body?.producerRatePercent);
   const companyPercent = Number(req.body?.companyRatePercent);
+  const optionalPercent = (value, fallback) => (value === undefined || value === null || value === "") ? fallback : Number(value);
+  const orderProducerPercent = optionalPercent(req.body?.orderProducerRatePercent, producerPercent);
+  const orderCompanyPercent = optionalPercent(req.body?.orderCompanyRatePercent, companyPercent);
   const validPercent = (value) => Number.isFinite(value) && value >= 0 && value <= 100 && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
   if (!validPercent(producerPercent) || !validPercent(companyPercent) || producerPercent + companyPercent > 100) return res.status(400).json({ error: "أدخل نسبًا من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
-  const next = { producerRateBps: Math.round(producerPercent * 100), companyRateBps: Math.round(companyPercent * 100) };
+  if (!validPercent(orderProducerPercent) || !validPercent(orderCompanyPercent) || orderProducerPercent + orderCompanyPercent > 100) return res.status(400).json({ error: "أدخل نسب الأوردر من 0 إلى 100 بدقة منزلتين وبمجموع لا يتجاوز 100%." });
+  const next = { producerRateBps: Math.round(producerPercent * 100), companyRateBps: Math.round(companyPercent * 100), orderProducerRateBps: Math.round(orderProducerPercent * 100), orderCompanyRateBps: Math.round(orderCompanyPercent * 100) };
   const before = currentSettlementPolicy();
   try {
     db.transaction(() => {
       setSetting("producer_rate_bps", next.producerRateBps);
       setSetting("company_rate_bps", next.companyRateBps);
-      setSetting("special_order_rate_bps", next.producerRateBps);
-      setSetting("special_order_company_from_producer_rate_bps", next.companyRateBps);
-      setSetting("order_producer_rate_bps", next.producerRateBps);
-      setSetting("order_company_rate_bps", next.companyRateBps);
-      setSetting("settlement_policy_version", "owner_custom");
-      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps, specialOrderProducerRateBps: before.specialOrderProducerRateBps, specialOrderCompanyRateBps: before.specialOrderCompanyRateBps }, after: { ...next, specialOrderProducerRateBps: next.producerRateBps, specialOrderCompanyRateBps: next.companyRateBps }, appliesTo: "normal_and_order_orders" });
+      setSetting("special_order_rate_bps", next.orderProducerRateBps);
+      setSetting("special_order_company_from_producer_rate_bps", next.orderCompanyRateBps);
+      setSetting("order_producer_rate_bps", next.orderProducerRateBps);
+      setSetting("order_company_rate_bps", next.orderCompanyRateBps);
+      setSetting("settlement_policy_version", OWNER_CUSTOM_SETTLEMENT_POLICY_VERSION);
+      audit("admin.settlement_policy.changed", "system", "settlement_policy", { before: { producerRateBps: before.producerRateBps, companyRateBps: before.companyRateBps, specialOrderProducerRateBps: before.specialOrderProducerRateBps, specialOrderCompanyRateBps: before.specialOrderCompanyRateBps }, after: { producerRateBps: next.producerRateBps, companyRateBps: next.companyRateBps, specialOrderProducerRateBps: next.orderProducerRateBps, specialOrderCompanyRateBps: next.orderCompanyRateBps }, appliesTo: "normal_and_order_specific" });
     })();
     res.setHeader("Cache-Control", "no-store, max-age=0");
-    res.json({ success: true, policy: settlementPolicyResponse(), message: "تم حفظ نسب التسوية 12% للمنزّل و3% للشركة، بإجمالي خصم 15% من المنفّذ للطلب العادي والأوردر الجديد فقط؛ السجلات السابقة لا تتغير." });
+    const saved = settlementPolicyResponse();
+    res.json({ success: true, policy: saved, message: `تم حفظ نسب التسوية: طلب عادي ${saved.producerRatePercent}% للمنزّل + ${saved.companyRatePercent}% للشركة = خصم ${saved.totalRatePercent}% من المنفّذ، وأوردر ${saved.specialOrderProducerRatePercent}% للمنزّل + ${saved.specialOrderCompanyRatePercent}% للشركة = خصم ${saved.specialOrderTotalRatePercent}%. تُطبق على التسويات الجديدة فقط؛ السجلات السابقة لا تتغير.` });
   } catch (error) {
     console.error("[Settings] settlement policy update failed:", error.message);
     res.status(500).json({ error: "تعذر حفظ إعدادات التسوية" });

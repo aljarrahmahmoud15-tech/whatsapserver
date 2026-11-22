@@ -44,8 +44,11 @@ assert.ok(
   'owner approval is required to create and activate the captain account'
 );
 assert.ok(
-  server.includes('confirmingCaptainWalletRate: "-15%"'),
-  'the full 15% executor debit is exposed'
+  server.includes('confirmingCaptainWalletRate: `-${total}%`')
+    && !/confirmingCaptainWalletRate:\s*"\d/.test(server)
+    && server.includes('orderKindSettlementLabel(order.order_kind)')
+    && !/خصم 15%/.test(server),
+  'the full executor debit is exposed per order kind and derived from the saved settlement policy, never hard-coded'
 );
 assert.ok(
   server.includes('posted_share_cents') &&
@@ -54,10 +57,13 @@ assert.ok(
   'captain-facing fee summaries include the full executor debit'
 );
 assert.ok(
-  server.includes('const PRODUCER_RATE_BPS = 1200;') &&
-  server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;') &&
-  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 300;'),
-  'the approved 12%/3% rates for both order kinds are policy constants'
+  server.includes('const PRODUCER_RATE_BPS = 1300;') &&
+  server.includes('const SPECIAL_ORDER_RATE_BPS = 1700;') &&
+  server.includes('const COMPANY_FROM_PRODUCER_RATE_BPS = 300;') &&
+  server.includes('const SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS = 300;') &&
+  !server.includes('const PRODUCER_RATE_BPS = 1200;') &&
+  !server.includes('const SPECIAL_ORDER_RATE_BPS = 1200;'),
+  'the owner-approved 13%+3% normal and 17%+3% order rates are policy constants'
 );
 assert.ok(
   server.includes('if (getSetting(key) === null) setSetting(key, value);') &&

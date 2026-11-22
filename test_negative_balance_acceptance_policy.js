@@ -25,6 +25,6 @@ assert.equal(exact.allowed, true);
 assert.equal(exact.projectedBalanceCents, 0);
 assert.match(server, /const balanceGuard = evaluateBalance\(/);
 assert.match(server, /if \(!balanceGuard\.allowed\)/);
-assert.match(server, /orderSettlementDebtPolicy: "projected balances below 0\.00 JOD are rejected/);
+assert.match(server, /orderSettlementDebtPolicy: `projected balances below 0\.00 JOD are rejected; normal debit \$\{sp\.totalRatePercent\}% and order debit \$\{sp\.specialOrderTotalRatePercent\}%`/);
 assert.match(server, /يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0\.00 دينار/);
 console.log('zero-floor settlement guard verified');
