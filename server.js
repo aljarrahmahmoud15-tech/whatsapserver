@@ -4042,6 +4042,7 @@ async function downloadIncomingVoiceMediaWithRecovery(message, messageId) {
   const retryDelays = [0, 750, 1500];
   let target = message;
   let lastReason = "audio_media_required";
+  let lastAttempt = null;
   for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
     if (retryDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
     if (attempt > 0 && client && isReady && messageId) {
@@ -4050,14 +4051,53 @@ async function downloadIncomingVoiceMediaWithRecovery(message, messageId) {
     }
     if (!target || typeof target.downloadMedia !== "function") {
       lastReason = "media_download_unavailable";
+      lastAttempt = { attempt: attempt + 1, reason: lastReason, mimeType: "", filename: "", dataChars: 0, downloadError: null, liveRefetched: attempt > 0 };
       continue;
     }
-    const media = await withTimeout(target.downloadMedia(), 30000, null).catch(() => null);
-    const mimeType = String(media?.mimetype || "").trim().toLowerCase();
-    if (media?.data && /^audio\//.test(mimeType)) return { media, mimeType, target, attempt: attempt + 1 };
-    lastReason = media?.data ? "audio_media_required" : "audio_media_pending";
+    let downloadError = null;
+    let media = null;
+    try {
+      media = await withTimeout(target.downloadMedia(), 30000, null);
+    } catch (error) {
+      downloadError = String(error?.message || error).replace(/\s+/g, " ").trim().slice(0, 180) || "media_download_threw";
+      media = null;
+    }
+    const acceptance = voiceMediaAcceptance(media);
+    lastAttempt = {
+      attempt: attempt + 1,
+      reason: downloadError && !acceptance.accepted ? "media_download_error" : acceptance.reason,
+      mimeType: acceptance.diagnostic.mimeType,
+      filename: acceptance.diagnostic.filename,
+      dataChars: acceptance.diagnostic.dataChars,
+      downloadError,
+      liveRefetched: attempt > 0,
+    };
+    if (acceptance.accepted) return { media, mimeType: acceptance.mimeType, target, attempt: attempt + 1, diagnostic: lastAttempt };
+    lastReason = acceptance.reason;
   }
-  throw new Error(lastReason);
+  const error = new Error(lastReason);
+  error.voiceMediaDiagnostic = lastAttempt;
+  throw error;
+}
+const VOICE_MEDIA_OCTET_MIME_TYPES = new Set(["", "application/octet-stream", "application/unknown"]);
+const VOICE_MEDIA_AUDIO_EXTENSION_RE = /\.(ogg|opus|mp3|m4a|aac|amr|wav)$/i;
+// whatsapp-web.js sometimes resolves a ptt/audio download with the payload present but the
+// mimetype empty or reported as a generic stream, and it raises real errors that used to be
+// swallowed. Classify the payload once so the caller can keep the strict audio/* preference
+// while still recording what the client actually returned.
+function voiceMediaAcceptance(media) {
+  const rawMimeType = String(media?.mimetype || "").trim();
+  const normalisedMimeType = rawMimeType.toLowerCase();
+  const filename = String(media?.filename || "").trim();
+  const payload = media?.data ? String(media.data) : "";
+  const diagnostic = { mimeType: normalisedMimeType, filename, dataChars: payload.length };
+  if (!payload) return { accepted: false, reason: "audio_media_pending", diagnostic };
+  if (/^audio\//i.test(normalisedMimeType)) return { accepted: true, mimeType: normalisedMimeType, reason: "audio_mime_accepted", diagnostic };
+  const extensionSaysAudio = VOICE_MEDIA_AUDIO_EXTENSION_RE.test(filename);
+  if (extensionSaysAudio || VOICE_MEDIA_OCTET_MIME_TYPES.has(normalisedMimeType)) {
+    return { accepted: true, mimeType: "audio/ogg; codecs=opus", reason: extensionSaysAudio ? "audio_mime_extension_fallback" : "audio_mime_octet_fallback", diagnostic };
+  }
+  return { accepted: false, reason: "audio_media_required", diagnostic };
 }
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || message?.fromMe || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
@@ -4067,16 +4107,28 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   if (!messageId) return { status: "skipped", reason: "missing_message_id", stage: "message_id" };
   const stamp = now();
   const existing = db.prepare("SELECT id,status,attempts FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
-  if (existing) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts, stage: "idempotency" };
-  let row;
-  try {
-    row = db.prepare("INSERT OR IGNORE INTO voice_booking_intakes(message_id,group_id,sender_phone,message_type,status,attempts,first_seen_at,last_seen_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
-      .run(messageId, groupId, normalizedPhone || senderIdentityHint, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
-  } catch (error) {
-    audit("voice_booking_intake.receipt_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
-    return { status: "failed", reason: "receipt_failed", stage: "intake_receipt" };
+  const retryFailedIntake = Boolean(existing && voiceBookingIntakeFailedRetryEligible(existing));
+  if (existing && !retryFailedIntake) return { status: "duplicate", messageId, intakeId: existing.id, priorStatus: existing.status, attempts: existing.attempts, stage: "idempotency" };
+  if (retryFailedIntake) {
+    // A failed intake used to be sealed for good by the message_id uniqueness guard, so every
+    // media-download defect silently cost the owner that booking forever. Re-open only rows that
+    // failed inside the recovery window and below the attempt cap; no order, wallet or settlement
+    // is created here, and the unique key still prevents any duplicate row.
+    const reopenedAttempts = Number(existing.attempts || 0) + 1;
+    db.prepare("UPDATE voice_booking_intakes SET status='received',attempts=?,error_code=NULL,last_seen_at=?,updated_at=? WHERE id=?")
+      .run(reopenedAttempts, now(), now(), existing.id);
+    audit("voice_booking_intake.retry_attempted", "message", messageId, { groupId, intakeId: existing.id, priorStatus: existing.status, attempts: reopenedAttempts, financialMutation: false, orderMutation: false });
+  } else {
+    let row;
+    try {
+      row = db.prepare("INSERT OR IGNORE INTO voice_booking_intakes(message_id,group_id,sender_phone,message_type,status,attempts,first_seen_at,last_seen_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(messageId, groupId, normalizedPhone || senderIdentityHint, String(message.type || "audio"), "received", 1, stamp, stamp, stamp, stamp);
+    } catch (error) {
+      audit("voice_booking_intake.receipt_failed", "message", messageId, { groupId, error: String(error?.message || error).slice(0, 180), financialMutation: false, orderMutation: false });
+      return { status: "failed", reason: "receipt_failed", stage: "intake_receipt" };
+    }
+    if (!row || row.changes !== 1) return { status: "duplicate", messageId, stage: "idempotency" };
   }
-  if (!row || row.changes !== 1) return { status: "duplicate", messageId, stage: "idempotency" };
   if (!normalizedPhone) {
     const identityAttempts = 3;
     for (let attempt = 1; attempt <= identityAttempts && !normalizedPhone; attempt += 1) {
@@ -4159,13 +4211,32 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
     }
   } catch (error) {
     const errorCode = String(error?.message || error).slice(0, 120);
+    const mediaDiagnostic = error?.voiceMediaDiagnostic || null;
+    const diagnosticFields = mediaDiagnostic
+      ? `reason=${String(mediaDiagnostic.reason || "").slice(0, 40)} mime=${String(mediaDiagnostic.mimeType || "").slice(0, 40)} filename=${String(mediaDiagnostic.filename || "").slice(0, 40)} dataChars=${Number(mediaDiagnostic.dataChars || 0)} attempts=${Number(mediaDiagnostic.attempt || 0)} liveRefetched=${mediaDiagnostic.liveRefetched ? "1" : "0"} downloadError=${String(mediaDiagnostic.downloadError || "").slice(0, 140)}`
+      : "";
     db.prepare("UPDATE voice_booking_intakes SET status='failed',error_code=?,last_seen_at=?,updated_at=? WHERE message_id=?").run(errorCode, now(), now(), messageId);
-    audit("voice_booking_intake.failed", "message", messageId, { groupId, errorCode, financialMutation: false, orderMutation: false });
+    audit("voice_booking_intake.failed", "message", messageId, {
+      groupId,
+      errorCode,
+      mediaDiagnostic,
+      financialMutation: false,
+      orderMutation: false,
+    });
+    console.warn(`[VoiceIntake] intake_failed key=${orderTraceKey(messageId)} stage=${diagnosticStage} error=${errorCode} ${diagnosticFields}`.slice(0, 460));
     return { status: "failed", reason: errorCode, messageId, stage: diagnosticStage };
   } finally {
     try { if (tempPath) fs.rmSync(tempPath, { force: true }); } catch (_) {}
     try { if (tempDir) fs.rmSync(tempDir, { recursive: false, force: true }); } catch (_) {}
   }
+}
+const VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const VOICE_BOOKING_INTAKE_MAX_ATTEMPTS = 4;
+function voiceBookingIntakeFailedRetryEligible(row) {
+  if (!row || row.status !== "failed") return false;
+  if (Number(row.attempts || 0) >= VOICE_BOOKING_INTAKE_MAX_ATTEMPTS) return false;
+  const lastSeenAt = Date.parse(String(row.last_seen_at || ""));
+  return Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt <= VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS;
 }
 function generalMessageDeletionEnabled() {
   return readBooleanSetting(GENERAL_MESSAGE_DELETION_SETTING_KEY, false);
@@ -8358,7 +8429,7 @@ async function recoverHistoricalOrderCandidates(groupId) {
 async function recoverHistoricalVoiceBookingIntakes(groupId) {
   if (!client || !isReady || !groupId || !isConfiguredGroup(groupId)) return;
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, liveLookupAttempts: 0, liveLookupHits: 0, liveLookupMisses: 0, recovered: 0, skipped: 0, failed: 0, source: null, lastStage: "history_fetch", lastResultStatus: null, lastFailureStage: null, lastFailureReason: null, finishedAt: null };
+  const recovery = { startedAt: new Date().toISOString(), groupKey: orderTraceKey(groupId), scanned: 0, voiceMessages: 0, liveLookupAttempts: 0, liveLookupHits: 0, liveLookupMisses: 0, recovered: 0, skipped: 0, failed: 0, retries: 0, source: null, lastStage: "history_fetch", lastResultStatus: null, lastFailureStage: null, lastFailureReason: null, finishedAt: null };
   lastVoiceBookingRecovery = recovery;
   const history = await withTimeout(fetchGroupHistory(groupId, 200, { includeOutgoing: false, earlierLoadLimit: WHATSAPP_RECOVERY_EARLIER_LOADS, cacheOnly: false }), WHATSAPP_RECOVERY_PAGE_TIMEOUT_MS + 25000, { chat: null, messages: [] });
   recovery.source = history?.chat ? "chat.fetchMessages" : "history-fallback";
@@ -8373,8 +8444,9 @@ async function recoverHistoricalVoiceBookingIntakes(groupId) {
     if (!messageId || seen.has(messageId) || timestamp < cutoff || message?.fromMe || messageGroupId !== groupId || !isIncomingVoiceMessage(message)) continue;
     seen.add(messageId);
     recovery.voiceMessages += 1;
-    const existing = db.prepare("SELECT id FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
-    if (existing) { recovery.skipped += 1; recovery.lastStage = "idempotency"; recovery.lastResultStatus = "duplicate"; continue; }
+    const existing = db.prepare("SELECT id,status,attempts,last_seen_at FROM voice_booking_intakes WHERE message_id=? LIMIT 1").get(messageId);
+    if (existing && !voiceBookingIntakeFailedRetryEligible(existing)) { recovery.skipped += 1; recovery.lastStage = "idempotency"; recovery.lastResultStatus = "duplicate"; continue; }
+    if (existing) { recovery.retries += 1; recovery.lastStage = "failed_row_reopened"; recovery.lastResultStatus = "retry"; }
     try {
       // History serialization can expose a ptt row without the live whatsapp-web.js
       // media methods. Re-fetch the exact message before intake so downloadMedia()
@@ -18151,6 +18223,7 @@ app.get("/api/admin/group/voice-booking-recovery-status", requireAdmin, adminRea
       recovered: Number(recovery.recovered || 0),
       skipped: Number(recovery.skipped || 0),
       failed: Number(recovery.failed || 0),
+      retries: Number(recovery.retries || 0),
       lastStage: recovery.lastStage || null,
       lastResultStatus: recovery.lastResultStatus || null,
       lastFailureStage: recovery.lastFailureStage || null,
