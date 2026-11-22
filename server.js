@@ -4233,12 +4233,23 @@ async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone,
   }
 }
 const VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const VOICE_BOOKING_INTAKE_MAX_ATTEMPTS = 4;
+// Owner-approved retry pacing (2026-11-22): recovery passes run every ~30 seconds and every attempt
+// rewrites last_seen_at, so a cap alone was burned within ~3 minutes and the row stayed sealed while
+// WhatsApp's media layer was still unavailable. A failed row is now retried only after a 15 minute
+// backoff, at most 8 times, and only inside the existing 24 hour window. last_seen_at is rewritten on
+// the reopen (status='received') and on every failure write, so the elapsed time is exactly the time
+// since the last attempt of this row; no schema change and no new state are needed.
+const VOICE_BOOKING_INTAKE_RETRY_BACKOFF_MS = 15 * 60 * 1000;
+const VOICE_BOOKING_INTAKE_MAX_ATTEMPTS = 8;
 function voiceBookingIntakeFailedRetryEligible(row) {
   if (!row || row.status !== "failed") return false;
   if (Number(row.attempts || 0) >= VOICE_BOOKING_INTAKE_MAX_ATTEMPTS) return false;
   const lastSeenAt = Date.parse(String(row.last_seen_at || ""));
-  return Number.isFinite(lastSeenAt) && Date.now() - lastSeenAt <= VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS;
+  if (!Number.isFinite(lastSeenAt)) return false;
+  const elapsedSinceLastAttempt = Date.now() - lastSeenAt;
+  // Equal or stricter than the previous window test: inside 24h AND past the 15 minute backoff.
+  return elapsedSinceLastAttempt >= VOICE_BOOKING_INTAKE_RETRY_BACKOFF_MS
+    && elapsedSinceLastAttempt <= VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS;
 }
 function generalMessageDeletionEnabled() {
   return readBooleanSetting(GENERAL_MESSAGE_DELETION_SETTING_KEY, false);
@@ -18231,6 +18242,12 @@ app.get("/api/admin/group/voice-booking-recovery-status", requireAdmin, adminRea
       lastFailureStage: recovery.lastFailureStage || null,
       lastFailureReason: recovery.lastFailureReason || null,
     } : null,
+    // Read-only echo of the retry policy so the live pacing can be verified without the shell.
+    retryPolicy: {
+      windowMs: VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS,
+      backoffMs: VOICE_BOOKING_INTAKE_RETRY_BACKOFF_MS,
+      maxAttempts: VOICE_BOOKING_INTAKE_MAX_ATTEMPTS,
+    },
   });
 });
 app.get("/api/admin/group/voice-booking-evidence", requireAdmin, adminReadLimiter, (req, res) => {

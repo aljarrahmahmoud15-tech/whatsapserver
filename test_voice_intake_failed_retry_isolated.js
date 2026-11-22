@@ -74,6 +74,7 @@ function buildContext(existingRow) {
 
 (async () => {
   // A) failed row inside the window and below the attempt cap is reopened, never duplicated.
+  // (45 minutes old, i.e. past the 15 minute backoff, so the retry is allowed to proceed.)
   const fresh = buildContext({ id: 107, status: "failed", attempts: 1, last_seen_at: new Date(Date.now() - 45 * 60 * 1000).toISOString() });
   const firstResult = await fresh.context.handleIncomingVoiceBookingIntake({ type: "ptt" }, { groupId: "group-1@g.us", senderPhone: "0700000000", senderName: "Producer" });
   assert.equal(firstResult.status, "failed");
@@ -93,14 +94,32 @@ function buildContext(existingRow) {
   assert.ok(!/INSERT OR IGNORE INTO voice_booking_intakes/.test(sqlText), "no duplicate intake row for a known message");
   assert.ok(!/INSERT INTO orders|wallet_ledger/.test(sqlText), "no money or order statement executed");
 
-  // B) exhausted attempts keep the strict duplicate exit (bounded churn, no retry storm).
-  const exhausted = buildContext({ id: 108, status: "failed", attempts: 4, last_seen_at: new Date().toISOString() });
+  // B) the attempt cap (8) keeps the strict duplicate exit (bounded churn, no retry storm).
+  const exhausted = buildContext({ id: 108, status: "failed", attempts: 8, last_seen_at: new Date(Date.now() - 20 * 60 * 1000).toISOString() });
   const secondResult = await exhausted.context.handleIncomingVoiceBookingIntake({ type: "ptt" }, { groupId: "group-1@g.us", senderPhone: "0700000000", senderName: "Producer" });
   assert.equal(secondResult.status, "duplicate");
   assert.equal(secondResult.stage, "idempotency");
   assert.equal(secondResult.intakeId, 108);
   const exhaustedSql = exhausted.audits.filter((entry) => typeof entry === "string").join(" || ");
   assert.ok(!/UPDATE voice_booking_intakes SET status='received'/.test(exhaustedSql), "capped row is not reopened");
+  // B2) a recently failed row waits out the 15 minute backoff instead of burning attempts on every
+  // ~30 second recovery pass (the defect the owner approved this change to remove).
+  const backingOff = buildContext({ id: 110, status: "failed", attempts: 3, last_seen_at: new Date(Date.now() - 60 * 1000).toISOString() });
+  const backoffResult = await backingOff.context.handleIncomingVoiceBookingIntake({ type: "ptt" }, { groupId: "group-1@g.us", senderPhone: "0700" + "000000", senderName: "Producer" });
+  assert.equal(backoffResult.status, "duplicate");
+  assert.equal(backoffResult.stage, "idempotency");
+  assert.equal(backoffResult.intakeId, 110);
+  assert.equal(backingOff.audits.filter((entry) => typeof entry === "object" && entry.action === "voice_booking_intake.retry_attempted").length, 0, "no retry audited inside the backoff");
+  const backoffSql = backingOff.audits.filter((entry) => typeof entry === "string").join(" || ");
+  assert.ok(!/UPDATE voice_booking_intakes SET status='received'/.test(backoffSql), "row inside the backoff is not reopened");
+  assert.ok(!/UPDATE voice_booking_intakes SET status='failed'/.test(backoffSql), "row inside the backoff is not re-attempted or re-failed");
+  // B3) one row past the backoff and one row below the cap are both required: 8 attempts spread over
+  // at least ~2 hours of retries rather than ~3 minutes.
+  const eligibleAgain = buildContext({ id: 111, status: "failed", attempts: 7, last_seen_at: new Date(Date.now() - 16 * 60 * 1000).toISOString() });
+  await eligibleAgain.context.handleIncomingVoiceBookingIntake({ type: "ptt" }, { groupId: "group-1@g.us", senderPhone: "0700" + "000000", senderName: "Producer" });
+  const lateRetry = eligibleAgain.audits.find((entry) => typeof entry === "object" && entry.action === "voice_booking_intake.retry_attempted");
+  assert.ok(lateRetry, "last allowed attempt still runs after the backoff");
+  assert.equal(lateRetry.payload.attempts, 8);
 
   // C) a completed row is never reopened (transcripts stay stable, no re-creation of anything).
   const done = buildContext({ id: 109, status: "downloaded", attempts: 2, last_seen_at: new Date().toISOString() });

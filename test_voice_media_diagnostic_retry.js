@@ -101,12 +101,30 @@ vm.runInNewContext(
 
   // 3) Retry window: only failed rows inside 24h and below the attempt cap are reopened.
   const iso = (offsetMs) => new Date(Date.now() - offsetMs).toISOString();
+  // Owner-approved pacing must be explicit in the deployed source, never implied.
+  const retryText = source.slice(retryStart, retryEnd);
+  assert.match(retryText, /const VOICE_BOOKING_INTAKE_RETRY_BACKOFF_MS = 15 \* 60 \* 1000;/, "15 minute backoff declared");
+  assert.match(retryText, /const VOICE_BOOKING_INTAKE_MAX_ATTEMPTS = 8;/, "attempt cap is 8");
+  assert.match(retryText, /const VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS = 24 \* 60 \* 60 \* 1000;/, "24 hour window unchanged");
+  assert.doesNotMatch(retryText, /MAX_ATTEMPTS = 4/, "the old cap of 4 is gone");
+  assert.match(retryText, /elapsedSinceLastAttempt >= VOICE_BOOKING_INTAKE_RETRY_BACKOFF_MS/, "backoff lower bound enforced");
+  assert.match(retryText, /elapsedSinceLastAttempt <= VOICE_BOOKING_INTAKE_RETRY_WINDOW_MS/, "window upper bound still enforced");
+  // Eligible: past the backoff, inside the 24h window, below the cap.
   assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: iso(60 * 60 * 1000) }), true);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: iso(16 * 60 * 1000) }), true);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 7, last_seen_at: iso(20 * 60 * 1000) }), true);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: iso(23 * 60 * 60 * 1000) }), true);
+  // Ineligible inside the backoff: this is what stopped four attempts burning out in ~3 minutes.
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: iso(14 * 60 * 1000) }), false);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 3, last_seen_at: new Date().toISOString() }), false);
+  // Ineligible outside the window or at/above the cap.
   assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: iso(25 * 60 * 60 * 1000) }), false);
-  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 4, last_seen_at: iso(60 * 1000) }), false);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 8, last_seen_at: iso(60 * 60 * 1000) }), false);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 99, last_seen_at: iso(60 * 60 * 1000) }), false);
   assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "downloaded", attempts: 1, last_seen_at: iso(60 * 1000) }), false);
   assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "skipped", attempts: 1, last_seen_at: iso(60 * 1000) }), false);
   assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: "" }), false);
+  assert.equal(voiceBookingIntakeFailedRetryEligible({ status: "failed", attempts: 1, last_seen_at: "not-a-date" }), false);
   assert.equal(voiceBookingIntakeFailedRetryEligible(null), false);
 
   console.log("voice media diagnostics + bounded retry guardrails passed");
