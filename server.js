@@ -3923,6 +3923,10 @@ const VOICE_BOOKING_EXTRACTION_SETTING_KEY = "official_group_voice_booking_field
 // adopted it explicitly; it can be switched back off through the same owner-only settings endpoint.
 const VOICE_BOOKING_BOT_SOURCE_SETTING_KEY = "official_group_voice_booking_intake_bot_source_enabled";
 const VOICE_BOOKING_STT_MAX_TRANSCRIPT_CHARS = 12000;
+// Owner-approved 2026-11-22: keep the provider's own error code inside the stored voice error code.
+// HTTP 429 is returned both for an account rate limit and for an exhausted quota, and the status
+// number alone cannot tell them apart. The cap bounds the whole suffix before it reaches the DB.
+const VOICE_BOOKING_STT_ERROR_CODE_MAX_CHARS = 48;
 const VOICE_BOOKING_INTAKE_MAX_BYTES = Math.max(256 * 1024, Math.min(15 * 1024 * 1024, Number(process.env.VOICE_BOOKING_INTAKE_MAX_BYTES || 15 * 1024 * 1024)));
 const GENERAL_MESSAGE_DELETION_SETTING_KEY = "official_group_unapproved_message_deletion_enabled";
 const GENERAL_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_unapproved_message_deletion_emergency_stop";
@@ -4028,6 +4032,25 @@ function voiceTranscriptConfidence(payload) {
   const averageNoSpeech = probabilities.reduce((sum, value) => sum + value, 0) / probabilities.length;
   return Math.max(0, Math.min(1, Number((1 - averageNoSpeech).toFixed(4))));
 }
+// Diagnostic-only helper (owner-requested 2026-11-22, media/quota triage): OpenAI reports the reason
+// for a refusal inside the response body as { error: { message, type, param, code } }. HTTP 429 is
+// used BOTH for a request-rate ceiling (code "rate_limit_exceeded" / type "rate_limit_error") and for
+// an exhausted balance (code "insufficient_quota"), which look identical through the status number.
+// We keep only the machine-readable code and type, never the free-text message, never any header, and
+// never the credential: characters outside [A-Za-z0-9_.-] are stripped and the value is length-capped.
+// Nothing here changes retry, settlement, ordering or media behaviour — it only enriches the label
+// that is already stored in voice_booking_intakes.error_code and shown by the read-only probe.
+function voiceTranscriptionProviderErrorCode(payload) {
+  const detail = payload && typeof payload === "object" ? payload.error : null;
+  const source = detail && typeof detail === "object" ? detail : { code: detail };
+  const clean = (value) => String(value === null || value === undefined ? "" : value)
+    .replace(/[^A-Za-z0-9_.-]/g, "")
+    .slice(0, VOICE_BOOKING_STT_ERROR_CODE_MAX_CHARS);
+  const code = clean(source.code);
+  const type = clean(source.type);
+  if (code && type && code !== type) return `${code}.${type}`.slice(0, VOICE_BOOKING_STT_ERROR_CODE_MAX_CHARS);
+  return code || type;
+}
 async function transcribeVoiceBookingAudio(filePath, mimeType) {
   const provider = String(process.env.VOICE_BOOKING_STT_PROVIDER || "openai").trim().toLowerCase();
   const apiKey = String(process.env.VOICE_BOOKING_STT_API_KEY || process.env.OPENAI_API_KEY || "").trim();
@@ -4046,7 +4069,15 @@ async function transcribeVoiceBookingAudio(filePath, mimeType) {
   try {
     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form, signal: controller.signal });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload) throw new Error(`speech_to_text_http_${response.status}`);
+    if (!response.ok || !payload) {
+      // The suffix is diagnostic only and stays inside the 120-char slice already applied by both
+      // catch blocks, so the stored reason grows from "speech_to_text_http_429" to something that
+      // names the ceiling (for example "…429:rate_limit_exceeded" or "…429:insufficient_quota").
+      const providerErrorCode = voiceTranscriptionProviderErrorCode(payload);
+      throw new Error(providerErrorCode
+        ? `speech_to_text_http_${response.status}:${providerErrorCode}`
+        : `speech_to_text_http_${response.status}`);
+    }
     const transcript = boundedVoiceTranscript(payload.text);
     if (!transcript) throw new Error("speech_to_text_empty_transcript");
     return { provider, transcript, language: String(payload.language || "ar").slice(0, 16), confidence: voiceTranscriptConfidence(payload) };
