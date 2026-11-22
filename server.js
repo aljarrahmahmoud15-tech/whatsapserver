@@ -4115,6 +4115,134 @@ function voiceMediaAcceptance(media) {
   }
   return { accepted: false, reason: "audio_media_required", diagnostic };
 }
+// ---------------------------------------------------------------------------
+// Stage 0 of the owner-approved media remediation: a read-only probe of what
+// WhatsApp Web really exposes for one voice message (media stage, media key,
+// direct path, in-memory blob cache, web client version). It never downloads a
+// blob, never writes the intake table, never sends anything and never touches
+// settlement state, so it can be pointed at already-sealed rows safely.
+// ---------------------------------------------------------------------------
+const VOICE_MEDIA_PROBE_TIMEOUT_MS = 12000;
+const VOICE_MEDIA_PROBE_ROW_LIMIT = 10;
+const VOICE_MEDIA_PROBE_SAFE_KEYS = [
+  "found", "webVersion", "resolveMediaBlobAvailable", "messageType", "mediaStage",
+  "hasMediaKey", "hasDirectPath", "hasFilehash", "hasMediaObject", "mediaBlobType",
+  "mimetype", "sizeBytes", "blobCacheEntries", "blobCacheHit", "error",
+];
+// Machine-readable next step per branch so the owner can decide without reading the code.
+const VOICE_MEDIA_PROBE_NEXT_STEP = Object.freeze({
+  resolved_without_bytes: "upgrade_whatsapp_webjs",
+  resolved_without_media_object: "upgrade_whatsapp_webjs",
+  bytes_available: "media_reachable_now",
+  media_key_absent: "repair_session_or_protocol_channel",
+  media_stage_blocked: "repair_session_or_protocol_channel",
+  waiting_on_media_stage: "reprobe_after_media_download",
+  message_model_unavailable: "message_not_in_page_store",
+  probe_unavailable: "whatsapp_session_not_ready",
+});
+const WHATSAPP_WEBJS_LIBRARY_VERSION = (() => {
+  try {
+    return String(require("whatsapp-web.js/package.json").version || "");
+  } catch (_) {
+    return "";
+  }
+})();
+// A serialized whatsapp-web.js id is <fromMe>_<group Jid>_<32 hex>@c.us, so only the
+// random stanza tail is echoed: enough to point at a row, never a group or contact id.
+function maskVoiceMessageReference(value) {
+  const text = String(value || "");
+  if (!text) return null;
+  const parts = text.split("_");
+  if (parts.length < 3) return null;
+  const core = parts.slice(2).join("_").replace(/@c\.us$/, "");
+  if (!core) return null;
+  return `${parts[0] === "true" ? "outgoing" : "incoming"}_…${core.slice(-6)}`;
+}
+function sanitizeVoiceMediaProbe(probe) {
+  if (!probe || probe.available === false) return null;
+  const safe = {};
+  for (const key of VOICE_MEDIA_PROBE_SAFE_KEYS) {
+    if (probe[key] !== undefined) safe[key] = probe[key];
+  }
+  return safe;
+}
+// Two decisive branches for the next repair step: a present media key with a RESOLVED
+// stage but no cached blob means the library threw the bytes away (the upgrade fixes it);
+// a missing key or an ERROR/FETCHING stage means WhatsApp Web never handed this device the
+// media at all (re-pair the session and/or a protocol channel is needed).
+function voiceMediaProbeBranch(probe) {
+  if (!probe || probe.available === false) return "probe_unavailable";
+  if (!probe.found) return "message_model_unavailable";
+  const stage = String(probe.mediaStage || "");
+  if (/ERROR/i.test(stage) || stage === "FETCHING") return "media_stage_blocked";
+  if (!probe.hasMediaKey) return "media_key_absent";
+  if (probe.blobCacheHit) return "bytes_available";
+  if (!probe.hasMediaObject) return "resolved_without_media_object";
+  if (/RESOLVED/i.test(stage)) return "resolved_without_bytes";
+  return "waiting_on_media_stage";
+}
+async function probeWhatsAppVoiceMediaState(messageId) {
+  if (!client || !client.pupPage || typeof client.pupPage.evaluate !== "function") {
+    return { available: false, branch: "probe_unavailable", detail: null, reason: "browser_page_unavailable" };
+  }
+  if (!messageId) {
+    return { available: false, branch: "probe_unavailable", detail: null, reason: "missing_message_id" };
+  }
+  const probe = await withTimeout(client.pupPage.evaluate(async (requestedId) => {
+    const out = { available: true, found: false };
+    try {
+      out.webVersion = String(window?.Debug?.VERSION || "");
+      out.resolveMediaBlobAvailable = typeof window?.WWebJS?.resolveMediaBlob === "function";
+      const collections = window.require("WAWebCollections");
+      const Msg = collections?.Msg;
+      const parts = String(requestedId || "").split("_");
+      const candidates = [...new Set([String(requestedId || ""), parts.slice(2).join("_"), parts[2] || "", `${parts[2] || ""}@c.us`].filter(Boolean))];
+      let msg = null;
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        msg = Msg && typeof Msg.get === "function" ? Msg.get(candidate) : null;
+        if (msg) break;
+      }
+      if (!msg && Msg && typeof Msg.getMessagesById === "function") {
+        const fetched = await Msg.getMessagesById(candidates);
+        msg = fetched?.messages?.[0] || null;
+      }
+      if (!msg) {
+        out.error = "message_model_unavailable";
+        return out;
+      }
+      out.found = true;
+      out.messageType = String(msg.type || "");
+      out.mediaStage = String(msg.mediaData?.mediaStage || "");
+      const mediaKey = msg.mediaKey || msg.mediaData?.mediaKey || null;
+      const mediaKeyValue = typeof mediaKey === "string" ? mediaKey : (mediaKey?.base64 || mediaKey?.data || "");
+      const directPath = msg.directPath || msg.mediaData?.directPath || "";
+      const filehash = msg.mediaObject?.filehash || msg.filehash || "";
+      out.hasMediaKey = Boolean(mediaKey && mediaKeyValue && String(mediaKeyValue).length >= 8);
+      out.hasDirectPath = Boolean(directPath);
+      out.hasFilehash = Boolean(filehash);
+      out.hasMediaObject = Boolean(msg.mediaObject);
+      out.mediaBlobType = String(msg.mediaObject?.mediaBlob?.type || "");
+      out.mimetype = String(msg.mimetype || "");
+      const declaredSize = Number(msg.size || msg.mediaData?.size || 0);
+      out.sizeBytes = Number.isFinite(declaredSize) && declaredSize > 0 ? declaredSize : null;
+      const blobCache = window.require("WAWebMediaInMemoryBlobCache")?.InMemoryMediaBlobCache;
+      out.blobCacheEntries = blobCache && typeof blobCache.size === "number" ? blobCache.size : null;
+      out.blobCacheHit = Boolean(blobCache && typeof blobCache.get === "function" && filehash && blobCache.get(filehash));
+    } catch (error) {
+      out.error = String(error?.message || error).replace(/\s+/g, " ").trim().slice(0, 160) || "media_probe_threw";
+    }
+    return out;
+  }, messageId), VOICE_MEDIA_PROBE_TIMEOUT_MS, { available: false, reason: "media_probe_timeout" });
+  const normalized = probe && typeof probe === "object" ? probe : { available: false, reason: "media_probe_empty" };
+  const detail = sanitizeVoiceMediaProbe(normalized);
+  return {
+    available: normalized.available !== false,
+    branch: voiceMediaProbeBranch(normalized),
+    detail,
+    reason: normalized.reason || null,
+  };
+}
 async function handleIncomingVoiceBookingIntake(message, { groupId, senderPhone, senderName = "" }) {
   const isBotSourceVoice = Boolean(message?.fromMe);
   if (!voiceBookingIntakeEnabled() || !isIncomingVoiceMessage(message) || (isBotSourceVoice && !voiceBookingBotSourceCaptureEnabled()) || !groupId || groupId !== configuredRuntimeGroupId()) return { status: "not_applicable", stage: "guard" };
@@ -18334,9 +18462,69 @@ app.get("/api/admin/group/voice-booking-recovery-status", requireAdmin, adminRea
     },
   });
 });
+// Read-only media probe for the voice defect: which WhatsApp Web media stage, key and blob
+// state does this device actually see for the stored voice rows? Nothing is downloaded,
+// written, sent or settled here.
+app.get("/api/admin/group/voice-media-diagnostics", requireAdmin, adminReadLimiter, async (req, res) => {
+  const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ success: false, error: "Configured group not found", mutation: "none" });
+  const limit = Math.max(1, Math.min(VOICE_MEDIA_PROBE_ROW_LIMIT, Number(req.query.limit || 5) || 5));
+  const requestedMessageId = String(req.query.messageId || "").trim();
+  const columns = "id,message_id,status,attempts,error_code,media_mime_type,media_size_bytes,message_type,last_seen_at";
+  let rows = [];
+  if (requestedMessageId) {
+    const core = messageIdCore(requestedMessageId);
+    const likePattern = `%${String(core || requestedMessageId).replace(/[\\%_]/g, "\\\\$&")}%`;
+    rows = db.prepare(`SELECT ${columns} FROM voice_booking_intakes WHERE group_id=? AND (message_id=? OR message_id LIKE ? ESCAPE '\\\\') ORDER BY id DESC LIMIT 1`).all(groupId, requestedMessageId, likePattern);
+  } else {
+    rows = db.prepare(`SELECT ${columns} FROM voice_booking_intakes WHERE group_id=? ORDER BY last_seen_at DESC LIMIT ?`).all(groupId, limit);
+  }
+  if (!rows.length) return res.json({ success: true, mutation: "none", readOnly: true, financialMutation: false, orderMutation: false, groupId, libraryVersion: WHATSAPP_WEBJS_LIBRARY_VERSION, probed: 0, rows: [], note: "no_voice_intake_rows" });
+  const results = [];
+  const branchCounts = {};
+  try {
+    for (const row of rows) {
+      const probe = await probeWhatsAppVoiceMediaState(row.message_id);
+      branchCounts[probe.branch] = (branchCounts[probe.branch] || 0) + 1;
+      results.push({
+        intakeId: row.id,
+        messageIdMasked: maskVoiceMessageReference(row.message_id),
+        source: String(row.message_id || "").startsWith("true_") ? "bot_number" : "captain",
+        messageType: row.message_type || null,
+        storedStatus: row.status,
+        storedAttempts: Number(row.attempts || 0),
+        storedErrorCode: row.error_code || null,
+        storedMimeType: row.media_mime_type || null,
+        storedSizeBytes: row.media_size_bytes ?? null,
+        lastSeenAt: row.last_seen_at || null,
+        branch: probe.branch,
+        nextStep: VOICE_MEDIA_PROBE_NEXT_STEP[probe.branch] || "unknown",
+        reason: probe.reason || null,
+        live: probe.detail,
+      });
+    }
+  } catch (error) {
+    return res.status(502).json({ success: false, mutation: "none", readOnly: true, error: String(error?.message || error).slice(0, 160), probed: results.length, rows: results });
+  }
+  res.setHeader("Cache-Control", "no-store");
+  return res.json({
+    success: true,
+    mutation: "none",
+    readOnly: true,
+    financialMutation: false,
+    orderMutation: false,
+    groupId,
+    libraryVersion: WHATSAPP_WEBJS_LIBRARY_VERSION,
+    probeTimeoutMs: VOICE_MEDIA_PROBE_TIMEOUT_MS,
+    probed: results.length,
+    branchCounts,
+    rows: results,
+  });
+});
 app.get("/api/admin/group/voice-booking-evidence", requireAdmin, adminReadLimiter, (req, res) => {
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
   const messageId = String(req.query.messageId || "").trim();
+
   if (!groupId || !isConfiguredGroup(groupId)) return res.status(404).json({ error: "Configured group not found", mutation: "none" });
   if (!messageId) return res.status(400).json({ error: "messageId is required", mutation: "none" });
   const core = messageIdCore(messageId);
