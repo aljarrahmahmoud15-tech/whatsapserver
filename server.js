@@ -4127,8 +4127,12 @@ const VOICE_MEDIA_PROBE_ROW_LIMIT = 10;
 const VOICE_MEDIA_PROBE_SAFE_KEYS = [
   "found", "webVersion", "resolveMediaBlobAvailable", "messageType", "mediaStage",
   "hasMediaKey", "hasDirectPath", "hasFilehash", "hasMediaObject", "mediaBlobType",
-  "mimetype", "sizeBytes", "blobCacheEntries", "blobCacheHit", "error",
+  "mimetype", "sizeBytes", "blobCacheEntries", "blobCacheHit", "blobCacheModule", "error",
 ];
+// The in-memory blob cache module is only exposed by newer WhatsApp Web bundles;
+// reporting which name resolved proves on the live service whether the bytes could
+// ever have been reachable through the installed library's media path.
+const VOICE_MEDIA_BLOB_CACHE_MODULES = ["WAWebMediaInMemoryBlobCache", "MediaInMemoryBlobCache", "WAWebMediaBlobUtils"];
 // Machine-readable next step per branch so the owner can decide without reading the code.
 const VOICE_MEDIA_PROBE_NEXT_STEP = Object.freeze({
   resolved_without_bytes: "upgrade_whatsapp_webjs",
@@ -4136,6 +4140,10 @@ const VOICE_MEDIA_PROBE_NEXT_STEP = Object.freeze({
   bytes_available: "media_reachable_now",
   media_key_absent: "repair_session_or_protocol_channel",
   media_stage_blocked: "repair_session_or_protocol_channel",
+  // Key, direct path and file hash are all present but the stage never left INIT /
+  // NOT_REQUESTED: the installed client never forced the fetch, which is exactly what
+  // the newer library's resolveMediaBlob does unconditionally.
+  media_never_fetched: "upgrade_whatsapp_webjs",
   waiting_on_media_stage: "reprobe_after_media_download",
   message_model_unavailable: "message_not_in_page_store",
   probe_unavailable: "whatsapp_session_not_ready",
@@ -4154,9 +4162,11 @@ function maskVoiceMessageReference(value) {
   if (!text) return null;
   const parts = text.split("_");
   if (parts.length < 3) return null;
-  const core = parts.slice(2).join("_").replace(/@c\.us$/, "");
-  if (!core) return null;
-  return `${parts[0] === "true" ? "outgoing" : "incoming"}_…${core.slice(-6)}`;
+  // Only the random stanza id (parts[2]) is ever echoed: the group Jid and the
+  // participant suffix (which can carry a contact or lid identity) are dropped.
+  const stanza = String(parts[2] || "").replace(/@(c\.us|lid)$/i, "");
+  if (!stanza) return null;
+  return `${parts[0] === "true" ? "outgoing" : "incoming"}_…${stanza.slice(0, 6)}…${stanza.slice(-4)}`;
 }
 function sanitizeVoiceMediaProbe(probe) {
   if (!probe || probe.available === false) return null;
@@ -4179,6 +4189,9 @@ function voiceMediaProbeBranch(probe) {
   if (probe.blobCacheHit) return "bytes_available";
   if (!probe.hasMediaObject) return "resolved_without_media_object";
   if (/RESOLVED/i.test(stage)) return "resolved_without_bytes";
+  if (!stage || /^(INIT|NOT_REQUESTED|NEEDS_RETRY|NEEDS_DOWNLOAD|DOWNLOADING)$/i.test(stage)) {
+    return probe.hasDirectPath ? "media_never_fetched" : "waiting_on_media_stage";
+  }
   return "waiting_on_media_stage";
 }
 async function probeWhatsAppVoiceMediaState(messageId) {
@@ -4188,7 +4201,7 @@ async function probeWhatsAppVoiceMediaState(messageId) {
   if (!messageId) {
     return { available: false, branch: "probe_unavailable", detail: null, reason: "missing_message_id" };
   }
-  const probe = await withTimeout(client.pupPage.evaluate(async (requestedId) => {
+  const probe = await withTimeout(client.pupPage.evaluate(async (requestedId, requestedModules) => {
     const out = { available: true, found: false };
     try {
       out.webVersion = String(window?.Debug?.VERSION || "");
@@ -4226,14 +4239,25 @@ async function probeWhatsAppVoiceMediaState(messageId) {
       out.mimetype = String(msg.mimetype || "");
       const declaredSize = Number(msg.size || msg.mediaData?.size || 0);
       out.sizeBytes = Number.isFinite(declaredSize) && declaredSize > 0 ? declaredSize : null;
-      const blobCache = window.require("WAWebMediaInMemoryBlobCache")?.InMemoryMediaBlobCache;
+      let blobCache = null;
+      for (const moduleName of (requestedModules || [])) {
+        try {
+          const mod = window.require(moduleName);
+          const candidate = mod?.InMemoryMediaBlobCache || mod?.mediaBlobCache || mod?.default?.InMemoryMediaBlobCache || null;
+          if (candidate && typeof candidate.get === "function") {
+            blobCache = candidate;
+            out.blobCacheModule = moduleName;
+            break;
+          }
+        } catch (_) {}
+      }
       out.blobCacheEntries = blobCache && typeof blobCache.size === "number" ? blobCache.size : null;
-      out.blobCacheHit = Boolean(blobCache && typeof blobCache.get === "function" && filehash && blobCache.get(filehash));
+      out.blobCacheHit = Boolean(blobCache && filehash && blobCache.get(filehash));
     } catch (error) {
       out.error = String(error?.message || error).replace(/\s+/g, " ").trim().slice(0, 160) || "media_probe_threw";
     }
     return out;
-  }, messageId), VOICE_MEDIA_PROBE_TIMEOUT_MS, { available: false, reason: "media_probe_timeout" });
+  }, messageId, VOICE_MEDIA_BLOB_CACHE_MODULES), VOICE_MEDIA_PROBE_TIMEOUT_MS, { available: false, reason: "media_probe_timeout" });
   const normalized = probe && typeof probe === "object" ? probe : { available: false, reason: "media_probe_empty" };
   const detail = sanitizeVoiceMediaProbe(normalized);
   return {

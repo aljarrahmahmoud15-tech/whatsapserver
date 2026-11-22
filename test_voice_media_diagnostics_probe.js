@@ -49,15 +49,24 @@ vm.runInNewContext(`${helpers}\nthis.api = { maskVoiceMessageReference, sanitize
 const api = context.api;
 assert.equal(api.WHATSAPP_WEBJS_LIBRARY_VERSION, "1.34.7", "library version is read from the installed package");
 
-const SYMBOLIC_GROUP = "123456789012345678@g.us";
+const SYMBOLIC_GROUP = "approved-group@g.us"; // textual placeholder, never a production id
 const CORE = "AAAABBBBCCCCDDDDEEEEFFFF00001111";
 const incoming = `false_${SYMBOLIC_GROUP}_${CORE}@c.us`;
 const outgoing = `true_${SYMBOLIC_GROUP}_${CORE}@c.us`;
 const incomingMask = api.maskVoiceMessageReference(incoming);
 const outgoingMask = api.maskVoiceMessageReference(outgoing);
-assert.equal(incomingMask, `incoming_…${CORE.slice(-6)}`, "incoming rows keep only the random stanza tail");
-assert.equal(outgoingMask, `outgoing_…${CORE.slice(-6)}`, "rows sent by the bot number are still distinguishable");
+assert.equal(incomingMask, `incoming_…${CORE.slice(0, 6)}…${CORE.slice(-4)}`, "incoming rows echo only the random stanza id");
+assert.equal(outgoingMask, `outgoing_…${CORE.slice(0, 6)}…${CORE.slice(-4)}`, "rows sent by the bot number are still distinguishable");
 assert.ok(!incomingMask.includes(SYMBOLIC_GROUP) && !incomingMask.includes("@g.us"), "mask never carries the group id");
+// Real group ids carry a participant suffix; two rows from the same sender must stay distinguishable
+// and the participant (a contact or lid identity) must never be echoed. The fixture is symbolic text,
+// never a number that could resemble a real contact.
+const PARTICIPANT = "fixture-contact-identity@c.us";
+const rowA = api.maskVoiceMessageReference(`false_${SYMBOLIC_GROUP}_${CORE}_${PARTICIPANT}`);
+const rowB = api.maskVoiceMessageReference(`false_${SYMBOLIC_GROUP}_ZZZZ1111YYYY2222XXXX3333WWWW_${PARTICIPANT}`);
+assert.equal(rowA, `incoming_…${CORE.slice(0, 6)}…${CORE.slice(-4)}`, "participant suffix is dropped from the handle");
+assert.notEqual(rowA, rowB, "two rows from the same sender get different handles");
+assert.ok(!rowA.includes("fixture-contact-identity") && !rowA.includes(PARTICIPANT), "mask never carries a contact or lid identity");
 assert.equal(api.maskVoiceMessageReference(""), null, "an empty id masks to null");
 
 // Branch classification drives the owner's next step, so both decisive outcomes are pinned.
@@ -74,6 +83,11 @@ assert.equal(api.VOICE_MEDIA_PROBE_NEXT_STEP[api.voiceMediaProbeBranch(keyAbsent
 
 assert.equal(api.voiceMediaProbeBranch({ available: true, found: true, mediaStage: "ERROR_DOWNLOAD", hasMediaKey: true }), "media_stage_blocked", "an ERROR stage blocks regardless of the key");
 assert.equal(api.voiceMediaProbeBranch({ available: true, found: true, mediaStage: "FETCHING", hasMediaKey: true }), "media_stage_blocked", "FETCHING is still blocked");
+// Measured live on 2026-11-22: key, direct path, file hash and size are all present while the
+// stage sits at INIT, i.e. the installed client never forced the fetch. That must point at the upgrade.
+assert.equal(api.voiceMediaProbeBranch({ available: true, found: true, mediaStage: "INIT", hasMediaKey: true, hasDirectPath: true, hasFilehash: true, hasMediaObject: true, blobCacheHit: false }), "media_never_fetched", "key present with a stage that never advanced is a never-fetched media");
+assert.equal(api.VOICE_MEDIA_PROBE_NEXT_STEP.media_never_fetched, "upgrade_whatsapp_webjs", "the never-fetched branch points at the library upgrade");
+assert.equal(api.voiceMediaProbeBranch({ available: true, found: true, mediaStage: "INIT", hasMediaKey: true, hasDirectPath: false, hasMediaObject: true }), "waiting_on_media_stage", "without a direct path there is nothing to fetch yet");
 assert.equal(api.voiceMediaProbeBranch({ ...keyPresentResolved, blobCacheHit: true }), "bytes_available", "a cache hit means the media is reachable now");
 assert.equal(api.voiceMediaProbeBranch({ available: true, found: false }), "message_model_unavailable", "a row missing from the page store is reported as such");
 assert.equal(api.voiceMediaProbeBranch({ available: false, reason: "media_probe_timeout" }), "probe_unavailable", "a probe timeout never looks like a media result");
