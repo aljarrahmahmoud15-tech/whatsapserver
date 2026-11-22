@@ -11436,7 +11436,7 @@ async function handleMessageReactionUnlocked(reaction) {
     if (cancelled.state === "cancelled" && cancelled.reversed) {
       void notifyOrderCancellationParties({ order: cancelled.order || acceptedOrder, producer: cancelled.producer, captain: cancelled.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
     }
-    if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+    if (cancelled.state === "cancelled") void sendFinalBookingCancellation(target.from, cancelled.order || acceptedOrder).catch(() => null);
     return;
   }
   if (removedThumb) {
@@ -11513,7 +11513,7 @@ async function handleMessageReactionUnlocked(reaction) {
       void enforceCaptainWalletThresholds({ captainId: result.producer.id, balanceCents: producerBalance, reason: "عكس حصة الطلب بعد إزالة التفاعل", reference: `ORDER-${order.order_no}-CANCEL` });
       void notifyOrderCancellationParties({ order: result.order || order, producer: result.producer, captain: result.captain, reason: "producer_thumb_removed" }).catch((error) => console.warn("[WhatsApp] cancellation party notices failed:", error.message));
     }
-    if (result.state === "cancelled") void sendFinalBookingCancellation(target.from).catch(() => null);
+    if (result.state === "cancelled") void sendFinalBookingCancellation(target.from, result.order || order).catch(() => null);
     return;
   }
   let acceptance = findPendingAcceptanceByMessage(target.from, messageId);
