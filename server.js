@@ -175,6 +175,7 @@ const WHATSAPP_SESSION_CLEAR_CONFIRMATION = "CLEAR_WHATSAPP_SESSION_AND_RECONNEC
 const WHATSAPP_SESSION_ARCHIVE_CONFIRMATION = "ARCHIVE_WHATSAPP_SESSION_AND_RECONNECT";
 const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol("low_balance_acceptance_delete_permit");
 const GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT = Symbol("general_unapproved_message_delete_permit");
+const VOICE_MESSAGE_DELETE_PERMIT = Symbol("voice_message_delete_permit");
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
 const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
@@ -4014,6 +4015,9 @@ function voiceMessageDeletionPolicyResponse() {
     scope: "official_group_only",
     appliesTo: "new_incoming_audio_and_ptt_messages",
     excludes: ["owner", "group_admin", "bot_outgoing_messages"],
+    // Lets the owner panels tell a live switch from the old dead one: audio deletions now reach
+    // the WhatsApp delete path instead of returning owner_policy_low_balance_acceptance_only.
+    deletionPath: "voice_permit",
     financialMutation: false,
     orderMutation: false,
   };
@@ -5701,7 +5705,10 @@ async function handleIncomingVoiceMessagePolicy(message, { groupId, senderPhone 
   }
   const messageId = serializedMessageId(message);
   if (!messageId) return { status: "skipped", reason: "missing_message_id" };
-  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_audio_message", groupId });
+  const deletion = await deleteWhatsAppMessageForEveryone(messageId, { message, messageIdCandidates: messageIdCandidates(message), reason: "unapproved_audio_message", groupId,
+    policyAction: "voice_message",
+    [VOICE_MESSAGE_DELETE_PERMIT]: true,
+  });
   audit("voice_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
@@ -16985,6 +16992,24 @@ function generalUnapprovedMessageDeletePermitValid(context, groupId) {
     && generalMessageDeletionEnabled()
     && !generalMessageDeletionEmergencyStopped();
 }
+// Owner-approved 2026-11-23 («فعل حذف مقطع الصوت الان جميع مقطع الصوت»): the voice policy used to be
+// a dead switch because the central allowlist knew only the low-balance acceptance and the
+// general-unapproved permits, so every audio deletion came back paused with
+// owner_policy_low_balance_acceptance_only. This permit mirrors the general one exactly: it is valid
+// only for the configured official group, only for the audio reason, and only while the owner's
+// voice policy is effective (enabled and not emergency-stopped). Protected senders stay excluded by
+// the caller, which is the identity guard and is not weakened here.
+function voiceMessageDeletePermitValid(context, groupId) {
+  const configuredGroupId = String(configuredRuntimeGroupId() || "").trim();
+  return context?.[VOICE_MESSAGE_DELETE_PERMIT] === true
+    && context?.policyAction === "voice_message"
+    && context?.reason === "unapproved_audio_message"
+    && Boolean(configuredGroupId)
+    && String(groupId || "").trim() === configuredGroupId
+    && isConfiguredGroup(configuredGroupId)
+    && voiceMessageDeletionEnabled()
+    && !voiceMessageDeletionEmergencyStopped();
+}
 async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   const deletionContext = {
     reason: String(context.reason || "unspecified").slice(0, 120),
@@ -16995,7 +17020,8 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   };
   const deletionKey = orderTraceKey(messageId);
   const permitted = lowBalanceAcceptanceDeletePermitValid(context, deletionContext.groupId)
-    || generalUnapprovedMessageDeletePermitValid(context, deletionContext.groupId);
+    || generalUnapprovedMessageDeletePermitValid(context, deletionContext.groupId)
+    || voiceMessageDeletePermitValid(context, deletionContext.groupId);
   if (!permitted) {
     const blocked = { ok: false, requested: false, revoked: false, paused: true, reason: "owner_policy_low_balance_acceptance_only" };
     audit("whatsapp.message_deletion.blocked_by_low_balance_only_policy", "message", deletionKey, {

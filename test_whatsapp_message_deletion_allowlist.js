@@ -11,6 +11,13 @@ assert.match(server, /const GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT = Symbol\(/
 assert.match(server, /\[LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT\]: true/);
 assert.match(server, /\[GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT\]: true/);
 assert.match(server, /policyAction: "low_balance_acceptance"/);
+// Owner-approved 2026-11-23: audio deletion is now a fourth, separately gated path. These pins keep
+// it as strict as the general path: a distinct symbol, a distinct action, the audio reason only.
+assert.match(server, /const VOICE_MESSAGE_DELETE_PERMIT = Symbol\(/);
+assert.match(server, /\[VOICE_MESSAGE_DELETE_PERMIT\]: true/);
+assert.match(server, /policyAction: "voice_message"/);
+assert.match(server, /reason: "unapproved_audio_message"/);
+assert.doesNotMatch(server, /policyAction: "voice_message"[\s\S]{0,200}insufficient_balance_acceptance/);
 
 const permitStart = server.indexOf("function lowBalanceAcceptanceDeletePermitValid(context, groupId)");
 const permitEnd = server.indexOf("\nasync function deleteWhatsAppMessageForEveryone", permitStart);
@@ -51,6 +58,20 @@ assert.match(deletionRoute, /requested: false/);
 assert.match(deletionRoute, /owner_policy_low_balance_acceptance_only/);
 assert.match(deletionRoute, /whatsapp\.message_deletion\.blocked_by_low_balance_only_policy/);
 assert.match(deletionRoute, /generalUnapprovedMessageDeletePermitValid\(context, deletionContext\.groupId\)/);
+assert.match(deletionRoute, /voiceMessageDeletePermitValid\(context, deletionContext\.groupId\)/);
+// Every permit must be checked before the central path looks the message up at all.
+const voicePermitCheck = server.indexOf("voiceMessageDeletePermitValid(context, deletionContext.groupId)", deletionStart);
+assert.ok(voicePermitCheck > policyCheck && voicePermitCheck < firstLookup,
+  "the audio permit must be validated in the same pre-deletion check");
+const voicePermitSource = server.slice(
+  server.indexOf("function voiceMessageDeletePermitValid(context, groupId)"),
+  server.indexOf("\nasync function deleteWhatsAppMessageForEveryone")
+);
+assert.match(voicePermitSource, /configuredRuntimeGroupId\(\)/);
+assert.match(voicePermitSource, /isConfiguredGroup\(configuredGroupId\)/);
+assert.match(voicePermitSource, /voiceMessageDeletionEnabled\(\)/);
+assert.match(voicePermitSource, /!voiceMessageDeletionEmergencyStopped\(\)/);
+assert.doesNotMatch(voicePermitSource, /financialMutation|balanceCents/);
 
 const groupDeleteRoute = server.indexOf('app.get("/api/admin/group/delete-unapproved"');
 const groupDeleteGuard = server.indexOf("if (WHATSAPP_GROUP_CHAT_DELETION_DISABLED)", groupDeleteRoute);
