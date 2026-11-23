@@ -1985,6 +1985,64 @@ function captainWalletPoolPreview(operation, requestedCents) {
   };
 }
 
+// Display-only: recover the percentage words of a recorded settlement from the money it stored.
+// A rate is shown only when it reproduces the recorded cents exactly, so a label can never
+// contradict the amount it describes. No amount, wallet or settlement value is computed here.
+function settlementDisplayRateBps({ priceCents, shareCents, snapshotBps, approvedBps }) {
+  const price = Number(priceCents);
+  const share = Math.abs(Number(shareCents));
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(share)) {
+    return Number.isFinite(Number(snapshotBps)) ? Number(snapshotBps) : null;
+  }
+  const reproduces = (rateBps) => Number.isFinite(Number(rateBps)) && Math.round(price * Number(rateBps) / 10000) === Math.round(share);
+  if (reproduces(snapshotBps)) return Number(snapshotBps);
+  if (reproduces(approvedBps)) return Number(approvedBps);
+  return Math.round(share * 10000 / price);
+}
+function ledgerNoteDisplayRates(entry, orderKind, snapshotRates, rateOverride) {
+  if (rateOverride && (Number.isFinite(Number(rateOverride.producer)) || Number.isFinite(Number(rateOverride.company)))) {
+    return {
+      ...snapshotRates,
+      kindProducerRateBps: Number.isFinite(Number(rateOverride.producer)) ? Number(rateOverride.producer) : undefined,
+      kindCompanyRateBps: Number.isFinite(Number(rateOverride.company)) ? Number(rateOverride.company) : undefined,
+    };
+  }
+  let details = null;
+  try { details = entry?.details_json ? JSON.parse(entry.details_json) : null; } catch { details = null; }
+  const priceCents = Number(details?.priceCents);
+  if (!Number.isFinite(priceCents) || priceCents <= 0) return snapshotRates;
+  const shareCents = Math.abs(Number(entry?.amount_cents) || 0);
+  const isOrder = orderKind === "order";
+  const approvedProducer = isOrder ? SPECIAL_ORDER_RATE_BPS : PRODUCER_RATE_BPS;
+  const approvedCompany = isOrder ? SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS : COMPANY_FROM_PRODUCER_RATE_BPS;
+  const type = entry?.type;
+  if (type === "commission_producer" || type === "commission_bot_producer" || type === "reversal_producer") {
+    return { ...snapshotRates, kindProducerRateBps: settlementDisplayRateBps({ priceCents, shareCents, snapshotBps: snapshotRates.producerRateBps, approvedBps: approvedProducer }) };
+  }
+  if (type === "commission_company" || type === "reversal_company") {
+    return { ...snapshotRates, kindCompanyRateBps: settlementDisplayRateBps({ priceCents, shareCents, snapshotBps: snapshotRates.companyRateBps, approvedBps: approvedCompany }) };
+  }
+  if (type === "captain_fee" || type === "company_bot_fee" || type === "reversal_captain_fee") {
+    if (Math.round(priceCents * (approvedProducer + approvedCompany) / 10000) === Math.round(shareCents)) {
+      return { ...snapshotRates, kindProducerRateBps: approvedProducer, kindCompanyRateBps: approvedCompany };
+    }
+    const snapshotProducer = Number(snapshotRates.producerRateBps);
+    const snapshotCompany = Number(snapshotRates.companyRateBps);
+    if (Number.isFinite(snapshotProducer) && Number.isFinite(snapshotCompany)
+      && Math.round(priceCents * (snapshotProducer + snapshotCompany) / 10000) === Math.round(shareCents)) {
+      return snapshotRates;
+    }
+    const totalBps = settlementDisplayRateBps({
+      priceCents,
+      shareCents,
+      snapshotBps: Number.isFinite(snapshotProducer) && Number.isFinite(snapshotCompany) ? snapshotProducer + snapshotCompany : undefined,
+      approvedBps: approvedProducer + approvedCompany,
+    });
+    const companyBps = Number.isFinite(snapshotCompany) ? snapshotCompany : approvedCompany;
+    return { ...snapshotRates, kindProducerRateBps: Math.max(0, totalBps - companyBps), kindCompanyRateBps: companyBps };
+  }
+  return snapshotRates;
+}
 function settlementFinancials(row) {
   const value = (primary, fallback = 0) => row[primary] === null || row[primary] === undefined
     ? Number(row[fallback] || 0)
@@ -1997,13 +2055,22 @@ function settlementFinancials(row) {
     : Number(row.settlement_captain_fee_cents || 0);
   const executorWalletCreditCents = 0;
   const policySnapshot = settlementPolicyFromDetails(row.settlement_details_json || row.details_json);
+  let detailsForKind = null;
+  try { detailsForKind = JSON.parse(row.settlement_details_json || row.details_json || "{}"); } catch { detailsForKind = null; }
+  const orderKindForDisplay = (row.order_kind || row.orderKind || detailsForKind?.orderKind) === "order" ? "order" : "normal";
+  const approvedForKind = orderKindForDisplay === "order"
+    ? { producer: SPECIAL_ORDER_RATE_BPS, company: SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS }
+    : { producer: PRODUCER_RATE_BPS, company: COMPANY_FROM_PRODUCER_RATE_BPS };
+  const producerRateBpsDisplay = settlementDisplayRateBps({ priceCents: externalOrderValueCents, shareCents: producerCents, snapshotBps: policySnapshot.producerRateBps, approvedBps: approvedForKind.producer });
+  const companyRateBpsDisplay = settlementDisplayRateBps({ priceCents: externalOrderValueCents, shareCents: companyCents, snapshotBps: policySnapshot.companyRateBps, approvedBps: approvedForKind.company });
   return {
     price: money(externalOrderValueCents),
     policy: {
-      producerRatePercent: policySnapshot.producerRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps)),
-      companyRatePercent: policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.companyRateBps)),
-      totalRatePercent: policySnapshot.producerRateBps === undefined || policySnapshot.companyRateBps === undefined ? null : Number(ratePercentFromBps(policySnapshot.producerRateBps + policySnapshot.companyRateBps)),
+      producerRatePercent: producerRateBpsDisplay === null ? null : Number(ratePercentFromBps(producerRateBpsDisplay)),
+      companyRatePercent: companyRateBpsDisplay === null ? null : Number(ratePercentFromBps(companyRateBpsDisplay)),
+      totalRatePercent: producerRateBpsDisplay === null || companyRateBpsDisplay === null ? null : Number(ratePercentFromBps(producerRateBpsDisplay + companyRateBpsDisplay)),
     },
+    policyRateBps: { producer: producerRateBpsDisplay, company: companyRateBpsDisplay, orderKind: orderKindForDisplay },
     externalOrderValue: money(externalOrderValueCents),
     externalOrderValueCents,
     company: money(companyCents),
@@ -2026,13 +2093,14 @@ function settlementFinancials(row) {
   };
 }
 
-function canonicalLedgerNote(entry) {
+function canonicalLedgerNote(entry, rateOverride = null) {
   let orderKind = entry?.order_kind || null;
   if (!orderKind && entry?.details_json) {
     try { orderKind = JSON.parse(entry.details_json).orderKind || null; } catch { orderKind = null; }
   }
   if (!orderKind || !entry?.type) return entry?.note || null;
-  const notes = settlementLedgerNotes(orderKind, settlementPolicyFromDetails(entry?.details_json));
+  const snapshotRates = settlementPolicyFromDetails(entry?.details_json);
+  const notes = settlementLedgerNotes(orderKind, ledgerNoteDisplayRates(entry, orderKind, snapshotRates, rateOverride));
   const byType = {
     commission_company: notes.company,
     commission_producer: notes.producer,
@@ -2092,7 +2160,7 @@ function serializeSettlement(row, includeLedger = true) {
   const ledger = includeLedger
     ? db.prepare("SELECT user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE order_id=? ORDER BY id ASC").all(row.order_id).map((entry) => ({
       ...entry,
-      note: canonicalLedgerNote({ ...entry, order_kind: row.order_kind }),
+      note: canonicalLedgerNote({ ...entry, order_kind: row.order_kind }, finance.policyRateBps),
       amount: money(entry.amount_cents),
       balanceAfter: money(entry.balance_after_cents),
     }))
@@ -12971,11 +13039,12 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const withdrawalRequests = captainWithdrawalRequestRows("", 50, user.id);
   const storedUiDesign = getSetting(captainUiDesignSettingKey(user.id), "classic");
   const uiDesign = CAPTAIN_UI_DESIGN_IDS.has(storedUiDesign) ? storedUiDesign : "classic";
+  const captainRates = settlementPolicyResponse();
   res.setHeader("Cache-Control", "no-store");
   res.json({
     user: { id: user.id, phone: user.phone, name: user.name, vehicleType: user.vehicle_type || null, vehicleModel: user.vehicle_model || null, role: user.role, active: Boolean(user.active), accountStatus: user.account_status, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), lastLoginAt: user.captain_last_login_at, uiDesign },
     wallet: { currency: "JOD", balance: money(user.wallet_cents), balanceCents: user.wallet_cents },
-    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: '12%', companyRate: '3%', executorDebit: '15%' }, order: { postedRate: '12%', companyRate: '3%', executorDebit: '15%' } } },
+    earnings: { gross: money(totals?.posted_share_cents || 0), fees: money(totals?.executed_debit_cents || 0), net: money(Number(totals?.posted_share_cents || 0) - Number(totals?.executed_debit_cents || 0)), postedShare: money(totals?.posted_share_cents || 0), executedDebit: money(totals?.executed_debit_cents || 0), postedOrders: Number(totals?.posted_orders || 0), executedOrders: Number(totals?.executed_orders || 0), policy: { normal: { postedRate: `${captainRates.producerRatePercent}%`, companyRate: `${captainRates.companyRatePercent}%`, executorDebit: `${captainRates.totalRatePercent}%` }, order: { postedRate: `${captainRates.specialOrderProducerRatePercent}%`, companyRate: `${captainRates.specialOrderCompanyRatePercent}%`, executorDebit: `${captainRates.specialOrderTotalRatePercent}%` } } },
     entries,
     trips,
     activeOrders,
@@ -18429,8 +18498,9 @@ app.get("/api/admin/overview", requireAdmin, adminReadLimiter, v27AdminReadCache
   const voidCards = db.prepare("SELECT COUNT(*) AS count FROM topup_cards WHERE status='void'").get().count;
   const customerLeads = db.prepare("SELECT COUNT(*) AS count FROM customer_leads WHERE state NOT IN ('cancelled')").get().count;
   const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
+  const overviewRates = settlementPolicyResponse();
   const companyWallet = companyWalletSummary();
-  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "3%" }, order: { captainCashFromCustomer: "100%", producerWalletCredit: "12%", confirmingCaptainWalletDebit: "15%", companyWalletCredit: "3%" }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: "يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0.00 دينار؛ الطلب العادي والأوردر يخصمان 15%", lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "يُرفض الرصيد السالب، مع إبقاء الكابتن نشطًا ومنع الإزالة أو التعطيل بسبب نقص الرصيد", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
+  res.json({ orders, accepted, pendingConfirmation, customerLeads, companyBalance: money(company.wallet_cents), companyWallet, companyEarnings: { total: money(companyEarnings.cents), entries: companyEarnings.entries }, wallets, ledgerMoves, cards: { issued: issuedCards, redeemed: redeemedCards, void: voidCards }, groupId: getSetting("group_id", null), rules: { normalOrders: { captainCashFromCustomer: "100%", producerWalletCredit: `${overviewRates.producerRatePercent}%`, confirmingCaptainWalletDebit: `${overviewRates.totalRatePercent}%`, companyWalletCredit: `${overviewRates.companyRatePercent}%` }, order: { captainCashFromCustomer: "100%", producerWalletCredit: `${overviewRates.specialOrderProducerRatePercent}%`, confirmingCaptainWalletDebit: `${overviewRates.specialOrderTotalRatePercent}%`, companyWalletCredit: `${overviewRates.specialOrderCompanyRatePercent}%` }, debtPolicyEnabled: CAPTAIN_DEBT_POLICY_ENABLED, manualWalletDebitsEnabled: CAPTAIN_MANUAL_WALLET_CHANGES_ENABLED, debtLimit: `${money(CAPTAIN_MIN_BALANCE_CENTS)} JOD للخصومات اليدوية والاشتراكات فقط`, orderSettlementDebtPolicy: `يُرفض التثبيت إذا أصبح الرصيد المتوقع أقل من 0.00 دينار؛ الطلب العادي يخصم ${overviewRates.totalRatePercent}% والأوردر يخصم ${overviewRates.specialOrderTotalRatePercent}%`, lowBalanceWarning: `${money(CAPTAIN_LOW_BALANCE_WARNING_CENTS)} JOD`, negativeBalanceAction: "يُرفض الرصيد السالب، مع إبقاء الكابتن نشطًا ومنع الإزالة أو التعطيل بسبب نقص الرصيد", fare: "الكابتن يستلم كامل قيمة الرحلة نقدًا من الزبون" }, confirmation: { method: "إعجاب كابتن تنزيل الطلب على رد تم المحدد", settlementAfterConfirmation: true, automatic: true } });
 });
 app.get("/api/admin/leads", requireAdmin, adminReadLimiter, v27AdminReadCache("leads", 2000), (req, res) => {
   const rows = db.prepare("SELECT id,phone,name,direction,travel_mode,travel_date,travelers_count,state,created_at,updated_at FROM customer_leads ORDER BY updated_at DESC LIMIT 200").all();

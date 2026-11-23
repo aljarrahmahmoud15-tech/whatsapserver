@@ -76,16 +76,21 @@ function settlementLedgerNotes(orderKind = "normal", rates = {}) {
   const normalizedKind = orderKind === "order" ? "order" : "normal";
   const defaultProducer = normalizedKind === "order" ? ORDER_PRODUCER_RATE_BPS : REGULAR_PRODUCER_RATE_BPS;
   const defaultCompany = normalizedKind === "order" ? ORDER_COMPANY_RATE_BPS : COMPANY_FROM_PRODUCER_RATE_BPS;
-  const producerRateBps = Number.isFinite(Number(rates.producerRateBps))
-    ? Number(rates.producerRateBps)
-    : Number.isFinite(Number(rates.regularProducerRateBps))
-      ? Number(rates.regularProducerRateBps)
-      : defaultProducer;
-  const companyRateBps = Number.isFinite(Number(rates.companyRateBps))
-    ? Number(rates.companyRateBps)
-    : Number.isFinite(Number(rates.companyFromProducerRateBps))
-      ? Number(rates.companyFromProducerRateBps)
-      : defaultCompany;
+  // Note text follows the order kind: an «أوردر» row is labelled with the order pair,
+  // never with the normal pair that the legacy details snapshot kept beside it.
+  const firstFiniteNumber = (values, fallback) => {
+    for (const value of values) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric)) return numeric;
+    }
+    return fallback;
+  };
+  const producerRateBps = normalizedKind === "order"
+    ? firstFiniteNumber([rates.kindProducerRateBps, rates.orderProducerRateBps, rates.specialOrderProducerRateBps, rates.producerRateBps, rates.regularProducerRateBps], defaultProducer)
+    : firstFiniteNumber([rates.kindProducerRateBps, rates.producerRateBps, rates.regularProducerRateBps], defaultProducer);
+  const companyRateBps = normalizedKind === "order"
+    ? firstFiniteNumber([rates.kindCompanyRateBps, rates.orderCompanyRateBps, rates.specialOrderCompanyRateBps, rates.specialOrderCompanyFromProducerRateBps, rates.companyRateBps, rates.companyFromProducerRateBps], defaultCompany)
+    : firstFiniteNumber([rates.kindCompanyRateBps, rates.companyRateBps, rates.companyFromProducerRateBps], defaultCompany);
   const producerRate = formatRatePercent(producerRateBps);
   const companyRate = formatRatePercent(companyRateBps);
   const totalRate = formatRatePercent(producerRateBps + companyRateBps);
