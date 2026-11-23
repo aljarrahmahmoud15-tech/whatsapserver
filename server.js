@@ -16775,7 +16775,9 @@ function buildOutsideGroupCaptainRemovalPlan(snapshot) {
   }
   const botPhone = phoneWithCountry(connectedBotPhone() || "");
   const trust = outsideGroupRemovalTrust({ participants, memberPhones, unresolvedParticipants, botPhone });
-  const captains = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' ORDER BY id").all();
+  // Rows this path already tombstoned (account_status='deleted') are left out of the plan, so a bounded batch
+  // never re-lists finished work. NULL account_status behaves exactly as before: '<>' excludes it either way.
+  const captains = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' AND account_status<>'deleted' ORDER BY id").all();
   // One grouped aggregate per referencing table instead of eight prepared count queries for every captain:
   // that per-captain loop is what froze the instance on 2026-11-23, so this shape is deliberate.
   const referenceCounts = new Map();
@@ -16807,6 +16809,8 @@ function buildOutsideGroupCaptainRemovalPlan(snapshot) {
   return {
     trust,
     buckets,
+    // Kept so a batch can recount what is left without reading WhatsApp again.
+    participants,
     memberCount: memberPhones.size,
     registeredCaptainCount: captains.length,
     counts: {
@@ -16872,6 +16876,15 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
   if (!Object.values(expected).every(Number.isInteger)) {
     return res.status(400).json({ success: false, mutation: "none", error: "مطلوب عدّادات المعاينة الخمسة كأعداد صحيحة" });
   }
+  // The first live run (2026-11-24 01:09 +03) held the single-CPU instance past the edge timeout and a restart
+  // rolled the whole transaction back. Bounding the rows per request keeps each write short so the bot keeps
+  // answering between batches; every safety check above stays exactly as it was.
+  const batchSizeRaw = req.body?.batchSize;
+  const batchSize = batchSizeRaw === undefined || batchSizeRaw === null || batchSizeRaw === "" ? 0 : Number(batchSizeRaw);
+  if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 500) {
+    return res.status(400).json({ success: false, mutation: "none", error: "batchSize يجب أن يكون عددًا صحيحًا بين 1 و500، أو متغيبًا لتنفيذ القائمة كاملة" });
+  }
+  const skipBackup = req.body?.skipBackup === true;
   let snapshot = null;
   try { snapshot = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId); } catch (_) { snapshot = null; }
   if (!snapshot || !snapshot.isGroup || !Array.isArray(snapshot.participants)) {
@@ -16886,14 +16899,27 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
   }
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
-  const backupName = "pre-outside-group-removal-" + Date.now() + ".sqlite";
-  await db.backup(path.join(backupDir, backupName));
+  let backupName = null;
+  if (skipBackup) {
+    // A later batch may reuse an earlier removal backup instead of copying the database again; it is never
+    // allowed to run when no removal backup exists yet.
+    const prior = fs.readdirSync(backupDir).filter((name) => /^pre-outside-group-removal-\d+\.sqlite$/.test(name)).sort();
+    if (!prior.length) {
+      return res.status(503).json({ success: false, mutation: "none", error: "لا توجد نسخة احتياطية سابقة؛ نفّذ دفعة بدون skipBackup أولًا" });
+    }
+    backupName = prior[prior.length - 1];
+  } else {
+    backupName = "pre-outside-group-removal-" + Date.now() + ".sqlite";
+    await db.backup(path.join(backupDir, backupName));
+  }
   const stamp = now();
   const deleted = [];
   const unlinked = [];
   const held = [];
+  const deleteTargets = batchSize > 0 ? plan.buckets.delete.slice(0, batchSize) : plan.buckets.delete;
+  const unlinkTargets = batchSize > 0 ? plan.buckets.unlink.slice(0, Math.max(0, batchSize - deleteTargets.length)) : plan.buckets.unlink;
   db.transaction(() => {
-    for (const item of plan.buckets.delete) {
+    for (const item of deleteTargets) {
       try {
         // Clear the money-free access artifacts first: links and invites must never keep a ghost account alive.
         try { db.prepare("DELETE FROM captain_login_links WHERE captain_user_id=?").run(item.id); } catch (_) {}
@@ -16907,7 +16933,7 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
         held.push({ id: item.id, reason: "reference_protected", detail: boundedDiagnosticText(error?.message || error, 140) });
       }
     }
-    for (const item of plan.buckets.unlink) {
+    for (const item of unlinkTargets) {
       const result = db.prepare("UPDATE users SET active=0,account_status='deleted',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").run(stamp, OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON, stamp, item.id);
       if (result.changes === 1) {
         try { db.prepare("UPDATE captain_login_links SET revoked_at=?,updated_at=? WHERE captain_user_id=? AND revoked_at IS NULL").run(stamp, stamp, item.id); } catch (_) {}
@@ -16917,6 +16943,9 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
       }
     }
   })();
+  // Recounted in memory from the same trusted participant snapshot: no second WhatsApp read, and the numbers
+  // below are what the next batch must pass as its expected counts.
+  const recount = buildOutsideGroupCaptainRemovalPlan({ isGroup: true, participants: plan.participants });
   const summary = {
     memberCount: plan.memberCount,
     registeredCaptainCount: plan.registeredCaptainCount,
@@ -16924,6 +16953,12 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
     deletedCount: deleted.length,
     unlinkedCount: unlinked.length,
     heldCount: held.length,
+    remainingDeleteCount: recount.counts.deleteCount,
+    remainingUnlinkCount: recount.counts.unlinkCount,
+    remainingHoldCount: recount.counts.holdCount,
+    completed: recount.counts.deleteCount === 0 && recount.counts.unlinkCount === 0,
+    batchSize: batchSize || null,
+    backupSkipped: skipBackup,
     backupName,
   };
   audit("captains.outside_group.removal.applied", "group", groupId, summary);
@@ -16934,12 +16969,22 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
       "حذف كامل بلا أي صلة: " + deleted.length,
       "إخراج من النظام مع حفظ السجل المالي: " + unlinked.length,
       "أُرجئ لحماية مرجعية: " + held.length,
+      "المتبقي بعد هذه الدفعة: " + (recount.counts.deleteCount + recount.counts.unlinkCount),
       "عدد المشاركين في القروب الرسمي: " + plan.memberCount,
       "النسخة الاحتياطية: " + backupName,
     ],
     ownersOnly: true,
   });
-  res.json({ success: true, mutation: "applied", groupId, ...summary, deleted: deleted.slice(0, 200), unlinked: unlinked.slice(0, 200), held });
+  res.json({
+    success: true,
+    mutation: "applied",
+    groupId,
+    ...summary,
+    nextExpected: recount.counts,
+    deleted: deleted.slice(0, 100),
+    unlinked: unlinked.slice(0, 100),
+    held,
+  });
 });
 
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {

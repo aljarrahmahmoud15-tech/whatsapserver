@@ -127,4 +127,22 @@ assert.ok(block.includes("ownersOnly: true"), "the confirmation notice goes to t
 assert.equal(block.includes("FROM orders WHERE producer_user_id=? OR captain_user_id=?"), false,
   "no per-captain prepared count loop is allowed in this path");
 assert.ok(block.includes("GROUP BY uid"), "references must be gathered with grouped aggregates");
+
+// --- bounded batches ------------------------------------------------------------
+// The first live run on 2026-11-24 01:09 +03 kept the single-CPU instance busy past the edge timeout and the
+// restart rolled the whole transaction back, so a batch now writes a bounded number of accounts per request.
+// None of the original guards were relaxed to get there.
+assert.ok(block.includes("account_status<>'merged' AND account_status<>'deleted'"),
+  "accounts this path already tombstoned must leave the plan so each batch sees a smaller list");
+assert.ok(block.includes("const deleteTargets = batchSize > 0"), "each request must bound how many accounts it writes");
+assert.ok(block.includes("if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 500)"),
+  "the batch size needs a hard upper bound");
+assert.ok(block.includes("const prior = fs.readdirSync(backupDir)"),
+  "a later batch may reuse an existing removal backup instead of copying the database again");
+assert.ok(block.includes("if (!prior.length)"),
+  "skipping the backup when no removal backup exists must refuse before any write");
+assert.ok(block.includes("nextExpected: recount.counts"),
+  "the response must report the counts the next batch has to confirm, so no preview is skipped");
+assert.ok(block.includes("completed: recount.counts.deleteCount === 0 && recount.counts.unlinkCount === 0"),
+  "the run must state when nothing is left to remove");
 console.log("outside-group captain removal plan and owner route shape: passed");
