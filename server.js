@@ -16825,6 +16825,35 @@ function buildOutsideGroupCaptainRemovalPlan(snapshot) {
   };
 }
 
+// Deleting one users row makes SQLite scan every non-cascade child table that has no index on its foreign key
+// column. That per-delete scan - not the number of accounts - is what kept the instance blocked for more than
+// nine minutes on 2026-11-24 01:40 +03. Creating the indexes once turns each check into an index seek; the
+// statement is idempotent, touches no rows and is only ever run from the owner-only execution route.
+function ensureOutsideGroupRemovalIndexes() {
+  const created = [];
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()) {
+    const child = String(row.name || "");
+    if (!child || child === "users") continue;
+    let keys = [];
+    try { keys = db.prepare("PRAGMA foreign_key_list(\"" + child.replaceAll("\"", "\"\"") + "\")").all(); } catch (_) { keys = []; }
+    for (const key of keys) {
+      if (String(key.table || "") !== "users") continue;
+      if (String(key.on_delete || "").toLowerCase() === "cascade") continue;
+      const column = String(key.from || "");
+      if (!column) continue;
+      const quotedChild = "\"" + child.replaceAll("\"", "\"\"") + "\"";
+      const quotedColumn = "\"" + column.replaceAll("\"", "\"\"") + "\"";
+      const indexName = "users_ref_" + child.replaceAll(/[^a-zA-Z0-9_]/g, "_") + "_" + column.replaceAll(/[^a-zA-Z0-9_]/g, "_");
+      try {
+        db.prepare("CREATE INDEX IF NOT EXISTS \"" + indexName + "\" ON " + quotedChild + "(" + quotedColumn + ")").run();
+        const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?").get(indexName);
+        if (exists) created.push(indexName);
+      } catch (_) { /* a view or a locked table must never block the owner's removal */ }
+    }
+  }
+  return created;
+}
+
 app.get("/api/admin/captains/outside-group-preview", requireOwnerAdmin, adminReadLimiter, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", error: "WhatsApp غير جاهز حاليًا" });
   const groupId = String(req.query.groupId || configuredRuntimeGroupId() || "").trim();
@@ -16897,6 +16926,9 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
   if (JSON.stringify(plan.counts) !== JSON.stringify(expected)) {
     return res.status(409).json({ success: false, mutation: "none", error: "تغيرت البيانات منذ المعاينة؛ أعد المعاينة", currentCounts: plan.counts, expected });
   }
+  // Foreign-key checks for a delete are index seeks here on; without them every deleted account scans whole
+  // child tables, which is the cost that blocked the instance on 2026-11-24 01:40 +03.
+  const removalIndexes = ensureOutsideGroupRemovalIndexes();
   const backupDir = path.join(DATA_DIR, "backups");
   fs.mkdirSync(backupDir, { recursive: true });
   let backupName = null;
@@ -16958,6 +16990,7 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
     remainingHoldCount: recount.counts.holdCount,
     completed: recount.counts.deleteCount === 0 && recount.counts.unlinkCount === 0,
     batchSize: batchSize || null,
+    indexesEnsured: removalIndexes.length,
     backupSkipped: skipBackup,
     backupName,
   };

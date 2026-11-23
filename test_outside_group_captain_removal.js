@@ -145,4 +145,16 @@ assert.ok(block.includes("nextExpected: recount.counts"),
   "the response must report the counts the next batch has to confirm, so no preview is skipped");
 assert.ok(block.includes("completed: recount.counts.deleteCount === 0 && recount.counts.unlinkCount === 0"),
   "the run must state when nothing is left to remove");
+
+// --- the delete cost fix --------------------------------------------------------
+// 233 hard deletes on 2026-11-24 01:40 +03 blocked the instance for more than nine minutes because every
+// delete made SQLite scan each unindexed child table. Indexing the foreign key columns is the fix, and it
+// must never be paid for by switching foreign key enforcement off or by dropping anything afterwards.
+assert.ok(block.includes("function ensureOutsideGroupRemovalIndexes()"),
+  "the removal path must ensure foreign key indexes before it deletes");
+assert.ok(block.includes("const removalIndexes = ensureOutsideGroupRemovalIndexes();"),
+  "the indexes must be ensured before any write, after the preview counts match");
+assert.ok(block.includes("CREATE INDEX IF NOT EXISTS"), "index creation must stay idempotent");
+assert.equal(block.includes("PRAGMA foreign_keys"), false, "foreign key enforcement must never be turned off here");
+assert.equal(block.includes("DROP"), false, "the removal path must not drop schema objects");
 console.log("outside-group captain removal plan and owner route shape: passed");
