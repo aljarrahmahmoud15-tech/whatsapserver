@@ -16713,6 +16713,235 @@ app.post("/api/admin/captains/cleanup-execute", requireAdmin, async (req, res) =
   void notifyOperations({ event: "captains.cleanup.applied", title: "تأكيد تنظيف حسابات الكباتن", lines: [`القروب: ${chat.name || groupId}`, `تمت أرشفة حسابات فارغة: ${deleted.length}`, `تم إيقاف حسابات مرتبطة مع حفظ السجل: ${suspended.length}`, `النسخة الاحتياطية: ${backupName}`], ownersOnly: true });
   res.json({ success: true, mutation: "applied", groupId, groupName: chat.name || null, backupName, memberCount: memberPhones.size, deletedCount: deleted.length, suspendedCount: suspended.length, deleted, suspended });
 });
+// Owner decision 2026-11-24: «أي كابتن خارج القروب الرسمي يُحذف بالكامل».
+// These helpers deliberately never touch money: wallet_ledger, order_settlements and audit_logs rows stay
+// exactly as they are, because the owner's V26/V27 profit and settlement figures are computed from them. A
+// captain account that never touched anything is hard deleted; an account that ever held an order, a card, a
+// charge, a wallet row or a balance is unlinked instead (login, PIN, links and panel visibility all stop) so
+// the company keeps its audit trail. Membership is only trusted when the live participant snapshot is
+// complete and every participant phone resolves, so a partial snapshot can never delete an active in-group
+// captain. The global CAPTAIN_REMOVAL_PAUSED switch protects the automatic low-balance removal paths and is
+// untouched here; this path needs an explicit owner token plus preview counts that must still match at
+// execution time.
+const OUTSIDE_GROUP_CAPTAIN_REMOVAL_CONFIRMATION = "REMOVE_CAPTAINS_OUTSIDE_OFFICIAL_GROUP";
+const OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON = "خارج القروب الرسمي — قرار المالك";
+
+function outsideGroupRemovalTrust({ participants, memberPhones, unresolvedParticipants, botPhone }) {
+  const list = Array.isArray(participants) ? participants : [];
+  const trust = {
+    trusted: true,
+    reason: null,
+    participantCount: list.length,
+    unresolvedParticipants: Number(unresolvedParticipants || 0),
+  };
+  if (!list.length) { trust.trusted = false; trust.reason = "participant_snapshot_empty"; return trust; }
+  if (trust.unresolvedParticipants > 0) { trust.trusted = false; trust.reason = "participant_phone_unresolved"; return trust; }
+  if (botPhone && !memberPhones.has(botPhone)) { trust.trusted = false; trust.reason = "bot_missing_from_participants"; return trust; }
+  return trust;
+}
+
+// Access artifacts (invite cards and login links) carry no money, so they are cleared instead of blocking a
+// deletion. Everything else that can reference a captain - orders, candidates, acceptances, wallet ledger,
+// settlements, top-up cards, subscription and daily charges, withdrawal requests and audit rows - is a hard
+// block: those accounts are unlinked so the company keeps its financial audit trail.
+const OUTSIDE_GROUP_ACCESS_CHILD_TABLES = new Set(["captain_login_links", "captain_invites"]);
+
+function classifyOutsideGroupCaptains({ captains, memberPhones, referenceCounts, accessCounts, isProtectedIdentity }) {
+  const buckets = { keep: [], delete: [], unlink: [], hold: [], protectedKeep: [] };
+  for (const captain of (Array.isArray(captains) ? captains : [])) {
+    const id = Number(captain.id);
+    const rawPhone = String(captain.phone || "");
+    const refs = Number(referenceCounts?.get(id) || 0);
+    const access = Number(accessCounts?.get(id) || 0);
+    const walletCents = Number(captain.wallet_cents || 0);
+    const entry = { id, phone: rawPhone, refs, access, walletCents, active: Boolean(captain.active), accountStatus: String(captain.account_status || "") };
+    if (typeof isProtectedIdentity === "function" && isProtectedIdentity(rawPhone)) { buckets.protectedKeep.push(entry); continue; }
+    if (memberPhones?.has(rawPhone)) { buckets.keep.push(entry); continue; }
+    // A captain row whose phone cannot be normalized cannot be proven absent from the group, so it is held.
+    if (!rawPhone) { buckets.hold.push({ ...entry, reason: "captain_phone_unresolved" }); continue; }
+    if (refs === 0 && walletCents === 0) { buckets.delete.push(entry); continue; }
+    buckets.unlink.push({ ...entry, reason: refs > 0 ? "financial_or_order_history" : "non_zero_wallet" });
+  }
+  return buckets;
+}
+
+function buildOutsideGroupCaptainRemovalPlan(snapshot) {
+  const participants = Array.isArray(snapshot?.participants) ? snapshot.participants : [];
+  const memberPhones = new Set();
+  let unresolvedParticipants = 0;
+  for (const participant of participants) {
+    const phone = groupParticipantPhone(participant);
+    if (phone) memberPhones.add(phone); else unresolvedParticipants += 1;
+  }
+  const botPhone = phoneWithCountry(connectedBotPhone() || "");
+  const trust = outsideGroupRemovalTrust({ participants, memberPhones, unresolvedParticipants, botPhone });
+  const captains = db.prepare("SELECT id,phone,name,registration_name,wallet_cents,active,account_status FROM users WHERE role='captain' AND is_bot=0 AND account_status<>'merged' ORDER BY id").all();
+  // One grouped aggregate per referencing table instead of eight prepared count queries for every captain:
+  // that per-captain loop is what froze the instance on 2026-11-23, so this shape is deliberate.
+  const referenceCounts = new Map();
+  const accessCounts = new Map();
+  const countInto = (map, uid, count) => map.set(uid, (map.get(uid) || 0) + Number(count || 0));
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()) {
+    const child = String(row.name || "");
+    if (!child || child === "users") continue;
+    let keys = [];
+    try { keys = db.prepare("PRAGMA foreign_key_list(\"" + child.replaceAll("\"", "\"\"") + "\")").all(); } catch (_) { keys = []; }
+    for (const key of keys) {
+      if (String(key.table || "") !== "users") continue;
+      if (String(key.on_delete || "").toLowerCase() === "cascade") continue;
+      const column = String(key.from || "");
+      if (!column) continue;
+      let rows = [];
+      const quotedChild = "\"" + child.replaceAll("\"", "\"\"") + "\"";
+      const quotedColumn = "\"" + column.replaceAll("\"", "\"\"") + "\"";
+      try { rows = db.prepare("SELECT " + quotedColumn + " AS uid, COUNT(*) AS count FROM " + quotedChild + " WHERE " + quotedColumn + " IS NOT NULL GROUP BY uid").all(); } catch (_) { rows = []; }
+      const into = OUTSIDE_GROUP_ACCESS_CHILD_TABLES.has(child) ? accessCounts : referenceCounts;
+      for (const ref of rows) {
+        const uid = Number(ref.uid);
+        if (!uid) continue;
+        countInto(into, uid, ref.count);
+      }
+    }
+  }
+  const buckets = classifyOutsideGroupCaptains({ captains, memberPhones, referenceCounts, accessCounts, isProtectedIdentity: isProtectedOwnerIdentity });
+  return {
+    trust,
+    buckets,
+    memberCount: memberPhones.size,
+    registeredCaptainCount: captains.length,
+    counts: {
+      keepCount: buckets.keep.length,
+      deleteCount: buckets.delete.length,
+      unlinkCount: buckets.unlink.length,
+      holdCount: buckets.hold.length,
+      protectedCount: buckets.protectedKeep.length,
+    },
+    unlinkWalletCents: buckets.unlink.reduce((total, item) => total + Number(item.walletCents || 0), 0),
+    unlinkReferences: buckets.unlink.reduce((total, item) => total + Number(item.refs || 0), 0),
+  };
+}
+
+app.get("/api/admin/captains/outside-group-preview", requireOwnerAdmin, adminReadLimiter, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", error: "WhatsApp غير جاهز حاليًا" });
+  const groupId = String(req.query.groupId || configuredRuntimeGroupId() || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ success: false, mutation: "none", error: "القروب الرسمي غير مضبوط" });
+  let snapshot = null;
+  try { snapshot = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId); } catch (_) { snapshot = null; }
+  if (!snapshot || !snapshot.isGroup || !Array.isArray(snapshot.participants)) {
+    return res.status(502).json({ success: false, mutation: "none", groupId, error: "تعذّر قراءة لقطة المشاركين في القروب الرسمي" });
+  }
+  const plan = buildOutsideGroupCaptainRemovalPlan(snapshot);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    mutation: "none",
+    groupId,
+    groupName: snapshot.name || null,
+    generatedAt: now(),
+    trust: plan.trust,
+    memberCount: plan.memberCount,
+    registeredCaptainCount: plan.registeredCaptainCount,
+    counts: plan.counts,
+    unlinkWallet: money(plan.unlinkWalletCents),
+    unlinkReferences: plan.unlinkReferences,
+    samples: {
+      delete: plan.buckets.delete.slice(0, 20).map((item) => ({ id: item.id, phone: displayPhone(item.phone) })),
+      unlink: plan.buckets.unlink.slice(0, 20).map((item) => ({ id: item.id, phone: displayPhone(item.phone), refs: item.refs, balance: money(item.walletCents), reason: item.reason })),
+      hold: plan.buckets.hold.slice(0, 20).map((item) => ({ id: item.id, refs: item.refs, balance: money(item.walletCents), reason: item.reason })),
+      protectedKeep: plan.buckets.protectedKeep.slice(0, 10).map((item) => ({ id: item.id, phone: displayPhone(item.phone) })),
+    },
+  });
+});
+
+app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  const confirmation = String(req.body?.confirmation || "");
+  if (confirmation !== OUTSIDE_GROUP_CAPTAIN_REMOVAL_CONFIRMATION) {
+    return res.status(400).json({ success: false, mutation: "none", error: "مطلوب تأكيد صريح من المالك لحذف الكباتن خارج القروب الرسمي" });
+  }
+  if (req.body?.execute !== true) return res.status(400).json({ success: false, mutation: "none", error: "مطلوب execute:true للتنفيذ الفعلي" });
+  if (!client || !isReady) return res.status(503).json({ success: false, mutation: "none", error: "WhatsApp غير جاهز حاليًا" });
+  const groupId = String(req.body?.groupId || configuredRuntimeGroupId() || "").trim();
+  if (!groupId || !isConfiguredGroup(groupId)) return res.status(409).json({ success: false, mutation: "none", error: "القروب الرسمي غير مضبوط" });
+  const expected = {
+    keepCount: Number(req.body?.expectedKeepCount),
+    deleteCount: Number(req.body?.expectedDeleteCount),
+    unlinkCount: Number(req.body?.expectedUnlinkCount),
+    holdCount: Number(req.body?.expectedHoldCount),
+    protectedCount: Number(req.body?.expectedProtectedCount),
+  };
+  if (!Object.values(expected).every(Number.isInteger)) {
+    return res.status(400).json({ success: false, mutation: "none", error: "مطلوب عدّادات المعاينة الخمسة كأعداد صحيحة" });
+  }
+  let snapshot = null;
+  try { snapshot = await readGroupSnapshot(groupId) || await resolveGroupChat(groupId); } catch (_) { snapshot = null; }
+  if (!snapshot || !snapshot.isGroup || !Array.isArray(snapshot.participants)) {
+    return res.status(502).json({ success: false, mutation: "none", error: "تعذّر قراءة لقطة المشاركين؛ لم يتم أي تغيير" });
+  }
+  const plan = buildOutsideGroupCaptainRemovalPlan(snapshot);
+  if (!plan.trust.trusted) {
+    return res.status(503).json({ success: false, mutation: "none", error: "لقطة المشاركين غير موثوقة؛ لم يتم أي تغيير", trust: plan.trust });
+  }
+  if (JSON.stringify(plan.counts) !== JSON.stringify(expected)) {
+    return res.status(409).json({ success: false, mutation: "none", error: "تغيرت البيانات منذ المعاينة؛ أعد المعاينة", currentCounts: plan.counts, expected });
+  }
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = "pre-outside-group-removal-" + Date.now() + ".sqlite";
+  await db.backup(path.join(backupDir, backupName));
+  const stamp = now();
+  const deleted = [];
+  const unlinked = [];
+  const held = [];
+  db.transaction(() => {
+    for (const item of plan.buckets.delete) {
+      try {
+        // Clear the money-free access artifacts first: links and invites must never keep a ghost account alive.
+        try { db.prepare("DELETE FROM captain_login_links WHERE captain_user_id=?").run(item.id); } catch (_) {}
+        try { db.prepare("UPDATE captain_invites SET approved_user_id=NULL,updated_at=? WHERE approved_user_id=?").run(stamp, item.id); } catch (_) {}
+        const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").run(item.id);
+        if (result.changes === 1) {
+          deleted.push({ id: item.id, phone: displayPhone(item.phone) });
+          audit("captain.outside_group.deleted", "user", item.id, { references: 0, accessArtifactsRemoved: item.access || 0, walletCents: 0, financialMutation: false, settlementMutation: false, ledgerRowsPreserved: true, membership: "outside_official_group" });
+        }
+      } catch (error) {
+        held.push({ id: item.id, reason: "reference_protected", detail: boundedDiagnosticText(error?.message || error, 140) });
+      }
+    }
+    for (const item of plan.buckets.unlink) {
+      const result = db.prepare("UPDATE users SET active=0,account_status='deleted',archived_at=?,archive_reason=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").run(stamp, OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON, stamp, item.id);
+      if (result.changes === 1) {
+        try { db.prepare("UPDATE captain_login_links SET revoked_at=?,updated_at=? WHERE captain_user_id=? AND revoked_at IS NULL").run(stamp, stamp, item.id); } catch (_) {}
+        try { db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=?").run(item.id); } catch (_) {}
+        unlinked.push({ id: item.id, phone: displayPhone(item.phone), refs: item.refs, balanceCents: item.walletCents });
+        audit("captain.outside_group.unlinked", "user", item.id, { references: item.refs, walletCents: item.walletCents, financialMutation: false, settlementMutation: false, ledgerRowsPreserved: true, membership: "outside_official_group" });
+      }
+    }
+  })();
+  const summary = {
+    memberCount: plan.memberCount,
+    registeredCaptainCount: plan.registeredCaptainCount,
+    ...plan.counts,
+    deletedCount: deleted.length,
+    unlinkedCount: unlinked.length,
+    heldCount: held.length,
+    backupName,
+  };
+  audit("captains.outside_group.removal.applied", "group", groupId, summary);
+  void notifyOperations({
+    event: "captains.outside_group.removal.applied",
+    title: "تأكيد حذف الكباتن خارج القروب الرسمي",
+    lines: [
+      "حذف كامل بلا أي صلة: " + deleted.length,
+      "إخراج من النظام مع حفظ السجل المالي: " + unlinked.length,
+      "أُرجئ لحماية مرجعية: " + held.length,
+      "عدد المشاركين في القروب الرسمي: " + plan.memberCount,
+      "النسخة الاحتياطية: " + backupName,
+    ],
+    ownersOnly: true,
+  });
+  res.json({ success: true, mutation: "applied", groupId, ...summary, deleted: deleted.slice(0, 200), unlinked: unlinked.slice(0, 200), held });
+});
+
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
