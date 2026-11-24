@@ -3984,6 +3984,8 @@ const OWNER_NOTIFICATION_DEFINITIONS = Object.freeze({
   captainWelcome: { key: "notification_captain_welcome", label: "ترحيب الكابتن الجديد داخل القروب", defaultValue: true },
   captainAnnouncements: { key: "notification_captain_announcements", label: "إعلانات التشغيل العامة للكباتن", defaultValue: true },
   pendingBookingApproval: { key: "notification_pending_booking_approval", label: "تنبيه الحجز المعلّق للمالك", defaultValue: false },
+  // Owner-approved 2026-11-24 option (ب): a reason notice in the official group after each confirmed deletion.
+  messageDeletionReasons: { key: "notification_message_deletion_reasons", label: "سبب حذف الرسائل داخل القروب الرسمي", defaultValue: true },
 });
 const VOICE_MESSAGE_DELETION_SETTING_KEY = "official_group_voice_message_deletion_enabled";
 const VOICE_MESSAGE_DELETION_EMERGENCY_STOP_KEY = "official_group_voice_message_deletion_emergency_stop";
@@ -5690,6 +5692,113 @@ function incomingMessageMediaClassification(message) {
 function isIncomingVoiceMessage(message) {
   return incomingMessageMediaClassification(message).voice;
 }
+// Owner-approved 2026-11-24 option (ب) («عند حذف الرساله اذهار ما سبب الحذف» ثم «اختر الخيار (ب) ونفذ
+// التعديل المقترح الآن»): after a voice or general message is CONFIRMED revoked for everyone, the
+// official group gets one short notice naming the sender (registered name, never a phone number) and
+// the reason. Nothing is sent for an unconfirmed deletion, so the group never reads «حُذفت» about a
+// message members can still see. The low-balance «تم» deletion keeps its own existing group notice.
+// The texts deliberately carry no digits, no price keywords and do not start with «تم», so the bot's
+// own notice can never be parsed as an order or as an acceptance. Owner toggle: messageDeletionReasons.
+const MESSAGE_DELETION_REASON_TEXTS = Object.freeze({
+  unapproved_audio_message: "الرسائل الصوتية غير مسموحة في قروب وصلني الآن، يُرجى كتابة الطلب نصًّا.",
+  unapproved_general_message: "القروب مخصص لطلبات الرحلات والردود المعتمدة عليها فقط، وهذه الرسالة ليست منها.",
+});
+const MESSAGE_DELETION_REASON_SENDER_COOLDOWN_MS = 60 * 1000;
+const MESSAGE_DELETION_REASON_RECENT_SENDER_LIMIT = 500;
+const messageDeletionReasonRecentSender = new Map();
+const messageDeletionReasonInFlight = new Set();
+function messageDeletionReasonSenderLabel(senderName) {
+  const label = String(senderName || "").replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").replace(/\s+/g, " ").trim();
+  // A display name that is really a phone number would publish that number inside the group.
+  if (!label || /\d{4,}/.test(label.replace(/[\s\-+().]/g, "")) || /^[\d\s\-+().]+$/.test(label)) return "أحد الكباتن";
+  return label.slice(0, 60);
+}
+function messageDeletionReasonNoticeText(reason, senderLabel) {
+  const reasonText = MESSAGE_DELETION_REASON_TEXTS[String(reason || "")];
+  if (!reasonText) return null;
+  const subject = reason === "unapproved_audio_message" ? "رسالة صوتية" : "رسالة";
+  return `🗑️ حُذفت ${subject} من ${messageDeletionReasonSenderLabel(senderLabel)}.\nالسبب: ${reasonText}`;
+}
+function messageDeletionReasonSenderName(message, senderPhone) {
+  let captain = null;
+  try { captain = typeof findCaptainByPhone === "function" ? findCaptainByPhone(senderPhone) : null; } catch (_) { captain = null; }
+  return String(captain?.registration_name || captain?.name || message?._data?.notifyName || "").trim();
+}
+async function notifyOfficialGroupMessageDeletionReason({ groupId, messageId, reason, deletion, senderName, senderPhone }) {
+  if (!notificationEnabled("messageDeletionReasons")) return { status: "skipped", reason: "owner_notification_setting_disabled" };
+  const reasonKey = String(reason || "");
+  if (!MESSAGE_DELETION_REASON_TEXTS[reasonKey]) return { status: "skipped", reason: "unsupported_deletion_reason" };
+  if (deletion?.ok !== true || deletion?.revoked !== true || deletion?.paused === true) {
+    return { status: "not_confirmed", reason: "message_deletion_not_confirmed" };
+  }
+  const targetGroupId = String(groupId || "").trim();
+  const configuredGroupId = String(configuredRuntimeGroupId() || "").trim();
+  if (!targetGroupId || targetGroupId !== configuredGroupId || !isOfficialGroupTarget(targetGroupId) || !isServer2OutboundTargetAllowed(targetGroupId)) {
+    return { status: "blocked", reason: "official_group_target_not_allowed" };
+  }
+  const sourceKey = String(messageId || "").trim();
+  const sourceCore = messageIdCore(sourceKey);
+  if (!sourceCore) return { status: "skipped", reason: "missing_message_id" };
+  const senderKey = `${reasonKey}:${phoneWithCountry(senderPhone) || "unknown"}`;
+  const nowMs = Date.now();
+  if (nowMs - Number(messageDeletionReasonRecentSender.get(senderKey) || 0) < MESSAGE_DELETION_REASON_SENDER_COOLDOWN_MS) {
+    return { status: "skipped", reason: "sender_notice_cooldown" };
+  }
+  const idempotencyKey = `GROUP-MESSAGE-DELETION-REASON-${targetGroupId}-${sourceCore}`;
+  if (messageDeletionReasonInFlight.has(idempotencyKey)) return { status: "already_in_flight", idempotencyKey };
+  const title = "سبب حذف رسالة في القروب الرسمي";
+  const message = messageDeletionReasonNoticeText(reasonKey, senderName);
+  if (!message) return { status: "skipped", reason: "unsupported_deletion_reason" };
+  let inserted;
+  let receipt;
+  try {
+    inserted = db.prepare("INSERT OR IGNORE INTO notifications(recipient_phone,recipient_role,event,title,message,delivery_status,source_message_id,idempotency_key,created_at) VALUES(?,'group',?,?,?,'pending',?,?,?)")
+      .run(targetGroupId, "group.message_deletion.reason", title, message, sourceKey, idempotencyKey, now());
+    receipt = db.prepare("SELECT id,delivery_status,message_id FROM notifications WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+  } catch (error) {
+    return { status: "receipt_error", reason: String(error?.message || error).slice(0, 180), idempotencyKey };
+  }
+  if (!receipt) return { status: "receipt_error", reason: "notification_receipt_missing", idempotencyKey };
+  if (inserted?.changes !== 1 || receipt.delivery_status !== "pending") {
+    const receiptStatus = ["sent", "delivered"].includes(receipt.delivery_status) ? "already_sent" : receipt.delivery_status || "already_attempted";
+    return { status: receiptStatus, duplicate: true, notificationId: receipt.id, messageId: receipt.message_id || null, idempotencyKey };
+  }
+  const notificationId = receipt.id;
+  // Claim the sender slot before sending so a burst of deleted messages yields one notice per minute.
+  messageDeletionReasonRecentSender.delete(senderKey);
+  messageDeletionReasonRecentSender.set(senderKey, nowMs);
+  while (messageDeletionReasonRecentSender.size > MESSAGE_DELETION_REASON_RECENT_SENDER_LIMIT) {
+    messageDeletionReasonRecentSender.delete(messageDeletionReasonRecentSender.keys().next().value);
+  }
+  messageDeletionReasonInFlight.add(idempotencyKey);
+  try {
+    let result;
+    try {
+      result = !client || !isReady || typeof client.sendMessage !== "function"
+        ? { status: "unavailable", message: null, error: "whatsapp_not_ready" }
+        : await sendWhatsAppAtMostOnce(targetGroupId, message, undefined, 30000);
+    } catch (error) {
+      try { db.prepare("UPDATE notifications SET delivery_status='failed',message_id=NULL WHERE id=?").run(notificationId); } catch (_) {}
+      return { status: "failed", notificationId, idempotencyKey, error: String(error?.message || error).slice(0, 180) };
+    }
+    const deliveryStatus = result?.status === "sent" ? "sent" : result?.status === "uncertain" ? "uncertain" : "failed";
+    const sentMessageId = result?.message?.id?._serialized || result?.message?.id?.id || null;
+    try {
+      db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=? AND idempotency_key=? AND delivery_status='pending'").run(deliveryStatus, sentMessageId, notificationId, idempotencyKey);
+    } catch (_) {}
+    audit("official_group.message_deletion_reason_notice", "chat", targetGroupId, {
+      sourceMessageId: sourceKey,
+      reason: reasonKey,
+      deliveryStatus,
+      notificationId,
+      financialMutation: false,
+      orderMutation: false,
+    });
+    return { status: deliveryStatus, notificationId, messageId: sentMessageId, idempotencyKey };
+  } finally {
+    messageDeletionReasonInFlight.delete(idempotencyKey);
+  }
+}
 async function handleIncomingVoiceMessagePolicy(message, { groupId, senderPhone }) {
   if (!isIncomingVoiceMessage(message) || !groupId || groupId !== configuredRuntimeGroupId() || message.fromMe) return { status: "not_applicable" };
   if (!voiceMessageDeletionEnabled()) return { status: "disabled" };
@@ -5713,6 +5822,10 @@ async function handleIncomingVoiceMessagePolicy(message, { groupId, senderPhone 
     [VOICE_MESSAGE_DELETE_PERMIT]: true,
   });
   audit("voice_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
+  if (deletion?.ok === true && deletion?.revoked === true && typeof notifyOfficialGroupMessageDeletionReason === "function") {
+    const senderName = typeof messageDeletionReasonSenderName === "function" ? messageDeletionReasonSenderName(message, normalizedPhone) : "";
+    void Promise.resolve(notifyOfficialGroupMessageDeletionReason({ groupId, messageId, reason: "unapproved_audio_message", deletion, senderName, senderPhone: normalizedPhone })).catch(() => {});
+  }
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
 function messageTextForPolicy(message) {
@@ -5758,6 +5871,10 @@ async function handleIncomingGeneralMessageDeletionPolicy(message, { groupId, se
     [GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT]: true,
   });
   audit("general_message_deletion.attempted", "message", messageId, { groupId, senderProtected: false, deleted: Boolean(deletion?.ok), deletionResult: deletion || null, financialMutation: false, orderMutation: false });
+  if (deletion?.ok === true && deletion?.revoked === true && typeof notifyOfficialGroupMessageDeletionReason === "function") {
+    const senderName = typeof messageDeletionReasonSenderName === "function" ? messageDeletionReasonSenderName(message, normalizedPhone) : "";
+    void Promise.resolve(notifyOfficialGroupMessageDeletionReason({ groupId, messageId, reason: "unapproved_general_message", deletion, senderName, senderPhone: normalizedPhone })).catch(() => {});
+  }
   return { status: deletion?.ok ? "deleted" : "failed", deletion };
 }
 function snapshotFromGroupChat(groupId, chat) {
@@ -18167,6 +18284,40 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, groupId, hours, scanned: messages.length, acceptanceMessages: acceptanceMessages.length, matches, filters: expected, source: historySource, mutation: "none" });
 });
+// Owner-approved 2026-11-24 («اختر الخيار (ب) ونفذ التعديل المقترح الآن»). whatsapp-web.js 1.34.8
+// Message.delete(true) revokes for everyone only when WhatsApp Web's own capability check
+// (canSenderRevokeMsg || canAdminRevokeMsg) passes for the exact id it is handed; otherwise it
+// silently falls back to Cmd.sendDeleteMsgs, which removes the message from the bot's account only.
+// That fallback is why members kept seeing «deleted» messages while the bot lost its own copy, and the
+// page-level revoke path then answered message_not_found. This read-only probe runs the same check on
+// the same id first, and the callers below invoke delete(true) only when it would really revoke. A
+// probe that cannot answer is treated as "not permitted" (fail closed against delete-for-me).
+async function whatsappMessageRevokeCapability(message) {
+  const targetId = String(message?.id?._serialized || "").trim();
+  if (!targetId) return { checked: false, found: false, canRevoke: false, reason: "message_id_unavailable" };
+  if (!client?.pupPage || typeof client.pupPage.evaluate !== "function") return { checked: false, found: false, canRevoke: false, reason: "page_unavailable" };
+  try {
+    const probe = await withTimeout(client.pupPage.evaluate(async (msgId) => {
+      try {
+        const collections = window.require("WAWebCollections");
+        const inStore = Boolean(collections.Msg.get(msgId));
+        const msg = collections.Msg.get(msgId) || (await collections.Msg.getMessagesById([msgId]))?.messages?.[0] || null;
+        if (!msg) return { checked: true, found: false, inStore, canRevoke: false, reason: "message_not_in_store" };
+        const capability = window.require("WAWebMsgActionCapability");
+        const canSenderRevoke = Boolean(capability?.canSenderRevokeMsg?.(msg));
+        const canAdminRevoke = Boolean(capability?.canAdminRevokeMsg?.(msg));
+        const canRevoke = canSenderRevoke || canAdminRevoke;
+        return { checked: true, found: true, inStore, canSenderRevoke, canAdminRevoke, canRevoke, reason: canRevoke ? "revoke_permitted" : "revoke_not_permitted" };
+      } catch (error) {
+        return { checked: false, found: false, canRevoke: false, reason: String(error?.message || error).slice(0, 160) };
+      }
+    }, targetId), 8000, null);
+    if (!probe || typeof probe !== "object") return { checked: false, found: false, canRevoke: false, reason: "capability_probe_timeout" };
+    return { ...probe, canRevoke: probe.canRevoke === true };
+  } catch (error) {
+    return { checked: false, found: false, canRevoke: false, reason: String(error?.message || error).slice(0, 160) };
+  }
+}
 async function verifyWhatsAppMessageDeletion(message, messageId, timeoutMs = 5000) {
   if (!message) return { verified: false, reason: "message_unavailable", attempts: 0 };
   const verificationDelays = [0, 500, 1200];
@@ -18287,6 +18438,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   console.log(`[WhatsApp][MessageDelete] start message=${deletionKey} reason=${deletionContext.reason} group=${orderTraceKey(deletionContext.groupId)}`);
   let result;
   let searchFallbackMessageId = null;
+  let directRevokeProbe = null;
   const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId);
   let originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
   // Incoming LID events can carry a stale/plain wrapper whose delete() method
@@ -18314,6 +18466,15 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
       if (directDeleteDelays[attempt]) await new Promise((resolve) => setTimeout(resolve, directDeleteDelays[attempt]));
       console.log(`[WhatsApp][MessageDelete] direct_start message=${deletionKey} method=message.delete attempt=${attempt + 1}/${directDeleteDelays.length}`);
       try {
+        const revokeCapability = await whatsappMessageRevokeCapability(originalMessage);
+        directRevokeProbe = revokeCapability;
+        if (!revokeCapability.canRevoke) {
+          // delete(true) here would only delete for the bot; leave the message in place so the
+          // chat-history and page revoke paths below can still revoke it for everyone.
+          result = { ok: false, reason: "direct_revoke_not_permitted", requested: false, method: "message.delete", attempts: attempt + 1, revokeCapability };
+          console.warn(`[WhatsApp][MessageDelete] direct_skipped_delete_for_me_guard message=${deletionKey} attempt=${attempt + 1}/${directDeleteDelays.length} found=${revokeCapability.found === true} inStore=${revokeCapability.inStore === true} canSenderRevoke=${revokeCapability.canSenderRevoke === true} canAdminRevoke=${revokeCapability.canAdminRevoke === true} reason=${revokeCapability.reason}`);
+          break;
+        }
         const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
         const verification = await verifyWhatsAppMessageDeletion(originalMessage, messageId);
         // WhatsApp Web can revoke the message successfully while the WWebJS
@@ -18365,6 +18526,11 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
         const candidate = liveCandidates[index];
         if (typeof candidate.delete !== "function") continue;
         try {
+          const candidateCapability = await whatsappMessageRevokeCapability(candidate);
+          if (!candidateCapability.canRevoke) {
+            console.warn(`[WhatsApp][MessageDelete] chat_history_skipped_delete_for_me_guard message=${deletionKey} attempt=${index + 1}/${liveCandidates.length} found=${candidateCapability.found === true} canSenderRevoke=${candidateCapability.canSenderRevoke === true} canAdminRevoke=${candidateCapability.canAdminRevoke === true} reason=${candidateCapability.reason}`);
+            continue;
+          }
           const deletedFromHistory = await withTimeout(candidate.delete(true), 15000, false);
           const verification = await verifyWhatsAppMessageDeletion(candidate, messageId);
           console.log(`[WhatsApp][MessageDelete] chat_history_result message=${deletionKey} ok=${verification.verified} deleteReturn=${deletedFromHistory === true} verification=${verification.reason} attempt=${index + 1}/${liveCandidates.length}`);
@@ -18412,7 +18578,11 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
         searchFallbackMessageId = serializedMessageId(candidate) || null;
         console.warn(`[WhatsApp][MessageDelete] search_unique_acceptance_fallback message=${deletionKey} candidates=1 originalMessage=${Boolean(originalMessage)} receipt=${Boolean(persistedReceipt)}`);
         console.log(`[WhatsApp][MessageDelete] search_candidate_id message=${deletionKey} candidate=${orderTraceKey(searchFallbackMessageId)}`);
-        const deletedFromSearch = typeof candidate.delete === "function"
+        const searchCapability = await whatsappMessageRevokeCapability(candidate);
+        if (!searchCapability.canRevoke) {
+          console.warn(`[WhatsApp][MessageDelete] search_skipped_delete_for_me_guard message=${deletionKey} found=${searchCapability.found === true} canSenderRevoke=${searchCapability.canSenderRevoke === true} canAdminRevoke=${searchCapability.canAdminRevoke === true} reason=${searchCapability.reason}`);
+        }
+        const deletedFromSearch = typeof candidate.delete === "function" && searchCapability.canRevoke
           ? await withTimeout(candidate.delete(true), 15000, false)
           : false;
         const verification = await verifyWhatsAppMessageDeletion(candidate, serializedMessageId(candidate) || messageId);
@@ -18507,6 +18677,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     messageKey: deletionKey,
     outcome,
     deletionResult: result || null,
+    directRevokeProbe,
   });
   return result || { ok: false, reason: "empty_deletion_result" };
 }
