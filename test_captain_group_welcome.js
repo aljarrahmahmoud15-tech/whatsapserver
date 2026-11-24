@@ -24,6 +24,18 @@ test('captain welcome is idempotent by normalized phone and does not target owne
   assert.match(source, /رقم هاتف الكابتن للنسخ/);
 });
 
+test('welcome failures record bounded stage and provider error diagnostics without full phone numbers', () => {
+  assert.match(source, /let diagnosticStage = "recipient_resolve"/);
+  assert.match(source, /diagnosticStage = "media_render"/);
+  assert.match(source, /diagnosticStage = "send_message"/);
+  assert.match(source, /errorCode: diagnosticErrorCode/);
+  assert.match(source, /errorMessage: diagnosticErrorMessage/);
+  assert.match(source, /recipientLast4: phone\.slice\(-4\)/);
+  assert.match(source, /notification\.captain\.group\.welcome\.diagnostic/);
+  assert.match(source, /phone-last4=\$\{phone\.slice\(-4\)\}/);
+  assert.match(source, /errorCode: String\(error\?\.code \|\| ""\)\.slice\(0, 120\) \|\| null/);
+});
+
 test('welcome instructions accept quoted or unquoted تم and use the captain portal', () => {
   assert.match(source, /باقتباس أو بدونه/);
   assert.match(source, /captainLoginUrl\(baseUrl\)/);

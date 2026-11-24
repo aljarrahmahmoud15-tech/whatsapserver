@@ -2468,15 +2468,15 @@ function getPersistedWhatsAppMessageReceipt(messageId) {
 }
 const WHATSAPP_SEND_TIMEOUT = Symbol("whatsapp_send_timeout");
 async function sendWhatsAppAtMostOnce(to, content, options = undefined, timeoutMs = 20000) {
-  if (!isServer2OutboundTargetAllowed(to)) return { status: "blocked", message: null, error: "server2_target_not_allowed" };
-  if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready" };
+  if (!isServer2OutboundTargetAllowed(to)) return { status: "blocked", message: null, error: "server2_target_not_allowed", errorCode: "server2_target_not_allowed" };
+  if (!client || !isReady || typeof client.sendMessage !== "function") return { status: "unavailable", message: null, error: "whatsapp_not_ready", errorCode: "whatsapp_not_ready" };
   try {
     const promise = options === undefined ? client.sendMessage(to, content) : client.sendMessage(to, content, options);
     const message = await withTimeoutStrict(promise, timeoutMs, WHATSAPP_SEND_TIMEOUT);
-    if (message === WHATSAPP_SEND_TIMEOUT) return { status: "uncertain", message: null, error: "send_timeout_no_retry" };
-    return { status: "sent", message: message || null, error: null };
+    if (message === WHATSAPP_SEND_TIMEOUT) return { status: "uncertain", message: null, error: "send_timeout_no_retry", errorCode: "send_timeout_no_retry" };
+    return { status: "sent", message: message || null, error: null, errorCode: null };
   } catch (error) {
-    return { status: "failed", message: null, error: String(error?.message || error).slice(0, 240) };
+    return { status: "failed", message: null, error: String(error?.message || error).slice(0, 240), errorCode: String(error?.code || "").slice(0, 120) || null };
   }
 }
 async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCents, requiredCents, sourceMessageId, publicTripNo }) {
@@ -5517,21 +5517,40 @@ async function sendCaptainGroupWelcome(participant, groupId) {
   captainGroupWelcomeInFlight.add(key);
   let deliveryStatus = "failed";
   let messageId = null;
+  let diagnosticStage = "recipient_resolve";
+  let diagnosticErrorCode = null;
+  let diagnosticErrorMessage = null;
   try {
     const recipient = await resolveWhatsAppRecipientId(phone) || `${phone}@c.us`;
+    diagnosticStage = "media_render";
     const media = await withTimeout(renderCaptainWelcomeCardMedia(name, process.env.PUBLIC_BASE_URL || "", phone, groupInviteUrl, temporaryPin), 30000, null);
     if (!media) throw new Error("captain welcome card render returned no media");
+    diagnosticStage = "send_message";
     const result = await sendWhatsAppAtMostOnce(recipient, media, { caption: message }, 30000);
+    diagnosticErrorCode = result.errorCode || null;
+    diagnosticErrorMessage = result.error || null;
     if (result.status === "sent" || result.status === "uncertain") {
       deliveryStatus = result.status === "uncertain" ? "uncertain" : "sent";
       messageId = result.message?.id?._serialized || null;
     }
   } catch (error) {
-    console.warn(`[CaptainWelcome] failed for ${phone}: ${String(error?.message || error).slice(0, 160)}`);
+    diagnosticErrorCode = String(error?.code || "").slice(0, 120) || null;
+    diagnosticErrorMessage = String(error?.message || error).slice(0, 240);
+    console.warn(`[CaptainWelcome] failed for phone-last4=${phone.slice(-4)} stage=${diagnosticStage} code=${diagnosticErrorCode || "none"}: ${diagnosticErrorMessage}`);
   } finally {
     captainGroupWelcomeInFlight.delete(key);
   }
   db.prepare("UPDATE notifications SET delivery_status=?,message_id=? WHERE id=?").run(deliveryStatus, messageId, notificationId);
+  if (deliveryStatus === "failed") {
+    audit("notification.captain.group.welcome.diagnostic", "user", phone.slice(-4), {
+      deliveryStatus,
+      stage: diagnosticStage,
+      errorCode: diagnosticErrorCode,
+      errorMessage: diagnosticErrorMessage,
+      recipientLast4: phone.slice(-4),
+      idempotencyKey: key,
+    });
+  }
   audit(`notification.${CAPTAIN_GROUP_WELCOME_EVENT}`, "user", phone, { deliveryStatus, idempotencyKey: key, groupId });
   return { status: deliveryStatus, phone, notificationId, messageId };
 }
