@@ -17355,6 +17355,259 @@ function startRemovedPurgeBackup() {
     });
   return { started: true, reason: null, backups: removedPurgeBackups(backupDir) };
 }
+// The disk may be too small for a second full copy of a multi-gigabyte database, and the owner must never be asked to
+// delete an older copy to make room. So the purge accepts a second, independent safety anchor: every single row this
+// purge would destroy is written out by the server, slice by slice, next to the backups, and a batch is only allowed
+// when a manifest whose files still hash correctly covers exactly the accounts of that batch and the same row counts.
+const REMOVED_PURGE_EXPORT_PREFIX = "purge-export-";
+const REMOVED_PURGE_EXPORT_SLICE = 200;
+let removedPurgeExportJob = null;
+let removedPurgeExportPromise = null;
+
+function removedPurgeExportDir() {
+  return path.join(DATA_DIR, "backups");
+}
+function publicRemovedPurgeExportJob() {
+  if (!removedPurgeExportJob) return null;
+  return {
+    status: removedPurgeExportJob.status,
+    name: removedPurgeExportJob.name,
+    startedAt: removedPurgeExportJob.startedAt,
+    completedAt: removedPurgeExportJob.completedAt,
+    parts: removedPurgeExportJob.parts,
+    rowsTotal: removedPurgeExportJob.rowsTotal,
+    bytesTotal: removedPurgeExportJob.bytesTotal,
+    error: removedPurgeExportJob.error,
+  };
+}
+// The same declarative predicate that drives the counts and the writes, turned into a row query: whatever is counted
+// is whatever is exported, so no table or column list can drift away from the purge it is supposed to protect.
+function removedPurgeExportRowSql(select) {
+  const text = String(select || "");
+  const prefix = "SELECT COUNT(*) AS count FROM ";
+  if (!text.startsWith(prefix)) return null;
+  return "SELECT * FROM " + text.slice(prefix.length);
+}
+function removedPurgeStepCounts(ids, phones) {
+  const idsJson = JSON.stringify(ids.map(Number));
+  const phonesJson = JSON.stringify(phones.map(String));
+  const counts = { users: ids.length };
+  const errors = [];
+  for (const item of removedCaptainHistoryPurgeSteps().concat(removedCaptainHistorySweepSteps())) {
+    if (!item.select) continue;
+    const values = (item.bind || ["ids"]).map((name) => (name === "phones" ? phonesJson : idsJson));
+    try {
+      counts[item.key] = Number(db.prepare(item.select).get(...values).count || 0);
+    } catch (error) {
+      errors.push({ key: item.key, detail: boundedDiagnosticText(error && error.message ? error.message : error, 120) });
+    }
+  }
+  return { counts, errors };
+}
+function removedPurgeExportSliceLines(ids, phones) {
+  const idsJson = JSON.stringify(ids.map(Number));
+  const phonesJson = JSON.stringify(phones.map(String));
+  const lines = [];
+  const counts = { users: 0 };
+  for (const row of db.prepare("SELECT * FROM users WHERE id " + REMOVED_HISTORY_IDS_PREDICATE).all(idsJson)) {
+    lines.push(JSON.stringify({ step: "users", kind: "user", row }));
+    counts.users += 1;
+  }
+  for (const item of removedCaptainHistoryPurgeSteps().concat(removedCaptainHistorySweepSteps())) {
+    const sql = removedPurgeExportRowSql(item.select);
+    if (!sql) continue;
+    const values = (item.bind || ["ids"]).map((name) => (name === "phones" ? phonesJson : idsJson));
+    let rows;
+    try {
+      rows = db.prepare(sql).all(...values);
+    } catch (error) {
+      return { error: { key: item.key, detail: boundedDiagnosticText(error && error.message ? error.message : error, 140) }, lines, counts };
+    }
+    counts[item.key] = rows.length;
+    for (const row of rows) lines.push(JSON.stringify({ step: item.key, kind: item.kind, row }));
+  }
+  return { lines, counts };
+}
+function buildRemovedPurgeExport(name, setDir, job) {
+  const all = removedCaptainPurgeTargets(0).targets;
+  const targetIds = all.map((row) => Number(row.id));
+  const parts = [];
+  const perStepTotal = {};
+  let offset = 0;
+  while (offset < all.length) {
+    const chunk = all.slice(offset, offset + REMOVED_PURGE_EXPORT_SLICE);
+    const built = removedPurgeExportSliceLines(chunk.map((row) => Number(row.id)), chunk.map((row) => String(row.phone || "")).filter(Boolean));
+    if (built.error) throw new Error("export step failed: " + built.error.key + " " + built.error.detail);
+    const body = built.lines.length ? built.lines.join("\n") + "\n" : "";
+    const fileName = "part-" + String(parts.length).padStart(3, "0") + ".ndjson";
+    fs.writeFileSync(path.join(setDir, fileName), body);
+    const buffer = fs.readFileSync(path.join(setDir, fileName));
+    perStepTotal["users"] = Number(perStepTotal["users"] || 0) + Number(built.counts.users || 0);
+    for (const [key, value] of Object.entries(built.counts)) {
+      if (key === "users") continue;
+      perStepTotal[key] = Number(perStepTotal[key] || 0) + Number(value || 0);
+    }
+    parts.push({
+      index: parts.length,
+      name: fileName,
+      offset,
+      limit: chunk.length,
+      ids: chunk.map((row) => Number(row.id)),
+      lines: built.lines.length,
+      bytes: Number(buffer.length || 0),
+      sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      perStep: built.counts,
+    });
+    job.parts = parts.length;
+    job.rowsTotal = parts.reduce((total, part) => total + part.lines, 0);
+    job.bytesTotal = parts.reduce((total, part) => total + part.bytes, 0);
+    offset += REMOVED_PURGE_EXPORT_SLICE;
+  }
+  const manifest = {
+    name,
+    startedAt: job.startedAt,
+    completedAt: now(),
+    sliceSize: REMOVED_PURGE_EXPORT_SLICE,
+    targetCount: targetIds.length,
+    targetIdsSha256: crypto.createHash("sha256").update(JSON.stringify(targetIds)).digest("hex"),
+    targetIds,
+    parts,
+    perStepTotal,
+    rowsTotal: job.rowsTotal,
+    bytesTotal: job.bytesTotal,
+  };
+  const json = JSON.stringify(manifest, null, 2);
+  fs.writeFileSync(path.join(setDir, "manifest.json"), json);
+  fs.writeFileSync(path.join(setDir, "manifest.sha256"), crypto.createHash("sha256").update(json).digest("hex") + "\n");
+  return manifest;
+}
+// A manifest is trusted only when its own hash matches and every part file it lists is still present with the same
+// size, line count and sha256. Anything else is reported as unverified with the reason, never used as cover.
+// The batch takes the first N targets ordered by id; the export writes consecutive blocks of the same size from the
+// same ordered list, so a batch is covered only by the part holding exactly those ids - never by "some" part.
+function removedPurgeExportPartFor(record, ids) {
+  const wanted = (ids || []).map(Number).sort((a, b) => a - b);
+  const parts = (record && record.parts) || [];
+  return parts.find((item) => {
+    const list = (item.ids || []).map(Number).sort((a, b) => a - b);
+    return list.length === wanted.length && list.every((value, index) => value === wanted[index]);
+  }) || null;
+}
+function removedPurgeExports(baseDir) {
+  const dir = baseDir || removedPurgeExportDir();
+  const out = { dir, sets: [], verified: [], unverified: [], job: publicRemovedPurgeExportJob() };
+  if (!fs.existsSync(dir)) return out;
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((name) => {
+      if (!new RegExp("^" + REMOVED_PURGE_EXPORT_PREFIX + "\\d+$").test(name)) return false;
+      try { return fs.statSync(path.join(dir, name)).isDirectory(); } catch { return false; }
+    }).sort();
+  } catch { return out; }
+  for (const name of names) {
+    out.sets.push(name);
+    const reasons = [];
+    let manifest = null;
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(dir, name, "manifest.json"), "utf8"));
+    } catch (error) {
+      out.unverified.push({ name, reasons: ["manifest unreadable"], files: [] });
+      continue;
+    }
+    try {
+      const raw = fs.readFileSync(path.join(dir, name, "manifest.json"));
+      const expected = String(fs.readFileSync(path.join(dir, name, "manifest.sha256"), "utf8")).trim();
+      if (expected !== crypto.createHash("sha256").update(raw).digest("hex")) reasons.push("manifest hash mismatch");
+    } catch {
+      reasons.push("manifest hash missing");
+    }
+    const files = [];
+    for (const part of manifest.parts || []) {
+      let buffer = null;
+      try { buffer = fs.readFileSync(path.join(dir, name, part.name)); } catch { buffer = null; }
+      if (buffer === null) {
+        files.push({ name: part.name, present: false });
+        reasons.push("part missing: " + part.name);
+        continue;
+      }
+      const bytes = Number(buffer.length || 0);
+      const lines = buffer.toString("utf8").split("\n").filter(Boolean).length;
+      const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+      const matched = bytes === Number(part.bytes) && lines === Number(part.lines) && sha256 === part.sha256;
+      files.push({ name: part.name, present: true, bytes, lines, matched });
+      if (!matched) reasons.push("part drifted: " + part.name);
+    }
+    const record = {
+      name,
+      completedAt: String(manifest.completedAt || ""),
+      sliceSize: manifest.sliceSize,
+      targetCount: Number(manifest.targetCount || 0),
+      targetIdsSha256: manifest.targetIdsSha256,
+      targetIds: manifest.targetIds || [],
+      parts: manifest.parts || [],
+      perStepTotal: manifest.perStepTotal || {},
+      rowsTotal: Number(manifest.rowsTotal || 0),
+      bytesTotal: Number(manifest.bytesTotal || 0),
+      files,
+      verified: reasons.length === 0,
+      reasons,
+    };
+    if (record.verified) out.verified.push(record);
+    else out.unverified.push(record);
+  }
+  out.verified.sort((a, b) => (a.name < b.name ? 1 : -1));
+  return out;
+}
+function publicRemovedPurgeExportSets(list) {
+  // The light view for previews and logs: the full id list stays server-side so a batch can be checked against it
+  // without shipping a thousand numbers in every preview payload.
+  const brief = (record) => ({
+    name: record.name,
+    completedAt: record.completedAt,
+    sliceSize: record.sliceSize,
+    targetCount: record.targetCount,
+    targetIdsSha256: record.targetIdsSha256,
+    rowsTotal: record.rowsTotal,
+    bytesTotal: record.bytesTotal,
+    parts: (record.parts || []).map((part) => ({ name: part.name, lines: part.lines, bytes: part.bytes, ids: part.ids })),
+    perStepTotal: record.perStepTotal,
+    reasons: record.reasons,
+  });
+  return {
+    dir: list.dir,
+    sets: list.sets,
+    verifiedCount: list.verified.length,
+    newest: list.verified.length ? brief(list.verified[0]) : null,
+    unverified: list.unverified.map(brief),
+    job: list.job,
+  };
+}
+function startRemovedPurgeExportBuild() {
+  const dir = removedPurgeExportDir();
+  fs.mkdirSync(dir, { recursive: true });
+  if (removedPurgeExportJob && removedPurgeExportJob.status === "running") {
+    return { started: false, reason: "already_running", exports: removedPurgeExports(dir) };
+  }
+  const name = REMOVED_PURGE_EXPORT_PREFIX + Date.now();
+  const setDir = path.join(dir, name);
+  fs.mkdirSync(setDir, { recursive: true });
+  const job = { status: "running", name, startedAt: now(), completedAt: null, parts: 0, rowsTotal: 0, bytesTotal: 0, error: null };
+  removedPurgeExportJob = job;
+  removedPurgeExportPromise = Promise.resolve()
+    .then(() => buildRemovedPurgeExport(name, setDir, job))
+    .then((manifest) => {
+      job.status = "complete";
+      job.completedAt = manifest.completedAt;
+      job.parts = manifest.parts.length;
+      job.rowsTotal = manifest.rowsTotal;
+      job.bytesTotal = manifest.bytesTotal;
+    })
+    .catch((error) => {
+      job.status = "failed";
+      job.error = boundedDiagnosticText(error && error.message ? error.message : error, 200);
+    });
+  return { started: true, reason: null, exports: removedPurgeExports(dir) };
+}
 // Targets are the tombstones of the owner's outside-group decision, minus protected owner identities and minus the
 // connected bot number. Nothing else can enter the set.
 function removedCaptainPurgeTargets(limit = 0) {
@@ -17461,6 +17714,7 @@ app.get("/api/admin/captains/removed-history-preview", requireOwnerAdmin, adminR
     countErrors: report.countErrors,
     samples: report.targets.slice(0, 20),
     backup: removedPurgeBackups(),
+    export: publicRemovedPurgeExportSets(removedPurgeExports()),
     confirmation: REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION,
   });
 });
@@ -17484,6 +17738,49 @@ app.post("/api/admin/captains/purge-backup", requireOwnerAdmin, adminMutationLim
     nextStep: result.started ? "poll GET /api/admin/captains/purge-backup until complete, then run the batches" : "a backup is already running",
   });
 });
+app.get("/api/admin/captains/purge-export", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", exports: publicRemovedPurgeExportSets(removedPurgeExports()) });
+});
+app.post("/api/admin/captains/purge-export", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  // Building the export writes rows and hashes files, which is far more than an edge request should wait for, so it
+  // runs off the handler exactly like the copy does and the owner polls for it.
+  const result = startRemovedPurgeExportBuild();
+  res.json({
+    success: true,
+    mutation: "export-only",
+    financialMutation: false,
+    started: result.started,
+    reason: result.reason,
+    job: publicRemovedPurgeExportJob(),
+    exports: publicRemovedPurgeExportSets(result.exports),
+    sliceSize: REMOVED_PURGE_EXPORT_SLICE,
+    nextStep: result.started ? "poll GET /api/admin/captains/purge-export until the job is complete, then read the parts" : "an export is already running",
+  });
+});
+app.get("/api/admin/captains/purge-export/part", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  // Only names taken from a verified manifest, never a caller-supplied path: this route exists so the export can be
+  // read off the platform, which is the whole point of the anchor.
+  const list = removedPurgeExports();
+  const record = list.verified.find((item) => item.name === String(req.query.name || ""));
+  const index = Number(req.query.index);
+  if (!record || !Number.isInteger(index) || index < 0 || index >= (record.parts || []).length) {
+    return res.status(400).json({ success: false, mutation: "none", error: "اسم أو رقم جزء غير صالح؛ المسموح فقط أجزاء من سجل مُتحقَّق منه", verified: list.verified.map((item) => item.name) });
+  }
+  const part = record.parts[index];
+  const file = path.join(list.dir, record.name, part.name);
+  let buffer = null;
+  try { buffer = fs.readFileSync(file); } catch { buffer = null; }
+  if (!buffer || crypto.createHash("sha256").update(buffer).digest("hex") !== part.sha256) {
+    return res.status(503).json({ success: false, mutation: "none", error: "ملف الجزء لم يعد مطابقًا للسجل؛ ابدأ تصديرًا جديدًا", name: record.name, index });
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Export-Sha256", part.sha256);
+  res.setHeader("X-Export-Lines", String(part.lines));
+  res.setHeader("X-Export-Bytes", String(buffer.length));
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.send(buffer);
+});
 app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
   if (String(req.body?.confirmation || "") !== REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION) {
     return res.status(400).json({ success: false, mutation: "none", error: "مطلوب تأكيد صريح من المالك لمحو السجل المالي والتدقيقي للمُخرَجين" });
@@ -17498,19 +17795,27 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
   if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 300) {
     return res.status(400).json({ success: false, mutation: "none", error: "batchSize يجب أن يكون عددًا صحيحًا بين 1 و300، أو متغيبًا للتنفيذ الكامل" });
   }
-  // History cannot be rebuilt, so a completed full copy is required before anything is measured or written, and a
-  // copy whose marker is missing is treated as no copy at all rather than as a partial safety net.
+  // History cannot be rebuilt, so a completed safety anchor is required before anything is measured or written: either
+  // a marker-verified full copy of the database, or - when the disk cannot hold one and the owner chose not to delete
+  // an older copy for room - a verified export of every row this purge destroys. A copy whose marker is missing is
+  // treated as no copy at all, and a manifest whose files drifted is treated as no manifest at all.
   const backups = removedPurgeBackups();
-  if (!backups.complete) {
+  const exportSets = removedPurgeExports();
+  if (!backups.complete && !exportSets.verified.length) {
     return res.status(503).json({
       success: false,
       mutation: "none",
-      error: "no completed backup exists; run POST /api/admin/captains/purge-backup and wait for it before any batch",
+      error: "no completed backup and no verified row export exist; run POST /api/admin/captains/purge-backup or POST /api/admin/captains/purge-export and wait for it before any batch",
       incompleteBackups: backups.incomplete,
       backupJob: backups.job,
+      exportJob: exportSets.job,
+      unverifiedExports: publicRemovedPurgeExportSets(exportSets).unverified,
     });
   }
-  const backupName = backups.complete.name;
+  const safety = backups.complete
+    ? { kind: "full-backup", name: backups.complete.name, bytes: backups.complete.bytes, completedAt: backups.complete.completedAt }
+    : { kind: "row-export", name: exportSets.verified[0].name, rows: exportSets.verified[0].rowsTotal, bytes: exportSets.verified[0].bytesTotal, targetIdsSha256: exportSets.verified[0].targetIdsSha256, completedAt: exportSets.verified[0].completedAt };
+  const backupName = backups.complete ? backups.complete.name : null;
   const preview = removedCaptainHistoryPurgeReport(batchSize);
   const previewKey = Object.fromEntries(preview.steps.map((row) => [row.key, row.count]));
   const liveKey = {
@@ -17537,7 +17842,7 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
     return res.status(503).json({ success: false, mutation: "none", error: "تعذّر قياس بعض الأعداد؛ لم يتم أي تغيير", countErrors: preview.countErrors });
   }
   if (!preview.targetCount) {
-    return res.json({ success: true, mutation: "none", completed: true, message: "لا توجد حسابات مُخرَجة بهذا السبب؛ لا شيء لِمحوه", backupName, backupCompletedAt: backups.complete.completedAt });
+    return res.json({ success: true, mutation: "none", completed: true, message: "لا توجد حسابات مُخرَجة بهذا السبب؛ لا شيء لِمحوه", safety, backupName, backupCompletedAt: backups.complete ? backups.complete.completedAt : null });
   }
   // Refuse to run while the company's own ledger sits inside the target set - impossible by construction, but this
   // path destroys history, so the invariant is checked rather than assumed.
@@ -17546,6 +17851,39 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
   }
   const ids = preview.targets.map((row) => row.id);
   const phones = preview.targets.map((row) => row.phone).filter(Boolean);
+  if (safety.kind === "row-export") {
+    // The export is the only proof that these rows exist somewhere other than this disk. It has to cover this exact
+    // slice, and the live counts still have to match what was written out, or the batch is refused before any write.
+    const record = exportSets.verified[0];
+    const wanted = ids.map(Number).sort((a, b) => a - b);
+    const part = removedPurgeExportPartFor(record, wanted);
+    if (!part) {
+      return res.status(503).json({
+        success: false,
+        mutation: "none",
+        error: "هذه الدفعة غير مغطاة بأي سجل تصدير مُتحقَّق منه؛ أعد POST /api/admin/captains/purge-export بنفس حجم الشريحة قبل أي محو",
+        exportName: record.name,
+        exportTargets: record.targetCount,
+        batchTargets: wanted.length,
+      });
+    }
+    const live = removedPurgeStepCounts(wanted, phones);
+    const drift = [];
+    for (const [key, count] of Object.entries(live.counts)) {
+      if (Number((part.perStep || {})[key] || 0) !== Number(count)) drift.push({ key, exported: Number((part.perStep || {})[key] || 0), live: Number(count) });
+    }
+    if (live.errors.length || drift.length) {
+      return res.status(503).json({
+        success: false,
+        mutation: "none",
+        error: "تغيّرت صفوف هذه الدفعة منذ التصدير؛ أعد POST /api/admin/captains/purge-export قبل أي محو",
+        exportName: record.name,
+        partName: part.name,
+        countErrors: live.errors,
+        drift,
+      });
+    }
+  }
   const removalIndexes = ensureOutsideGroupRemovalIndexes();
   const purgeIndexes = ensureRemovedCaptainPurgeIndexes();
   // The copy already finished in its own request. Nothing in a batch waits on it, or the batch dies at the edge and
@@ -17567,9 +17905,13 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
     remainingDetachedRows: recount.totals.nullRows,
     completed: recount.targetCount === 0,
     batchSize: batchSize || null,
+    safetyKind: safety.kind,
     backupName,
-    backupCompletedAt: backups.complete.completedAt,
-    backupBytes: backups.complete.bytes,
+    backupCompletedAt: backups.complete ? backups.complete.completedAt : null,
+    backupBytes: backups.complete ? backups.complete.bytes : null,
+    exportName: safety.kind === "row-export" ? safety.name : null,
+    exportRows: safety.kind === "row-export" ? safety.rows : null,
+    exportBytes: safety.kind === "row-export" ? safety.bytes : null,
     indexesEnsured: removalIndexes.length + purgeIndexes.length,
     walletCentsDestroyed: preview.walletCentsDestroyed,
     failures: purge.failures,
@@ -17584,7 +17926,7 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
       "صفوف فُصل عنها اسم المُخرَج: " + summary.detachedRows,
       "بقي بعد الدفعة: " + summary.remainingTargets,
       "أرباح الشركة: " + money(earningsBefore) + " ← " + money(earningsAfter) + " JOD",
-      "النسخة الاحتياطية: " + backupName,
+      backupName ? "النسخة الاحتياطية: " + backupName : "سجل التصدير المُتحقَّق: " + safety.name,
     ],
     ownersOnly: true,
   });

@@ -4,6 +4,7 @@
 // the real write sequence against a real database and asserts what survived: every orders row, the company's own
 // commission ledger rows, and every row whose subject is still an active captain.
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -166,7 +167,7 @@ ins("probe_refs", { id: 1702, captain_ref: null, locked_ref: 4 });
 
 // --- run the block against that database ---------------------------------------
 const sandbox = {
-  db, fs, path, console, JSON, Math, Number, Object, String, Array, Date, Set, Map, Error, Promise, Buffer, setTimeout,
+  db, fs, path, console, JSON, Math, Number, Object, String, Array, Date, Set, Map, Error, Promise, Buffer, setTimeout, crypto,
   DATA_DIR: dir,
   OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON: REASON,
   now: () => STAMP,
@@ -194,6 +195,14 @@ vm.runInNewContext(block
   + "\nthis.backups = removedPurgeBackups;"
   + "\nthis.startBackup = startRemovedPurgeBackup;"
   + "\nthis.backupPromise = () => removedPurgeBackupPromise;"
+  + "\nthis.exportSets = removedPurgeExports;"
+  + "\nthis.buildExport = buildRemovedPurgeExport;"
+  + "\nthis.publicExports = publicRemovedPurgeExportSets;"
+  + "\nthis.stepCounts = removedPurgeStepCounts;"
+  + "\nthis.partFor = removedPurgeExportPartFor;"
+  + "\nthis.startExport = startRemovedPurgeExportBuild;"
+  + "\nthis.exportPromise = () => removedPurgeExportPromise;"
+  + "\nthis.exportSlice = REMOVED_PURGE_EXPORT_SLICE;"
   + "\nthis.confirmation = REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION;", sandbox);
 
 const count = (sql, ...args) => Number(db.prepare(sql).get(...args).count || 0);
@@ -246,6 +255,90 @@ for (const item of sandbox.purgeSteps().concat(sandbox.sweepSteps())) {
 }
 
 // --- the writes ---------------------------------------------------------------
+// --- the row export: the second safety anchor ----------------------------------
+// Server 2's persistent disk cannot hold a second full copy of a multi-gigabyte database, and the owner refused to
+// delete an older copy for room. So the purge also accepts a verified export of exactly the rows it destroys. This
+// drives that contract while the rows still exist: the exported bytes have to be the pre-destruction image.
+const xIds = sandbox.purgeTargets(0).targets.map((row) => Number(row.id));
+const xPhones = sandbox.purgeTargets(0).targets.map((row) => String(row.phone));
+assert.ok(xIds.length >= 2, "the fixture must have targets to export");
+assert.equal(sandbox.exportSets().verified.length, 0, "nothing is exported yet, so nothing may be destroyed");
+assert.equal(sandbox.exportSlice, 200, "the export slice is the same size a batch may take");
+
+const xName = "purge-export-1000";
+const xDir = path.join(dir, "backups", xName);
+fs.mkdirSync(xDir, { recursive: true });
+const xJob = { status: "running", name: xName, startedAt: STAMP, completedAt: null, parts: 0, rowsTotal: 0, bytesTotal: 0, error: null };
+const xManifest = sandbox.buildExport(xName, xDir, xJob);
+assert.equal(xManifest.targetCount, xIds.length, "the manifest covers every current target");
+assert.equal(xManifest.parts.length, 1, "one slice holds the whole fixture");
+assert.ok(fs.existsSync(path.join(xDir, "manifest.json")) && fs.existsSync(path.join(xDir, "manifest.sha256")), "the manifest and its hash are files too");
+
+const xList = sandbox.exportSets();
+assert.equal(xList.verified.length, 1, "a freshly written export verifies");
+assert.deepEqual(Array.from(xList.unverified), [], "and nothing is refused");
+const xRecord = xList.verified[0];
+
+const xText = fs.readFileSync(path.join(xDir, xRecord.parts[0].name), "utf8");
+const xLines = xText.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+assert.equal(xLines.length, Number(xRecord.parts[0].lines), "the manifest line count is the file's line count");
+assert.equal(crypto.createHash("sha256").update(Buffer.from(xText)).digest("hex"), xRecord.parts[0].sha256, "the part hashes to what the manifest recorded");
+const xByStep = {};
+for (const item of xLines) xByStep[item.step] = (xByStep[item.step] || 0) + 1;
+
+const xUserIds = xLines.filter((item) => item.step === "users").map((item) => Number(item.row.id)).sort((a, b) => a - b);
+assert.deepEqual(Array.from(xUserIds), Array.from(xIds).sort((a, b) => a - b), "every target account row is exported before it is destroyed");
+assert.equal(xByStep.users, xIds.length);
+
+const xLiveLedger = count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id IN (" + xIds.join(",") + ")");
+assert.equal(xByStep.wallet_ledger, xLiveLedger, "the exported money rows are exactly the rows the purge deletes");
+assert.equal(xRecord.perStepTotal.wallet_ledger, xLiveLedger, "and the manifest totals agree");
+assert.ok(xLiveLedger > 0, "at least one target must carry wallet history in the fixture");
+for (const item of xLines.filter((row) => row.step === "wallet_ledger")) {
+  assert.equal(xIds.indexOf(Number(item.row.user_id)) >= 0, true, "no ledger row outside the target set may enter the export");
+}
+const xExportedCents = xLines.filter((item) => item.step === "wallet_ledger").reduce((total, item) => total + Number(item.row.amount_cents || 0), 0);
+const xLiveCents = Number(count("SELECT COALESCE(SUM(amount_cents),0) AS count FROM wallet_ledger WHERE user_id IN (" + xIds.join(",") + ")"));
+assert.equal(xExportedCents, xLiveCents, "the export keeps the amounts, not just the row count");
+
+const xLiveNotes = count("SELECT COUNT(*) AS count FROM notifications WHERE recipient_phone IN ('" + xPhones.join("','") + "')");
+assert.equal(xByStep.notifications, xLiveNotes, "notification rows are exported under the same predicate");
+
+const xCounts = sandbox.stepCounts(xIds, xPhones);
+assert.deepEqual(Array.from(xCounts.errors), [], "every step is countable");
+for (const key of Object.keys(xCounts.counts)) {
+  assert.equal(Number(xRecord.parts[0].perStep[key]), Number(xCounts.counts[key]), key + ": the export matches the live count");
+}
+
+assert.ok(sandbox.partFor(xRecord, xIds), "the whole fixture is one exported slice");
+assert.equal(sandbox.partFor(xRecord, xIds.concat([999999])), null, "an account that was never exported is not covered");
+assert.equal(sandbox.partFor(xRecord, xIds.slice(1)), null, "a shorter slice is not the same slice");
+
+fs.appendFileSync(path.join(xDir, xRecord.parts[0].name), "{\"step\":\"x\",\"kind\":\"delete\",\"row\":{}}\n");
+const xTampered = sandbox.exportSets();
+assert.equal(xTampered.verified.length, 0, "a drifted part is not a verified export");
+assert.equal(xTampered.unverified.length, 1);
+assert.ok(xTampered.unverified[0].reasons.some((text) => /part drifted/.test(text)), "and the refusal says why");
+
+const xName2 = "purge-export-2000";
+const xDir2 = path.join(dir, "backups", xName2);
+fs.mkdirSync(xDir2, { recursive: true });
+const xJob2 = { status: "running", name: xName2, startedAt: STAMP, completedAt: null, parts: 0, rowsTotal: 0, bytesTotal: 0, error: null };
+sandbox.buildExport(xName2, xDir2, xJob2);
+const xRebuilt = sandbox.exportSets();
+assert.equal(xRebuilt.verified.length, 1, "the rebuilt export verifies");
+assert.equal(xRebuilt.verified[0].name, xName2, "and the newest one is what a batch cites");
+assert.equal(xRebuilt.unverified.length, 1, "the damaged set is still reported, never hidden");
+const xGoodText = fs.readFileSync(path.join(xDir2, xRebuilt.verified[0].parts[0].name), "utf8");
+const xGoodLines = xGoodText.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+assert.equal(crypto.createHash("sha256").update(Buffer.from(xGoodText)).digest("hex"), xRebuilt.verified[0].parts[0].sha256);
+
+const xPublic = sandbox.publicExports(xRebuilt);
+assert.equal(xPublic.verifiedCount, 1);
+assert.equal(typeof xPublic.newest.targetIdsSha256, "string");
+assert.equal(xPublic.newest.targetIds, undefined, "previews stay small");
+console.log("removed captain history purge: the row-export anchor contract passed");
+
 const targets = sandbox.purgeTargets(0).targets;
 const ids = targets.map((row) => Number(row.id));
 const phones = targets.map((row) => String(row.phone));
@@ -369,6 +462,29 @@ for (const column of ["orders.producer_user_id", "orders.captain_user_id", "wall
   assert.equal(second.files.length, 2);
   assert.ok(second.complete.bytes > 0 && second.complete.name === second.job.name, "the newest completed copy is the one reported");
   console.log("removed captain history purge: the backup contract passed");
+  // --- the export really is a restore point --------------------------------------
+  // One destroyed money row is put back out of the exported bytes. If the image were not usable, this is where it shows.
+  const xSavedText = fs.readFileSync(path.join(xDir2, sandbox.exportSets().verified[0].parts[0].name), "utf8");
+  const xSaved = xSavedText.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((item) => item.step === "wallet_ledger");
+  assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id IN (" + xIds.join(",") + ")"), 0, "the purge really destroyed those money rows");
+  assert.ok(xSaved.length > 0, "and the export still holds them");
+  const xSavedUsers = fs.readFileSync(path.join(xDir2, sandbox.exportSets().verified[0].parts[0].name), "utf8")
+    .split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((item) => item.step === "users");
+  const xOwner = xSavedUsers.find((item) => Number(item.row.id) === Number(xSaved[0].row.user_id));
+  assert.ok(xOwner, "the account the money row belongs to is in the same export");
+  const xUserCols = Object.keys(xOwner.row);
+  db.prepare("INSERT INTO users (" + xUserCols.join(",") + ") VALUES (@" + xUserCols.join(",@") + ")").run(xOwner.row);
+  const xRow = Object.assign({}, xSaved[0].row);
+  const xCols = Object.keys(xRow);
+  db.prepare("INSERT INTO wallet_ledger (" + xCols.join(",") + ") VALUES (@" + xCols.join(",@") + ")").run(xRow);
+  const xBack = db.prepare("SELECT * FROM wallet_ledger WHERE id=?").get(Number(xRow.id));
+  assert.ok(xBack, "the exported row is insertable, so the image is a real restore point");
+  assert.equal(Number(xBack.amount_cents), Number(xRow.amount_cents), "with the amount it was written with");
+  db.prepare("DELETE FROM wallet_ledger WHERE id=?").run(Number(xRow.id));
+  db.prepare("DELETE FROM users WHERE id=?").run(Number(xOwner.row.id));
+  console.log("removed captain history purge: the export restores destroyed rows");
+
+
   fs.rmSync(dir, { recursive: true, force: true });
 })().catch((error) => {
   console.error(error);
@@ -388,7 +504,7 @@ assert.ok(block.includes('app.post("/api/admin/captains/purge-backup", requireOw
 assert.ok(block.includes('app.get("/api/admin/captains/purge-backup", requireOwnerAdmin'), "and it can be polled read-only");
 assert.equal(block.includes("await db.backup("), false, "no batch request may wait on the copy: the edge cut the first attempt and the write never ran");
 assert.equal(block.includes("skipBackup"), false, "a batch cannot opt out of the backup requirement any more");
-assert.ok(block.includes("if (!backups.complete)"), "a batch refuses while no completed copy exists");
+assert.ok(block.includes("if (!backups.complete && !exportSets.verified.length)"), "a batch refuses while neither a completed copy nor a verified export exists");
 assert.ok(block.includes("Number(marker.bytes) === bytes"), "a marker whose size disagrees with the file is not a backup");
 assert.ok(block.includes("reason: \"already_running\""), "concurrent copies are refused instead of piling up");
 assert.ok(block.includes("backup: removedPurgeBackups(),"), "the preview states whether a completed copy exists");
@@ -405,6 +521,19 @@ assert.ok(block.includes("nextExpected:"), "the response must report the counts 
 assert.ok(block.includes("completed: recount.targetCount === 0"), "the run must state when nothing is left");
 assert.ok(block.includes("ownersOnly: true"), "the confirmation notice goes to the owner only");
 assert.ok(block.includes('mutation: "none"'), "every refusal path must state that nothing changed");
+
+assert.ok(block.includes('app.post("/api/admin/captains/purge-export", requireOwnerAdmin'), "the row export is its own owner-only request");
+assert.ok(block.includes('app.get("/api/admin/captains/purge-export", requireOwnerAdmin'), "and it can be polled read-only");
+assert.ok(block.includes('app.get("/api/admin/captains/purge-export/part", requireOwnerAdmin'), "the parts are served only from a verified manifest");
+assert.ok(block.includes("if (!backups.complete && !exportSets.verified.length)"), "a batch needs a completed copy or a verified export, never neither");
+assert.ok(block.includes('kind: "row-export"'), "and it says which anchor it ran under");
+assert.ok(block.includes("const part = removedPurgeExportPartFor(record, wanted);"), "every batch account has to sit in an exported slice");
+assert.ok(block.includes("تغيّرت صفوف هذه الدفعة منذ التصدير"), "rows that changed since the export refuse the batch");
+assert.ok(block.includes("crypto.createHash(\"sha256\").update(buffer).digest(\"hex\") !== part.sha256"), "a part is served only while it still hashes right");
+assert.ok(block.includes("if (!sql) continue;"), "only steps with a countable predicate are exported");
+assert.ok(block.includes("counts[item.key] = rows.length;"), "the export counts what it writes, step by step");
+assert.ok(block.includes("export: publicRemovedPurgeExportSets(removedPurgeExports()),"), "the preview states whether a verified export exists");
+assert.equal(block.includes("fs.rmSync(exportSetDir"), false, "the export never deletes the safety record it wrote");
 
 // Destruction boundaries.
 for (const forbidden of ["DELETE FROM orders", "DELETE FROM order_confirmation_deliveries", "DELETE FROM topup_cards",
