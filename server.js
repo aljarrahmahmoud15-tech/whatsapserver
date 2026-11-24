@@ -18318,6 +18318,86 @@ async function whatsappMessageRevokeCapability(message) {
     return { checked: false, found: false, canRevoke: false, reason: String(error?.message || error).slice(0, 160) };
   }
 }
+// Owner-approved 2026-11-24 (unit H, live verification). A successful group-admin revoke does not keep the
+// message under the id the bot holds: WhatsApp Web rekeys it as a «revoked» stub that still carries the
+// original send timestamp and the original author. Live trace 2026-11-24 (after cf2e364): 18:07:35, 18:23:47,
+// 18:24:20, 18:24:38, 18:47:01 and 18:47:18 each show a revoked stub 4-5 s before the matching audit line that
+// reported message_not_found, and the direct path logs delete(true) followed by the original id vanishing from
+// the store. The messages were therefore removed for everyone while the bot could only report a failure, which
+// also suppressed the approved deletion-reason notice.
+// This read-only probe confirms a revoke from that stub. It is a POSITIVE signal — same official group chat,
+// same author part of the serialized id, type "revoked", timestamp of the original message — and it is only
+// accepted when the original id is no longer present as a live (non-revoked) message. Absence on its own is
+// still never treated as a confirmed deletion.
+function whatsappSerializedIdAuthorParts(values) {
+  const parts = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const segments = text.split("_");
+    if (segments.length >= 4 && /@g\.us$/.test(segments[1])) parts.add(segments[2]);
+    // A bare author jid (from message.author / id.participant) is equally usable.
+    if (segments.length === 1 && /@(c\.us|lid|s\.web)$/.test(text)) parts.add(text);
+  }
+  return [...parts].filter((part) => part && !/@g\.us$/.test(part));
+}
+async function whatsappRevokeStubEvidence({ groupId, authorParts, targetIds, targetTimestamp, startedAtMs } = {}) {
+  const chatId = String(groupId || "").trim();
+  const authors = (Array.isArray(authorParts) ? authorParts : []).map((value) => String(value || "").trim()).filter(Boolean);
+  const ids = (Array.isArray(targetIds) ? targetIds : []).map((value) => String(value || "").trim()).filter(Boolean);
+  if (!chatId || !ids.length) return { checked: false, found: false, reason: "evidence_input_incomplete" };
+  if (!client?.pupPage || typeof client.pupPage.evaluate !== "function") return { checked: false, found: false, reason: "page_unavailable" };
+  const targetTs = Number(targetTimestamp || 0) || 0;
+  const startSec = Math.floor((Number(startedAtMs || 0) || Date.now()) / 1000);
+  try {
+    const evidence = await withTimeout(client.pupPage.evaluate(async (payload) => {
+      try {
+        const collections = window.require("WAWebCollections");
+        const wid = window.require("WAWebWidFactory").createWid(payload.chatId);
+        const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
+        if (!chat?.msgs?.getModelsArray) return { checked: true, found: false, reason: "chat_history_unavailable" };
+        let targetLive = false;
+        for (const id of payload.ids) {
+          const model = collections.Msg.get(id);
+          if (model && String(model.type || "").toLowerCase() !== "revoked") { targetLive = true; break; }
+        }
+        if (targetLive) return { checked: true, found: false, targetAbsent: false, reason: "target_still_live" };
+        const digits = (value) => String(value || "").replace(/[^0-9]/g, "");
+        const nowSec = Math.floor(Date.now() / 1000);
+        const fromSec = payload.targetTs > 0 ? payload.targetTs - 5 : Math.max(0, payload.startSec - 120);
+        const toSec = payload.targetTs > 0 ? payload.targetTs + 5 : nowSec + 30;
+        const authorTokens = payload.authors.map(digits);
+        const models = chat.msgs.getModelsArray();
+        let revokedInWindow = 0;
+        let matched = null;
+        for (const model of models) {
+          if (!model || String(model.type || "").toLowerCase() !== "revoked") continue;
+          if (model.id?.fromMe === true) continue;
+          const serialized = String(model.id?._serialized || "");
+          const segments = serialized.split("_");
+          const authorToken = segments.length >= 4 ? segments[2] : String(model.author || model.id?.participant || "");
+          const ts = Number(model.t || model.timestamp || 0) || 0;
+          if (!ts || ts < fromSec || ts > toSec) continue;
+          revokedInWindow += 1;
+          const authorDigits = digits(authorToken);
+          const authorMatched = !authorTokens.length || (authorDigits && authorTokens.indexOf(authorDigits) >= 0) || authorTokens.indexOf(authorToken) >= 0;
+          if (!authorMatched) continue;
+          if (!matched || ts > matched.stubTimestamp) matched = { stubTimestamp: ts, stubIdTail: serialized.slice(-4) };
+        }
+        if (!matched) {
+          return { checked: true, found: false, targetAbsent: true, revokedInWindow, reason: authorTokens.length && revokedInWindow ? "revoked_stub_author_mismatch" : revokedInWindow ? "revoked_stub_timestamp_mismatch" : "no_revoked_stub_in_window" };
+        }
+        return { checked: true, found: true, targetAbsent: true, revokedInWindow, ...matched, reason: "revoked_stub_confirmed" };
+      } catch (error) {
+        return { checked: false, found: false, reason: String(error?.message || error).slice(0, 160) };
+      }
+    }, { chatId, ids, authors, targetTs, startSec }), 12000, null);
+    if (!evidence || typeof evidence !== "object") return { checked: false, found: false, reason: "revoke_stub_probe_timeout" };
+    return evidence;
+  } catch (error) {
+    return { checked: false, found: false, reason: String(error?.message || error).slice(0, 160) };
+  }
+}
 async function verifyWhatsAppMessageDeletion(message, messageId, timeoutMs = 5000) {
   if (!message) return { verified: false, reason: "message_unavailable", attempts: 0 };
   const verificationDelays = [0, 500, 1200];
@@ -18439,6 +18519,9 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   let result;
   let searchFallbackMessageId = null;
   let directRevokeProbe = null;
+  // The revoke-stub confirmation below is only allowed to credit an action the bot actually performed.
+  let deleteAttempted = false;
+  let deleteStartedAtMs = 0;
   const persistedReceipt = getPersistedWhatsAppMessageReceipt(messageId);
   let originalMessage = context.message || getCachedIncomingWhatsAppMessage(messageId);
   // Incoming LID events can carry a stale/plain wrapper whose delete() method
@@ -18459,6 +18542,21 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
   if (persistedReceipt) {
     console.log(`[WhatsApp][MessageDelete] persistent_receipt_found message=${deletionKey} variants=${persistedReceipt.messageIds.length}`);
   }
+  const revokeAuthorParts = whatsappSerializedIdAuthorParts([
+    messageId,
+    ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
+    ...refreshIds,
+    originalMessage?.id?._serialized,
+    originalMessage?.author,
+    originalMessage?.id?.participant,
+  ]);
+  const evidenceTargetIds = [...new Set([
+    messageId,
+    ...refreshIds,
+    ...messageIdLookupVariants(messageId),
+    ...(Array.isArray(context.messageIdCandidates) ? context.messageIdCandidates : []),
+    ...(persistedReceipt?.messageIds || []),
+  ].map((value) => String(value || "").trim()).filter(Boolean))];
   if (originalMessage && typeof originalMessage.delete === "function") {
     console.log(`[WhatsApp][MessageDelete] original_message_available message=${deletionKey} source=${context.message ? "context" : "cache"}`);
     const directDeleteDelays = [0, 400, 1000];
@@ -18475,6 +18573,8 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
           console.warn(`[WhatsApp][MessageDelete] direct_skipped_delete_for_me_guard message=${deletionKey} attempt=${attempt + 1}/${directDeleteDelays.length} found=${revokeCapability.found === true} inStore=${revokeCapability.inStore === true} canSenderRevoke=${revokeCapability.canSenderRevoke === true} canAdminRevoke=${revokeCapability.canAdminRevoke === true} reason=${revokeCapability.reason}`);
           break;
         }
+        deleteAttempted = true;
+        deleteStartedAtMs = Date.now();
         const directDeleted = await withTimeout(originalMessage.delete(true), 15000, false);
         const verification = await verifyWhatsAppMessageDeletion(originalMessage, messageId);
         // WhatsApp Web can revoke the message successfully while the WWebJS
@@ -18531,6 +18631,8 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
             console.warn(`[WhatsApp][MessageDelete] chat_history_skipped_delete_for_me_guard message=${deletionKey} attempt=${index + 1}/${liveCandidates.length} found=${candidateCapability.found === true} canSenderRevoke=${candidateCapability.canSenderRevoke === true} canAdminRevoke=${candidateCapability.canAdminRevoke === true} reason=${candidateCapability.reason}`);
             continue;
           }
+          deleteAttempted = true;
+          deleteStartedAtMs = Date.now();
           const deletedFromHistory = await withTimeout(candidate.delete(true), 15000, false);
           const verification = await verifyWhatsAppMessageDeletion(candidate, messageId);
           console.log(`[WhatsApp][MessageDelete] chat_history_result message=${deletionKey} ok=${verification.verified} deleteReturn=${deletedFromHistory === true} verification=${verification.reason} attempt=${index + 1}/${liveCandidates.length}`);
@@ -18581,6 +18683,10 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
         const searchCapability = await whatsappMessageRevokeCapability(candidate);
         if (!searchCapability.canRevoke) {
           console.warn(`[WhatsApp][MessageDelete] search_skipped_delete_for_me_guard message=${deletionKey} found=${searchCapability.found === true} canSenderRevoke=${searchCapability.canSenderRevoke === true} canAdminRevoke=${searchCapability.canAdminRevoke === true} reason=${searchCapability.reason}`);
+        }
+        if (searchCapability.canRevoke && typeof candidate.delete === "function") {
+          deleteAttempted = true;
+          deleteStartedAtMs = Date.now();
         }
         const deletedFromSearch = typeof candidate.delete === "function" && searchCapability.canRevoke
           ? await withTimeout(candidate.delete(true), 15000, false)
@@ -18670,6 +18776,35 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     }
     }, lookupIds), 30000, { ok: false, reason: "page_evaluation_timeout", lookupIds });
   }
+  // Final, positive confirmation of a revoke-for-everyone. Only reached when every path above reported a
+  // failure AND the bot really issued delete(true) here. It credits the deletion only when the official
+  // group contains a «revoked» message by the same author with the original send timestamp while the target
+  // id is no longer live in the store. A delete-for-me leaves no such stub, so it still fails, and a probe
+  // that cannot answer fails closed.
+  let revokeStubEvidence = null;
+  if (!result?.ok && deleteAttempted && deletionContext.groupId && revokeAuthorParts.length) {
+    revokeStubEvidence = await whatsappRevokeStubEvidence({
+      groupId: deletionContext.groupId,
+      authorParts: revokeAuthorParts,
+      targetIds: evidenceTargetIds,
+      targetTimestamp: Number(originalMessage?.timestamp || originalMessage?.t || 0) || null,
+      startedAtMs: deleteStartedAtMs,
+    });
+    console.log(`[WhatsApp][MessageDelete] revoke_stub_evidence message=${deletionKey} found=${revokeStubEvidence.found === true} targetAbsent=${revokeStubEvidence.targetAbsent === true} stubs=${revokeStubEvidence.revokedInWindow ?? 0} reason=${revokeStubEvidence.reason}`);
+    if (revokeStubEvidence.found === true) {
+      result = {
+        ok: true,
+        requested: true,
+        revoked: true,
+        method: "revoke_stub_evidence",
+        attempts: Number(result?.attempts || 1) || 1,
+        acknowledgement: "revoked_stub_confirmed",
+        priorReason: result?.reason || null,
+        lookupIds: evidenceTargetIds.slice(0, 12),
+        revokeStub: { stubTimestamp: revokeStubEvidence.stubTimestamp || null, revokedInWindow: revokeStubEvidence.revokedInWindow ?? null },
+      };
+    }
+  }
   const outcome = result?.ok ? "success" : "failure";
   console.log(`[WhatsApp][MessageDelete] ${outcome} message=${deletionKey} reason=${deletionContext.reason} result=${String(result?.reason || (result?.revoked ? "revoked" : "not_revoked"))} requested=${Boolean(result?.requested)} revoked=${Boolean(result?.revoked)}`);
   audit("whatsapp.message_deletion", "message", String(messageId || ""), {
@@ -18678,6 +18813,7 @@ async function deleteWhatsAppMessageForEveryone(messageId, context = {}) {
     outcome,
     deletionResult: result || null,
     directRevokeProbe,
+    revokeStubEvidence,
   });
   return result || { ok: false, reason: "empty_deletion_result" };
 }
