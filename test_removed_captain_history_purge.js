@@ -244,6 +244,10 @@ assert.equal(preview.walletCentsDestroyed, 2100, "the removed accounts' balances
 assert.equal(preview.money.inactiveTombstonesWithOtherReasons, 1, "a tombstone from another decision is counted as untouched, not as a target");
 assert.equal(preview.money.liveAgainWithSameReasonProtected, 1, "the re-registered account is reported as protected");
 assert.equal(preview.countErrors.length, 0, "no count may fail silently - a swallowed error would let the owner confirm a wrong number");
+// The write path must bind the stored number, never the screen formatting: "+" + phone matches no stored phone.
+const rawPhones = db.prepare("SELECT phone FROM users WHERE role='captain' AND is_bot=0 AND active=0 AND account_status<>'merged' AND archive_reason=? ORDER BY id").all(REASON).map((row) => String(row.phone));
+assert.deepEqual(Array.from(preview.targetPhones), Array.from(rawPhones.filter(Boolean)), "the report hands the writes the stored numbers");
+assert.equal(preview.targetPhones.some((p) => String(p).startsWith("+")), false, "a plus-prefixed number would silently match nothing");
 assert.equal(stepCount(preview, "captain_merge_history"), 1, "a step with two placeholders must bind both, or the preview undercounts");
 
 // Structural invariant behind that bug: every statement needs exactly one bound value per placeholder.
@@ -532,6 +536,9 @@ assert.ok(block.includes("تغيّرت صفوف هذه الدفعة منذ ال�
 assert.ok(block.includes("crypto.createHash(\"sha256\").update(buffer).digest(\"hex\") !== part.sha256"), "a part is served only while it still hashes right");
 assert.ok(block.includes("if (!sql) continue;"), "only steps with a countable predicate are exported");
 assert.ok(block.includes("counts[item.key] = rows.length;"), "the export counts what it writes, step by step");
+assert.ok(block.includes("const phones = preview.targetPhones;"), "the batch binds the stored phone numbers to the deletes");
+assert.equal(block.includes("const phones = preview.targets.map((row) => row.phone)"), false, "display-formatted phones must never reach the write path");
+assert.ok(block.includes("targetPhones: targets.map((row) => String(row.phone || \"\")).filter(Boolean),"), "the report exposes them separately from the display list");
 assert.ok(block.includes("export: publicRemovedPurgeExportSets(removedPurgeExports()),"), "the preview states whether a verified export exists");
 assert.equal(block.includes("fs.rmSync(exportSetDir"), false, "the export never deletes the safety record it wrote");
 

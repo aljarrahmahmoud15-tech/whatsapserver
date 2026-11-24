@@ -17673,6 +17673,12 @@ function removedCaptainHistoryPurgeReport(limit = 0) {
   const liveAgainWithSameReason = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND archive_reason=?").get(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON).count || 0);
   return {
     targets: targets.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone), balance: money(Number(row.wallet_cents || 0)), accountStatus: String(row.account_status || "") })),
+    // The phone-bound writes (their notifications and the confirmations attributed to their number) have to be given
+    // the number exactly as it is stored. displayPhone only prefixes a plus for the screen, and a "+962..." bound
+    // against recipient_phone matches nothing - which would have left 3,979 notification rows and 130 confirmation
+    // rows holding these numbers after the owner's order was called executed. The export counted them with the raw
+    // value, so the drift guard caught it before any write: mutation none, nothing destroyed.
+    targetPhones: targets.map((row) => String(row.phone || "")).filter(Boolean),
     targetCount: ids.length,
     skippedProtected: skippedProtected.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone) })),
     walletCentsDestroyed: targets.reduce((total, row) => total + Number(row.wallet_cents || 0), 0),
@@ -17850,7 +17856,7 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
     return res.status(503).json({ success: false, mutation: "none", error: "تعذّر التحقق من فصل حساب الشركة عن مجموعة المُخرَجين؛ لم يتم أي تغيير" });
   }
   const ids = preview.targets.map((row) => row.id);
-  const phones = preview.targets.map((row) => row.phone).filter(Boolean);
+  const phones = preview.targetPhones;
   if (safety.kind === "row-export") {
     // The export is the only proof that these rows exist somewhere other than this disk. It has to cover this exact
     // slice, and the live counts still have to match what was written out, or the batch is refused before any write.
