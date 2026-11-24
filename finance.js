@@ -5,6 +5,7 @@
 //   with a 16% total debit from the confirming executor wallet.
 // - An "order" / "اوردر" request uses 17% for the posting captain and 3% for the company,
 //   with a 20% total debit from the confirming executor wallet.
+// These are defaults only: server.js passes the live owner-set rates (normal 12% + 3% = 15% since 2026-11-24).
 const REGULAR_PRODUCER_RATE_BPS = 1300;
 const COMPANY_FROM_PRODUCER_RATE_BPS = 300;
 const ORDER_PRODUCER_RATE_BPS = 1700;

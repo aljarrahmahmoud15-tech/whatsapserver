@@ -199,6 +199,9 @@ const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || `aljarah-${
 // Settlement policy: the value after the fare marker is external and never credits the executor.
 // Owner-approved 2026-11-22: a normal request debits 13% downloader + 3% company = 16% of the executor wallet.
 // An «أوردر» request debits 17% downloader + 3% company = 20%. The company share is 3.00% for both kinds.
+// These constants are fresh-database defaults only. Live rates are read from the settings table via
+// currentSettlementPolicy(); the owner changed the normal request to 12% + 3% = 15% on 2026-11-24 through
+// PATCH /api/admin/settings/settlement (orders unchanged at 17% + 3% = 20%).
 const COMPANY_RATE_BPS = 300;
 const PRODUCER_RATE_BPS = 1300;
 const SPECIAL_ORDER_RATE_BPS = 1700;

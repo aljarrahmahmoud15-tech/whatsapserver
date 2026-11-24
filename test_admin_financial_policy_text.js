@@ -30,5 +30,13 @@ assert.equal(ORDER_PRODUCER_RATE_BPS, 1700);
 assert.equal(ORDER_COMPANY_RATE_BPS, 300);
 
 assert.match(admin, /id="settlementOrderProducerRate"/);
+// The owner card must not hard-code rates: the live values come from #settlementPolicySummary.
+const ownerCardStart = admin.indexOf('id="ownerSettingsCard"');
+const ownerCardIntro = admin.slice(ownerCardStart, admin.indexOf('</p>', ownerCardStart));
+assert.ok(ownerCardStart > 0);
+assert.doesNotMatch(ownerCardIntro, /\d+\s*%/);
+assert.match(ownerCardIntro, /تُقرأ مباشرة من الإعدادات الحيّة/);
+assert.match(admin, /id="settlementPolicySummary"/);
+assert.match(admin, /summary\.textContent=`الطلب العادي: \$\{settlementPolicyState\?\.producerRatePercent/);
 assert.match(admin, /orderProducerRatePercent:orderProducer/);
 console.log('admin financial policy text guard passed: normal 13% + 3%, order 17% + 3%');
