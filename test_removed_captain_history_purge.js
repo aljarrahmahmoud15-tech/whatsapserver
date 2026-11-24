@@ -59,6 +59,8 @@ assert.ok(schema.includes("FOREIGN KEY(ledger_id) REFERENCES wallet_ledger(id)")
 const P = (head, tail) => "962" + head + tail;
 const T1 = P("790", "000555");
 const T2 = P("790", "000666");
+const T3 = P("790", "000557");
+const T4 = P("790", "000558");
 const A1 = P("790", "000333");
 const A2 = P("790", "000444");
 const BOT = P("799", "999000");
@@ -78,8 +80,14 @@ ins("users", { id: 6, phone: T2, name: "removed-T2", role: "captain", wallet_cen
 // Neither of these may ever enter the target set: a merged account and a tombstone from a different decision.
 ins("users", { id: 7, phone: P("790", "000777"), name: "merged", role: "captain", wallet_cents: 0, active: 0, is_bot: 0, created_at: STAMP, updated_at: STAMP, account_status: "merged", archive_reason: REASON });
 ins("users", { id: 8, phone: P("790", "000888"), name: "other-reason", role: "captain", wallet_cents: 700, active: 0, is_bot: 0, created_at: STAMP, updated_at: STAMP, account_status: "deleted", archived_at: STAMP, archive_reason: "سبب آخر" });
+// This is the live shape the owner's 1007 removals actually have today: the debt policy re-labelled the
+// tombstone 'suspended' (active=0, archived_at and the reason left alone). It is still the same decision.
+ins("users", { id: 9, phone: T3, name: "removed-T3-suspended", role: "captain", wallet_cents: 900, active: 0, is_bot: 0, created_at: STAMP, updated_at: STAMP, account_status: "suspended", archived_at: STAMP, archive_reason: REASON });
+// The opposite case, and it exists in production: tombstoned, then registered again. A live account keeps
+// its whole record, even though the old reason is still written on it.
+ins("users", { id: 10, phone: T4, name: "re-registered", role: "captain", wallet_cents: 0, active: 1, is_bot: 0, created_at: STAMP, updated_at: STAMP, account_status: "active", archived_at: STAMP, archive_reason: REASON });
 
-const phoneOf = (id) => ({ 1: P("770", "000001"), 2: BOT, 3: A1, 4: A2, 5: T1, 6: T2, 7: P("790", "000777"), 8: P("790", "000888") })[id] || null;
+const phoneOf = (id) => ({ 1: P("770", "000001"), 2: BOT, 3: A1, 4: A2, 5: T1, 6: T2, 7: P("790", "000777"), 8: P("790", "000888"), 9: T3, 10: T4 })[id] || null;
 const order = (id, producer, captain, status, confirmedPhone) => ins("orders", {
   id, order_no: 100 + id, source_message_id: "ORDER-" + id, group_id: "group", raw_text: "السعر 15", price_cents: 1500,
   order_kind: id === 103 ? "order" : "normal", producer_user_id: producer, captain_user_id: captain, status,
@@ -93,6 +101,7 @@ order(102, 3, 5, "completed", A1);   // active downloader, removed executor -> s
 order(103, 5, 6, "accepted", T1);    // both sides removed
 order(104, 3, 4, "accepted", A1);    // fully active, the control row
 order(105, 5, null, "open", T1);     // removed downloader only, never accepted
+order(106, 3, 9, "accepted", A1);    // executed by the re-labelled tombstone
 
 const settlement = (id, orderId, captain, producer, charged, approval) => ins("order_settlements", {
   id, order_id: orderId, status: "applied", idempotency_key: "SET-" + id, captain_user_id: captain, producer_user_id: producer,
@@ -103,6 +112,7 @@ settlement(1, 101, 3, 5, 3, 5);
 settlement(2, 102, 5, 3, 5, 3);
 settlement(3, 103, 5, 6, 5, 6);
 settlement(4, 104, 3, 4, 3, 4);
+settlement(5, 106, 9, 3, 9, 3);   // the suspended tombstone as executor
 
 const ledger = (id, user, orderId, type, amount) => ins("wallet_ledger", {
   id, user_id: user, order_id: orderId, type, amount_cents: amount, balance_after_cents: amount, reference: "REF-" + id, created_at: STAMP,
@@ -116,6 +126,8 @@ ledger(6, 5, null, "topup", 1200);
 ledger(7, 6, null, "topup", 500);
 ledger(8, 4, 104, "commission_credit", 400);
 ledger(9, 8, null, "topup", 700);
+ledger(10, 9, null, "topup", 900);
+ledger(11, 10, null, "topup", 400);  // the re-registered account's own money history
 
 ins("order_candidates", { id: 201, source_message_id: "CAND-1", group_id: "group", raw_text: "السعر 15", price_cents: 1500, producer_user_id: 5, status: "finalized", final_order_id: 101, created_at: STAMP, updated_at: STAMP });
 ins("order_candidates", { id: 202, source_message_id: "CAND-2", group_id: "group", raw_text: "السعر 20", price_cents: 2000, producer_user_id: 3, pending_captain_user_id: 5, status: "pending", created_at: STAMP, updated_at: STAMP });
@@ -139,8 +151,11 @@ ins("captain_merge_history", { id: 1202, source_captain_id: 8, target_captain_id
 ins("audit_logs", { id: 1301, actor_user_id: 5, action: "captain.login", entity_type: "user", entity_id: "5", created_at: STAMP });
 ins("audit_logs", { id: 1302, actor_user_id: 3, action: "captain.login", entity_type: "user", entity_id: "3", created_at: STAMP });
 ins("audit_logs", { id: 1303, actor_user_id: null, action: "captain.outside_group.unlinked", entity_type: "user", entity_id: "5", created_at: STAMP });
+ins("audit_logs", { id: 1304, actor_user_id: 9, action: "captain.login", entity_type: "user", entity_id: "9", created_at: STAMP });
 ins("notifications", { id: 1401, recipient_phone: T1, recipient_role: "captain", event: "x", title: "t", message: "m", created_at: STAMP });
 ins("notifications", { id: 1402, recipient_phone: A1, recipient_role: "captain", event: "x", title: "t", message: "m", created_at: STAMP });
+ins("notifications", { id: 1403, recipient_phone: T3, recipient_role: "captain", event: "x", title: "t", message: "m", created_at: STAMP });
+ins("notifications", { id: 1404, recipient_phone: T4, recipient_role: "captain", event: "x", title: "t", message: "m", created_at: STAMP });
 ins("whatsapp_identities", { id: 1501, user_id: 5, phone: T1, whatsapp_lid: "555@lid", source: "webjs", verified_at: STAMP, last_seen_at: STAMP });
 ins("captain_phone_aliases", { phone: P("790", "002222"), captain_user_id: 5, created_at: STAMP });
 ins("captain_auth_challenges", { id: 1601, captain_user_id: 5, phone: T1, purpose: "login", code_hash: "z", expires_at: STAMP, created_at: STAMP });
@@ -185,33 +200,37 @@ const stepCount = (report, key) => Number((report.steps.find((row) => row.key ==
 const preview = sandbox.report(0);
 assert.equal(sandbox.confirmation, "PURGE_REMOVED_CAPTAIN_FINANCIAL_HISTORY");
 // Values built inside the vm context belong to another realm, so identity is compared through this realm.
-assert.deepEqual(Array.from(preview.targets.map((row) => Number(row.id)).sort((a, b) => a - b)), [5, 6], "only the outside-group tombstones are targets");
-assert.equal(preview.targetCount, 2);
+assert.deepEqual(Array.from(preview.targets.map((row) => Number(row.id)).sort((a, b) => a - b)), [5, 6, 9], "the recorded reason, not the status, decides the target set");
+assert.equal(preview.targetCount, 3);
+assert.deepEqual(Array.from(new Set(preview.targets.map((row) => String(row.accountStatus)))).sort(), ["deleted", "suspended"],
+  "both a fresh tombstone and one the debt policy re-labelled are targets");
+assert.equal(preview.targets.some((row) => Number(row.id) === 10), false, "an account that is live again is never a target");
 assert.equal(preview.skippedProtected.length, 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM users WHERE id IN (5,6,7,8) AND role='captain'"), 4, "merged and other-reason accounts exist but are out of scope");
-assert.equal(stepCount(preview, "wallet_ledger"), 3, "the removed accounts own three ledger rows");
-assert.equal(stepCount(preview, "order_settlements_executed"), 2, "two settlements name a removed executor");
+assert.equal(count("SELECT COUNT(*) AS count FROM users WHERE id IN (7,8,10) AND role='captain'"), 3, "merged, other-reason and re-registered accounts exist but are out of scope");
+assert.equal(stepCount(preview, "wallet_ledger"), 4, "the removed accounts own four ledger rows");
+assert.equal(stepCount(preview, "order_settlements_executed"), 3, "three settlements name a removed executor, including the re-labelled tombstone");
 assert.equal(stepCount(preview, "order_candidates"), 2, "two candidate requests were posted by removed accounts");
 assert.equal(stepCount(preview, "order_candidate_acceptances_captain"), 1);
 assert.equal(stepCount(preview, "order_candidate_acceptances_child"), 1);
 assert.equal(stepCount(preview, "orders_producer"), 3, "orders keep existing: only the identity column is detached");
-assert.equal(stepCount(preview, "orders_captain"), 2);
-assert.equal(stepCount(preview, "notifications"), 1);
-assert.equal(stepCount(preview, "audit_logs_actor"), 1, "only actions performed by them leave; records about them stay");
+assert.equal(stepCount(preview, "orders_captain"), 3);
+assert.equal(stepCount(preview, "notifications"), 2);
+assert.equal(stepCount(preview, "audit_logs_actor"), 2, "only actions performed by them leave; records about them stay");
 assert.equal(stepCount(preview, "whatsapp_identities"), 1);
 assert.equal(stepCount(preview, "sweep_probe_refs_captain_ref"), 1, "the dynamic sweep must pick up an unlisted nullable foreign key");
 assert.equal(preview.steps.filter((row) => String(row.key).includes("locked_ref")).length, 0,
   "a NOT NULL foreign key is never silently nulled - that account would surface as held instead");
 assert.equal(preview.money.companyLedgerRowsInsideTargets, 0, "the company wallet must be provably outside the target set");
 assert.equal(preview.money.orderRows.before, preview.money.orderRows.after, "orders rows are never deleted");
-assert.equal(preview.money.overviewOrders.before, 4);
+assert.equal(preview.money.overviewOrders.before, 5);
 assert.equal(preview.money.overviewOrders.after, 2, "the dashboard booking figure is the settlement join, so it must be reported honestly");
-assert.equal(preview.money.ledgerMoves.before, 9);
-assert.equal(preview.money.ledgerMoves.after, 6);
+assert.equal(preview.money.ledgerMoves.before, 11);
+assert.equal(preview.money.ledgerMoves.after, 7);
 assert.equal(preview.money.companyEarnings.total, 8.1);
 assert.equal(preview.money.activeCaptainWallets.sum, 80, "active captain balances are untouched");
-assert.equal(preview.walletCentsDestroyed, 1200, "the removed accounts' balances are the only wallet money leaving");
-assert.equal(preview.money.otherDeletedAccountsUntouched, 1);
+assert.equal(preview.walletCentsDestroyed, 2100, "the removed accounts' balances are the only wallet money leaving");
+assert.equal(preview.money.inactiveTombstonesWithOtherReasons, 1, "a tombstone from another decision is counted as untouched, not as a target");
+assert.equal(preview.money.liveAgainWithSameReasonProtected, 1, "the re-registered account is reported as protected");
 assert.equal(preview.countErrors.length, 0, "no count may fail silently - a swallowed error would let the owner confirm a wrong number");
 assert.equal(stepCount(preview, "captain_merge_history"), 1, "a step with two placeholders must bind both, or the preview undercounts");
 
@@ -230,30 +249,35 @@ const phones = targets.map((row) => String(row.phone));
 const purge = db.transaction(() => sandbox.runPurge(ids, phones, STAMP))();
 assert.equal(JSON.stringify(purge.failures), "[]", "the declared order must satisfy every foreign key without a single failure");
 assert.equal(JSON.stringify(purge.held), "[]", "after the purge no removed account may still be referenced");
-assert.equal(purge.usersRemoved, 2);
+assert.equal(purge.usersRemoved, 3);
 assert.equal(purge.deleteRows, stepCount(preview, "captain_subscription_charges") + stepCount(preview, "captain_daily_charges") + stepCount(preview, "captain_withdrawal_requests")
   + stepCount(preview, "order_settlements_executed") + stepCount(preview, "order_candidate_acceptances_captain") + stepCount(preview, "order_candidate_acceptances_child")
   + stepCount(preview, "order_candidates") + stepCount(preview, "wallet_ledger") + stepCount(preview, "captain_login_links") + stepCount(preview, "captain_merge_history")
   + stepCount(preview, "audit_logs_actor") + stepCount(preview, "notifications"));
 
 // gone
-assert.deepEqual(db.prepare("SELECT id FROM users ORDER BY id").all().map((row) => row.id), [1, 2, 3, 4, 7, 8]);
-assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id IN (5,6) OR producer_user_id IN (5,6) OR charged_user_id IN (5,6) OR approval_reaction_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM order_candidates WHERE producer_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM captain_login_links WHERE captain_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM captain_merge_history WHERE source_captain_id IN (5,6) OR target_captain_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM notifications WHERE recipient_phone IN (?,?)", T1, T2), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM whatsapp_identities WHERE user_id IN (5,6)"), 0, "phone identity leaves with the account");
-assert.equal(count("SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM captain_auth_challenges WHERE captain_user_id IN (5,6)"), 0);
-assert.equal(count("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id IN (5,6) OR captain_user_id IN (5,6) OR pending_captain_user_id IN (5,6) OR confirmed_by_phone IN (?,?)", T1, T2), 0,
+assert.deepEqual(db.prepare("SELECT id FROM users ORDER BY id").all().map((row) => row.id), [1, 2, 3, 4, 7, 8, 10]);
+assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id IN (5,6,9) OR producer_user_id IN (5,6,9) OR charged_user_id IN (5,6,9) OR approval_reaction_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM order_candidates WHERE producer_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM captain_login_links WHERE captain_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM captain_merge_history WHERE source_captain_id IN (5,6,9) OR target_captain_id IN (5,6)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM notifications WHERE recipient_phone IN (?,?,?)", T1, T2, T3), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM whatsapp_identities WHERE user_id IN (5,6,9)"), 0, "phone identity leaves with the account");
+assert.equal(count("SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM captain_auth_challenges WHERE captain_user_id IN (5,6,9)"), 0);
+assert.equal(count("SELECT COUNT(*) AS count FROM orders WHERE producer_user_id IN (5,6,9) OR captain_user_id IN (5,6,9) OR pending_captain_user_id IN (5,6,9) OR confirmed_by_phone IN (?,?,?)", T1, T2, T3), 0,
   "no order may still point at a removed account");
 assert.equal(count("SELECT COUNT(*) AS count FROM orders WHERE captain_phone_snapshot IS NOT NULL AND captain_user_id IS NULL"), 0, "snapshot columns leave with the id they belonged to");
 
 // preserved
-assert.equal(count("SELECT COUNT(*) AS count FROM orders"), 5, "every booking row survives");
+assert.equal(count("SELECT COUNT(*) AS count FROM orders"), 6, "every booking row survives");
+assert.equal(db.prepare("SELECT captain_user_id AS c, status AS s FROM orders WHERE id=106").get().c, null, "the booking stays, the removed executor name is detached");
+assert.equal(db.prepare("SELECT status AS s FROM orders WHERE id=106").get().s, "accepted");
+assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=10"), 1, "the re-registered account keeps its money history");
+assert.equal(count("SELECT COUNT(*) AS count FROM notifications WHERE recipient_phone=?", T4), 1, "and its notifications");
+assert.equal(count("SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id=10"), 0);
 assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=1"), 3, "the company's own commission rows survive");
 assert.equal(count("SELECT COALESCE(SUM(amount_cents),0) AS count FROM wallet_ledger WHERE user_id=1 AND type='commission_company'"), 810);
 assert.equal(count("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id IN (3,4)"), 2, "active captains keep their wallet history");
@@ -290,7 +314,7 @@ assert.equal(after.targetCount, 0, "the purge is finished, not partial");
 assert.equal(after.totals.deleteRows, 0);
 assert.equal(after.totals.nullRows, 0);
 assert.equal(after.money.overviewOrders.after, 2);
-assert.equal(after.money.ledgerMoves.after, 6);
+assert.equal(after.money.ledgerMoves.after, 7);
 assert.equal(after.money.companyEarnings.total, 8.1);
 assert.equal(sandbox.purgeSteps().filter((row) => !row.write).every((row) => row.kind === "cascade"), true, "count-only steps are exactly the cascade tables");
 assert.equal(sandbox.sweepSteps().every((row) => row.kind === "null" && row.write.includes("=NULL")), true, "the sweep may only detach, never destroy");
@@ -313,7 +337,8 @@ assert.ok(block.includes('return res.status(503).json({ success: false, mutation
 assert.ok(block.includes("JSON.stringify(liveKey) !== JSON.stringify(expectedKey)"), "live counts must still match the preview counts");
 assert.ok(block.includes("JSON.stringify(expected.steps) !== JSON.stringify(previewKey)"), "per-step counts are verified too");
 assert.ok(block.includes("if (preview.money.companyLedgerRowsInsideTargets !== 0)"), "the company wallet is checked before any write");
-assert.ok(block.includes('account_status=\'deleted\' AND archive_reason=?'), "targets are pinned to the owner's outside-group tombstone");
+assert.ok(block.includes("active=0 AND account_status<>'merged' AND archive_reason=?"), "targets are pinned to the owner's recorded reason with the account switched off, whatever the status field says");
+assert.equal(block.includes("account_status='deleted' AND archive_reason=?"), false, "a status-based target predicate would have matched nobody once the debt policy rewrote the statuses");
 assert.ok(block.includes("if (Number(result.changes || 0) === 1) usersRemoved += 1;"), "accounts are deleted one id at a time so a reference holds only that account");
 assert.ok(block.includes('if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 300)'), "the batch size needs a hard upper bound");
 assert.ok(block.includes("nextExpected:"), "the response must report the counts the next batch has to confirm");

@@ -17247,7 +17247,7 @@ function runRemovedCaptainHistoryPurge(ids, phones, stamp) {
   let usersRemoved = 0;
   for (const id of ids) {
     try {
-      const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status='deleted' AND archive_reason=?").run(Number(id), OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON);
+      const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND is_bot=0 AND active=0 AND account_status<>'merged' AND archive_reason=?").run(Number(id), OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON);
       if (Number(result.changes || 0) === 1) usersRemoved += 1;
       else held.push({ id: Number(id), reason: "row_not_matched" });
     } catch (error) {
@@ -17274,7 +17274,12 @@ function runRemovedCaptainHistoryPurge(ids, phones, stamp) {
 // connected bot number. Nothing else can enter the set.
 function removedCaptainPurgeTargets(limit = 0) {
   const cap = Number.isInteger(limit) && limit > 0 ? limit : -1;
-  const rows = db.prepare("SELECT id,phone,name,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='deleted' AND archive_reason=? ORDER BY id LIMIT ?")
+  // Status must stay out of the predicate: suspendMemberForDebt() (the wallet debt policy) rewrites
+  // account_status to 'suspended' for every account it walks through whose balance is <= 0, which is exactly
+  // what happened to these tombstones on the morning of 2026-11-24 while leaving archived_at and the reason
+  // intact. The owner's decision is carried by that recorded reason plus the account being switched off, so a
+  // row that is active again today is a live account and is never a target; merged rows stay out.
+  const rows = db.prepare("SELECT id,phone,name,wallet_cents,account_status FROM users WHERE role='captain' AND is_bot=0 AND active=0 AND account_status<>'merged' AND archive_reason=? ORDER BY id LIMIT ?")
     .all(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON, cap);
   const botPhone = phoneWithCountry(connectedBotPhone() || "");
   const targets = [];
@@ -17326,9 +17331,10 @@ function removedCaptainHistoryPurgeReport(limit = 0) {
   // Must be zero: the company user is role='company', so it can never be inside the captain target set.
   const companyLedgerInsideTargets = Number(db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=? AND user_id " + REMOVED_HISTORY_IDS_PREDICATE).get(company.id, idsJson).count || 0);
   const activeCaptains = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(wallet_cents),0) AS cents FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND account_status='active'").get();
-  const otherDeletedAccounts = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND account_status='deleted' AND (archive_reason IS NULL OR archive_reason<>?)").get(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON).count || 0);
+  const otherTombstones = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND active=0 AND archive_reason IS NOT NULL AND archive_reason<>?").get(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON).count || 0);
+  const liveAgainWithSameReason = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND archive_reason=?").get(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON).count || 0);
   return {
-    targets: targets.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone), balance: money(Number(row.wallet_cents || 0)) })),
+    targets: targets.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone), balance: money(Number(row.wallet_cents || 0)), accountStatus: String(row.account_status || "") })),
     targetCount: ids.length,
     skippedProtected: skippedProtected.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone) })),
     walletCentsDestroyed: targets.reduce((total, row) => total + Number(row.wallet_cents || 0), 0),
@@ -17345,7 +17351,8 @@ function removedCaptainHistoryPurgeReport(limit = 0) {
       companyBalance: money(Number(company.wallet_cents || 0)),
       companyLedgerRowsInsideTargets: companyLedgerInsideTargets,
       activeCaptainWallets: { count: Number(activeCaptains.count || 0), sum: money(Number(activeCaptains.cents || 0)) },
-      otherDeletedAccountsUntouched: otherDeletedAccounts,
+      inactiveTombstonesWithOtherReasons: otherTombstones,
+      liveAgainWithSameReasonProtected: liveAgainWithSameReason,
     },
   };
 }
