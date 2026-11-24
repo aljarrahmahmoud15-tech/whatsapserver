@@ -2511,7 +2511,7 @@ async function notifyCaptainInsufficientAcceptanceBalance({ captain, balanceCent
   }
 }
 const insufficientBalanceGroupNotificationInFlight = new Set();
-async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, messageId, deletionStatus, deletionResult, publicTripNo, captainName }) {
+async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourceMessageId, messageId, deletionStatus, deletionResult, publicTripNo, captainName, captainBalanceAmount, tripRequiredAmount }) {
   const targetGroupId = String(groupId || "").trim();
   const sourceKey = String(sourceMessageId || messageId || "").trim();
   const sourceCore = messageIdCore(sourceKey);
@@ -2547,7 +2547,24 @@ async function notifyOfficialGroupInsufficientAcceptanceBalance({ groupId, sourc
     return { status: existingStatus, duplicate: true, notificationId: existing.id, messageId: existing.message_id || null, idempotencyKey };
   }
   const title = "حذف قبول «تم» لعدم كفاية الرصيد";
-  const message = `تم حذف رسالة «تم» للكابتن ${String(captainName || "غير محدد")} لعدم كفاية الرصيد. رقم الرحلة: ${String(publicTripNo || "غير محدد")}.`;
+  // Owner-approved 2026-11-24 («عندما يتم حذف رسالة تم لعدم كفاية الرصيد، يتم إظهار رصيد الكابتن»): the group
+  // card now shows the current captain amount and what the trip needs, so the reason is visible in the group
+  // without opening the dashboard. The two amounts arrive from the acceptance path in cents and are display-only:
+  // this group helper still sends no private notice to the captain and mutates no money.
+  // The wording deliberately avoids parseOrder's price keywords (الأجرة/السعر/
+  // سعر/القيمة/قيمة/المبلغ/مبلغ/price) and any currency token after the number (د.أ/دينار/JOD), because the
+  // recovery scan treats a bot message matching parseOrder as the price message of a new order.
+  // A missing amount (null/undefined/blank/non-numeric) stays out of the card rather than rendering "0.00";
+  // a genuine 0.00 balance is still shown, because that value is meaningful to the group.
+  const amountText = (value) => (
+    value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : money(Number(value))
+  );
+  const balanceText = amountText(captainBalanceAmount);
+  const requiredText = amountText(tripRequiredAmount);
+  const balanceClause = balanceText === null
+    ? ""
+    : ` الرصيد الحالي للكابتن ${balanceText}${requiredText === null ? "" : `، ويحتاج تثبيت الرحلة ${requiredText}`}.`;
+  const message = `تم حذف رسالة «تم» للكابتن ${String(captainName || "غير محدد")} لعدم كفاية الرصيد. رقم الرحلة: ${String(publicTripNo || "غير محدد")}.${balanceClause}`;
   let inserted;
   let receipt;
   try {
@@ -9121,6 +9138,8 @@ async function recoverPendingAcceptanceMessages(groupId) {
         deletionResult,
         publicTripNo: unquoted.candidate.public_trip_no,
         captainName: unquotedResult.captain?.name,
+        captainBalanceAmount: unquotedResult.balanceCents,
+        tripRequiredAmount: unquotedResult.requiredCents,
         deletionStatus,
       });
       if (!["sent", "already_sent", "uncertain", "already_in_flight", "pending", "not_confirmed"].includes(correction.status)) {
@@ -10594,6 +10613,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
       deletionResult,
       publicTripNo: candidate.public_trip_no,
       captainName: acceptanceResult.captain?.name,
+      captainBalanceAmount: acceptanceResult.balanceCents,
+      tripRequiredAmount: acceptanceResult.requiredCents,
       deletionStatus,
     });
     if (!["sent", "already_sent", "uncertain", "already_in_flight", "pending", "not_confirmed"].includes(correction.status)) {

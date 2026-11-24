@@ -16,7 +16,7 @@ const groupNoticeStart = server.indexOf('const insufficientBalanceGroupNotificat
 const groupNoticeEnd = server.indexOf('\nconst cancellationPartyNotificationInFlight', groupNoticeStart);
 assert.ok(groupNoticeStart >= 0 && groupNoticeEnd > groupNoticeStart);
 const groupNotice = server.slice(groupNoticeStart, groupNoticeEnd);
-assert.match(groupNotice, /async function notifyOfficialGroupInsufficientAcceptanceBalance\(\{ groupId, sourceMessageId, messageId, deletionStatus, deletionResult, publicTripNo, captainName \}\)/);
+assert.match(groupNotice, /async function notifyOfficialGroupInsufficientAcceptanceBalance\(\{ groupId, sourceMessageId, messageId, deletionStatus, deletionResult, publicTripNo, captainName, captainBalanceAmount, tripRequiredAmount \}\)/);
 assert.match(groupNotice, /deletionStatus !== "deleted"/);
 assert.match(groupNotice, /deletionResult\?\.ok !== true/);
 assert.match(groupNotice, /deletionResult\?\.revoked !== true/);
