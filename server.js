@@ -17277,6 +17277,84 @@ function runRemovedCaptainHistoryPurge(ids, phones, stamp) {
   return { applied, failures, held, usersRemoved, ...tally };
 }
 
+// A full copy of this database does not fit inside a batch request. The first execution attempt on 2026-11-24 13:31
+// took the mandatory backup inline, the edge cut the connection after roughly a hundred seconds and the transaction
+// never ran: the read-only preview afterwards still reported all 1006 targets and nothing had been destroyed. So the
+// copy is its own owner-only request, runs off the request handler, and is only trusted when the marker written after
+// it finished is present and agrees with the file size - a torn file is not a backup.
+const REMOVED_PURGE_BACKUP_PREFIX = "pre-money-purge-";
+let removedPurgeBackupJob = null;
+let removedPurgeBackupPromise = null;
+function removedPurgeBackupDir() {
+  return path.join(DATA_DIR, "backups");
+}
+function publicRemovedPurgeBackupJob() {
+  if (!removedPurgeBackupJob) return null;
+  return {
+    status: removedPurgeBackupJob.status,
+    name: removedPurgeBackupJob.name,
+    startedAt: removedPurgeBackupJob.startedAt,
+    completedAt: removedPurgeBackupJob.completedAt,
+    bytes: removedPurgeBackupJob.bytes,
+    error: removedPurgeBackupJob.error,
+  };
+}
+function removedPurgeBackups(backupDir) {
+  const dir = backupDir || removedPurgeBackupDir();
+  const out = { dir, files: [], complete: null, incomplete: [], job: publicRemovedPurgeBackupJob() };
+  if (!fs.existsSync(dir)) return out;
+  const names = fs.readdirSync(dir).filter((name) => /^pre-money-purge-\d+\.sqlite$/.test(name)).sort();
+  for (const name of names) {
+    let bytes = null;
+    let modifiedAt = null;
+    try {
+      const stat = fs.statSync(path.join(dir, name));
+      bytes = Number(stat.size || 0);
+      modifiedAt = new Date(stat.mtime).toISOString();
+    } catch {
+      bytes = null;
+    }
+    let marker = null;
+    try { marker = JSON.parse(fs.readFileSync(path.join(dir, name + ".done"), "utf8")); } catch { marker = null; }
+    // A marker whose size disagrees with the file is a copy that was cut short: never a backup.
+    const complete = !!(marker && Number(marker.bytes) > 0 && Number(marker.bytes) === bytes);
+    const record = { name, bytes, modifiedAt, complete, completedAt: marker ? String(marker.completedAt || "") : null };
+    out.files.push(record);
+    if (complete) {
+      out.complete = { name, bytes, completedAt: record.completedAt, startedAt: marker ? String(marker.startedAt || "") : null };
+    } else {
+      out.incomplete.push(name);
+    }
+  }
+  return out;
+}
+function startRemovedPurgeBackup() {
+  const backupDir = removedPurgeBackupDir();
+  fs.mkdirSync(backupDir, { recursive: true });
+  if (removedPurgeBackupJob && removedPurgeBackupJob.status === "running") {
+    return { started: false, reason: "already_running", backups: removedPurgeBackups(backupDir) };
+  }
+  const name = REMOVED_PURGE_BACKUP_PREFIX + Date.now() + ".sqlite";
+  const target = path.join(backupDir, name);
+  const job = { status: "running", name, startedAt: now(), completedAt: null, bytes: null, error: null };
+  removedPurgeBackupJob = job;
+  removedPurgeBackupPromise = Promise.resolve()
+    .then(() => db.backup(target))
+    .then(() => {
+      const bytes = Number(fs.statSync(target).size || 0);
+      const completedAt = now();
+      fs.writeFileSync(path.join(backupDir, name + ".done"), JSON.stringify({ name, bytes, startedAt: job.startedAt, completedAt }));
+      job.status = "complete";
+      job.bytes = bytes;
+      job.completedAt = completedAt;
+    })
+    .catch((error) => {
+      job.status = "failed";
+      job.error = boundedDiagnosticText(error, 200);
+      try { fs.rmSync(target, { force: true }); } catch { job.error += " (partial copy kept)"; }
+    });
+  return { started: true, reason: null, backups: removedPurgeBackups(backupDir) };
+}
 // Targets are the tombstones of the owner's outside-group decision, minus protected owner identities and minus the
 // connected bot number. Nothing else can enter the set.
 function removedCaptainPurgeTargets(limit = 0) {
@@ -17382,10 +17460,30 @@ app.get("/api/admin/captains/removed-history-preview", requireOwnerAdmin, adminR
     steps: report.steps,
     countErrors: report.countErrors,
     samples: report.targets.slice(0, 20),
+    backup: removedPurgeBackups(),
     confirmation: REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION,
   });
 });
 
+app.get("/api/admin/captains/purge-backup", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, mutation: "none", backups: removedPurgeBackups() });
+});
+app.post("/api/admin/captains/purge-backup", requireOwnerAdmin, adminMutationLimiter, (req, res) => {
+  // Starting the copy and answering immediately is the whole point: a request that also waits for it gets cut by the
+  // edge, so the owner is told honestly that it is running and asked to poll this endpoint before any batch.
+  const result = startRemovedPurgeBackup();
+  res.json({
+    success: true,
+    mutation: "backup-only",
+    financialMutation: false,
+    started: result.started,
+    reason: result.reason,
+    job: publicRemovedPurgeBackupJob(),
+    backups: result.backups,
+    nextStep: result.started ? "poll GET /api/admin/captains/purge-backup until complete, then run the batches" : "a backup is already running",
+  });
+});
 app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
   if (String(req.body?.confirmation || "") !== REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION) {
     return res.status(400).json({ success: false, mutation: "none", error: "مطلوب تأكيد صريح من المالك لمحو السجل المالي والتدقيقي للمُخرَجين" });
@@ -17400,18 +17498,19 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
   if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 300) {
     return res.status(400).json({ success: false, mutation: "none", error: "batchSize يجب أن يكون عددًا صحيحًا بين 1 و300، أو متغيبًا للتنفيذ الكامل" });
   }
-  const skipBackup = req.body?.skipBackup === true;
-  const backupDir = path.join(DATA_DIR, "backups");
-  fs.mkdirSync(backupDir, { recursive: true });
-  let backupName = null;
-  if (skipBackup) {
-    // History cannot be rebuilt, so a full backup is mandatory: a later batch may reuse it, never run without it.
-    const prior = fs.readdirSync(backupDir).filter((name) => /^pre-money-purge-\d+\.sqlite$/.test(name)).sort();
-    if (!prior.length) {
-      return res.status(503).json({ success: false, mutation: "none", error: "لا توجد نسخة احتياطية لهذه العملية؛ نفّذ دفعة بدون skipBackup أولًا" });
-    }
-    backupName = prior[prior.length - 1];
+  // History cannot be rebuilt, so a completed full copy is required before anything is measured or written, and a
+  // copy whose marker is missing is treated as no copy at all rather than as a partial safety net.
+  const backups = removedPurgeBackups();
+  if (!backups.complete) {
+    return res.status(503).json({
+      success: false,
+      mutation: "none",
+      error: "no completed backup exists; run POST /api/admin/captains/purge-backup and wait for it before any batch",
+      incompleteBackups: backups.incomplete,
+      backupJob: backups.job,
+    });
   }
+  const backupName = backups.complete.name;
   const preview = removedCaptainHistoryPurgeReport(batchSize);
   const previewKey = Object.fromEntries(preview.steps.map((row) => [row.key, row.count]));
   const liveKey = {
@@ -17438,7 +17537,7 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
     return res.status(503).json({ success: false, mutation: "none", error: "تعذّر قياس بعض الأعداد؛ لم يتم أي تغيير", countErrors: preview.countErrors });
   }
   if (!preview.targetCount) {
-    return res.json({ success: true, mutation: "none", completed: true, message: "لا توجد حسابات مُخرَجة بهذا السبب؛ لا شيء لِمحوه", backupSkipped: skipBackup, backupName });
+    return res.json({ success: true, mutation: "none", completed: true, message: "لا توجد حسابات مُخرَجة بهذا السبب؛ لا شيء لِمحوه", backupName, backupCompletedAt: backups.complete.completedAt });
   }
   // Refuse to run while the company's own ledger sits inside the target set - impossible by construction, but this
   // path destroys history, so the invariant is checked rather than assumed.
@@ -17449,10 +17548,8 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
   const phones = preview.targets.map((row) => row.phone).filter(Boolean);
   const removalIndexes = ensureOutsideGroupRemovalIndexes();
   const purgeIndexes = ensureRemovedCaptainPurgeIndexes();
-  if (!skipBackup) {
-    backupName = "pre-money-purge-" + Date.now() + ".sqlite";
-    await db.backup(path.join(backupDir, backupName));
-  }
+  // The copy already finished in its own request. Nothing in a batch waits on it, or the batch dies at the edge and
+  // the owner is left guessing whether history was destroyed.
   const stamp = now();
   const companyBefore = companyUser();
   const earningsBefore = Number(db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents FROM wallet_ledger WHERE user_id=?").get(companyBefore.id).cents || 0);
@@ -17470,8 +17567,9 @@ app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMu
     remainingDetachedRows: recount.totals.nullRows,
     completed: recount.targetCount === 0,
     batchSize: batchSize || null,
-    backupSkipped: skipBackup,
     backupName,
+    backupCompletedAt: backups.complete.completedAt,
+    backupBytes: backups.complete.bytes,
     indexesEnsured: removalIndexes.length + purgeIndexes.length,
     walletCentsDestroyed: preview.walletCentsDestroyed,
     failures: purge.failures,

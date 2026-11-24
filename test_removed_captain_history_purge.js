@@ -191,6 +191,9 @@ vm.runInNewContext(block
   + "\nthis.report = removedCaptainHistoryPurgeReport;"
   + "\nthis.runPurge = runRemovedCaptainHistoryPurge;"
   + "\nthis.staticColumns = REMOVED_HISTORY_STATIC_COLUMNS;"
+  + "\nthis.backups = removedPurgeBackups;"
+  + "\nthis.startBackup = startRemovedPurgeBackup;"
+  + "\nthis.backupPromise = () => removedPurgeBackupPromise;"
   + "\nthis.confirmation = REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION;", sandbox);
 
 const count = (sql, ...args) => Number(db.prepare(sql).get(...args).count || 0);
@@ -322,7 +325,57 @@ assert.equal(sandbox.sweepSteps().some((row) => row.write.includes("DELETE")), f
 for (const column of ["orders.producer_user_id", "orders.captain_user_id", "wallet_ledger.user_id", "order_settlements.captain_user_id", "audit_logs.actor_user_id", "notifications.recipient_phone"]) {
   assert.ok(sandbox.staticColumns.has(column), column + " must stay in the reviewed list so the sweep cannot duplicate it");
 }
-fs.rmSync(dir, { recursive: true, force: true });
+// --- the mandatory backup, which is what authorises the destruction ------------
+// The first live attempt awaited the copy inside the batch request, the edge cut it, and nothing was destroyed. So
+// the copy is its own request now, and what makes it trustworthy is the marker written after it finished.
+// It is driven by the event loop, so this part has to await rather than poll synchronously.
+(async () => {
+  const backupsDir = path.join(dir, "backups");
+  assert.equal(sandbox.backups().complete, null, "no copy exists yet, so nothing may be destroyed");
+  assert.equal(sandbox.backups().files.length, 0);
+
+  const started = sandbox.startBackup();
+  assert.equal(started.started, true, "the owner-only request starts the copy");
+  assert.equal(sandbox.startBackup().reason, "already_running", "a second copy cannot stack on the first");
+  await sandbox.backupPromise();
+  const job = sandbox.backups().job;
+  assert.equal(job.status, "complete", "the copy finished: " + JSON.stringify(job));
+
+  const firstCopy = sandbox.backups();
+  assert.equal(firstCopy.files.length, 1);
+  assert.equal(firstCopy.complete.name, job.name, "the completed copy is the one a batch may cite");
+  assert.ok(Number(firstCopy.complete.bytes) > 0, "the marker carries a real size");
+  assert.deepEqual(Array.from(firstCopy.incomplete), []);
+  assert.ok(fs.existsSync(path.join(backupsDir, job.name)), "the database copy itself is on disk");
+  assert.ok(fs.existsSync(path.join(backupsDir, job.name + ".done")), "and its completion marker");
+
+  // Torn copy: the file is there but the marker is gone. It must not authorise anything.
+  fs.rmSync(path.join(backupsDir, job.name + ".done"));
+  const torn = sandbox.backups();
+  assert.equal(torn.complete, null, "a copy without its marker is not a backup");
+  assert.deepEqual(Array.from(torn.incomplete), [job.name]);
+
+  // A marker that disagrees with the file is still not a backup.
+  fs.writeFileSync(path.join(backupsDir, job.name + ".done"), JSON.stringify({ name: job.name, bytes: 7, completedAt: STAMP }));
+  assert.equal(sandbox.backups().complete, null, "a marker whose size disagrees is not a backup");
+  fs.rmSync(path.join(backupsDir, job.name + ".done"));
+
+  // A proper second copy restores the guarantee, as its own file.
+  assert.equal(sandbox.startBackup().started, true);
+  await sandbox.backupPromise();
+  const second = sandbox.backups();
+  assert.equal(second.job.status, "complete");
+  assert.notEqual(second.job.name, job.name, "each copy is its own file, never overwritten");
+  assert.equal(second.files.length, 2);
+  assert.ok(second.complete.bytes > 0 && second.complete.name === second.job.name, "the newest completed copy is the one reported");
+  console.log("removed captain history purge: the backup contract passed");
+  fs.rmSync(dir, { recursive: true, force: true });
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 console.log("removed captain history purge: scope, writes, preservation and invariants passed");
 
 // --- the deployed shape of the owner routes -----------------------------------
@@ -331,9 +384,16 @@ assert.ok(block.includes('app.post("/api/admin/captains/purge-removed-history", 
 assert.ok(block.includes("adminMutationLimiter"), "the purge route must keep the admin mutation limiter");
 assert.ok(block.includes('if (req.body?.execute !== true)'), "execution needs an explicit execute switch");
 assert.ok(block.includes('String(req.body?.confirmation || "") !== REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION'), "a literal owner confirmation token is required");
-assert.ok(block.includes("await db.backup("), "a full database backup is mandatory before history is destroyed");
-assert.ok(block.includes('/^pre-money-purge-\\d+\\.sqlite$/.test(name)'), "a later batch may reuse the purge backup");
-assert.ok(block.includes('return res.status(503).json({ success: false, mutation: "none", error: "لا توجد نسخة احتياطية لهذه العملية'), "skipping the backup with no prior backup must refuse");
+assert.ok(block.includes('app.post("/api/admin/captains/purge-backup", requireOwnerAdmin'), "the mandatory full copy is its own owner-only request");
+assert.ok(block.includes('app.get("/api/admin/captains/purge-backup", requireOwnerAdmin'), "and it can be polled read-only");
+assert.equal(block.includes("await db.backup("), false, "no batch request may wait on the copy: the edge cut the first attempt and the write never ran");
+assert.equal(block.includes("skipBackup"), false, "a batch cannot opt out of the backup requirement any more");
+assert.ok(block.includes("if (!backups.complete)"), "a batch refuses while no completed copy exists");
+assert.ok(block.includes("Number(marker.bytes) === bytes"), "a marker whose size disagrees with the file is not a backup");
+assert.ok(block.includes("reason: \"already_running\""), "concurrent copies are refused instead of piling up");
+assert.ok(block.includes("backup: removedPurgeBackups(),"), "the preview states whether a completed copy exists");
+assert.ok(block.includes('/^pre-money-purge-\\d+\\.sqlite$/.test(name)'), "every batch cites the one completed copy instead of making its own");
+assert.ok(block.includes("incompleteBackups: backups.incomplete"), "the refusal names the copies it did not trust");
 assert.ok(block.includes("JSON.stringify(liveKey) !== JSON.stringify(expectedKey)"), "live counts must still match the preview counts");
 assert.ok(block.includes("JSON.stringify(expected.steps) !== JSON.stringify(previewKey)"), "per-step counts are verified too");
 assert.ok(block.includes("if (preview.money.companyLedgerRowsInsideTargets !== 0)"), "the company wallet is checked before any write");
