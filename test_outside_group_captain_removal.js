@@ -94,8 +94,14 @@ assert.equal(accessBuckets.delete.find((item) => item.id === 7).access, 3);
 
 // --- the deployed shape of the owner route --------------------------------------
 const blockStart = source.indexOf('const OUTSIDE_GROUP_CAPTAIN_REMOVAL_CONFIRMATION = "REMOVE_CAPTAINS_OUTSIDE_OFFICIAL_GROUP";');
-const blockEndAnchor = source.indexOf('app.get("/api/admin/group/live-messages"');
-assert.ok(blockStart >= 0 && blockEndAnchor > blockStart, "the removal block must exist and end before the group live-messages route");
+// The owner-approved history purge (2026-11-24 12:38 +03) is a SEPARATE block that does destroy money rows, so this
+// money-neutrality slice must stop at its start. Tightened rather than loosened: the end anchor is now the purge
+// block itself, and a later append between them still has to keep the removal path money-neutral.
+const purgeBlockStart = source.indexOf('const REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION = "PURGE_REMOVED_CAPTAIN_FINANCIAL_HISTORY";');
+assert.ok(purgeBlockStart > blockStart, "the purge block must sit after the removal block, never inside it");
+const blockEndAnchor = purgeBlockStart;
+assert.ok(blockStart >= 0 && blockEndAnchor > blockStart, "the removal block must exist and end before the history purge block");
+assert.ok(blockEndAnchor < source.indexOf('app.get("/api/admin/group/live-messages"'), "both blocks must stay before the group live-messages route");
 assert.ok(blockStart > source.indexOf('app.post("/api/admin/captains/cleanup-execute"'), "the removal block must sit after the paused cleanup route, never inside it");
 const block = source.slice(blockStart, blockEndAnchor);
 

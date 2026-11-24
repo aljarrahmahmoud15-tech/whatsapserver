@@ -17020,6 +17020,485 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
   });
 });
 
+// Owner decision 2026-11-24 12:38 +03: «نفّذ» على محو السجل المالي والتدقيقي للحسابات المُخرَجة من القروب الرسمي.
+// The outside-group removal left 1007 tombstoned accounts alive precisely because their money and audit rows are
+// references; the owner has now approved destroying that history. The population is pinned to the tombstone this bot
+// wrote (role='captain', is_bot=0, account_status='deleted', archive_reason=«خارج القروب الرسمي — قرار المالك»), so
+// an active captain, a merged account, the bot number and the company wallet user can never enter the set.
+//
+// Destroyed (rows whose subject IS one of those accounts): their wallet_ledger, the order_settlements they were the
+// executor of, the order_candidates they posted and the acceptances they sent, their login links, subscription and
+// daily charges, withdrawal requests, merge history, audit rows they acted in, and the notifications addressed to
+// their phones. Their user rows go last, which cascades the phone/WhatsApp identity mappings.
+//
+// Protected (never deleted): every orders row, because the booking is the company's record and the company's own
+// commission ledger rows hang off it - that is what the owner's 318.10 JOD profit figure is computed from. A shared
+// order only loses the removed account's id and its snapshot columns. A settlement or card whose subject is still an
+// active captain is anonymised, not destroyed. The company wallet row is never written.
+const REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION = "PURGE_REMOVED_CAPTAIN_FINANCIAL_HISTORY";
+
+const REMOVED_HISTORY_IDS_PREDICATE = "IN (SELECT CAST(value AS INTEGER) FROM json_each(?))";
+const REMOVED_HISTORY_PHONES_PREDICATE = "IN (SELECT CAST(value AS TEXT) FROM json_each(?))";
+
+// Every users foreign key in the schema is listed here, so the dynamic sweep below can prove it only ever touches a
+// column this review did not already handle.
+const REMOVED_HISTORY_STATIC_COLUMNS = new Set([
+  "orders.producer_user_id", "orders.captain_user_id", "orders.pending_captain_user_id", "orders.confirmed_by_phone",
+  "order_candidates.producer_user_id", "order_candidates.pending_captain_user_id",
+  "order_candidate_acceptances.captain_user_id",
+  "order_settlements.captain_user_id", "order_settlements.producer_user_id", "order_settlements.charged_user_id",
+  "order_settlements.approval_reaction_user_id",
+  "wallet_ledger.user_id", "topup_cards.redeemed_by", "topup_cards.assigned_captain_id",
+  "topup_card_archive.captain_id", "audit_logs.actor_user_id", "captain_invites.approved_user_id",
+  "captain_login_links.captain_user_id", "captain_subscription_charges.user_id", "captain_daily_charges.user_id",
+  "captain_withdrawal_requests.captain_user_id", "ride_ratings.captain_user_id", "captain_merge_history.source_captain_id",
+  "captain_merge_history.target_captain_id", "notifications.recipient_phone",
+  "captain_phone_aliases.captain_user_id", "whatsapp_identities.user_id", "captain_auth_challenges.captain_user_id",
+]);
+
+// One declarative list drives both the preview counts and the writes, so what the owner confirms is what runs.
+// Order is load-bearing: children before parents, anonymise-then-delete, users last.
+function removedCaptainHistoryPurgeSteps() {
+  const ids = REMOVED_HISTORY_IDS_PREDICATE;
+  const phones = REMOVED_HISTORY_PHONES_PREDICATE;
+  const targetCandidates = "IN (SELECT id FROM order_candidates WHERE producer_user_id " + ids + ")";
+  const step = (key, label, kind, select, write, bind) => ({ key, label, kind, select, write, bind: bind || ["ids"] });
+  return [
+    // wallet_ledger is referenced by the three charge/withdrawal tables, so those leave first.
+    step("captain_subscription_charges", "اشتراكات الكابتن", "delete",
+      "SELECT COUNT(*) AS count FROM captain_subscription_charges WHERE user_id " + ids,
+      "DELETE FROM captain_subscription_charges WHERE user_id " + ids),
+    step("captain_daily_charges", "خصومات الكابتن اليومية", "delete",
+      "SELECT COUNT(*) AS count FROM captain_daily_charges WHERE user_id " + ids,
+      "DELETE FROM captain_daily_charges WHERE user_id " + ids),
+    step("captain_withdrawal_requests", "طلبات السحب", "delete",
+      "SELECT COUNT(*) AS count FROM captain_withdrawal_requests WHERE captain_user_id " + ids,
+      "DELETE FROM captain_withdrawal_requests WHERE captain_user_id " + ids),
+    step("order_settlements_executed", "تسويات كان المُخرَج هو المنفّذ فيها", "delete",
+      "SELECT COUNT(*) AS count FROM order_settlements WHERE captain_user_id " + ids,
+      "DELETE FROM order_settlements WHERE captain_user_id " + ids),
+    // Settlements whose subject is still an active captain stay; they only stop naming the removed account.
+    step("order_settlements_producer", "نسبة المُخرَج في تسويات الحسابات النشطة", "null",
+      "SELECT COUNT(*) AS count FROM order_settlements WHERE producer_user_id " + ids,
+      "UPDATE order_settlements SET producer_user_id=NULL WHERE producer_user_id " + ids),
+    step("order_settlements_charged", "الحساب المُحمَّل في تسويات الحسابات النشطة", "null",
+      "SELECT COUNT(*) AS count FROM order_settlements WHERE charged_user_id " + ids,
+      "UPDATE order_settlements SET charged_user_id=NULL WHERE charged_user_id " + ids),
+    step("order_settlements_approval", "إعجاب التثبيت المنسوب لمُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM order_settlements WHERE approval_reaction_user_id " + ids,
+      "UPDATE order_settlements SET approval_reaction_user_id=NULL WHERE approval_reaction_user_id " + ids),
+    // order_candidate_acceptances children first, then the candidates themselves.
+    step("order_candidate_acceptances_captain", "ردود «تم» أرسلها المُخرَج", "delete",
+      "SELECT COUNT(*) AS count FROM order_candidate_acceptances WHERE captain_user_id " + ids,
+      "DELETE FROM order_candidate_acceptances WHERE captain_user_id " + ids),
+    step("order_candidate_acceptances_child", "ردود «تم» معلّقة على طلبات المُخرَج", "delete",
+      "SELECT COUNT(*) AS count FROM order_candidate_acceptances WHERE candidate_id " + targetCandidates,
+      "DELETE FROM order_candidate_acceptances WHERE candidate_id " + targetCandidates),
+    step("unresolved_order_messages", "رسائل غير محلولة مرتبطة بطلبات المُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM unresolved_order_messages WHERE candidate_id " + targetCandidates,
+      "UPDATE unresolved_order_messages SET candidate_id=NULL WHERE candidate_id " + targetCandidates),
+    step("special_booking_requests", "ربط طلبات الحجز الخاصة بطلبات المُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM special_booking_requests WHERE order_candidate_id " + targetCandidates,
+      "UPDATE special_booking_requests SET order_candidate_id=NULL WHERE order_candidate_id " + targetCandidates),
+    step("customer_booking_requests", "ربط طلبات العملاء بطلبات المُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM customer_booking_requests WHERE order_candidate_id " + targetCandidates,
+      "UPDATE customer_booking_requests SET order_candidate_id=NULL WHERE order_candidate_id " + targetCandidates),
+    step("order_candidates_pending", "انتظار مُخرَج على طلب كابتن نشط", "null",
+      "SELECT COUNT(*) AS count FROM order_candidates WHERE pending_captain_user_id " + ids,
+      "UPDATE order_candidates SET pending_captain_user_id=NULL WHERE pending_captain_user_id " + ids),
+    step("order_candidates", "طلبات النزّل التي نشرها المُخرَج", "delete",
+      "SELECT COUNT(*) AS count FROM order_candidates WHERE producer_user_id " + ids,
+      "DELETE FROM order_candidates WHERE producer_user_id " + ids),
+    // Orders are never deleted: the booking and the company's commission rows stay, the removed identity leaves.
+    step("orders_producer", "المُخرَج كمنزّل في الطلبات", "null",
+      "SELECT COUNT(*) AS count FROM orders WHERE producer_user_id " + ids,
+      "UPDATE orders SET producer_user_id=NULL,producer_phone_snapshot=NULL,producer_name_snapshot=NULL WHERE producer_user_id " + ids),
+    step("orders_captain", "المُخرَج كمنفّذ في الطلبات", "null",
+      "SELECT COUNT(*) AS count FROM orders WHERE captain_user_id " + ids,
+      "UPDATE orders SET captain_user_id=NULL,captain_phone_snapshot=NULL,captain_name_snapshot=NULL WHERE captain_user_id " + ids),
+    step("orders_pending", "طلبات معلّقة على مُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM orders WHERE pending_captain_user_id " + ids,
+      "UPDATE orders SET pending_captain_user_id=NULL,pending_message_id=NULL,pending_at=NULL WHERE pending_captain_user_id " + ids),
+    step("orders_confirmed_phone", "هاتف التأكيد المنسوب لمُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM orders WHERE confirmed_by_phone " + phones,
+      "UPDATE orders SET confirmed_by_phone=NULL WHERE confirmed_by_phone " + phones, ["phones"]),
+    // The captain-side money history itself. The company's rows are outside the target set by construction.
+    step("wallet_ledger", "حركات محفظة المُخرَجين", "delete",
+      "SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id " + ids,
+      "DELETE FROM wallet_ledger WHERE user_id " + ids),
+    // Access artifacts and cards: attribution leaves, the card value record stays.
+    step("captain_login_links", "روابط الدخول", "delete",
+      "SELECT COUNT(*) AS count FROM captain_login_links WHERE captain_user_id " + ids,
+      "DELETE FROM captain_login_links WHERE captain_user_id " + ids),
+    step("captain_invites", "دعوات معتمدة باسم مُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM captain_invites WHERE approved_user_id " + ids,
+      "UPDATE captain_invites SET approved_user_id=NULL WHERE approved_user_id " + ids),
+    step("topup_cards_redeemed", "بطاقات شحن استُعملت بيد مُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM topup_cards WHERE redeemed_by " + ids,
+      "UPDATE topup_cards SET redeemed_by=NULL WHERE redeemed_by " + ids),
+    step("topup_cards_assigned", "بطاقات شحن مُخصّصة لمُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM topup_cards WHERE assigned_captain_id " + ids,
+      "UPDATE topup_cards SET assigned_captain_id=NULL WHERE assigned_captain_id " + ids),
+    step("topup_card_archive", "أرشيف البطاقات (اسم/هاتف مُخرَج)", "null",
+      "SELECT COUNT(*) AS count FROM topup_card_archive WHERE captain_id " + ids,
+      "UPDATE topup_card_archive SET captain_id=NULL,captain_name_snapshot=NULL,captain_phone_snapshot=NULL WHERE captain_id " + ids),
+    // Ratings, merge provenance, audit actions and notifications addressed to them.
+    step("ride_ratings", "تقييمات الرحلات المنسوبة لمُخرَج", "null",
+      "SELECT COUNT(*) AS count FROM ride_ratings WHERE captain_user_id " + ids,
+      "UPDATE ride_ratings SET captain_user_id=NULL WHERE captain_user_id " + ids),
+    step("captain_merge_history", "سجل دمج الحسابات", "delete",
+      "SELECT COUNT(*) AS count FROM captain_merge_history WHERE source_captain_id " + ids + " OR target_captain_id " + ids,
+      "DELETE FROM captain_merge_history WHERE source_captain_id " + ids + " OR target_captain_id " + ids, ["ids", "ids"]),
+    step("audit_logs_actor", "سجل تدقيق لأفعال قام بها المُخرَج", "delete",
+      "SELECT COUNT(*) AS count FROM audit_logs WHERE actor_user_id " + ids,
+      "DELETE FROM audit_logs WHERE actor_user_id " + ids),
+    step("notifications", "إشعارات موجّهة لهواتفهم", "delete",
+      "SELECT COUNT(*) AS count FROM notifications WHERE recipient_phone " + phones,
+      "DELETE FROM notifications WHERE recipient_phone " + phones, ["phones"]),
+    // Rows that cascade with the user row; counted so the identity wipe is visible before it happens.
+    step("whatsapp_identities", "هويات واتساب المرتبطة بهم (تُحذف بالتتابع)", "cascade",
+      "SELECT COUNT(*) AS count FROM whatsapp_identities WHERE user_id " + ids, null),
+    step("captain_phone_aliases", "أرقامهم البديلة (تُحذف بالتتابع)", "cascade",
+      "SELECT COUNT(*) AS count FROM captain_phone_aliases WHERE captain_user_id " + ids, null),
+    step("captain_auth_challenges", "تحديات تحقّق معلّقة (تُحذف بالتتابع)", "cascade",
+      "SELECT COUNT(*) AS count FROM captain_auth_challenges WHERE captain_user_id " + ids, null),
+  ];
+}
+
+// Safety net: any users foreign key that this review did not already enumerate, and that is nullable, gets detached
+// instead of blocking the account deletion. Cascade keys are left to SQLite. A NOT NULL surprise is never deleted
+// here - it surfaces as a held account so the owner hears about it first.
+function removedCaptainHistorySweepSteps() {
+  const steps = [];
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()) {
+    const child = String(row.name || "");
+    if (!child || child === "users") continue;
+    let keys = [];
+    try { keys = db.prepare("PRAGMA foreign_key_list(\"" + child.replaceAll("\"", "\"\"") + "\")").all(); } catch (_) { keys = []; }
+    let columns = [];
+    try { columns = db.prepare("PRAGMA table_info(\"" + child.replaceAll("\"", "\"\"") + "\")").all(); } catch (_) { columns = []; }
+    const nullable = new Map(columns.map((column) => [String(column.name), Number(column.notnull || 0) === 0]));
+    for (const key of keys) {
+      if (String(key.table || "") !== "users") continue;
+      if (String(key.on_delete || "").toLowerCase() === "cascade") continue;
+      const column = String(key.from || "");
+      if (!column || !nullable.get(column)) continue;
+      if (REMOVED_HISTORY_STATIC_COLUMNS.has(child + "." + column)) continue;
+      const quotedChild = "\"" + child.replaceAll("\"", "\"\"") + "\"";
+      const quotedColumn = "\"" + column.replaceAll("\"", "\"\"") + "\"";
+      steps.push({
+        key: "sweep_" + child.replaceAll(/[^a-zA-Z0-9_]/g, "_") + "_" + column.replaceAll(/[^a-zA-Z0-9_]/g, "_"),
+        label: "فصل غير مُدرج: " + child + "." + column,
+        kind: "null",
+        select: "SELECT COUNT(*) AS count FROM " + quotedChild + " WHERE " + quotedColumn + " " + REMOVED_HISTORY_IDS_PREDICATE,
+        write: "UPDATE " + quotedChild + " SET " + quotedColumn + "=NULL WHERE " + quotedColumn + " " + REMOVED_HISTORY_IDS_PREDICATE,
+        bind: ["ids"],
+      });
+    }
+  }
+  return steps;
+}
+
+// Cheap indexes for the columns this purge filters on that are not foreign keys (so the removal index pass above
+// does not cover them). Idempotent, touches no rows.
+function ensureRemovedCaptainPurgeIndexes() {
+  const wanted = [
+    "users_ref_notifications_recipient_phone|CREATE INDEX IF NOT EXISTS users_ref_notifications_recipient_phone ON notifications(recipient_phone)",
+    "users_ref_topup_cards_assigned_captain_id|CREATE INDEX IF NOT EXISTS users_ref_topup_cards_assigned_captain_id ON topup_cards(assigned_captain_id)",
+    "users_ref_topup_card_archive_captain_id|CREATE INDEX IF NOT EXISTS users_ref_topup_card_archive_captain_id ON topup_card_archive(captain_id)",
+    "users_ref_orders_pending_captain_user_id|CREATE INDEX IF NOT EXISTS users_ref_orders_pending_captain_user_id ON orders(pending_captain_user_id)",
+    "users_ref_orders_confirmed_by_phone|CREATE INDEX IF NOT EXISTS users_ref_orders_confirmed_by_phone ON orders(confirmed_by_phone)",
+    "users_ref_captain_merge_history_source|CREATE INDEX IF NOT EXISTS users_ref_captain_merge_history_source ON captain_merge_history(source_captain_id)",
+    "users_ref_captain_merge_history_target|CREATE INDEX IF NOT EXISTS users_ref_captain_merge_history_target ON captain_merge_history(target_captain_id)",
+  ];
+  const created = [];
+  for (const entry of wanted) {
+    const [name, sql] = entry.split("|");
+    try {
+      db.prepare(sql).run();
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?").get(name)) created.push(name);
+    } catch (_) { /* an absent optional column must never block the owner's purge */ }
+  }
+  return created;
+}
+
+// The writes themselves, isolated so a test can run this exact sequence against a real database instead of reading
+// it. Must be called inside a transaction. Static steps first in declared order, then the dynamic sweep, then the
+// user rows one id at a time so a single unexpected reference holds one account and not the batch.
+function runRemovedCaptainHistoryPurge(ids, phones, stamp) {
+  const idsJson = JSON.stringify(ids.map(Number));
+  const phonesJson = JSON.stringify(phones.map(String));
+  const steps = removedCaptainHistoryPurgeSteps().concat(removedCaptainHistorySweepSteps());
+  const kindByKey = new Map(steps.map((row) => [row.key, row.kind]));
+  const applied = {};
+  const failures = [];
+  const held = [];
+  for (const item of steps) {
+    if (!item.write) continue;
+    // One bound value per placeholder: a step may reference the id set twice (source OR target).
+    const values = (item.bind || ["ids"]).map((name) => (name === "phones" ? phonesJson : idsJson));
+    try {
+      const result = db.prepare(item.write).run(...values);
+      applied[item.key] = Number(result.changes || 0);
+    } catch (error) {
+      failures.push({ key: item.key, detail: boundedDiagnosticText(error?.message || error, 140) });
+    }
+  }
+  let usersRemoved = 0;
+  for (const id of ids) {
+    try {
+      const result = db.prepare("DELETE FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status='deleted' AND archive_reason=?").run(Number(id), OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON);
+      if (Number(result.changes || 0) === 1) usersRemoved += 1;
+      else held.push({ id: Number(id), reason: "row_not_matched" });
+    } catch (error) {
+      held.push({ id: Number(id), reason: "still_referenced", detail: boundedDiagnosticText(error?.message || error, 140) });
+    }
+  }
+  applied.__users = usersRemoved;
+  const sumByKind = (kind) => Object.entries(applied).reduce((total, [key, value]) => (kindByKey.get(key) === kind ? total + Number(value || 0) : total), 0);
+  const tally = { deleteRows: sumByKind("delete"), detachedRows: sumByKind("null"), cascadeRows: 0 };
+  audit("captains.removed_history.purge.applied", "captain_history_purge", "purge-" + stamp, {
+    accountsRemoved: usersRemoved,
+    heldCount: held.length,
+    deletedRows: tally.deleteRows,
+    detachedRows: tally.detachedRows,
+    membership: "outside_official_group_tombstone",
+    companyLedgerUntouched: true,
+    ordersRowsUntouched: true,
+    stamp,
+  });
+  return { applied, failures, held, usersRemoved, ...tally };
+}
+
+// Targets are the tombstones of the owner's outside-group decision, minus protected owner identities and minus the
+// connected bot number. Nothing else can enter the set.
+function removedCaptainPurgeTargets(limit = 0) {
+  const cap = Number.isInteger(limit) && limit > 0 ? limit : -1;
+  const rows = db.prepare("SELECT id,phone,name,wallet_cents FROM users WHERE role='captain' AND is_bot=0 AND account_status='deleted' AND archive_reason=? ORDER BY id LIMIT ?")
+    .all(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON, cap);
+  const botPhone = phoneWithCountry(connectedBotPhone() || "");
+  const targets = [];
+  const skippedProtected = [];
+  for (const row of rows) {
+    const phone = String(row.phone || "");
+    if (typeof isProtectedOwnerIdentity === "function" && isProtectedOwnerIdentity(phone)) { skippedProtected.push(row); continue; }
+    if (botPhone && phone === botPhone) { skippedProtected.push(row); continue; }
+    targets.push(row);
+  }
+  return { targets, skippedProtected };
+}
+
+function removedCaptainHistoryPurgeReport(limit = 0) {
+  const { targets, skippedProtected } = removedCaptainPurgeTargets(limit);
+  const ids = targets.map((row) => Number(row.id));
+  const phones = targets.map((row) => String(row.phone || "")).filter(Boolean);
+  const idsJson = JSON.stringify(ids);
+  const phonesJson = JSON.stringify(phones);
+  const allSteps = removedCaptainHistoryPurgeSteps().concat(removedCaptainHistorySweepSteps());
+  const steps = [];
+  const countErrors = [];
+  let deleteRows = 0;
+  let nullRows = 0;
+  let cascadeRows = 0;
+  for (const item of allSteps) {
+    let count = 0;
+    const values = (item.bind || ["ids"]).map((name) => (name === "phones" ? phonesJson : idsJson));
+    // A silently swallowed count would make the owner confirm the wrong number, so a failing count is reported.
+    try { count = Number(db.prepare(item.select).get(...values).count || 0); } catch (error) { count = -1; countErrors.push({ key: item.key, detail: boundedDiagnosticText(error?.message || error, 140) }); }
+    if (count < 0) continue;
+    if (item.kind === "delete") deleteRows += count;
+    else if (item.kind === "null") nullRows += count;
+    else cascadeRows += count;
+    steps.push({ key: item.key, label: item.label, kind: item.kind, count });
+  }
+  const company = companyUser();
+  const settledWhere = " FROM orders o JOIN order_settlements s ON s.order_id=o.id AND s.status='applied' WHERE o.status IN ('accepted','completed') AND o.settlement_state='settled'";
+  const overviewOrders = Number(db.prepare("SELECT COUNT(*) AS count" + settledWhere).get().count || 0);
+  const overviewAccepted = Number(db.prepare("SELECT COUNT(*) AS count" + settledWhere + " AND o.status='accepted'").get().count || 0);
+  const lostOrders = Number(db.prepare("SELECT COUNT(*) AS count" + settledWhere + " AND s.captain_user_id " + REMOVED_HISTORY_IDS_PREDICATE).get(idsJson).count || 0);
+  const lostAccepted = Number(db.prepare("SELECT COUNT(*) AS count" + settledWhere + " AND o.status='accepted' AND s.captain_user_id " + REMOVED_HISTORY_IDS_PREDICATE).get(idsJson).count || 0);
+  const ledgerMoves = Number(db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger").get().count || 0);
+  const ledgerDeleted = Number((steps.find((row) => row.key === "wallet_ledger") || {}).count || 0);
+  const settlementRows = Number(db.prepare("SELECT COUNT(*) AS count FROM order_settlements").get().count || 0);
+  const settlementsDeleted = Number((steps.find((row) => row.key === "order_settlements_executed") || {}).count || 0);
+  const orderRows = Number(db.prepare("SELECT COUNT(*) AS count FROM orders").get().count || 0);
+  const companyEarnings = db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents, COUNT(CASE WHEN type='commission_company' THEN 1 END) AS entries FROM wallet_ledger WHERE user_id=?").get(company.id);
+  // Must be zero: the company user is role='company', so it can never be inside the captain target set.
+  const companyLedgerInsideTargets = Number(db.prepare("SELECT COUNT(*) AS count FROM wallet_ledger WHERE user_id=? AND user_id " + REMOVED_HISTORY_IDS_PREDICATE).get(company.id, idsJson).count || 0);
+  const activeCaptains = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(wallet_cents),0) AS cents FROM users WHERE role='captain' AND is_bot=0 AND active=1 AND account_status='active'").get();
+  const otherDeletedAccounts = Number(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='captain' AND is_bot=0 AND account_status='deleted' AND (archive_reason IS NULL OR archive_reason<>?)").get(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON).count || 0);
+  return {
+    targets: targets.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone), balance: money(Number(row.wallet_cents || 0)) })),
+    targetCount: ids.length,
+    skippedProtected: skippedProtected.map((row) => ({ id: Number(row.id), phone: displayPhone(row.phone) })),
+    walletCentsDestroyed: targets.reduce((total, row) => total + Number(row.wallet_cents || 0), 0),
+    steps,
+    countErrors,
+    totals: { deleteRows, nullRows, cascadeRows, userRows: ids.length },
+    money: {
+      ledgerMoves: { before: ledgerMoves, after: ledgerMoves - ledgerDeleted },
+      settlements: { before: settlementRows, after: settlementRows - settlementsDeleted },
+      overviewOrders: { before: overviewOrders, after: overviewOrders - lostOrders },
+      overviewAccepted: { before: overviewAccepted, after: overviewAccepted - lostAccepted },
+      orderRows: { before: orderRows, after: orderRows },
+      companyEarnings: { total: money(companyEarnings.cents), entries: Number(companyEarnings.entries || 0) },
+      companyBalance: money(Number(company.wallet_cents || 0)),
+      companyLedgerRowsInsideTargets: companyLedgerInsideTargets,
+      activeCaptainWallets: { count: Number(activeCaptains.count || 0), sum: money(Number(activeCaptains.cents || 0)) },
+      otherDeletedAccountsUntouched: otherDeletedAccounts,
+    },
+  };
+}
+
+app.get("/api/admin/captains/removed-history-preview", requireOwnerAdmin, adminReadLimiter, (req, res) => {
+  const requestedLimit = Number(req.query.limit || 0);
+  const report = removedCaptainHistoryPurgeReport(Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 300) : 0);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    success: true,
+    mutation: "none",
+    generatedAt: now(),
+    scope: "حسابات الكباتن المُخرَجة من القروب الرسمي بقرار المالك فقط",
+    archiveReason: OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON,
+    targetCount: report.targetCount,
+    skippedProtected: report.skippedProtected,
+    walletToBeDestroyed: money(report.walletCentsDestroyed),
+    totals: report.totals,
+    money: report.money,
+    steps: report.steps,
+    countErrors: report.countErrors,
+    samples: report.targets.slice(0, 20),
+    confirmation: REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION,
+  });
+});
+
+app.post("/api/admin/captains/purge-removed-history", requireOwnerAdmin, adminMutationLimiter, async (req, res) => {
+  if (String(req.body?.confirmation || "") !== REMOVED_CAPTAIN_HISTORY_PURGE_CONFIRMATION) {
+    return res.status(400).json({ success: false, mutation: "none", error: "مطلوب تأكيد صريح من المالك لمحو السجل المالي والتدقيقي للمُخرَجين" });
+  }
+  if (req.body?.execute !== true) return res.status(400).json({ success: false, mutation: "none", error: "مطلوب execute:true للتنفيذ الفعلي" });
+  const expected = req.body?.expected;
+  if (!expected || typeof expected !== "object") {
+    return res.status(400).json({ success: false, mutation: "none", error: "مطلوب عدّادات المعاينة (expected) للمطابقة قبل أي كتابة" });
+  }
+  const batchSizeRaw = req.body?.batchSize;
+  const batchSize = batchSizeRaw === undefined || batchSizeRaw === null || batchSizeRaw === "" ? 0 : Number(batchSizeRaw);
+  if (!Number.isInteger(batchSize) || batchSize < 0 || batchSize > 300) {
+    return res.status(400).json({ success: false, mutation: "none", error: "batchSize يجب أن يكون عددًا صحيحًا بين 1 و300، أو متغيبًا للتنفيذ الكامل" });
+  }
+  const skipBackup = req.body?.skipBackup === true;
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  let backupName = null;
+  if (skipBackup) {
+    // History cannot be rebuilt, so a full backup is mandatory: a later batch may reuse it, never run without it.
+    const prior = fs.readdirSync(backupDir).filter((name) => /^pre-money-purge-\d+\.sqlite$/.test(name)).sort();
+    if (!prior.length) {
+      return res.status(503).json({ success: false, mutation: "none", error: "لا توجد نسخة احتياطية لهذه العملية؛ نفّذ دفعة بدون skipBackup أولًا" });
+    }
+    backupName = prior[prior.length - 1];
+  }
+  const preview = removedCaptainHistoryPurgeReport(batchSize);
+  const previewKey = Object.fromEntries(preview.steps.map((row) => [row.key, row.count]));
+  const liveKey = {
+    targetCount: preview.targetCount,
+    deleteRows: preview.totals.deleteRows,
+    nullRows: preview.totals.nullRows,
+    cascadeRows: preview.totals.cascadeRows,
+  };
+  const expectedKey = {
+    targetCount: Number(expected.targetCount),
+    deleteRows: Number(expected.deleteRows),
+    nullRows: Number(expected.nullRows),
+    cascadeRows: Number(expected.cascadeRows),
+  };
+  if (!Object.values(expectedKey).every(Number.isInteger)) {
+    return res.status(400).json({ success: false, mutation: "none", error: "العدّادات الأربعة للمعاينة مطلوبة كأعداد صحيحة" });
+  }
+  if (JSON.stringify(liveKey) !== JSON.stringify(expectedKey)
+    || (expected.steps && JSON.stringify(expected.steps) !== JSON.stringify(previewKey))) {
+    return res.status(409).json({ success: false, mutation: "none", error: "تغيّرت الأرقام منذ المعاينة؛ أعد المعاينة", current: liveKey, expected: expectedKey, currentSteps: previewKey });
+  }
+  if (preview.countErrors.length) {
+    // Refuse to write when the preview itself could not be measured.
+    return res.status(503).json({ success: false, mutation: "none", error: "تعذّر قياس بعض الأعداد؛ لم يتم أي تغيير", countErrors: preview.countErrors });
+  }
+  if (!preview.targetCount) {
+    return res.json({ success: true, mutation: "none", completed: true, message: "لا توجد حسابات مُخرَجة بهذا السبب؛ لا شيء لِمحوه", backupSkipped: skipBackup, backupName });
+  }
+  // Refuse to run while the company's own ledger sits inside the target set - impossible by construction, but this
+  // path destroys history, so the invariant is checked rather than assumed.
+  if (preview.money.companyLedgerRowsInsideTargets !== 0) {
+    return res.status(503).json({ success: false, mutation: "none", error: "تعذّر التحقق من فصل حساب الشركة عن مجموعة المُخرَجين؛ لم يتم أي تغيير" });
+  }
+  const ids = preview.targets.map((row) => row.id);
+  const phones = preview.targets.map((row) => row.phone).filter(Boolean);
+  const removalIndexes = ensureOutsideGroupRemovalIndexes();
+  const purgeIndexes = ensureRemovedCaptainPurgeIndexes();
+  if (!skipBackup) {
+    backupName = "pre-money-purge-" + Date.now() + ".sqlite";
+    await db.backup(path.join(backupDir, backupName));
+  }
+  const stamp = now();
+  const companyBefore = companyUser();
+  const earningsBefore = Number(db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents FROM wallet_ledger WHERE user_id=?").get(companyBefore.id).cents || 0);
+  const purge = db.transaction(() => runRemovedCaptainHistoryPurge(ids, phones, stamp))();
+  const recount = removedCaptainHistoryPurgeReport(0);
+  const companyAfter = companyUser();
+  const earningsAfter = Number(db.prepare("SELECT COALESCE(SUM(CASE WHEN type='commission_company' THEN amount_cents ELSE 0 END),0) AS cents FROM wallet_ledger WHERE user_id=?").get(companyAfter.id).cents || 0);
+  const summary = {
+    accountsRemoved: purge.usersRemoved,
+    heldCount: purge.held.length,
+    deleteRows: purge.deleteRows,
+    detachedRows: purge.detachedRows,
+    remainingTargets: recount.targetCount,
+    remainingDeleteRows: recount.totals.deleteRows,
+    remainingDetachedRows: recount.totals.nullRows,
+    completed: recount.targetCount === 0,
+    batchSize: batchSize || null,
+    backupSkipped: skipBackup,
+    backupName,
+    indexesEnsured: removalIndexes.length + purgeIndexes.length,
+    walletCentsDestroyed: preview.walletCentsDestroyed,
+    failures: purge.failures,
+  };
+  audit("captains.removed_history.purge.summary", "captain_history_purge", "summary", summary);
+  void notifyOperations({
+    event: "captains.removed_history.purge.applied",
+    title: "محو السجل المالي والتدقيقي للكباتن المُخرَجين",
+    lines: [
+      "حسابات أُزيلت في هذه الدفعة: " + summary.accountsRemoved,
+      "صفوف سُحقت: " + summary.deleteRows,
+      "صفوف فُصل عنها اسم المُخرَج: " + summary.detachedRows,
+      "بقي بعد الدفعة: " + summary.remainingTargets,
+      "أرباح الشركة: " + money(earningsBefore) + " ← " + money(earningsAfter) + " JOD",
+      "النسخة الاحتياطية: " + backupName,
+    ],
+    ownersOnly: true,
+  });
+  res.json({
+    success: true,
+    mutation: "applied",
+    ...summary,
+    money: recount.money,
+    company: {
+      balanceBefore: money(Number(companyBefore.wallet_cents || 0)),
+      balanceAfter: money(Number(companyAfter.wallet_cents || 0)),
+      earningsBefore: money(earningsBefore),
+      earningsAfter: money(earningsAfter),
+    },
+    nextExpected: {
+      targetCount: recount.targetCount,
+      deleteRows: recount.totals.deleteRows,
+      nullRows: recount.totals.nullRows,
+      cascadeRows: recount.totals.cascadeRows,
+      steps: Object.fromEntries(recount.steps.map((row) => [row.key, row.count])),
+    },
+    applied: purge.applied,
+    held: purge.held,
+  });
+});
+
 app.get("/api/admin/group/live-messages", requireAdmin, async (req, res) => {
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
   const groupId = String(req.query.groupId || getSetting("group_id", "")).trim();
