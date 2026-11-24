@@ -17023,8 +17023,15 @@ app.post("/api/admin/captains/remove-outside-group", requireOwnerAdmin, adminMut
 // Owner decision 2026-11-24 12:38 +03: «نفّذ» على محو السجل المالي والتدقيقي للحسابات المُخرَجة من القروب الرسمي.
 // The outside-group removal left 1007 tombstoned accounts alive precisely because their money and audit rows are
 // references; the owner has now approved destroying that history. The population is pinned to the tombstone this bot
-// wrote (role='captain', is_bot=0, account_status='deleted', archive_reason=«خارج القروب الرسمي — قرار المالك»), so
-// an active captain, a merged account, the bot number and the company wallet user can never enter the set.
+// wrote and is still carrying now: role='captain', is_bot=0, active=0 plus that recorded reason. An active captain,
+// a merged account, the bot number and the company wallet user can never enter the set.
+//
+// account_status deliberately does not identify the decision. The boot-time backfill in the schema block above
+// (UPDATE users SET account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END, whose allow-list is
+// 'pending','approved','active','suspended','merged','rejected') rewrites every 'deleted' tombstone to 'suspended'
+// the first time the process starts after the removal, because 'deleted' is not in that list. That is what the first
+// deploy of this feature did at 12:59 on 2026-11-24, and the first preview of this purge then honestly reported zero
+// targets instead of 1006. archived_at and archive_reason survive that rewrite, so they are the durable marker.
 //
 // Destroyed (rows whose subject IS one of those accounts): their wallet_ledger, the order_settlements they were the
 // executor of, the order_candidates they posted and the acceptances they sent, their login links, subscription and
@@ -17274,11 +17281,11 @@ function runRemovedCaptainHistoryPurge(ids, phones, stamp) {
 // connected bot number. Nothing else can enter the set.
 function removedCaptainPurgeTargets(limit = 0) {
   const cap = Number.isInteger(limit) && limit > 0 ? limit : -1;
-  // Status must stay out of the predicate: suspendMemberForDebt() (the wallet debt policy) rewrites
-  // account_status to 'suspended' for every account it walks through whose balance is <= 0, which is exactly
-  // what happened to these tombstones on the morning of 2026-11-24 while leaving archived_at and the reason
-  // intact. The owner's decision is carried by that recorded reason plus the account being switched off, so a
-  // row that is active again today is a live account and is never a target; merged rows stay out.
+  // Match the decision, not the status column. The boot-time backfill relabels these tombstones 'suspended'
+  // ('deleted' is not in its allow-list), so a predicate pinned to 'deleted' would silently match nobody after the
+  // next restart - which is exactly what the first preview on 2026-11-24 13:00 reported. What survives that rewrite
+  // is the reason the owner's removal order wrote plus the account being switched off, so a row that registered
+  // again (active=1) is a live account and is never a target, and merged rows stay out.
   const rows = db.prepare("SELECT id,phone,name,wallet_cents,account_status FROM users WHERE role='captain' AND is_bot=0 AND active=0 AND account_status<>'merged' AND archive_reason=? ORDER BY id LIMIT ?")
     .all(OUTSIDE_GROUP_CAPTAIN_ARCHIVE_REASON, cap);
   const botPhone = phoneWithCountry(connectedBotPhone() || "");
