@@ -32,11 +32,14 @@ function run(root) {
   }
 }
 
-// 1) The dependency is pinned to a single exact version in both manifests.
-assert.equal(packageJson.dependencies["whatsapp-web.js"], "1.34.8", "package.json pins the exact media-fixed release");
+// 1) The dependency is pinned to one immutable upstream commit in both manifests.
+const expectedCommit = "38eb45b2759450cc6fccb6a7a3f2cbc3bdb87db2";
+const expectedSource = `https://codeload.github.com/wwebjs/whatsapp-web.js/tar.gz/${expectedCommit}`;
+assert.equal(packageJson.dependencies["whatsapp-web.js"], expectedSource, "package.json pins the reviewed socket-fix commit");
 assert.equal(lock.packages["node_modules/whatsapp-web.js"].version, "1.34.8", "package-lock.json resolves the same version");
-assert.equal(lock.packages[""].dependencies["whatsapp-web.js"], "1.34.8", "lock root records the pinned range");
-assert.ok(lock.packages["node_modules/whatsapp-web.js"].integrity, "lock carries an integrity hash for the tarball");
+assert.equal(lock.packages[""].dependencies["whatsapp-web.js"], expectedSource, "lock root records the same immutable source");
+assert.equal(lock.packages["node_modules/whatsapp-web.js"].resolved, expectedSource, "lock resolves the same immutable source");
+assert.ok(lock.packages["node_modules/whatsapp-web.js"].integrity, "lock carries an integrity hash for the pinned archive");
 
 // 2) The 1.34.8 layout (upstream already contains the fix) must be a clean no-op.
 const upstreamNeedle = "            ...extraOptions,\n        };\n\n        // Bot's won't reply if canonicalUrl is set (linking)\n";
