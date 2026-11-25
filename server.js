@@ -271,6 +271,13 @@ const QR_ACCESS_DEFAULT_DURATION_SECONDS = Math.min(
 );
 const WHATSAPP_INIT_TIMEOUT_MS = Number(process.env.WHATSAPP_INIT_TIMEOUT_MS || 300000);
 const WHATSAPP_PROTOCOL_TIMEOUT_MS = Math.max(120000, Math.min(600000, Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS || 300000)));
+// whatsapp-web.js waits a fixed 30 s inside initialize() for the WhatsApp Web app to expose a
+// settled WebSocket state. On Render's throttled CPU a browser profile needs longer than that, so
+// every initialization aborted with "Waiting failed: 30000ms exceeded" before a QR could ever be
+// emitted. The documented authTimeoutMs option replaces that 30 s, and the ceiling keeps it below
+// half of WHATSAPP_INIT_TIMEOUT_MS so the outer controlled-retry guard still owns the deadline.
+const WHATSAPP_AUTH_TIMEOUT_CEILING_MS = Math.max(30000, Math.floor((WHATSAPP_INIT_TIMEOUT_MS - 30000) / 2));
+const WHATSAPP_AUTH_TIMEOUT_MS = Math.max(30000, Math.min(Number(process.env.WHATSAPP_AUTH_TIMEOUT_MS) || 120000, WHATSAPP_AUTH_TIMEOUT_CEILING_MS));
 const WHATSAPP_GROUP_CREATE_TIMEOUT_MS = Number(process.env.WHATSAPP_GROUP_CREATE_TIMEOUT_MS || 180000);
 const ADMIN_SEND_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.ADMIN_SEND_TIMEOUT_MS || 20000)));
 const IMMEDIATE_CONFIRMATION_SEND_TIMEOUT_MS = 1000;
@@ -4677,6 +4684,7 @@ function operationalSettings() {
     reconnectMaxDelayMs: boundedIntegerSetting("whatsapp_reconnect_max_delay_ms", WHATSAPP_RECONNECT_MAX_DELAY_MS, 10000, 900000),
     reconnectMaxAttempts: boundedIntegerSetting("whatsapp_reconnect_max_attempts", WHATSAPP_RECONNECT_MAX_ATTEMPTS, 1, 100),
     initTimeoutMs: boundedIntegerSetting("whatsapp_init_timeout_ms", WHATSAPP_INIT_TIMEOUT_MS, 60000, 900000),
+    authTimeoutMs: boundedIntegerSetting("whatsapp_auth_timeout_ms", WHATSAPP_AUTH_TIMEOUT_MS, 30000, WHATSAPP_AUTH_TIMEOUT_CEILING_MS),
   };
 }
 function currentSettlementPolicy() {
@@ -9561,6 +9569,9 @@ function createClient() {
   officialGroupAdminSnapshotAt = null;
   const instance = new Client({
     authStrategy: new LocalAuth({ clientId: WHATSAPP_CLIENT_ID, dataPath: AUTH_PATH }),
+    // Bounded replacement for the library's hardcoded 30 s authentication wait, so a slow
+    // Render CPU can reach the UNPAIRED state that emits a scannable QR.
+    authTimeoutMs: operationalSettings().authTimeoutMs,
     puppeteer: puppeteerConfig,
   });
   instance.on("qr", (qr) => {

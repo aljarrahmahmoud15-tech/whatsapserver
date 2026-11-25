@@ -289,7 +289,7 @@ test("stored reaction recovery reconciles at most 30 unique approved-group targe
 
 test("current-generation direct reaction handler remains uncapped and keeps immediate retry backoff", async () => {
   class FakeClient {
-    constructor() { this.handlers = new Map(); }
+    constructor(options = {}) { this.options = options; this.handlers = new Map(); }
     on(eventName, handler) { this.handlers.set(eventName, handler); return this; }
   }
   const handled = [];
@@ -307,6 +307,7 @@ test("current-generation direct reaction handler remains uncapped and keeps imme
     WHATSAPP_CLIENT_ID: "synthetic-client",
     AUTH_PATH: "/synthetic-auth",
     puppeteerConfig: {},
+    operationalSettings: () => ({ authTimeoutMs: 120000, initTimeoutMs: 300000 }),
     installWhatsAppStorageSendGuard() {},
     handleMessageReaction: async (reaction) => { handled.push(reaction); },
     scheduleReactionRetry: (reaction, delays) => { retries.push({ reaction, delays }); },
@@ -318,6 +319,12 @@ test("current-generation direct reaction handler remains uncapped and keeps imme
   evaluate(source.slice(start, end), context, "this.createClient = createClient;");
 
   const instance = context.createClient();
+  // The bounded auth timeout must reach whatsapp-web.js, otherwise every initialization aborts
+  // at the library's fixed 30 s and no QR is ever emitted. Client options stay minimal: the
+  // session strategy, the auth timeout and the browser config only, never a pairing shortcut.
+  assert.ok(Object.keys(instance.options).every((key) => ["authStrategy", "authTimeoutMs", "puppeteer"].includes(key)), "createClient must not add other client options");
+  assert.equal(instance.options.authTimeoutMs, 120000, "createClient passes the bounded auth timeout");
+  assert.ok(Number.isInteger(instance.options.authTimeoutMs) && instance.options.authTimeoutMs >= 30000 && instance.options.authTimeoutMs * 2 <= 300000, "auth timeout is a bounded integer inside the init deadline");
   const reactionHandler = instance.handlers.get("message_reaction");
   assert.equal(typeof reactionHandler, "function");
   for (let index = 0; index < 31; index += 1) {
