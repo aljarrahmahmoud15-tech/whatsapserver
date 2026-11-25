@@ -471,7 +471,7 @@ async function openInlineQr(){
   $('modalBody').innerHTML=`<div class="v27-qr-shell"><div class="window-identity-grid"><div class="detail-row"><span>رقم البوت</span><b>${esc(readOnlyBotNumber())}</b></div><div class="detail-row"><span>الحالة الحالية</span><b>${statusReady()?'جاهز':'بانتظار QR'}</b></div></div><div id="v27QrStatus" class="notice">جارٍ إصدار رابط QR مؤقت محمي…</div><div class="v27-qr-frame"><img id="v27QrImage" alt="QR ربط WhatsApp" hidden></div><div id="v27QrMeta" class="window-only-note">لا يتم عرض رمز الجلسة داخل السجل أو المحادثة.</div><button class="secondary" id="v27QrRefresh" type="button">تحديث QR الآن</button><div class="notice warning">امسح الرمز من WhatsApp ← الأجهزة المرتبطة ← ربط جهاز. لا تضغط أي زر لمسح الجلسة الحالية؛ هذه النافذة تحافظ على الجلسة ولا تحذفها.</div></div>`;
   $('v27QrRefresh').addEventListener('click',refreshInlineQr);
   try{
-    const grant=await api('/api/admin/qr-temporary-link',{method:'POST'});
+    const grant=await api('/api/admin/qr-main-link',{method:'POST'});
     qrAccessUrl=grant.url;
     $('v27QrMeta').textContent='تم إصدار وصول مؤقت محمي حتى '+(grant.expiresAt||'—')+' · التحديث تلقائي.';
     await refreshInlineQr();
