@@ -56,7 +56,9 @@ IF offer_owner REACTS with Like TO request -> BOOKING = CONFIRMED
 | `/api/admin/send` | إرسال رسالة إداريًا بعد التحقق |
 | `POST /api/admin/logout` | فصل جلسة WhatsApp ومسح ملفاتها ثم إعادة الاتصال؛ يتطلب المالك والتأكيد النصي `CLEAR_WHATSAPP_SESSION_AND_RECONNECT` |
 | `GET /api/admin/whatsapp/clear-session` | متوقف ويرجع 405 بلا أثر جانبي؛ لا تستخدم رابط GET لمسح الجلسة |
-| `POST /api/admin/whatsapp/archive-session` | أرشفة ملفات جلسة WhatsApp وإعادة الاتصال دون حذف الملفات؛ يتطلب المالك والتأكيد النصي `ARCHIVE_WHATSAPP_SESSION_AND_RECONNECT` |
+| `POST /api/admin/whatsapp/archive-session` | أرشفة ملفات جلسة WhatsApp وإعادة الاتصال دون حذف الملفات؛ يتطلب المالك والتأكيد النصي `ARCHIVE_WHATSAPP_SESSION_AND_RECONNECT`، ويتقبّل اختياريًا `includeActiveProfile: true` |
+
+عندما تُظهر صفحة واتساب شاشة QR لكن العملية تبقى على `initialize: Waiting failed` ولا يُطلق أي QR (لأن نموذج اتصال واتساب ويب لا يصل إلى حالة `UNPAIRED` التي ينتظرها الكتاب)، يمرر المالك `includeActiveProfile: true` مع نص التأكيد فتنُقل ملفات الجلسة الحالية نفسها — إعادة تسمية فقط إلى `.archived-sessions` داخل `AUTH_PATH` مع مسار `restoreTo` لكل مجلد، ولا يُحذف أي شيء — ليبدأ العميل من ملف نظيف ويظهر QR قابل للمسح. بدون هذا الحقل يبقى السلوك القديم حرفيًا: الملفات القديمة تُؤرشف وملف الجلسة الحالي يبقى في مكانه. المسار مقيّد بالمالك، ومحدود بثلاث طلبات لكل عنوان، ويرفض بـ 409 أثناء وجود جلسة متصلة، ويرفض إعادة الاتصال حتى تظهر QR.
 
 ## نشر Railway
 

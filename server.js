@@ -8713,31 +8713,48 @@ function disposeAndScheduleReconnect(instance, label) {
     });
 }
 
-function archiveWhatsAppSessionDirectories() {
+// WhatsApp web can sit on the pairing screen with a rendered QR canvas while its socket
+// model never reports UNPAIRED, which is the state that leaves whatsapp-web.js waiting
+// for an event that will never arrive ("Waiting failed: …ms exceeded", no QR emitted).
+// The only recovery is a profile the app has not already locked into that state. This
+// helper therefore RENAMES session profiles into .archived-sessions (restorable by
+// renaming back) and never deletes anything, so the owner keeps every previous session
+// directory on the persistent disk.
+function archiveWhatsAppSessionDirectories(options = {}) {
+  const includeActiveProfile = options.includeActiveProfile === true;
   const archiveRoot = path.join(AUTH_PATH, ".archived-sessions");
   const activeProfile = `session-${WHATSAPP_CLIENT_ID}`;
-  if (!fs.existsSync(AUTH_PATH)) return { archived: [], skipped: [], archiveRoot };
+  if (!fs.existsSync(AUTH_PATH)) {
+    return { archived: [], skipped: [], archiveRoot, activeProfile, activeProfileArchived: false };
+  }
   fs.mkdirSync(archiveRoot, { recursive: true });
   const archived = [];
   const skipped = [];
   for (const entry of fs.readdirSync(AUTH_PATH, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === ".archived-sessions" || !/^session(?:-.+)?$/.test(entry.name)) continue;
-    if (entry.name === activeProfile) { skipped.push(entry.name); continue; }
+    if (entry.name === activeProfile && !includeActiveProfile) { skipped.push(entry.name); continue; }
     const source = path.join(AUTH_PATH, entry.name);
     const destination = path.join(archiveRoot, `${entry.name}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`);
     fs.renameSync(source, destination);
-    archived.push({ name: entry.name, archive: path.basename(destination) });
+    archived.push({ name: entry.name, archive: path.basename(destination), restoreTo: path.join(AUTH_PATH, entry.name) });
   }
-  return { archived, skipped, archiveRoot };
+  return {
+    archived,
+    skipped,
+    archiveRoot,
+    activeProfile,
+    activeProfileArchived: includeActiveProfile && archived.some((item) => item.name === activeProfile),
+  };
 }
 
-async function stopAndArchiveOldWhatsAppSession() {
+async function stopAndArchiveOldWhatsAppSession(options = {}) {
   await destroyClient();
   qrCodeData = null;
-  const result = archiveWhatsAppSessionDirectories();
+  const result = archiveWhatsAppSessionDirectories(options);
   whatsappState = "session_archived";
   whatsappLastEvent = "session_archived";
   whatsappLastError = null;
+  console.log(`[WhatsApp] session archived: renamed=${result.archived.length} skipped=${result.skipped.length} activeProfileArchived=${result.activeProfileArchived === true} (directories renamed, nothing deleted)`);
   recordOwnerControlCheckpoint("whatsapp.session_archived", { force: true });
   return result;
 }
@@ -21323,10 +21340,18 @@ app.get("/api/admin/whatsapp/clear-session", requireAdmin, (_req, res) => {
 });
 app.post("/api/admin/whatsapp/archive-session", requireOwnerAdmin, async (req, res) => {
   if (req.body?.confirmation !== WHATSAPP_SESSION_ARCHIVE_CONFIRMATION) return res.status(400).json({ error: "Owner confirmation is required to archive and reconnect the WhatsApp session", code: "WHATSAPP_SESSION_ARCHIVE_CONFIRMATION_REQUIRED", mutation: "none" });
+  if (!consumeRateLimit(adminActionRate, clientAddress(req), 3)) return res.status(429).json({ error: "Too many session archive actions; try again later" });
+  if (isReady) return res.status(409).json({ error: "A WhatsApp session is live; archiving is refused while the bot is connected", code: "WHATSAPP_SESSION_ARCHIVE_READY", mutation: "none" });
   try {
-    const result = await stopAndArchiveOldWhatsAppSession();
+    const result = await stopAndArchiveOldWhatsAppSession({ includeActiveProfile: req.body?.includeActiveProfile === true });
     scheduleReconnect();
-    res.json({ success: true, message: "Old WhatsApp session stopped and archived; no session files were deleted", ...result });
+    res.json({
+      success: true,
+      message: result.activeProfileArchived
+        ? "Stale WhatsApp session profile archived (renamed, not deleted); the next attempt starts from a clean profile and will emit a QR"
+        : "Old WhatsApp session stopped and archived; no session files were deleted",
+      ...result,
+    });
   } catch (error) {
     console.error("[WhatsApp] session archive failed:", error.message);
     res.status(500).json({ error: "Unable to archive WhatsApp session" });

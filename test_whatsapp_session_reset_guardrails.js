@@ -33,8 +33,24 @@ const archive = route('app.post("/api/admin/whatsapp/archive-session"', 'app.pos
 assert.match(archive, /requireOwnerAdmin/);
 const archiveConfirmAt = archive.indexOf("req.body?.confirmation !== WHATSAPP_SESSION_ARCHIVE_CONFIRMATION");
 assert.ok(archiveConfirmAt >= 0, "session archiving must require exact owner confirmation");
-assert.ok(archive.indexOf("stopAndArchiveOldWhatsAppSession()") > archiveConfirmAt);
-assert.ok(archive.indexOf("scheduleReconnect()") > archiveConfirmAt);
+const archiveCallAt = archive.indexOf("stopAndArchiveOldWhatsAppSession(");
+assert.ok(archiveCallAt > archiveConfirmAt, "session archiving must run only after owner confirmation");
+assert.ok(archive.indexOf("scheduleReconnect()") > archiveCallAt, "reconnect must happen only after the archive");
+assert.match(archive, /consumeRateLimit\(adminActionRate, clientAddress\(req\), 3\)/);
+assert.ok(archive.indexOf("consumeRateLimit(") < archiveCallAt, "rate limit must be checked before any archive work");
+assert.match(archive, /if \(isReady\) return res\.status\(409\)[\s\S]{0,200}WHATSAPP_SESSION_ARCHIVE_READY/);
+assert.ok(archive.indexOf("isReady") < archiveCallAt, "a live session must be refused before anything is archived");
+assert.match(archive, /includeActiveProfile: req\.body\?\.includeActiveProfile === true/);
+for (const effect of ["rmSync(", "unlinkSync(", "rmdirSync(", "fs.rm("])
+  assert.ok(!archive.includes(effect), `archive route must never delete (${effect})`);
+
+const archiveHelper = route("function archiveWhatsAppSessionDirectories(", "async function stopAndArchiveOldWhatsAppSession(");
+for (const effect of ["rmSync(", "unlinkSync(", "rmdirSync(", "fs.rm("])
+  assert.ok(!archiveHelper.includes(effect), `archive helper must only rename, never delete (${effect})`);
+assert.match(archiveHelper, /fs\.renameSync\(source, destination\)/);
+assert.match(archiveHelper, /restoreTo: path\.join\(AUTH_PATH, entry\.name\)/);
+assert.match(archiveHelper, /if \(entry\.name === activeProfile && !includeActiveProfile\)/);
+assert.match(source, /console\.log\(`\[WhatsApp\] session archived: renamed=/);
 
 assert.match(readme, /`GET \/api\/admin\/whatsapp\/clear-session`[^\n]*405/);
 assert.match(readme, /CLEAR_WHATSAPP_SESSION_AND_RECONNECT/);
