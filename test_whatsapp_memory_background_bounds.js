@@ -375,6 +375,7 @@ function loadWatchdogContext() {
   const recycleCalls = [];
   const pruneCalls = [];
   const sampleLogs = [];
+  const cpuCalls = [];
   const context = {
     MEMORY_RECYCLE_INTERVAL_MS: 1000,
     MEMORY_PRUNE_TRIGGER_MB: 50,
@@ -408,12 +409,16 @@ function loadWatchdogContext() {
     pruneRuntimeMemoryCaches() { pruneCalls.push("prune"); },
     cleanupStaleRuntimeTempFiles() { pruneCalls.push("temp"); },
     recycleBrowserForMemory: (reason) => { recycleCalls.push(reason); },
+    // The owner-approved CPU instrumentation rides the existing watchdog tick; stub the
+    // collaborator so the extracted region stays runnable and its call count observable.
+    sampleCpuUsage: () => { cpuCalls.push("sample"); },
     global: {},
     console: { log() {}, warn() {}, error() {}, info(label, raw) { sampleLogs.push({ label, sample: JSON.parse(raw) }); } },
     intervalCallback: null,
     recycleCalls,
     pruneCalls,
     sampleLogs,
+    cpuCalls,
   };
   evaluate(source.slice(start, end), context, "this.startRuntimeMemoryWatchdog = startRuntimeMemoryWatchdog;");
   context.startRuntimeMemoryWatchdog();
@@ -443,6 +448,11 @@ test("watchdog chooses process-tree RSS, bounds telemetry to 120 samples, and pr
   assert.equal(context.sampleLogs[0].label, "[Runtime] memory sample:");
   assert.deepEqual(context.sampleLogs[0].sample, JSON.parse(JSON.stringify(context.lastMemoryUsageMb)));
   assert.equal(context.memoryRecycleAboveThresholdSamples, 1);
+  assert.equal(
+    context.cpuCalls.length,
+    2,
+    "cpu sampling must run once at watchdog start and once per existing tick, never on its own timer",
+  );
 
   context.processTreeRssMb = () => null;
   tick();
@@ -522,6 +532,27 @@ test("watchdog chooses process-tree RSS, bounds telemetry to 120 samples, and pr
   context.lastDisconnectAt = null;
   context.lastInitializationStartedAt = null;
   context.lastInitializationFinishedAt = null;
+  // Owner-approved 2026-11-25: health.memory gained one additive `cpu` block. Provide the
+  // same observational collaborators the running server exposes so this harness stays honest.
+  context.CPU_SAMPLE_LOG_MAX = 60;
+  context.osCpuCount = () => 1;
+  context.cpuUsageSamples = [{
+    at: "2026-01-01T00:00:00.000Z",
+    windowSeconds: 120,
+    nodeCpuPct: 7.5,
+    instanceCpuPct: 12.5,
+    nodeCpuPctSinceBoot: 6.2,
+    nodeCpuSecondsTotal: 111.1,
+    instanceCpuSecondsTotal: 184.4,
+    cpuCount: 1,
+    loadAvg1m: 0.42,
+  }];
+  context.cpuUsageSummary = () => ({
+    last: context.cpuUsageSamples[0],
+    samples: context.cpuUsageSamples.length,
+    nodeWindowPct: { min: 7.5, max: 7.5, avg: 7.5 },
+    instanceWindowPct: { min: 12.5, max: 12.5, avg: 12.5 },
+  });
   const healthStart = source.indexOf("function runtimeHealth()");
   const healthEnd = source.indexOf("function ensureSystemUsers()", healthStart);
   assert.ok(healthStart >= 0 && healthEnd > healthStart, "runtimeHealth must be extractable");
@@ -533,7 +564,15 @@ test("watchdog chooses process-tree RSS, bounds telemetry to 120 samples, and pr
     "chromiumHeapLimitMb", "externalBytes", "heapLimitBytes", "heapTotalBytes", "heapUsedBytes", "instanceRssMb",
     "lastPruneAt", "lastRecycleAt", "lastSample", "measuredScope", "nodeHeapLimitMb",
     "pruneTriggerMb", "recentSamples", "recycleTriggerMb", "rssBytes", "rssLimitMb",
+    "cpu",
   ].sort());
+  assert.deepEqual(Object.keys(health.memory.cpu).sort(), [
+    "cpuLimitCount", "instanceWindowPct", "last", "measuredScope", "nodeWindowPct",
+    "recentSamples", "sampleIntervalMs", "samples", "unit",
+  ].sort());
+  assert.equal(health.memory.cpu.sampleIntervalMs, 1000, "cpu windows must follow the existing watchdog interval");
+  assert.equal(health.memory.cpu.unit, "percent of one core (100 = one full core)");
+  assert.doesNotMatch(source.slice(healthStart, healthEnd), /if\s*\([^)]*Cpu/, "cpu figures must never gate a health decision");
   const serialized = JSON.stringify(health);
   for (const forbiddenPayload of [
     "MESSAGE-BODY-SENTINEL",
@@ -550,6 +589,8 @@ test("watchdog chooses process-tree RSS, bounds telemetry to 120 samples, and pr
 
   assert.match(source, /const MEMORY_USAGE_SAMPLE_LOG_MAX = 120/);
   assert.match(source, /recentSamples: memoryUsageSamples\.slice\(-MEMORY_USAGE_SAMPLE_LOG_MAX\)/);
+  assert.match(source, /const CPU_SAMPLE_LOG_MAX = 60/, "cpu telemetry must stay bounded");
+  assert.match(source, /recentSamples: cpuUsageSamples\.slice\(-CPU_SAMPLE_LOG_MAX\)/);
 });
 
 test("background readers cannot enter native fetchMessages' unbounded history loop", async () => {

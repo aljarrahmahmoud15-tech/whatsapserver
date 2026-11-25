@@ -7,6 +7,7 @@ const path = require("path");
 const { createClient: createRedisClient } = require("redis");
 const fs = require("fs");
 const v8 = require("v8");
+const os = require("os");
 const Database = require("better-sqlite3");
 const compression = require("compression");
 const bcrypt = require("bcryptjs");
@@ -4874,6 +4875,15 @@ function runtimeHealth() {
       // watchdog compares against recycleTriggerMb; the fields above report Node only.
       instanceRssMb: processTreeRssMb(),
       measuredScope: "process-tree (node + chromium)",
+      // Owner-approved CPU instrumentation. Reported only; never used as a trigger.
+      cpu: {
+        ...cpuUsageSummary(),
+        recentSamples: cpuUsageSamples.slice(-CPU_SAMPLE_LOG_MAX),
+        cpuLimitCount: osCpuCount(),
+        sampleIntervalMs: MEMORY_RECYCLE_INTERVAL_MS,
+        measuredScope: "node = this process; instance = container cgroup (node + chromium)",
+        unit: "percent of one core (100 = one full core)",
+      },
     },
     storage: {
       dataDir: DATA_DIR,
@@ -9558,6 +9568,114 @@ let lastMemoryPruneAt = null;
 let memoryRecycleAboveThresholdSamples = 0;
 const MEMORY_USAGE_SAMPLE_LOG_MAX = 120;
 const memoryUsageSamples = [];
+// Owner-approved 2026-11-25: measure CPU alongside memory. The instance had no CPU
+// instrumentation at all, so CPU could only be eyeballed on Render's charts. These helpers
+// only observe: nothing here changes prune/recycle decisions, timers, or any WhatsApp or
+// financial path. The container is limited to one core, so 100% = one full core.
+const CPU_SAMPLE_LOG_MAX = 60;
+const cpuUsageSamples = [];
+let cpuBaseline = null;
+let lastCpuUsageSample = null;
+let osCpuCountCache = null;
+
+function osCpuCount() {
+  if (osCpuCountCache == null) {
+    try { osCpuCountCache = Math.max(1, os.cpus().length); } catch { osCpuCountCache = 1; }
+  }
+  return osCpuCountCache;
+}
+
+function clampCpuPercent(value) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.round(value * 10) / 10;
+}
+
+// cgroup counters cover every process in the container (Node + Chromium), which is what
+// Render meters and throttles against. Support both cgroup layouts and never throw.
+function readCgroupCpuMicroseconds() {
+  const candidates = [
+    { file: "/sys/fs/cgroup/cpu.stat", kind: "v2" },
+    { file: "/sys/fs/cgroup/cpuacct/cpuacct.usage", kind: "v1" },
+    { file: "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage", kind: "v1" },
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = fs.readFileSync(candidate.file, "utf8");
+      if (candidate.kind === "v2") {
+        const match = /(^|\n)usage_usec\s+(\d+)/.exec(raw);
+        if (match) {
+          const value = Number(match[2]);
+          if (Number.isFinite(value) && value >= 0) return value;
+        }
+        continue;
+      }
+      const value = Number(String(raw).trim());
+      if (Number.isFinite(value) && value >= 0) return Math.round(value / 1000);
+    } catch {
+      // Layout not available on this runtime; try the next one.
+    }
+  }
+  return null;
+}
+
+function sampleCpuUsage(nowMs = Date.now()) {
+  let usage;
+  try { usage = process.cpuUsage(); } catch { return null; }
+  const processMicro = Number(usage.user) + Number(usage.system);
+  const cgroupMicro = readCgroupCpuMicroseconds();
+  const previous = cpuBaseline;
+  cpuBaseline = { atMs: nowMs, processMicro, cgroupMicro };
+  const uptimeSeconds = Math.max(1, process.uptime());
+  const sample = {
+    at: new Date(nowMs).toISOString(),
+    windowSeconds: previous ? Math.max(1, Math.round((nowMs - previous.atMs) / 1000)) : null,
+    nodeCpuPct: null,
+    instanceCpuPct: null,
+    nodeCpuPctSinceBoot: clampCpuPercent(((processMicro / 1e6) / uptimeSeconds) * 100),
+    nodeCpuSecondsTotal: Math.round((processMicro / 1e6) * 100) / 100,
+    instanceCpuSecondsTotal: cgroupMicro == null ? null : Math.round((cgroupMicro / 1e6) * 100) / 100,
+    cpuCount: osCpuCount(),
+    loadAvg1m: null,
+  };
+  try {
+    const load = os.loadavg();
+    if (Number.isFinite(Number(load[0]))) sample.loadAvg1m = Math.round(Number(load[0]) * 100) / 100;
+  } catch {
+    // loadavg is unavailable on some platforms; the cgroup figure is the authoritative one.
+  }
+  if (previous) {
+    const elapsedMs = Math.max(1, nowMs - previous.atMs);
+    sample.nodeCpuPct = clampCpuPercent((((processMicro - previous.processMicro) / 1e6) / (elapsedMs / 1000)) * 100);
+    if (cgroupMicro != null && previous.cgroupMicro != null) {
+      sample.instanceCpuPct = clampCpuPercent((((cgroupMicro - previous.cgroupMicro) / 1e6) / (elapsedMs / 1000)) * 100);
+    }
+  }
+  lastCpuUsageSample = sample;
+  cpuUsageSamples.push(sample);
+  if (cpuUsageSamples.length > CPU_SAMPLE_LOG_MAX) cpuUsageSamples.splice(0, cpuUsageSamples.length - CPU_SAMPLE_LOG_MAX);
+  console.info("[Runtime] cpu sample:", JSON.stringify(sample));
+  return sample;
+}
+
+function cpuUsageSummary() {
+  const windowed = cpuUsageSamples.filter((entry) => entry && Number.isFinite(entry.windowSeconds));
+  const nodeValues = windowed.map((entry) => entry.nodeCpuPct).filter((value) => Number.isFinite(value));
+  const instanceValues = windowed.map((entry) => entry.instanceCpuPct).filter((value) => Number.isFinite(value));
+  const stats = (values) => {
+    if (!values.length) return { min: null, max: null, avg: null };
+    return {
+      min: Math.round(Math.min(...values) * 10) / 10,
+      max: Math.round(Math.max(...values) * 10) / 10,
+      avg: Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10,
+    };
+  };
+  return {
+    last: lastCpuUsageSample,
+    samples: cpuUsageSamples.length,
+    nodeWindowPct: stats(nodeValues),
+    instanceWindowPct: stats(instanceValues),
+  };
+}
 async function recycleBrowserForMemory(reason) {
   if (runtimeMemoryWatchdogRunning) return;
   runtimeMemoryWatchdogRunning = true;
@@ -9640,6 +9758,8 @@ function processTreeRssMb(rootPid = process.pid) {
 }
 function startRuntimeMemoryWatchdog() {
   if (runtimeMemoryWatchdogTimer || MEMORY_RECYCLE_INTERVAL_MS <= 0) return;
+  // Establish the CPU baseline immediately so the first tick already reports a window.
+  sampleCpuUsage();
   runtimeMemoryWatchdogTimer = setInterval(() => {
     const usage = process.memoryUsage();
     const nodeRssMb = Math.round(usage.rss / (1024 * 1024));
@@ -9650,6 +9770,7 @@ function startRuntimeMemoryWatchdog() {
     lastMemoryUsageMb = sample;
     memoryUsageSamples.push(sample);
     if (memoryUsageSamples.length > MEMORY_USAGE_SAMPLE_LOG_MAX) memoryUsageSamples.splice(0, memoryUsageSamples.length - MEMORY_USAGE_SAMPLE_LOG_MAX);
+    sampleCpuUsage();
     console.info("[Runtime] memory sample:", JSON.stringify(sample));
     if (rssMb >= MEMORY_PRUNE_TRIGGER_MB && Date.now() - Number(lastMemoryPruneAt || 0) >= MEMORY_PRUNE_COOLDOWN_MS) {
       try {
