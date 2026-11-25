@@ -217,6 +217,7 @@ function makeHarness() {
     installWhatsAppStorageSendGuard() {},
     installWhatsAppSendDiagnostics: async () => {},
     startWhatsAppStorageMonitor() {},
+    startWhatsAppInitProbe() { return () => {}; },
     enforceCaptainWalletThresholdsForAll: async () => {},
     normalizeAllCaptains: async () => ({ status: "not_needed" }),
     registerGroupMembersAsCaptains: async () => ({ results: [] }),

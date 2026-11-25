@@ -9559,6 +9559,74 @@ function stopRuntimeMemoryWatchdog() {
   runtimeMemoryWatchdogTimer = null;
 }
 
+// Read-only, redacted visibility into the WhatsApp Web page while initialize() is pending.
+// whatsapp-web.js waits for WAWebSocketModel.Socket.state to leave OPENING/UNLAUNCHED/PAIRING;
+// when that never happens the only evidence is "Waiting failed", so log the observed state.
+const WHATSAPP_INIT_PROBE_INTERVAL_MS = 20000;
+function redactInitDiagnostic(value, limit = 300) {
+  return boundedDiagnosticText(value, limit)
+    .replace(/\d{7,}/g, "[digits]")
+    .replace(/https?:\/\/[^\/\s?#]+[^\s]*/gi, "[url]");
+}
+function startWhatsAppInitProbe(instance, runId) {
+  const startedAt = Date.now();
+  let attached = false;
+  let busy = false;
+  let errorLogs = 0;
+  const logLimited = (label, text) => {
+    if (errorLogs >= 20) return;
+    errorLogs += 1;
+    console.warn(`[WhatsAppInitProbe] ${label}: ${redactInitDiagnostic(text)}`);
+  };
+  const tick = async () => {
+    if (busy || runId !== initializationRunId || client !== instance || isReady) return;
+    const page = instance.pupPage;
+    if (!page) { console.log(`[WhatsAppInitProbe] t=${Math.round((Date.now() - startedAt) / 1000)}s page=not_created`); return; }
+    if (!attached) {
+      attached = true;
+      page.on("pageerror", (error) => logLimited("pageerror", error?.message || error));
+      page.on("requestfailed", (request) => {
+        const type = typeof request.resourceType === "function" ? request.resourceType() : "";
+        if (!["document", "script", "xhr", "fetch", "websocket"].includes(type)) return;
+        let host = "";
+        try { host = new URL(request.url()).host; } catch (_) { host = "unknown"; }
+        logLimited("requestfailed", `${type} ${host} ${request.failure()?.errorText || ""}`);
+      });
+      page.on("console", (message) => { if (message.type() === "error") logLimited("console.error", message.text()); });
+    }
+    busy = true;
+    try {
+      const snapshot = await withTimeout(page.evaluate(() => {
+        let socketState = null;
+        let socketStream = null;
+        try {
+          const socket = window.require?.("WAWebSocketModel")?.Socket;
+          socketState = socket?.state || null;
+          socketStream = socket?.stream || null;
+        } catch (_) { socketState = "require_failed"; }
+        return {
+          host: location.host,
+          readyState: document.readyState,
+          webVersion: String(window.Debug?.VERSION || ""),
+          socketState,
+          socketStream,
+          hasQrCanvas: Boolean(document.querySelector("canvas")),
+          title: String(document.title || "").slice(0, 60),
+        };
+      }), 8000, { evaluate: "timeout" });
+      const safe = redactInitDiagnostic(JSON.stringify(snapshot || {}), 400);
+      console.log(`[WhatsAppInitProbe] t=${Math.round((Date.now() - startedAt) / 1000)}s ${safe}`);
+    } catch (error) {
+      logLimited("evaluate_failed", error?.message || error);
+    } finally {
+      busy = false;
+    }
+  };
+  const timer = setInterval(() => void tick(), WHATSAPP_INIT_PROBE_INTERVAL_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearInterval(timer);
+}
+
 function createClient() {
   const generation = ++connectionGeneration;
   groupSnapshotFlights.clear();
@@ -9739,13 +9807,16 @@ async function initializeWhatsApp() {
   whatsappLastError = null;
   lastInitializationStartedAt = new Date().toISOString();
   let currentClient = null;
+  let stopInitProbe = () => {};
   try {
     await destroyClient();
     if (runId !== initializationRunId) return;
     currentClient = createClient();
     client = currentClient;
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
+    stopInitProbe = startWhatsAppInitProbe(currentClient, runId);
     const initialized = await withTimeoutStrict(currentClient.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
+    stopInitProbe();
     if (runId !== initializationRunId) {
       if (client === currentClient) client = null;
       await disposeClientInstance(currentClient, "stale_initialize");
@@ -9781,6 +9852,7 @@ async function initializeWhatsApp() {
       .catch(() => console.warn("[WhatsApp] initialization retry must recheck blocked cleanup"));
     if (runId === initializationRunId) scheduleReconnect();
   } finally {
+    stopInitProbe();
     if (runId === initializationRunId) {
       initializing = false;
       lastInitializationFinishedAt = new Date().toISOString();
