@@ -91,6 +91,7 @@ function makeHarness() {
     checkpointCalls: [],
     timerCalls: [],
     clearTimerCalls: 0,
+    liveQrResets: [],
     clientCreates: 0,
     assertionCalls: 0,
     assertionFailures: 0,
@@ -193,6 +194,10 @@ function makeHarness() {
       counters.checkpointCalls.push(name);
     },
     recordWhatsAppPageDiagnostic() {},
+    // The live pairing screenshot cache must be dropped when a pairing cycle is torn down.
+    resetLiveWhatsAppQrCache(reason) {
+      counters.liveQrResets.push(String(reason || ""));
+    },
     boundedDiagnosticText(value) { return String(value || ""); },
     phoneWithCountry(value) { return String(value || ""); },
     operationalSettings() { return { initTimeoutMs: 1000 }; },
@@ -456,6 +461,7 @@ test("manual restart invalidates a suspended initialize and prevents double disp
   await Promise.all([initialization, restartA]);
   assert.equal(h.counters.clientCreates, 1, "restart must not implicitly double-start initialization");
   assert.equal(lastState(h).isReady, false);
+  assert.deepEqual(h.counters.liveQrResets, ["restart"], "a manual restart must drop the stale live pairing screenshot");
 });
 
 test("late rejection from an old initialize cannot clobber a ready successor", async () => {

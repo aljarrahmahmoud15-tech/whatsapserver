@@ -8317,6 +8317,114 @@ async function readWhatsAppSendDiagnostics() {
   };
 }
 
+// ── Live pairing QR capture (QR root-cause fix) ────────────────────────────────────────────
+// Measured inside this exact container (2026-11-25): WhatsApp Web 2.3000.x draws a real,
+// scannable pairing QR by itself (a canvas inside div[data-ref], verified to decode into the
+// five comma-separated pairing fields) while window.require('WAWebSocketModel') still reports
+// unresolved dependencies, because the contact/auth stores are only defined after the first
+// successful pairing. whatsapp-web.js 1.34.8 registers its QR listener only after that socket
+// state gate resolves, so the library never receives the QR string and /qr-main stays on
+// "جاري تجهيز QR" while initialize dies with "Waiting failed: …ms exceeded".
+// A screenshot of the pairing canvas carries exactly what a phone camera would read, so the
+// owner panel can show it and stay live-refreshing while the library keeps waiting for the
+// post-pairing state change that persists the session. Nothing here reads, logs or stores the
+// QR payload: only geometry and byte length are recorded.
+const LIVE_QR_CACHE_MS = 2000;
+const LIVE_QR_MIN_SIDE_PX = 140;
+let liveQrPng = null;
+let liveQrCapturedAt = 0;
+let liveQrLastResult = null;
+let liveQrInFlight = null;
+
+function liveQrPngLooksValid(buf) {
+  return Buffer.isBuffer(buf) && buf.length > 512
+    && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+}
+
+function liveWhatsAppQrHealth() {
+  return {
+    available: Boolean(liveQrPngLooksValid(liveQrPng)),
+    bytes: liveQrPng && liveQrPng.length ? liveQrPng.length : 0,
+    capturedAt: liveQrCapturedAt ? new Date(liveQrCapturedAt).toISOString() : null,
+    ageMs: liveQrCapturedAt ? Date.now() - liveQrCapturedAt : null,
+    last: liveQrLastResult ? { ...liveQrLastResult } : null,
+  };
+}
+
+function resetLiveWhatsAppQrCache(reason) {
+  liveQrPng = null;
+  liveQrCapturedAt = 0;
+  liveQrLastResult = { at: now(), ok: false, reason: String(reason || "reset"), bytes: 0 };
+}
+
+async function captureLiveWhatsAppQrPng(options = {}) {
+  const force = Boolean(options.force);
+  if (isReady) return { ok: false, reason: "already_connected", png: null };
+  if (!force && liveQrPngLooksValid(liveQrPng) && Date.now() - liveQrCapturedAt < LIVE_QR_CACHE_MS) {
+    return { ok: true, reason: "cached", png: liveQrPng, bytes: liveQrPng.length, capturedAt: liveQrCapturedAt };
+  }
+  if (liveQrInFlight) {
+    try {
+      return await liveQrInFlight;
+    } catch (error) {
+      return { ok: false, reason: "in_flight_failed", png: null };
+    }
+  }
+  const page = client?.pupPage;
+  if (!page || typeof page.evaluate !== "function" || typeof page.screenshot !== "function") {
+    liveQrLastResult = { at: now(), ok: false, reason: page ? "page_not_ready" : "pairing_page_unavailable", bytes: 0 };
+    return { ok: false, reason: liveQrLastResult.reason, png: null };
+  }
+  const task = (async () => {
+    const box = await withTimeout(page.evaluate(() => {
+      const el = document.querySelector("div[data-ref] canvas") || document.querySelector("canvas");
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const style = typeof window.getComputedStyle === "function" ? window.getComputedStyle(el) : null;
+      return {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        intrinsicWidth: Number(el.width) || 0,
+        intrinsicHeight: Number(el.height) || 0,
+        hidden: Boolean(style && (style.display === "none" || style.visibility === "hidden")),
+        pairedScreen: Boolean(el.closest && el.closest("div[data-ref]")),
+      };
+    }), 8000, null);
+    if (!box) {
+      liveQrPng = null;
+      liveQrLastResult = { at: now(), ok: false, reason: "qr_canvas_not_drawn_yet", bytes: 0 };
+      return { ok: false, reason: "qr_canvas_not_drawn_yet", png: null };
+    }
+    const width = Math.round(Number(box.width) || 0);
+    const height = Math.round(Number(box.height) || 0);
+    if (box.hidden || width < LIVE_QR_MIN_SIDE_PX || height < LIVE_QR_MIN_SIDE_PX) {
+      liveQrLastResult = { at: now(), ok: false, reason: "qr_canvas_too_small", bytes: 0, width, height };
+      return { ok: false, reason: "qr_canvas_too_small", png: null, width, height };
+    }
+    const padding = 6;
+    const clip = {
+      x: Math.max(0, Math.floor(box.x - padding)),
+      y: Math.max(0, Math.floor(box.y - padding)),
+      width: Math.min(Math.ceil(width + padding * 2), 1200),
+      height: Math.min(Math.ceil(height + padding * 2), 1200),
+    };
+    const png = await withTimeout(page.screenshot({ type: "png", clip }), 15000, null);
+    if (!liveQrPngLooksValid(png)) {
+      liveQrLastResult = { at: now(), ok: false, reason: "screenshot_failed", bytes: 0, width, height };
+      return { ok: false, reason: "screenshot_failed", png: null, width, height };
+    }
+    liveQrPng = png;
+    liveQrCapturedAt = Date.now();
+    liveQrLastResult = { at: now(), ok: true, reason: "captured", bytes: png.length, width, height, pairedScreen: Boolean(box.pairedScreen) };
+    console.log(`[WhatsApp][QrLive] pairing canvas captured ${width}x${height} bytes=${png.length} pairingScreen=${Boolean(box.pairedScreen)} state=${whatsappState}`);
+    return { ok: true, reason: "captured", png, bytes: png.length, capturedAt: liveQrCapturedAt, width, height };
+  })().finally(() => { liveQrInFlight = null; });
+  liveQrInFlight = task;
+  return task;
+}
+
 function indexedDbErrorIsActive(pageState) {
   const lastErrorAt = Date.parse(pageState?.lastError?.at || "");
   const lastResultAt = Date.parse(pageState?.lastResult?.at || "");
@@ -8777,6 +8885,7 @@ function restartWhatsApp(reason = "manual restart") {
     await destroyClient();
     qrCodeData = null;
     lastQrTime = null;
+    resetLiveWhatsAppQrCache("restart");
     initializing = false;
     console.warn(`[WhatsApp] restarting session: ${reason}`);
     scheduleReconnect();
@@ -9675,6 +9784,7 @@ function createClient() {
     whatsappLastEvent = "authenticated";
     whatsappLastError = null;
     qrCodeData = null;
+    resetLiveWhatsAppQrCache("authenticated");
     console.log(`[WhatsApp] authenticated (clientId=${WHATSAPP_CLIENT_ID})`);
     recordOwnerControlCheckpoint("whatsapp.authenticated", { force: true });
   });
@@ -14465,10 +14575,12 @@ app.get("/api/admin/bot/status", requireAdmin, adminReadLimiter, v27AdminReadCac
   const botPhone = connectedBotPhone();
   const botPhoneDisplay = displayPhone(botPhone);
   const whatsappLink = isValidJordanPhone(botPhone) ? `https://wa.me/${botPhone}` : null;
+  const qrLive = liveWhatsAppQrHealth();
   res.setHeader("Cache-Control", "private, max-age=1, stale-while-revalidate=2");
   res.json({
     success: true,
     status: health.whatsapp?.ready ? "connected" : "offline",
+    qrLive,
     group: {
       groupId: configuredRuntimeGroupId() || null,
       bound: Boolean(configuredRuntimeGroupId()),
@@ -15068,6 +15180,32 @@ app.post("/api/admin/qr-main-link", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, url: `${origin}/qr-main?access=${encodeURIComponent(grant.token)}`, expiresAt: grant.expiresAt, durationSeconds: grant.durationSeconds });
 });
+// Live screenshot of the pairing window for the owner panel. WhatsApp Web 2.3000.x only offers the
+// pairing QR as pixels before the first pairing, so this is the same payload a phone camera reads.
+// Guarded like /qr-main (admin session or a temporary QR grant); it never exposes the payload.
+app.get("/api/admin/whatsapp/qr-live.png", requireQrAccess, async (req, res) => {
+  try {
+    const capture = await captureLiveWhatsAppQrPng({ force: req.query.force === "1" });
+    if (!capture.ok || !liveQrPngLooksValid(capture.png)) {
+      return res.status(409).json({
+        success: false,
+        error: "live_pairing_qr_unavailable",
+        reason: capture.reason || "unknown",
+        whatsappState,
+        ready: Boolean(isReady),
+        live: liveWhatsAppQrHealth(),
+      });
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.end(capture.png);
+  } catch (error) {
+    console.error("[WhatsApp][QrLive] capture failed:", boundedDiagnosticText(error?.message || error, 160));
+    return res.status(500).json({ success: false, error: "live_qr_capture_failed" });
+  }
+});
 app.get("/qr-main", requireQrAccess, async (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
   res.setHeader("Referrer-Policy", "no-referrer");
@@ -15077,7 +15215,10 @@ app.get("/qr-main", requireQrAccess, async (req, res) => {
     return res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:white;display:grid;place-items:center;min-height:100vh"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px"><h2>QR البوت الرئيسي</h2><p>امسح هذا الرمز لربط رقم البوت ${BOT_PHONE_INTL || BOT_PHONE}</p><img src="${image}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p>هذا الرمز ليس لمستقبل المجموعة</p></main><script>setTimeout(()=>location.href=${JSON.stringify(refreshTarget)},30000)</script></body></html>`);
   }
   if (isReady) return res.send(`<html dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>البوت الرئيسي متصل</h2><p>${BOT_PHONE_INTL || BOT_PHONE}</p></body></html>`);
-  res.send(`<html dir="rtl"><meta charset="utf-8"><meta http-equiv="refresh" content="3;url=${refreshTarget}"><body style="font-family:system-ui;text-align:center;padding:50px"><h2>جاري تجهيز QR البوت الرئيسي...</h2><p>لا تعرض هذه الصفحة QR مستقبل المجموعة.</p></body></html>`);
+  // The library cannot hand us a QR string before the first pairing (see captureLiveWhatsAppQrPng),
+  // so show the live pairing window itself instead of an endless spinner.
+  const liveSrc = `/api/admin/whatsapp/qr-live.png${req.query.access ? `?access=${encodeURIComponent(String(req.query.access))}` : ""}`;
+  res.send(`<html dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><body style="font-family:system-ui;background:#09111f;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0"><main style="text-align:center;background:#14243a;padding:24px;border-radius:18px;max-width:440px"><h2>QR البوت الرئيسي</h2><img id="liveQr" alt="رمز الاقتران الحي" src="${liveSrc}" style="max-width:320px;width:100%;background:#fff;padding:12px;border-radius:12px"><p id="liveQrStatus" style="color:#9fd6a0">جاري قراءة نافذة الاقتران الحيّة…</p><p>امسح هذا الرمز لربط رقم البوت ${BOT_PHONE_INTL || BOT_PHONE}</p><p>واتساب ← الأجهزة المرتبطة ← ربط جهاز</p><p style="color:#8fb3d9">هذه لقطة مباشرة لنافذة اقتران واتساب داخل الخدمة، وليست رمز مستقبل المجموعة، وتُحدَّث كل ثانيتين حتى المسح.</p></main><script>(function(){var src=${JSON.stringify(liveSrc)};var sep=src.indexOf("?")>=0?"&":"?";var img=document.getElementById("liveQr");var note=document.getElementById("liveQrStatus");function tick(){img.src=src+sep+"t="+Date.now();}img.onload=function(){note.textContent="الرمز الحي يتحدث تلقائيًا؛ امسحه الآن من واتساب ← الأجهزة المرتبطة.";};img.onerror=function(){note.textContent="لم تُرسم نافذة الاقتران بعد؛ تُعاد المحاولة خلال 4 ثوانٍ.";setTimeout(tick,4000);};setInterval(tick,2000);setTimeout(function(){location.href=${JSON.stringify(refreshTarget)};},45000);})();</script></body></html>`);
 });
 app.get("/qr", requireQrAccess, async (req, res) => {
   res.setHeader("Cache-Control", "no-store, max-age=0");
