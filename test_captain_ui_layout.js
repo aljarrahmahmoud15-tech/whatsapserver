@@ -33,7 +33,6 @@ const ORDER = [
   ['aria-label="أدوات V27 للكابتن"', 'أدوات V27'],
   ['aria-label="خدمة العملاء للكابتن"', 'خدمة العملاء'],
   ['aria-label="تغيير رمز الكابتن"', 'تغيير الرمز'],
-  ['aria-label="معرض التصاميم القديمة"', 'معرض التصاميم'],
   ['<div class="footer"', 'التذييل'],
 ];
 let previous = -1;
@@ -43,12 +42,13 @@ for (const [marker, label] of ORDER) {
   previous = at;
 }
 
-// 2) لا لوحة ضاعت: كل الأقسام الحادية عشرة ما زالت موجودة مرة واحدة على الأقل.
+// 2) لا لوحة تشغيلية ضاعت؛ معرض التصاميم حُذف عمدًا.
 for (const label of ['الملخص المالي', 'الطلبات الجارية والمعلقة', 'الطلبات الجديدة للكابتن', 'طلب شحن الرصيد',
   'بطاقات شحن الرصيد', 'طلب سحب المستحقات', 'أدوات V27 للكابتن', 'خدمة العملاء للكابتن',
-  'تغيير رمز الكابتن', 'معرض التصاميم القديمة']) {
+  'تغيير رمز الكابتن']) {
   assert.ok(app.includes(`aria-label="${label}"`), `قسم ${label} لم يُحذف`);
 }
+assert.doesNotMatch(app, /captain-design-gallery|معرض التصاميم القديمة|التصاميم القديمة/, 'معرض التصاميم وخياره محذوفان');
 assert.equal((app.match(/aria-label="تغيير رمز الكابتن"/g) || []).length, 1, 'قسم تغيير الرمز واحد');
 assert.equal((app.match(/aria-label="طلب شحن الرصيد"/g) || []).length, 1, 'قسم الشحن واحد');
 assert.ok((app.match(/<section/g) || []).length >= 11, 'عدد الأقسام محفوظ');
@@ -101,16 +101,17 @@ for (const id of ['classic', 'taj', 'red-white', 'rahlati', 'compact']) {
   assert.ok(designs.includes(`[data-captain-design="${id}"]`), `تصميم ${id} ما زال معروفًا`);
 }
 
-// 7) صفر تغيير تعاقدي: قائمة المسارات نفسها حرفيًا (14 مسارًا).
+// 7) لا تتضمن واجهة الكابتن طلبًا لتغيير التصميم بعد تثبيت المظهر؛ مسارات التشغيل تبقى كما هي.
 const EXPECTED = [
   '/api/captain/change-pin', '/api/captain/invites/', '/api/captain/login', '/api/captain/login-link/exchange',
   '/api/captain/logout', '/api/captain/overview', '/api/captain/pin-recovery/request-code',
   '/api/captain/pin-recovery/reset', '/api/captain/redeem-card', '/api/captain/register',
-  '/api/captain/topup-request', '/api/captain/ui-design', '/api/captain/withdrawal-requests', '/api/support/tickets',
+  '/api/captain/topup-request', '/api/captain/withdrawal-requests', '/api/support/tickets',
 ];
 const found = [...new Set((captain.match(/\/api\/[a-z0-9\/_-]+/gi) || []).map((p) => p.replace(/\/$/, '')))].sort();
 assert.deepEqual(found.map((p) => p.replace(/^\/api\/captain\/invites$/, '/api/captain/invites/')).sort(), EXPECTED.slice().sort(),
-  'لا مسار API جديد أو محذوف في واجهة الكابتن');
+  'مسارات التشغيل المستخدمة من واجهة الكابتن محفوظة');
+assert.doesNotMatch(captain, /\/api\/captain\/ui-design/, 'واجهة الكابتن لا تعرض أو تحفظ خيارات التصميم');
 assert.doesNotMatch(captain, /\/api\/admin\//, 'لا استدعاء أي مسار إدارة من بوابة الكابتن');
 assert.doesNotMatch(captain, /wallet-adjust|commission-withdrawal|\/api\/staff\//, 'لا مسار مالي إداري في بوابة الكابتن');
 
@@ -125,13 +126,14 @@ assert.match(captain, /الرمز تسلسلي سهل التخمين/);
 assert.match(captain, /لا تستخدم رقمًا مكررًا خمس مرات/);
 assert.match(captain, /api\('\/api\/captain\/pin-recovery\/request-code'/, 'استعادة الرمز لم تُمس');
 
-// 9) إخفاء الأرقام المالية المقصود باقٍ كما أمر المالك.
-assert.match(app, /class="metric net" hidden aria-hidden="true"/);
-assert.match(app, /class="metric fees" hidden aria-hidden="true"/);
+// 9) إظهار الرصيد والعمولة المخصومة فقط؛ صافي/حصة الإنتاج لا يظهران للكابتن.
+assert.match(app, /id="balance"/);
+assert.match(app, /class="metric fees"><span>عمولة الطلبات المخصومة من رصيدك<\/span><strong id="fees">/);
+assert.match(captain, /setText\('fees', data\.earnings\?\.executedDebit \|\| data\.earnings\?\.fees \|\| '0\.00'\);/);
+assert.doesNotMatch(app, /net-earnings|posted-share|صافي الأرباح|حصة الإنتاج/);
+assert.doesNotMatch(captain, /postedShare|earnings\?\.gross|posted-share/);
 assert.match(app, /<section class="panel" hidden aria-hidden="true">[\s\S]{0,220}aria-label="حركات الرصيد"|<section class="panel" hidden aria-hidden="true">[\s\S]{0,220}id="ledger"/);
-assert.match(captain, /posted-share/);
-assert.match(captain, /executedDebit/);
-assert.doesNotMatch(app, /class="metric (net|fees)"(?! hidden)/, 'لا كشف غير مقصود لبطاقات مالية مخفية');
+assert.match(captain, /#app:not\(\.account-open\) \.topup-window\{display:block\}/, 'طرق الشحن ظاهرة دون فتح لوحة الحساب');
 
 // 10) لا وسوم خطر مضافة.
 assert.doesNotMatch(captain, /document\.write|eval\(|new Function\(/);

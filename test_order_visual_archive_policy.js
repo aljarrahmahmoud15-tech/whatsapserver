@@ -30,15 +30,15 @@ assert.doesNotMatch(captain, /captain-archive-panel|archived-trips|data\.archive
 assert.match(captain, /id="captain-new-orders" class="panel"/);
 assert.match(captain, /الطلبات المكتملة الأقدم مؤرشفة ولا تُحذف/);
 assert.match(captain, /id="captain-active-orders-panel"/);
-assert.match(captain, /id="captain-design-gallery"/);
-assert.match(captain, /api\('\/api\/captain\/ui-design'/);
-assert.match(captain, /معرض التصاميم القديمة/);
+assert.doesNotMatch(captain, /captain-design-gallery|معرض التصاميم القديمة|التصاميم القديمة/);
+assert.match(captain, /function applyCaptainDesign\(\) \{ document\.body\.dataset\.captainDesign = 'compact'; \}/);
+assert.match(captain, /applyCaptainDesign\(\);/);
 assert.match(server, /app\.put\("\/api\/captain\/ui-design", requireCaptain, adminMutationLimiter/);
 assert.match(server, /CAPTAIN_UI_DESIGN_IDS\.has\(design\)/);
 assert.match(server, /captain\.ui_design\.updated/);
 assert.match(server, /walletMutation: false, orderStateMutation: false/);
+assert.doesNotMatch(captain, /data-activate-captain-design|captain-design-card|captain-design-preview/);
 for (const design of ['classic', 'taj', 'red-white', 'rahlati', 'compact']) {
-  assert.match(captain, new RegExp(`data-activate-captain-design="${design}"`));
   assert.match(styles, new RegExp(`data-design-preview="${design}"`));
   assert.ok(server.includes(`"${design}"`), `server allowlist includes ${design}`);
 }
