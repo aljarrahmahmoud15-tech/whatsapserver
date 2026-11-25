@@ -9806,42 +9806,142 @@ function stopRuntimeMemoryWatchdog() {
   runtimeMemoryWatchdogTimer = null;
 }
 
-// Read-only, redacted visibility into the WhatsApp Web page while initialize() is pending.
-// whatsapp-web.js waits for WAWebSocketModel.Socket.state to leave OPENING/UNLAUNCHED/PAIRING;
-// when that never happens the only evidence is "Waiting failed", so log the observed state.
-const WHATSAPP_INIT_PROBE_INTERVAL_MS = 20000;
+// Read-only, redacted visibility into the WhatsApp Web page during initialization and the immediate client lifecycle.
+// whatsapp-web.js may return from initialize() before a later authenticated/disconnected event; keep
+// this bounded probe alive until ready, disconnect, or the diagnostic time/snapshot limit.
+const WHATSAPP_INIT_PROBE_INTERVAL_MS = 5000;
+const WHATSAPP_INIT_PROBE_PAGE_POLL_MS = 250;
+const WHATSAPP_INIT_PROBE_MAX_DURATION_MS = 120000;
+const WHATSAPP_INIT_PROBE_MAX_SNAPSHOTS = 25;
+const WHATSAPP_INIT_PROBE_MAX_ERROR_LOGS = 20;
 function redactInitDiagnostic(value, limit = 300) {
   return boundedDiagnosticText(value, limit)
-    .replace(/\d{7,}/g, "[digits]")
-    .replace(/https?:\/\/[^\/\s?#]+[^\s]*/gi, "[url]");
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\b(token|authorization|cookie|session|password|secret)\s*[:=]\s*[^,\s;]+/gi, "$1=[redacted]")
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\+?\d[\d().\s-]{5,}\d/g, "[digits]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[opaque]");
 }
 function startWhatsAppInitProbe(instance, runId) {
   const startedAt = Date.now();
-  let attached = false;
+  let attachedPage = null;
   let busy = false;
   let errorLogs = 0;
-  const logLimited = (label, text) => {
-    if (errorLogs >= 20) return;
-    errorLogs += 1;
-    console.warn(`[WhatsAppInitProbe] ${label}: ${redactInitDiagnostic(text)}`);
+  let lifecycleLogs = 0;
+  let snapshotCount = 0;
+  let stopped = false;
+  let terminalLifecycleObserved = false;
+  let finalSnapshotRequested = false;
+  let probeTimer = null;
+  let pageWaitTimer = null;
+  let nextPageWaitLogMs = 20000;
+  const pageListeners = [];
+  const clientListeners = [];
+  const elapsedSeconds = () => Math.round((Date.now() - startedAt) / 1000);
+  const unbind = (emitter, bindings) => {
+    if (!emitter) { bindings.length = 0; return; }
+    for (const [event, listener] of bindings) {
+      try {
+        if (typeof emitter.off === "function") emitter.off(event, listener);
+        else if (typeof emitter.removeListener === "function") emitter.removeListener(event, listener);
+      } catch (_) {
+        try { emitter.removeListener?.(event, listener); } catch (_) {}
+      }
+    }
+    bindings.length = 0;
   };
-  const tick = async () => {
-    if (busy || runId !== initializationRunId || client !== instance || isReady) return;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (probeTimer) clearInterval(probeTimer);
+    if (pageWaitTimer) clearInterval(pageWaitTimer);
+    probeTimer = null;
+    pageWaitTimer = null;
+    unbind(attachedPage, pageListeners);
+    attachedPage = null;
+    unbind(instance, clientListeners);
+  };
+  const logLimited = (label, text) => {
+    if (stopped || errorLogs >= WHATSAPP_INIT_PROBE_MAX_ERROR_LOGS) return;
+    errorLogs += 1;
+    console.warn(`[WhatsAppInitProbe] t=${elapsedSeconds()}s ${label}: ${redactInitDiagnostic(text)}`);
+  };
+  const logLifecycle = (event, detail = "") => {
+    if (stopped || lifecycleLogs >= 8) return;
+    lifecycleLogs += 1;
+    const safeDetail = detail ? ` detail=${redactInitDiagnostic(detail, 240)}` : "";
+    console.log(`[WhatsAppInitProbe] t=${elapsedSeconds()}s client_event=${event}${safeDetail}`);
+  };
+  const addListener = (emitter, bindings, event, listener, prepend = false) => {
+    try {
+      if (prepend && typeof emitter.prependListener === "function") emitter.prependListener(event, listener);
+      else emitter.on(event, listener);
+      bindings.push([event, listener]);
+    } catch (error) {
+      logLimited("listener_attach_failed", `${event} ${error?.message || error}`);
+    }
+  };
+  const attachPage = () => {
     const page = instance.pupPage;
-    if (!page) { console.log(`[WhatsAppInitProbe] t=${Math.round((Date.now() - startedAt) / 1000)}s page=not_created`); return; }
-    if (!attached) {
-      attached = true;
-      page.on("pageerror", (error) => logLimited("pageerror", error?.message || error));
-      page.on("requestfailed", (request) => {
-        const type = typeof request.resourceType === "function" ? request.resourceType() : "";
+    if (!page || typeof page.on !== "function") return false;
+    if (page === attachedPage) return true;
+    if (attachedPage) unbind(attachedPage, pageListeners);
+    attachedPage = page;
+    addListener(page, pageListeners, "pageerror", (error) => {
+      const name = boundedDiagnosticText(error?.name || "Error", 120);
+      logLimited("pageerror", `${name}: ${error?.message || error || "unknown error"}`);
+    });
+    addListener(page, pageListeners, "error", (error) => {
+      const name = boundedDiagnosticText(error?.name || "Error", 120);
+      logLimited("page_crash", `${name}: ${error?.message || error || "unknown error"}`);
+    });
+    addListener(page, pageListeners, "close", () => logLimited("page_close", "page closed during initialization"));
+    addListener(page, pageListeners, "requestfailed", (request) => {
+      try {
+        const type = typeof request?.resourceType === "function" ? request.resourceType() : "";
         if (!["document", "script", "xhr", "fetch", "websocket"].includes(type)) return;
-        let host = "";
-        try { host = new URL(request.url()).host; } catch (_) { host = "unknown"; }
-        logLimited("requestfailed", `${type} ${host} ${request.failure()?.errorText || ""}`);
-      });
-      page.on("console", (message) => { if (message.type() === "error") logLimited("console.error", message.text()); });
+        let host = "unknown";
+        try { host = new URL(request.url()).hostname || "unknown"; } catch (_) {}
+        const failure = typeof request?.failure === "function" ? request.failure() : null;
+        logLimited("requestfailed", `${type} host=${host} error=${failure?.errorText || ""}`);
+      } catch (error) {
+        logLimited("requestfailed", `diagnostic unavailable: ${error?.message || error}`);
+      }
+    });
+    addListener(page, pageListeners, "console", (message) => {
+      let level = "";
+      try { level = typeof message?.type === "function" ? message.type() : ""; } catch (_) {}
+      if (level !== "error") return;
+      let text = "";
+      try { text = typeof message?.text === "function" ? message.text() : String(message || ""); } catch (_) { text = "console error"; }
+      logLimited("console_error", text);
+    });
+    return true;
+  };
+  const runProbe = async (force = false) => {
+    if (stopped || busy) {
+      if (force && busy) finalSnapshotRequested = true;
+      return;
+    }
+    if (runId !== initializationRunId || (!terminalLifecycleObserved && (client !== instance || isReady))) { stop(); return; }
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= WHATSAPP_INIT_PROBE_MAX_DURATION_MS || snapshotCount >= WHATSAPP_INIT_PROBE_MAX_SNAPSHOTS) {
+      logLimited("probe_stopped", "bounded diagnostic window reached");
+      stop();
+      return;
+    }
+    if (!attachPage()) {
+      if (force) logLimited("final_snapshot", "page unavailable after disconnect");
+      else if (elapsedMs >= nextPageWaitLogMs) {
+        logLimited("page_wait", "page=not_created");
+        nextPageWaitLogMs += 20000;
+      }
+      return;
     }
     busy = true;
+    snapshotCount += 1;
+    const page = attachedPage;
     try {
       const snapshot = await withTimeout(page.evaluate(() => {
         let socketState = null;
@@ -9855,25 +9955,103 @@ function startWhatsAppInitProbe(instance, runId) {
           host: location.host,
           readyState: document.readyState,
           webVersion: String(window.Debug?.VERSION || ""),
-          socketState,
-          socketStream,
+          socketState: socketState === null ? null : String(socketState),
+          socketStream: socketStream === null ? null : String(socketStream),
           hasQrCanvas: Boolean(document.querySelector("canvas")),
-          title: String(document.title || "").slice(0, 60),
         };
       }), 8000, { evaluate: "timeout" });
-      const safe = redactInitDiagnostic(JSON.stringify(snapshot || {}), 400);
-      console.log(`[WhatsAppInitProbe] t=${Math.round((Date.now() - startedAt) / 1000)}s ${safe}`);
+      const stateValue = (value) => {
+        if (value === null || value === undefined || value === "") return null;
+        const text = String(value);
+        return /^[A-Za-z0-9_./:-]{1,80}$/.test(text) ? text : "other";
+      };
+      const rawVersion = String(snapshot?.webVersion || "");
+      const safeSnapshot = {
+        host: redactInitDiagnostic(snapshot?.host || "", 120),
+        readyState: ["loading", "interactive", "complete"].includes(snapshot?.readyState) ? snapshot.readyState : "unknown",
+        webVersion: /^[A-Za-z0-9._-]{1,40}$/.test(rawVersion) ? rawVersion : "unknown",
+        socketState: stateValue(snapshot?.socketState),
+        socketStream: stateValue(snapshot?.socketStream),
+        hasQrCanvas: snapshot?.hasQrCanvas === true,
+      };
+      console.log(`[WhatsAppInitProbe] t=${elapsedSeconds()}s snapshot=${JSON.stringify(safeSnapshot)}`);
     } catch (error) {
       logLimited("evaluate_failed", error?.message || error);
     } finally {
       busy = false;
+      if (finalSnapshotRequested && !stopped) {
+        finalSnapshotRequested = false;
+        void runProbe(true).catch((error) => logLimited("final_snapshot_failed", error?.message || error)).finally(stop);
+        return;
+      }
+      if (!force && (snapshotCount >= WHATSAPP_INIT_PROBE_MAX_SNAPSHOTS || Date.now() - startedAt >= WHATSAPP_INIT_PROBE_MAX_DURATION_MS)) {
+        logLimited("probe_stopped", "bounded diagnostic window reached");
+        stop();
+      } else if (!force && (runId !== initializationRunId || (!terminalLifecycleObserved && (client !== instance || isReady)))) {
+        stop();
+      }
     }
   };
-  const timer = setInterval(() => void tick(), WHATSAPP_INIT_PROBE_INTERVAL_MS);
-  if (typeof timer.unref === "function") timer.unref();
-  return () => clearInterval(timer);
+  const captureFinalSnapshot = () => {
+    if (stopped) return;
+    terminalLifecycleObserved = true;
+    if (busy) { finalSnapshotRequested = true; return; }
+    void runProbe(true).catch((error) => logLimited("final_snapshot_failed", error?.message || error)).finally(stop);
+  };
+  const addClientListener = (event, listener, prepend = false) => addListener(instance, clientListeners, event, listener, prepend);
+  addClientListener("authenticated", () => {
+    logLifecycle("authenticated");
+    void runProbe().catch((error) => logLimited("probe_failed", error?.message || error));
+  });
+  addClientListener("auth_failure", (message) => {
+    logLifecycle("auth_failure", message || "");
+    captureFinalSnapshot();
+  }, true);
+  addClientListener("ready", () => {
+    logLifecycle("ready");
+    stop();
+  });
+  addClientListener("disconnected", (reason) => {
+    logLifecycle("disconnected", reason || "unknown");
+    captureFinalSnapshot();
+  }, true);
+  const unref = (timer) => { if (typeof timer?.unref === "function") timer.unref(); };
+  const startPeriodicProbe = () => {
+    if (probeTimer || stopped) return;
+    probeTimer = setInterval(() => {
+      void runProbe().catch((error) => logLimited("probe_failed", error?.message || error));
+    }, WHATSAPP_INIT_PROBE_INTERVAL_MS);
+    unref(probeTimer);
+  };
+  const waitForPage = () => {
+    if (stopped) return;
+    if (runId !== initializationRunId || (!terminalLifecycleObserved && (client !== instance || isReady))) { stop(); return; }
+    if (Date.now() - startedAt >= WHATSAPP_INIT_PROBE_MAX_DURATION_MS) {
+      logLimited("probe_stopped", "page was not available within the diagnostic window");
+      stop();
+      return;
+    }
+    if (!attachPage()) {
+      if (Date.now() - startedAt >= nextPageWaitLogMs) {
+        logLimited("page_wait", "page=not_created");
+        nextPageWaitLogMs += 20000;
+      }
+      return;
+    }
+    if (pageWaitTimer) clearInterval(pageWaitTimer);
+    pageWaitTimer = null;
+    startPeriodicProbe();
+    void runProbe().catch((error) => logLimited("probe_failed", error?.message || error));
+  };
+  if (attachPage()) {
+    startPeriodicProbe();
+    void runProbe().catch((error) => logLimited("probe_failed", error?.message || error));
+  } else {
+    pageWaitTimer = setInterval(waitForPage, WHATSAPP_INIT_PROBE_PAGE_POLL_MS);
+    unref(pageWaitTimer);
+  }
+  return stop;
 }
-
 function createClient() {
   const generation = ++connectionGeneration;
   groupSnapshotFlights.clear();
@@ -10056,6 +10234,7 @@ async function initializeWhatsApp() {
   lastInitializationStartedAt = new Date().toISOString();
   let currentClient = null;
   let stopInitProbe = () => {};
+  let keepInitProbeForClientLifecycle = false;
   try {
     await destroyClient();
     if (runId !== initializationRunId) return;
@@ -10064,12 +10243,12 @@ async function initializeWhatsApp() {
     const initTimeoutMarker = "__WHATSAPP_INIT_TIMEOUT__";
     stopInitProbe = startWhatsAppInitProbe(currentClient, runId);
     const initialized = await withTimeoutStrict(currentClient.initialize(), operationalSettings().initTimeoutMs, initTimeoutMarker);
-    stopInitProbe();
     if (runId !== initializationRunId) {
       if (client === currentClient) client = null;
       await disposeClientInstance(currentClient, "stale_initialize");
       return;
     }
+    if (initialized !== initTimeoutMarker && client === currentClient) keepInitProbeForClientLifecycle = true;
     if (initialized === initTimeoutMarker) {
       console.error(`[WhatsApp] initialize timeout after ${operationalSettings().initTimeoutMs}ms; scheduling controlled retry`);
       isReady = false;
@@ -10100,7 +10279,7 @@ async function initializeWhatsApp() {
       .catch(() => console.warn("[WhatsApp] initialization retry must recheck blocked cleanup"));
     if (runId === initializationRunId) scheduleReconnect();
   } finally {
-    stopInitProbe();
+    if (!keepInitProbeForClientLifecycle) stopInitProbe();
     if (runId === initializationRunId) {
       initializing = false;
       lastInitializationFinishedAt = new Date().toISOString();

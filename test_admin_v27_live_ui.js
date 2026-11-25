@@ -26,7 +26,11 @@ assert.match(page, /id="v27QrStatus"/);
 assert.match(page, /api\('\/api\/admin\/qr-main-link',\{method:'POST'\}\)/, 'V27 inline QR is issued only for the main bot');
 assert.doesNotMatch(page.slice(page.indexOf('async function openInlineQr()'), page.indexOf('function openQrDecision()')), /qr-temporary-link/, 'V27 inline QR does not use the shared QR route');
 assert.match(server, /function startWhatsAppInitProbe\(instance, runId\)/, 'initialization has a read-only page probe');
-assert.match(server, /stopInitProbe = startWhatsAppInitProbe\(currentClient, runId\);[\s\S]*?\} finally \{\s*stopInitProbe\(\);\s*if \(runId === initializationRunId\)/, 'probe is always stopped after initialize settles');
+assert.match(server, /stopInitProbe = startWhatsAppInitProbe\(currentClient, runId\);[\s\S]*?if \(initialized !== initTimeoutMarker && client === currentClient\) keepInitProbeForClientLifecycle = true;[\s\S]*?\} finally \{\s*if \(!keepInitProbeForClientLifecycle\) stopInitProbe\(\);\s*if \(runId === initializationRunId\)/, 'probe remains through the immediate client lifecycle only after initialization succeeds and cleans up otherwise');
+assert.match(server, /addClientListener\("ready",[\s\S]*?stop\(\);/, 'ready stops the bounded probe');
+assert.match(server, /addClientListener\("disconnected",[\s\S]*?captureFinalSnapshot\(\);/, 'disconnect captures a final snapshot and then stops');
+assert.match(server, /const WHATSAPP_INIT_PROBE_MAX_DURATION_MS = 120000;/, 'probe lifetime remains capped');
+assert.match(server, /const WHATSAPP_INIT_PROBE_MAX_SNAPSHOTS = 25;/, 'snapshot count remains capped');
 assert.doesNotMatch(page, /window\.open\('about:blank'/);
 assert.match(page, /class="v27-signal-mark"[^>]*>V27<\/span>/);
 
