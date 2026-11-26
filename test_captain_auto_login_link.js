@@ -20,8 +20,18 @@ assert.match(server, /link\.expires_at <= stamp/);
 assert.match(server, /SET used_at=\?,updated_at=\?/);
 assert.match(server, /used_at IS NULL AND revoked_at IS NULL AND expires_at>\?/);
 assert.match(server, /captain\.login_link\.exchanged/);
-assert.match(server, /authMethod: "magic_link"/);
-assert.match(server, /setCaptainSessionCookie\(res, sessionToken\)/);
+assert.match(server, /source: "magic_link"/);
+assert.match(server, /respondCaptainGroupAccessCodeIssue\(res, issued, "magic_link"\)/);
+
+const exchangeRoute = server.slice(server.indexOf('app.post("/api/captain/login-link/exchange"'), server.indexOf('app.post("/api/captain/whatsapp/request-code"'));
+assert.match(exchangeRoute, /getCaptainOfficialGroupMembership\(link\.phone\)/);
+assert.match(exchangeRoute, /requestCaptainOfficialGroupAccessCode\(/);
+assert.doesNotMatch(exchangeRoute, /jwt\.sign\(/, 'magic-link exchange must not issue a session before group OTP verification');
+assert.doesNotMatch(exchangeRoute, /setCaptainSessionCookie\(/, 'magic-link exchange must not set a captain session');
+
+assert.match(server, /const CAPTAIN_GROUP_ACCESS_PURPOSE = "official_group_access"/);
+assert.match(server, /function captainAuthCodeHash\(phone, code\)/);
+assert.match(server, /expiresAt = new Date\(Date\.now\(\) \+ 10 \* 60 \* 1000\)/);
 
 assert.match(server, /const accessLink = issueCaptainAutoLoginLink\(prepared, baseUrl\)/);
 assert.match(server, /رابط الدخول التلقائي لمرة واحدة/);
@@ -33,8 +43,10 @@ assert.match(captain, /function clearAutoLoginToken\(\)/);
 assert.match(captain, /history\.replaceState/);
 assert.match(captain, /async function loginWithAutoLink\(\)/);
 assert.match(captain, /\/api\/captain\/login-link\/exchange/);
-assert.match(captain, /clearAutoLoginToken\(\); showSection\('app'\)/);
+assert.match(captain, /beginGroupVerification\(result, ''\)/);
+assert.match(captain, /showSection\('group-verification'\)/);
+assert.match(captain, /\/api\/captain\/group-access\/verify/);
 assert.match(captain, /انتهت صلاحية رابط الدخول/);
 assert.match(captain, /<meta name="referrer" content="no-referrer">/);
 
-console.log('captain automatic one-time login link guardrails verified');
+console.log('captain automatic one-time login link now requires official-group OTP');

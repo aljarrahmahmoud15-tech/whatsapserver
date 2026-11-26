@@ -341,6 +341,7 @@ const loginRate = new Map();
 const redeemRate = new Map();
 const adminActionRate = new Map();
 const whatsappAuthRate = new Map();
+const captainGroupAccessRate = new Map();
 const captainPinRecoveryRate = new Map();
 const customerAuthRate = new Map();
 const nexoraOtpRate = new Map();
@@ -5961,20 +5962,22 @@ function snapshotFromGroupChat(groupId, chat) {
   if (!participants.length) return null;
   return { id: groupId, name: String(chat.formattedTitle || chat.name || ""), isGroup: true, participants, participantSource, participantRawCount: rawParticipants.length };
 }
-async function readGroupSnapshot(groupId) {
+async function readGroupSnapshot(groupId, { forceRefresh = false } = {}) {
   const clientAtStart = client;
   const pageAtStart = clientAtStart?.pupPage;
   const generationAtStart = connectionGeneration;
   if (!groupId || !clientAtStart || !isReady || !pageAtStart) return null;
-  const directChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
-  const directSnapshot = snapshotFromGroupChat(groupId, directChat);
-  if (directSnapshot) {
-    lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, stage: null, detail: null, participantCount: directSnapshot.participants.length, participantSource: "chat" };
-    updateOfficialGroupAdminSnapshot(groupId, directSnapshot);
-    return directSnapshot;
+  if (!forceRefresh) {
+    const directChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
+    const directSnapshot = snapshotFromGroupChat(groupId, directChat);
+    if (directSnapshot) {
+      lastGroupHydrationDiagnostic = { status: "ready", at: now(), reason: null, stage: null, detail: null, participantCount: directSnapshot.participants.length, participantSource: "chat" };
+      updateOfficialGroupAdminSnapshot(groupId, directSnapshot);
+      return directSnapshot;
+    }
   }
-  const key = `${generationAtStart}:${groupId}`;
-  const flight = createGroupSnapshotFlight(key, () => pageAtStart.evaluate(async (requestedId) => {
+  const key = `${generationAtStart}:${groupId}:${forceRefresh ? "fresh" : "cached"}`;
+  const flight = createGroupSnapshotFlight(key, () => pageAtStart.evaluate(async (requestedId, requireFresh) => {
     const compactError = (error) => String(error?.message || error || "unknown").slice(0, 180);
     const withStageTimeout = async (stage, timeoutMs, operation) => {
       let timeoutHandle = null;
@@ -6019,22 +6022,30 @@ async function readGroupSnapshot(groupId) {
       }
       if (!chat || !chat.groupMetadata) return { ok: false, reason: "group_chat_metadata_unavailable", modules: { widFactory: Boolean(widFactory), collections: Boolean(collections), wwebjs: Boolean(window.WWebJS?.getChat) } };
       const groupMetadata = collections?.GroupMetadata || collections?.WAWebGroupMetadataCollection;
+      let metadataRefreshed = false;
       try {
         const queryJob = module("WAWebGroupQueryJob");
         if (queryJob?.queryAndUpdateGroupMetadataById) {
           await withStageTimeout("group_metadata_query", 14000, () => queryJob.queryAndUpdateGroupMetadataById({ id: requestedId }));
+          metadataRefreshed = true;
         } else if (groupMetadata?.update && wid) {
           await withStageTimeout("group_metadata_update", 14000, () => groupMetadata.update(wid));
+          metadataRefreshed = true;
         }
       } catch (error) {
         if (error?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: error.snapshotStage, detail: "stage_deadline_exceeded" };
         try {
-          if (groupMetadata?.update && wid) await withStageTimeout("group_metadata_fallback_update", 8000, () => groupMetadata.update(wid));
+          if (groupMetadata?.update && wid) {
+            await withStageTimeout("group_metadata_fallback_update", 8000, () => groupMetadata.update(wid));
+            metadataRefreshed = true;
+          }
         } catch (fallbackError) {
           if (fallbackError?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: fallbackError.snapshotStage, detail: "stage_deadline_exceeded" };
         }
+        if (requireFresh && !metadataRefreshed) return { ok: false, reason: "group_metadata_refresh_failed", detail: compactError(error) };
         if (!chat.groupMetadata) return { ok: false, reason: "group_metadata_refresh_failed", detail: compactError(error) };
       }
+      if (requireFresh && !metadataRefreshed) return { ok: false, reason: "group_metadata_refresh_unavailable" };
       const hydratedChat = collections?.Chat?.get && wid
         ? (collections.Chat.get(wid) || chat)
         : (window.WWebJS?.getChat ? await withStageTimeout("refetch_hydrated_chat", 7000, () => window.WWebJS.getChat(requestedId, { getAsModel: false })) || chat : chat);
@@ -6067,10 +6078,22 @@ async function readGroupSnapshot(groupId) {
       if (error?.snapshotStage) return { ok: false, reason: "group_snapshot_stage_timeout", stage: error.snapshotStage, detail: "stage_deadline_exceeded" };
       return { ok: false, reason: "group_snapshot_evaluation_failed", detail: compactError(error) };
     }
-  }, groupId));
+  }, groupId, forceRefresh));
   const result = await flight.timed;
   if (generationAtStart !== connectionGeneration || client !== clientAtStart) return null;
   if (!result?.ok || !result.snapshot) {
+    if (forceRefresh) {
+      lastGroupHydrationDiagnostic = {
+        status: "failed",
+        at: now(),
+        reason: boundedDiagnosticText(result?.reason || "unknown", 180),
+        stage: boundedDiagnosticText(result?.stage || "", 80) || null,
+        detail: boundedDiagnosticText(result?.detail || "no_detail", 1200),
+        participantCount: 0,
+        participantSource: result?.participantSource || null,
+      };
+      return null;
+    }
     const fallbackChat = await withTimeout(clientAtStart.getChatById(groupId), 12000, null);
     const fallbackSnapshot = snapshotFromGroupChat(groupId, fallbackChat);
     if (fallbackSnapshot) {
@@ -6101,6 +6124,128 @@ async function readGroupSnapshot(groupId) {
   };
   updateOfficialGroupAdminSnapshot(groupId, result.snapshot);
   return result.snapshot;
+}
+const CAPTAIN_GROUP_ACCESS_PURPOSE = "official_group_access";
+const CAPTAIN_GROUP_MEMBERSHIP_CACHE_TTL_MS = 10000;
+let captainGroupMembershipCache = null;
+let captainGroupMembershipFlight = null;
+let captainGroupMembershipEpoch = 0;
+function invalidateCaptainGroupMembershipCache() {
+  captainGroupMembershipCache = null;
+  captainGroupMembershipEpoch += 1;
+}
+async function loadOfficialGroupMemberPhones() {
+  const groupId = configuredRuntimeGroupId();
+  const generation = connectionGeneration;
+  const epoch = captainGroupMembershipEpoch;
+  if (!groupId || !isOfficialGroupTarget(groupId) || !client || !isReady) return { status: "unavailable" };
+  const cached = captainGroupMembershipCache;
+  if (cached && cached.groupId === groupId && cached.generation === generation && Date.now() - cached.checkedAt < CAPTAIN_GROUP_MEMBERSHIP_CACHE_TTL_MS) return cached;
+  if (captainGroupMembershipFlight && captainGroupMembershipFlight.groupId === groupId && captainGroupMembershipFlight.generation === generation) {
+    if (captainGroupMembershipFlight.epoch !== epoch) return { status: "unavailable" };
+    return captainGroupMembershipFlight.promise;
+  }
+  const flight = { groupId, generation, epoch, promise: null };
+  flight.promise = (async () => {
+    const snapshot = await readGroupSnapshot(groupId, { forceRefresh: true });
+    if (!snapshot || snapshot.id !== groupId || snapshot.isGroup !== true || !Array.isArray(snapshot.participants) || !snapshot.participants.length) return { status: "unavailable" };
+    const lids = [...new Set(snapshot.participants.map((participant) => serializedWhatsappUserId(participant?.id || participant)).filter((id) => /@lid$/i.test(id)))];
+    let lidMappings = [];
+    if (lids.length) {
+      try { lidMappings = await resolveWhatsappLidsFromConfiguredGroup(lids, { hydrateGroup: false }); } catch (_) { return { status: "unavailable" }; }
+    }
+    const phoneByLid = new Map((Array.isArray(lidMappings) ? lidMappings : []).map((mapping) => [serializedWhatsappUserId(mapping?.lid), directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone)]).filter(([lid, phone]) => lid && phone));
+    const memberPhones = new Set();
+    let unresolvedLids = 0;
+    for (const participant of snapshot.participants) {
+      const participantId = serializedWhatsappUserId(participant?.id || participant);
+      const directPhone = directJordanPhoneFromWhatsappValue(participant?.id) || directJordanPhoneFromWhatsappValue(participant?.user);
+      const resolvedPhone = directPhone || (/@lid$/i.test(participantId) ? phoneByLid.get(participantId) || "" : "");
+      if (resolvedPhone) memberPhones.add(phoneWithCountry(resolvedPhone) || resolvedPhone);
+      else if (/@lid$/i.test(participantId)) unresolvedLids += 1;
+    }
+    if (generation !== connectionGeneration || epoch !== captainGroupMembershipEpoch || groupId !== configuredRuntimeGroupId()) return { status: "unavailable" };
+    const ready = { status: "ready", groupId, generation, checkedAt: Date.now(), memberPhones, unresolvedLids };
+    captainGroupMembershipCache = ready;
+    return ready;
+  })();
+  captainGroupMembershipFlight = flight;
+  try { return await flight.promise; }
+  finally { if (captainGroupMembershipFlight === flight) captainGroupMembershipFlight = null; }
+}
+async function getCaptainOfficialGroupMembership(phone) {
+  const normalizedPhone = phoneWithCountry(String(phone || ""));
+  if (!isValidJordanPhone(normalizedPhone)) return { status: "not_member" };
+  let members;
+  try { members = await loadOfficialGroupMemberPhones(); } catch (_) { return { status: "unavailable" }; }
+  if (members.status !== "ready") return members;
+  if (members.memberPhones.has(normalizedPhone)) return { status: "member" };
+  return members.unresolvedLids ? { status: "unavailable" } : { status: "not_member" };
+}
+function revokeCaptainOfficialGroupVerification(userId, reason = "not_official_group_member") {
+  const captainId = Number(userId || 0);
+  if (!captainId) return false;
+  const updated = db.prepare("UPDATE users SET captain_whatsapp_verified_at=NULL WHERE id=? AND role='captain' AND captain_whatsapp_verified_at IS NOT NULL").run(captainId);
+  db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose=? AND verified_at IS NULL").run(captainId, CAPTAIN_GROUP_ACCESS_PURPOSE);
+  if (updated.changes) audit("captain.group_access.revoked", "user", captainId, { reason, accountDisabled: false, financialMutation: false, walletMutation: false });
+  return updated.changes > 0;
+}
+async function requestCaptainOfficialGroupAccessCode(user, { source = "captain_login" } = {}) {
+  if (!user || Number(user.id) <= 0 || user.role !== "captain" || Number(user.is_bot) === 1) return { status: "not_available" };
+  const membership = await getCaptainOfficialGroupMembership(user.phone);
+  if (membership.status === "unavailable") return membership;
+  if (membership.status !== "member") {
+    revokeCaptainOfficialGroupVerification(user.id, "not_official_group_member");
+    return { status: "not_member" };
+  }
+  const code = createCaptainWhatsappCode();
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const challengeId = db.transaction(() => {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose=? AND verified_at IS NULL").run(user.id, CAPTAIN_GROUP_ACCESS_PURPOSE);
+    const inserted = db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, user.phone, CAPTAIN_GROUP_ACCESS_PURPOSE, captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
+    return Number(inserted.lastInsertRowid);
+  })();
+  let sent = false;
+  try {
+    sent = Boolean(await sendBotText(`${user.phone}@c.us`, `رمز التحقق الشخصي لدخول بوابة الكابتن: ${code}\nصالح لمدة 10 دقائق ولمرة واحدة. لا تشاركه مع أي شخص.`));
+  } catch (_) {}
+  if (!sent) {
+    db.prepare("DELETE FROM captain_auth_challenges WHERE id=? AND captain_user_id=? AND purpose=? AND verified_at IS NULL").run(challengeId, user.id, CAPTAIN_GROUP_ACCESS_PURPOSE);
+    return { status: "delivery_failed" };
+  }
+  audit("captain.group_access_code.sent", "user", user.id, { challengeId, source, expiresAt, membershipVerified: true });
+  return { status: "sent", challengeId, expiresAt };
+}
+function respondCaptainGroupAccessCodeIssue(res, result, authMethod) {
+  if (result.status === "unavailable") return res.status(503).json({ code: "captain_group_verification_unavailable", error: "تعذر فحص عضوية القروب الرسمي مؤقتًا؛ أعد المحاولة بعد قليل." });
+  if (result.status === "not_member") return res.status(403).json({ code: "captain_official_group_membership_required", error: "يجب أن يكون رقمك المسجل عضوًا في القروب الرسمي قبل إرسال رمز الدخول." });
+  if (result.status === "delivery_failed") return res.status(503).json({ code: "captain_group_access_code_delivery_failed", error: "تعذر إرسال رمز WhatsApp حاليًا؛ أعد المحاولة بعد قليل." });
+  if (result.status !== "sent") return res.status(403).json({ code: "captain_group_access_unavailable", error: "تعذر بدء تحقق الكابتن." });
+  return res.json({ success: true, requiresGroupVerification: true, authMethod, expiresAt: result.expiresAt, message: "تم تأكيد عضويتك، وأُرسل رمز تحقق مؤقت إلى WhatsApp المسجل." });
+}
+async function verifyCaptainOfficialGroupAccessCode(user, code) {
+  invalidateCaptainGroupMembershipCache();
+  const membership = await getCaptainOfficialGroupMembership(user?.phone);
+  if (membership.status === "unavailable") return { status: "unavailable" };
+  if (membership.status !== "member") {
+    revokeCaptainOfficialGroupVerification(user?.id, "not_official_group_member");
+    return { status: "not_member" };
+  }
+  const currentTime = now();
+  return db.transaction(() => {
+    const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND purpose=? AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id, CAPTAIN_GROUP_ACCESS_PURPOSE);
+    if (!challenge || challenge.expires_at <= currentTime || Number(challenge.attempts) >= 5) return { status: "expired" };
+    const attempted = db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=? AND verified_at IS NULL AND attempts<5").run(challenge.id);
+    if (!attempted.changes) return { status: "expired" };
+    if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return { status: "invalid_code" };
+    const verifiedAt = now();
+    const marked = db.prepare("UPDATE captain_auth_challenges SET verified_at=? WHERE id=? AND verified_at IS NULL AND expires_at>?").run(verifiedAt, challenge.id, verifiedAt);
+    if (!marked.changes) return { status: "expired" };
+    const updated = db.prepare("UPDATE users SET captain_whatsapp_verified_at=?,captain_last_login_at=?,updated_at=? WHERE id=? AND role='captain' AND is_bot=0 AND active=1 AND account_status='active'").run(verifiedAt, verifiedAt, verifiedAt, user.id);
+    if (!updated.changes) return { status: "inactive" };
+    return { status: "verified", verifiedAt, challengeId: Number(challenge.id) };
+  })();
 }
 async function resolveReadableGroupChat(groupId) {
   if (!groupId || !client || !isReady) return null;
@@ -9533,7 +9678,7 @@ function pruneCompletedRunMap(store, atMs = Date.now()) {
 let runtimeMemoryCleanupTimer = null;
 function pruneRuntimeMemoryCaches(atMs = Date.now()) {
   pruneAdminSendState(atMs);
-  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, captainPinRecoveryRate, customerAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
+  [loginRate, redeemRate, adminActionRate, whatsappAuthRate, captainGroupAccessRate, captainPinRecoveryRate, customerAuthRate, apiRate, qrRate].forEach((store) => pruneRateLimitStore(store, atMs));
   pruneTimestampedMap(captainAccessCardAckCache, { atMs, ttlMs: 10 * 60 * 1000, maxEntries: 1000, getAt: (value) => value?.at });
   pruneTimestampedMap(recentMessageEventKeys, { atMs, ttlMs: MESSAGE_EVENT_DEDUP_TTL_MS, maxEntries: 5000, getAt: (value) => value });
   pruneTimestampedMap(whatsappLidPhoneCache, { atMs, ttlMs: WHATSAPP_LID_CACHE_TTL_MS, maxEntries: WHATSAPP_LID_CACHE_MAX_ENTRIES, getAt: (value) => value?.cachedAt });
@@ -10182,9 +10327,15 @@ function createClient() {
   });
   instance.on("group_join", (notification) => {
     if (generation !== connectionGeneration || !notification || !isConfiguredGroup(notification.chatId)) return;
+    invalidateCaptainGroupMembershipCache();
     scheduleConfiguredGroupCaptainSync("group_join");
     void sendConfiguredGroupCaptainWelcome(notification).catch((error) => console.warn(`[CaptainWelcome] group handler failed: ${String(error?.message || error).slice(0, 180)}`));
     console.log(`[Captains] configured group member joined; activation sync scheduled recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
+  });
+  instance.on("group_leave", (notification) => {
+    if (generation !== connectionGeneration || !notification || !isOfficialGroupTarget(notification.chatId)) return;
+    invalidateCaptainGroupMembershipCache();
+    console.log(`[Captains] official group member left; access will be rechecked on protected requests recipients=${Array.isArray(notification.recipientIds) ? notification.recipientIds.length : 0}`);
   });
   instance.on("message_create", async (msg) => {
     if (generation !== connectionGeneration || !msg) return;
@@ -12909,11 +13060,31 @@ function getCaptainSession(req) {
     return payload && payload.role === "captain" ? payload : null;
   } catch { return null; }
 }
-function requireCaptain(req, res, next) {
+async function validateCaptainSessionGroupAccess(session) {
+  if (!session || !Number(session.userId)) return { status: "invalid_session" };
+  const user = db.prepare("SELECT id,phone,role,active,account_status,captain_whatsapp_verified_at FROM users WHERE id=? LIMIT 1").get(Number(session.userId));
+  if (!user || user.role !== "captain" || !user.active || user.account_status !== "active") return { status: "inactive" };
+  if (!session.groupVerifiedAt || String(session.groupVerifiedAt) !== String(user.captain_whatsapp_verified_at || "") || phoneWithCountry(session.phone) !== phoneWithCountry(user.phone)) return { status: "unverified" };
+  const membership = await getCaptainOfficialGroupMembership(user.phone);
+  if (membership.status === "unavailable") return membership;
+  if (membership.status !== "member") {
+    revokeCaptainOfficialGroupVerification(user.id, "not_official_group_member");
+    return { status: "not_member" };
+  }
+  return { status: "member", user };
+}
+async function requireCaptain(req, res, next) {
   const session = getCaptainSession(req);
-  if (!session) return res.status(401).json({ error: "Captain authentication required" });
-  req.captainSession = session;
-  next();
+  if (!session) { clearCaptainSessionCookie(res); return res.status(401).json({ code: "captain_authentication_required", error: "Captain authentication required" }); }
+  try {
+    const access = await validateCaptainSessionGroupAccess(session);
+    if (access.status === "unavailable") return res.status(503).json({ code: "captain_group_verification_unavailable", error: "تعذر فحص عضوية القروب الرسمي مؤقتًا؛ أعد المحاولة بعد قليل." });
+    if (access.status === "not_member") { clearCaptainSessionCookie(res); return res.status(403).json({ code: "captain_official_group_membership_required", error: "تم قفل الوصول لأن الحساب غير موجود حاليًا في القروب الرسمي. انضم إلى القروب ثم سجّل الدخول مجددًا." }); }
+    if (access.status === "unverified") { clearCaptainSessionCookie(res); return res.status(401).json({ code: "captain_group_verification_required", error: "يلزم إعادة تسجيل الدخول والتحقق من عضوية القروب الرسمي." }); }
+    if (access.status !== "member") { clearCaptainSessionCookie(res); return res.status(403).json({ code: "captain_account_inactive", error: "حساب الكابتن غير مفعل" }); }
+    req.captainSession = session;
+    return next();
+  } catch (error) { return next(error); }
 }
 function validCustomerPin(value) { return /^\d{5}$/.test(String(value || "")); }
 function setCustomerSessionCookie(res, token) {
@@ -13440,7 +13611,7 @@ app.get("/api/customer/bookings", requireCustomer, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, bookings, pagination: { limit, offset, total, hasMore: offset + bookings.length < total } });
 });
-app.post("/api/captain/login", (req, res) => {
+app.post("/api/captain/login", async (req, res) => {
   const pin = String(req.body?.pin || "").trim();
   const rawPhone = String(req.body?.phone || "").replace(/[^0-9]/g, "");
   const phone = phoneWithCountry(rawPhone) || rawPhone;
@@ -13458,10 +13629,9 @@ app.post("/api/captain/login", (req, res) => {
   const pinValid = Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash);
   if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
   if (!user.active || user.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
-  const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
-  db.prepare("UPDATE users SET captain_last_login_at=?,updated_at=? WHERE id=?").run(now(), now(), user.id);
-  setCaptainSessionCookie(res, token);
-  res.json({ success: true, authMethod: "pin", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: Boolean(user.active) } });
+  if (!consumeRateLimit(captainGroupAccessRate, `${clientAddress(req)}:${user.phone}:request`, 4)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const issued = await requestCaptainOfficialGroupAccessCode(user, { source: "pin_login" });
+  return respondCaptainGroupAccessCodeIssue(res, issued, "pin");
 });
 app.post("/api/captain/change-pin", requireCaptain, adminMutationLimiter, (req, res) => {
   const currentPin = String(req.body?.currentPin || "").trim();
@@ -13543,7 +13713,7 @@ app.post("/api/captain/pin-recovery/reset", (req, res) => {
   audit("captain.pin_recovered", "user", user.id, { phone: user.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
   res.json({ success: true, message: "تم استرجاع رمز الدخول بنجاح. يمكنك الدخول بالرمز الجديد." });
 });
-app.post("/api/captain/login-link/exchange", (req, res) => {
+app.post("/api/captain/login-link/exchange", async (req, res) => {
   const token = String(req.body?.token || "").trim();
   if (token.length < 32 || token.length > 160) return res.status(400).json({ error: "رابط الدخول غير صالح" });
   if (!consumeRateLimit(loginRate, `${clientAddress(req)}:login-link`, 10)) return res.status(429).json({ error: "محاولات كثيرة؛ اطلب رابط دخول جديدًا" });
@@ -13553,13 +13723,19 @@ app.post("/api/captain/login-link/exchange", (req, res) => {
   if (!link) return res.status(401).json({ error: "رابط الدخول غير صالح أو منتهي" });
   if (link.used_at || link.revoked_at || link.expires_at <= stamp) return res.status(410).json({ error: "انتهت صلاحية رابط الدخول؛ اطلب رابطًا جديدًا" });
   if (link.role !== "captain" || Number(link.is_bot) === 1 || Number(link.active) !== 1 || link.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
+  if (!consumeRateLimit(captainGroupAccessRate, `${clientAddress(req)}:${link.phone}:request`, 4)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const membership = await getCaptainOfficialGroupMembership(link.phone);
+  if (membership.status === "unavailable") return res.status(503).json({ code: "captain_group_verification_unavailable", error: "تعذر فحص عضوية القروب الرسمي مؤقتًا؛ أعد المحاولة بعد قليل." });
+  if (membership.status !== "member") { revokeCaptainOfficialGroupVerification(link.captain_user_id, "not_official_group_member"); return res.status(403).json({ code: "captain_official_group_membership_required", error: "يجب أن يكون رقمك المسجل عضوًا في القروب الرسمي قبل إرسال رمز الدخول." }); }
   const consumed = db.prepare("UPDATE captain_login_links SET used_at=?,updated_at=? WHERE id=? AND used_at IS NULL AND revoked_at IS NULL AND expires_at>? ").run(stamp, stamp, link.id, stamp);
   if (!consumed.changes) return res.status(409).json({ error: "تم استخدام رابط الدخول أو لم يعد صالحًا" });
-  const sessionToken = jwt.sign({ role: "captain", userId: link.captain_user_id, phone: link.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
-  db.prepare("UPDATE users SET captain_last_login_at=?,updated_at=? WHERE id=?").run(stamp, stamp, link.captain_user_id);
-  audit("captain.login_link.exchanged", "user", link.captain_user_id, { linkId: link.id });
-  setCaptainSessionCookie(res, sessionToken);
-  res.json({ success: true, authMethod: "magic_link", user: { id: link.captain_user_id, phone: link.phone, name: link.name, role: link.role, active: true } });
+  const issued = await requestCaptainOfficialGroupAccessCode({ id: link.captain_user_id, phone: link.phone, role: link.role, is_bot: link.is_bot }, { source: "magic_link" });
+  if (issued.status !== "sent") {
+    db.prepare("UPDATE captain_login_links SET used_at=NULL,updated_at=? WHERE id=? AND used_at=? AND revoked_at IS NULL").run(now(), link.id, stamp);
+    return respondCaptainGroupAccessCodeIssue(res, issued, "magic_link");
+  }
+  audit("captain.login_link.exchanged", "user", link.captain_user_id, { linkId: link.id, verificationRequired: true });
+  return respondCaptainGroupAccessCodeIssue(res, issued, "magic_link");
 });
 app.post("/api/captain/whatsapp/request-code", async (req, res) => {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
@@ -13568,20 +13744,9 @@ app.post("/api/captain/whatsapp/request-code", async (req, res) => {
   const user = findCaptainByPhone(phone, { activeOnly: true });
   if (!user) return res.status(404).json({ error: "لا يوجد حساب كابتن مفعل بهذا الرقم" });
   if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "whatsapp") return res.status(409).json({ error: "هذا الحساب يستخدم الرقم السري من 5 أرقام" });
-  const code = createCaptainWhatsappCode();
-  const stamp = now();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  db.transaction(() => {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL").run(user.id);
-    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, user.phone, "login", captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
-  })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
-  if (!sent) {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL").run(user.id);
-    return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
-  }
-  audit("captain.whatsapp_code.sent", "user", user.id, { phone: user.phone, expiresAt });
-  res.json({ success: true, expiresAt, message: "تم إرسال رمز التحقق إلى رقم WhatsApp المسجل" });
+  if (!consumeRateLimit(captainGroupAccessRate, `${clientAddress(req)}:${user.phone}:request`, 4)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
+  const issued = await requestCaptainOfficialGroupAccessCode(user, { source: "whatsapp_login" });
+  return respondCaptainGroupAccessCodeIssue(res, issued, "whatsapp");
 });
 app.post("/api/internal/nexora/otp", async (req, res) => {
   const configuredSecret = String(process.env.NEXORA_SECRET || "").trim();
@@ -13608,31 +13773,49 @@ app.get("/api/internal/whatsapp/identity", createWhatsAppIdentityHandler({
   findCaptainByPhone,
   findCustomerByPhone: (phone) => db.prepare("SELECT id,phone,name,active FROM customer_accounts WHERE phone=? AND active=1 LIMIT 1").get(phone),
 }));
-app.post("/api/captain/whatsapp/verify", (req, res) => {
+async function completeCaptainGroupAccessVerification(req, res) {
   const phone = phoneWithCountry(String(req.body?.phone || ""));
   const code = String(req.body?.code || "").trim();
   if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "رقم الهاتف ورمز التحقق مطلوبان" });
+  if (!consumeRateLimit(captainGroupAccessRate, `${clientAddress(req)}:${phone}:verify`, 8)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
   const user = findCaptainByPhone(phone, { activeOnly: true });
-  if (!user || normalizeCaptainAuthMethod(user.captain_auth_method) !== "whatsapp") return res.status(401).json({ error: "تعذر التحقق من الحساب" });
-  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='login' AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
-  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز التحقق؛ اطلب رمزًا جديدًا" });
-  db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
-  if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return res.status(401).json({ error: "رمز التحقق غير صحيح" });
-  const stamp = now();
-  db.prepare("UPDATE captain_auth_challenges SET verified_at=? WHERE id=?").run(stamp, challenge.id);
-  db.prepare("UPDATE users SET captain_whatsapp_verified_at=?,captain_last_login_at=?,updated_at=? WHERE id=?").run(stamp, stamp, stamp, user.id);
-  const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
+  if (!user || user.role !== "captain" || Number(user.is_bot) === 1) return res.status(401).json({ error: "تعذر التحقق من الحساب" });
+  const verification = await verifyCaptainOfficialGroupAccessCode(user, code);
+  if (verification.status === "unavailable") return res.status(503).json({ code: "captain_group_verification_unavailable", error: "تعذر فحص عضوية القروب الرسمي مؤقتًا؛ أعد المحاولة دون طلب رمز جديد." });
+  if (verification.status === "not_member") return res.status(403).json({ code: "captain_official_group_membership_required", error: "تم قفل الوصول لأن الرقم غير موجود حاليًا في القروب الرسمي. انضم ثم اطلب رمزًا جديدًا." });
+  if (verification.status === "expired") return res.status(410).json({ code: "captain_group_access_code_expired", error: "انتهت صلاحية الرمز أو استُنفدت المحاولات؛ اطلب رمزًا جديدًا." });
+  if (verification.status === "invalid_code") return res.status(401).json({ code: "captain_group_access_code_invalid", error: "رمز التحقق غير صحيح." });
+  if (verification.status !== "verified") return res.status(403).json({ code: "captain_account_inactive", error: "حساب الكابتن غير مفعل" });
+  const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone, groupVerifiedAt: verification.verifiedAt, groupChallengeId: verification.challengeId }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
   setCaptainSessionCookie(res, token);
-  audit("captain.whatsapp_login.verified", "user", user.id, { phone: user.phone });
-  res.json({ success: true, authMethod: "whatsapp", user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: true } });
-});
+  audit("captain.group_access.verified", "user", user.id, { authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), challengeId: verification.challengeId, membershipVerified: true });
+  return res.json({ success: true, authMethod: normalizeCaptainAuthMethod(user.captain_auth_method), user: { id: user.id, phone: user.phone, name: user.name, role: user.role, active: true } });
+}
+const captainGroupAccessVerificationRoute = (req, res, next) => { void completeCaptainGroupAccessVerification(req, res).catch(next); };
+app.post("/api/captain/group-access/verify", captainGroupAccessVerificationRoute);
+app.post("/api/captain/whatsapp/verify", captainGroupAccessVerificationRoute);
 app.post("/api/captain/logout", (req, res) => {
   clearCaptainSessionCookie(res);
   res.json({ success: true });
 });
+app.get("/api/captain/access", requireCaptain, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, membershipChecked: true });
+});
 app.get("/api/captain/direct-rides/events", requireCaptain, (req, res) => {
   prepareDirectRideEventStream(res);
   directRideNotificationHub.subscribeCaptain(req.captainSession.userId, res);
+  let checkInFlight = false;
+  const accessTimer = setInterval(() => {
+    if (checkInFlight || res.writableEnded || res.destroyed) return;
+    checkInFlight = true;
+    void validateCaptainSessionGroupAccess(req.captainSession).then((access) => {
+      if (access.status === "member" || res.writableEnded || res.destroyed) return;
+      try { res.end(); } catch (_) {}
+    }).catch(() => { try { res.end(); } catch (_) {} }).finally(() => { checkInFlight = false; });
+  }, 12000);
+  accessTimer.unref?.();
+  res.once("close", () => clearInterval(accessTimer));
 });
 app.get("/api/captain/direct-rides", requireCaptain, captainReadLimiter, (req, res) => {
   res.setHeader("Cache-Control", "no-store");
