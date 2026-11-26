@@ -6858,7 +6858,23 @@ function currentCaptainSubscriptionPeriod(stamp = now()) {
   const startMs = Date.parse(CAPTAIN_SUBSCRIPTION_START);
   const stampMs = Date.parse(stamp);
   if (!Number.isFinite(startMs) || !Number.isFinite(stampMs) || stampMs < startMs) return null;
-  return businessWeekPeriod(stamp);
+  const currentWeek = businessWeekPeriod(stamp);
+  const currentWeekStartMs = Date.parse(currentWeek.start);
+  if (!Number.isFinite(currentWeekStartMs)) return null;
+  const completedWeek = businessWeekPeriod(new Date(currentWeekStartMs - 1).toISOString());
+  if (!completedWeek || Date.parse(completedWeek.end) <= startMs) return null;
+  return { start: completedWeek.start, end: currentWeek.start };
+}
+function ensureCaptainSubscriptionActivityPolicyStart() {
+  const key = "captain_weekly_activity_policy_start_v1";
+  const saved = getSetting(key, null);
+  const savedMs = Date.parse(saved || "");
+  if (Number.isFinite(savedMs)) return new Date(savedMs).toISOString();
+  const currentMs = Date.parse(now());
+  if (!Number.isFinite(currentMs)) return null;
+  const effectiveAt = new Date(currentMs).toISOString();
+  setSetting(key, effectiveAt);
+  return effectiveAt;
 }
 const CAPTAIN_ARABIC_DISPLAY_NAMES = {
   "Ahmad Ali": "أحمد علي",
@@ -6881,13 +6897,40 @@ function captainDisplayName(name) {
   if (!original || (digits.length >= 8 && digits === original.replace(/[^0-9]/g, ""))) return "كابتن بدون اسم";
   return CAPTAIN_ARABIC_DISPLAY_NAMES[original] || original;
 }
-function weeklyChargeEligibleCaptains(stamp = now()) {
-  const cutoff = new Date(Date.parse(stamp) - CAPTAIN_SUBSCRIPTION_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
+function weeklyChargeEligibleCaptains(stamp = now(), period = currentCaptainSubscriptionPeriod(stamp)) {
+  const officialGroupId = configuredRuntimeGroupId();
+  const policyStartMs = Date.parse(getSetting("captain_weekly_activity_policy_start_v1", "") || "");
+  const periodStartMs = Date.parse(period?.start || "");
+  const periodEndMs = Date.parse(period?.end || "");
+  const stampMs = Date.parse(stamp);
+  if (!officialGroupId || !isConfiguredGroup(officialGroupId) || !Number.isFinite(policyStartMs) ||
+      !Number.isFinite(periodStartMs) || !Number.isFinite(periodEndMs) || !Number.isFinite(stampMs) ||
+      periodEndMs <= policyStartMs || periodEndMs > stampMs) return [];
+  const activityStart = new Date(Math.max(periodStartMs, Date.parse(CAPTAIN_SUBSCRIPTION_START), policyStartMs)).toISOString();
+  const activityEnd = period.end;
+  if (Date.parse(activityStart) >= periodEndMs) return [];
   return db.prepare(`SELECT DISTINCT u.id,u.phone,u.name,u.wallet_cents
-    FROM users u JOIN orders o ON o.captain_user_id=u.id
+    FROM users u
     WHERE u.role='captain' AND u.active=1 AND u.is_bot=0 AND u.account_status='active'
-      AND COALESCE(o.updated_at,o.created_at)>=? AND COALESCE(o.updated_at,o.created_at)<=?
-    ORDER BY u.id`).all(cutoff, stamp).filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
+      AND u.archived_at IS NULL
+      AND (
+        EXISTS (SELECT 1 FROM order_candidates c
+          WHERE c.producer_user_id=u.id AND c.group_id=? AND c.created_at>=? AND c.created_at<?
+            AND c.status IN ('candidate','pending','finalized') AND c.price_cents>0 AND TRIM(c.raw_text)<>'')
+        OR EXISTS (SELECT 1 FROM orders p
+          WHERE p.producer_user_id=u.id AND p.group_id=? AND p.created_at>=? AND p.created_at<?
+            AND p.status IN ('open','accepted','completed') AND p.price_cents>0 AND TRIM(p.raw_text)<>'')
+        OR EXISTS (SELECT 1 FROM orders o
+          JOIN order_candidates c ON c.source_message_id=o.source_message_id AND c.group_id=o.group_id
+            AND c.producer_user_id=o.producer_user_id AND c.final_order_id=o.id AND c.status='finalized'
+          JOIN order_settlements s ON s.order_id=o.id AND s.status='applied'
+          WHERE o.captain_user_id=u.id AND o.group_id=? AND o.status IN ('accepted','completed')
+            AND o.accepted_at>=? AND o.accepted_at<? AND o.accepted_message_id IS NOT NULL
+            AND o.price_cents>0 AND TRIM(o.raw_text)<>'')
+      )
+    ORDER BY u.id`).all(officialGroupId, activityStart, activityEnd,
+    officialGroupId, activityStart, activityEnd, officialGroupId, activityStart, activityEnd)
+    .filter((captain) => !isOfficialGroupAdminPhone(captain.phone));
 }
 function ammanDateKey(stamp = now()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Amman", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(stamp));
@@ -6903,7 +6946,8 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
   if (typeof WHATSAPP_GROUP_ID !== "undefined" && WHATSAPP_GROUP_ID && !officialGroupAdminSnapshotReady()) return { status: "deferred_group_admin_snapshot", applied: [], skipped: [], eligibleCount: 0, totalCents: 0 };
   const today = ammanDateKey(stamp);
   const businessWeek = businessWeekPeriod(stamp);
-  const candidates = weeklyChargeEligibleCaptains(stamp);
+  const candidates = weeklyChargeEligibleCaptains(stamp, period);
+  const activityScope = "official_group_valid_post_or_final_settled_acceptance";
   const applied = [];
   const skipped = [];
   for (const captain of candidates) {
@@ -6919,15 +6963,15 @@ function applyManualWeeklyCaptainCharges(stamp = now(), { scheduled = false, sch
         const nextBalance = Number(current.wallet_cents) - CAPTAIN_SUBSCRIPTION_CENTS;
         if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) {
           const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,reference,created_at,details_json) VALUES(?,?,?,?,?,?,?,?)")
-            .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "skipped_debt_limit", reference, stamp, JSON.stringify({ reason: "debt_limit", balanceCents: current.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, executorOnly: true }));
+            .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "skipped_debt_limit", reference, stamp, JSON.stringify({ reason: "debt_limit", balanceCents: current.wallet_cents, debtLimitCents: CAPTAIN_MIN_BALANCE_CENTS, activityScope }));
           return { state: "skipped_debt_limit", chargeId: charge.lastInsertRowid };
         }
         db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND is_bot=0 AND account_status='active'").run(nextBalance, stamp, captain.id);
         const ledger = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)")
-          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, scheduled ? "اشتراك أسبوعي تلقائي يوم الجمعة" : "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }), reference);
+          .run(captain.id, "subscription_fee", -CAPTAIN_SUBSCRIPTION_CENTS, nextBalance, reference, scheduled ? "اشتراك أسبوعي تلقائي يوم الجمعة" : "اشتراك أسبوعي يدوي للكابتن", stamp, JSON.stringify({ periodStart: period.start, periodEnd: period.end, chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek, activityScope }), reference);
         const charge = db.prepare("INSERT INTO captain_subscription_charges(user_id,period_start,period_end,amount_cents,status,ledger_id,reference,created_at,applied_at,details_json) VALUES(?,?,?,?,?,?,?,?,?,?)")
-          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek }));
-        audit("captain.subscription.charged", "user", captain.id, { phone: current.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference, manual: !scheduled, scheduled, scheduleKey }, null);
+          .run(captain.id, period.start, period.end, CAPTAIN_SUBSCRIPTION_CENTS, "applied", ledger.lastInsertRowid, reference, stamp, stamp, JSON.stringify({ chargeDate: today, manual: !scheduled, scheduled, scheduleKey, businessWeek, activityScope }));
+        audit("captain.subscription.charged", "user", captain.id, { phone: current.phone, amountCents: CAPTAIN_SUBSCRIPTION_CENTS, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance, periodStart: period.start, periodEnd: period.end, reference, manual: !scheduled, scheduled, scheduleKey, activityScope }, null);
         return { state: "applied", chargeId: charge.lastInsertRowid, ledgerId: ledger.lastInsertRowid, balanceBeforeCents: Number(current.wallet_cents), balanceAfterCents: nextBalance };
       })();
       if (result.state === "applied") applied.push({ ...captain, ...result, reference });
@@ -21724,6 +21768,7 @@ app.get("/api/admin/wallets", requireAdmin, adminReadLimiter, v27AdminReadCache(
   res.json({ wallets: users.map((user) => ({ ...user, balance: money(user.wallet_cents), postedShare: money(user.posted_share_cents), executedDebit: money(user.executed_debit_cents), companyShare: money(user.company_share_cents), netMovement: money(Number(user.posted_share_cents || 0) - Number(user.executed_debit_cents || 0)) })), companyWallet: companyWalletSummary() });
 });
 const weeklySubscriptionScheduler = createWeeklySubscriptionScheduler({ db, getSetting, setSetting, execute: applyManualWeeklyCaptainCharges, audit, clock: now });
+ensureCaptainSubscriptionActivityPolicyStart();
 app.get("/api/admin/captain-subscriptions/schedule", requireBotWalletOwner, adminReadLimiter, v27AdminReadCache("subscription-schedule", 2000), (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.json({ success: true, mutation: "none", ...weeklySubscriptionScheduler.status() });
