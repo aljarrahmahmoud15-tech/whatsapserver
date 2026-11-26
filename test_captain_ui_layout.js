@@ -103,10 +103,10 @@ for (const id of ['classic', 'taj', 'red-white', 'rahlati', 'compact']) {
 
 // 7) لا تتضمن واجهة الكابتن طلبًا لتغيير التصميم بعد تثبيت المظهر؛ مسارات التشغيل تبقى كما هي.
 const EXPECTED = [
-  '/api/captain/change-pin', '/api/captain/invites/', '/api/captain/login', '/api/captain/login-link/exchange',
+  '/api/captain/access', '/api/captain/change-pin', '/api/captain/group-access/verify', '/api/captain/invites/', '/api/captain/login', '/api/captain/login-link/exchange',
   '/api/captain/logout', '/api/captain/overview', '/api/captain/pin-recovery/request-code',
   '/api/captain/pin-recovery/reset', '/api/captain/redeem-card', '/api/captain/register',
-  '/api/captain/topup-request', '/api/captain/withdrawal-requests', '/api/support/tickets',
+  '/api/captain/topup-request', '/api/captain/whatsapp/request-code', '/api/captain/withdrawal-requests', '/api/support/tickets',
 ];
 const found = [...new Set((captain.match(/\/api\/[a-z0-9\/_-]+/gi) || []).map((p) => p.replace(/\/$/, '')))].sort();
 assert.deepEqual(found.map((p) => p.replace(/^\/api\/captain\/invites$/, '/api/captain/invites/')).sort(), EXPECTED.slice().sort(),

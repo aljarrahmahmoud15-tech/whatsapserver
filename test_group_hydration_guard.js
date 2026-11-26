@@ -4,7 +4,7 @@ const vm = require("vm");
 
 const source = fs.readFileSync("server.js", "utf8");
 
-assert.match(source, /async function readGroupSnapshot\(groupId\)/, "group snapshot resolver must exist");
+assert.match(source, /async function readGroupSnapshot\(groupId, \{ forceRefresh = false \} = \{\}\)/, "group snapshot resolver must support an explicit fresh-read mode");
 assert.match(source, /withStageTimeout\("wwebjs_get_chat", 8000/, "WWebJS chat fetch must have a labeled stage timeout");
 assert.match(source, /withStageTimeout\("find_or_create_latest_chat", 8000/, "chat discovery must have a labeled stage timeout");
 assert.match(source, /withStageTimeout\("group_metadata_query", 14000/, "group metadata query must have a labeled stage timeout");
@@ -18,7 +18,7 @@ assert.match(source, /stage: error\.snapshotStage/, "timed-out page stages must 
 assert.match(source, /lastGroupHydrationDiagnostic/, "group hydration state must be exposed to runtime diagnostics");
 assert.match(source, /groupHydration: \{ \.\.\.lastGroupHydrationDiagnostic \}/, "public/V27 status must expose group hydration state");
 assert.match(source, /const groupSnapshotFlights = new Map\(\)/, "group hydration must keep a single-flight registry");
-assert.match(source, /const key = `\$\{generationAtStart\}:\$\{groupId\}`/, "hydration single-flight must be scoped to connection generation and group");
+assert.match(source, /const key = `\$\{generationAtStart\}:\$\{groupId\}:\$\{forceRefresh \? "fresh" : "cached"\}`/, "hydration single-flight must isolate fresh reads by connection generation, group, and freshness mode");
 assert.match(source, /createGroupSnapshotFlight\(key,/, "snapshot reads must share an in-flight evaluation");
 assert.match(source, /pageAtStart\.evaluate/, "snapshot evaluation must use the page captured for its connection generation");
 assert.match(source, /if \(groupSnapshotFlights\.get\(key\) === flight\) groupSnapshotFlights\.delete\(key\)/, "settled or expired flights must be removed without deleting a newer retry");

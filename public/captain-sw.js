@@ -1,7 +1,7 @@
-const CACHE = 'v27-captain-shell-v2';
+const CACHE = 'v27-captain-shell-v3';
 const SHELL = ['/captain', '/captain.html', '/captain-designs.css?v=1', '/captain-manifest.json', '/aljarah-logo-mark-clean.png'];
 self.addEventListener('install', (event) => { event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())); });
-self.addEventListener('activate', (event) => { event.waitUntil(self.clients.claim()); });
+self.addEventListener('activate', (event) => { event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('v27-captain-shell-') && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;

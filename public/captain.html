@@ -112,9 +112,31 @@
         <label class="label">الرقم السري من 5 أرقام<input class="input" id="pin" type="password" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="current-password" required></label>
         <button class="primary" id="login-btn" type="submit">دخول البوابة</button>
         <div id="login-error" class="error" role="alert"></div>
+        <button class="link-button" id="whatsapp-login-btn" type="button">دخول برمز WhatsApp</button>
         <button class="link-button" id="forgot-pin-btn" type="button">نسيت رمز الدخول؟</button>
         <div class="hint" id="invite-hint">للتسجيل لأول مرة، ارجع للصفحة السابقة واختر «تسجيل كابتن جديد ذاتيًا».</div>
       </form>
+    </section>
+    <section id="group-verification" class="login hidden">
+      <form id="group-verification-form" class="login-card">
+        <div class="eyebrow">تحقق عضوية القروب الرسمي</div>
+        <h1>أدخل رمز التحقق</h1>
+        <p class="muted">بعد تأكيد العضوية، أرسلنا رمزًا شخصيًا إلى WhatsApp المسجل. الرمز صالح 10 دقائق ولمرة واحدة.</p>
+        <label class="label">رقم هاتف الكابتن<input class="input" id="group-verification-phone" inputmode="tel" autocomplete="tel" required></label>
+        <label class="label">رمز التحقق من 6 أرقام<input class="input" id="group-verification-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+        <button class="primary" id="group-verification-submit" type="submit">تحقق وافتح البوابة</button>
+        <div id="group-verification-status" class="hint" role="status" aria-live="polite"></div>
+        <button class="link-button" id="group-verification-back" type="button">العودة إلى تسجيل الدخول</button>
+      </form>
+    </section>
+    <section id="group-lock" class="login hidden">
+      <div class="login-card" role="alert">
+        <div class="eyebrow">الوصول محجوب مؤقتًا</div>
+        <h1 id="group-lock-title">تعذر التحقق</h1>
+        <p class="muted" id="group-lock-message">لم يتم تحميل أي بيانات للحساب.</p>
+        <button class="primary" id="group-lock-retry" type="button">إعادة فحص العضوية</button>
+        <button class="ghost" id="group-lock-login" type="button">العودة لتسجيل الدخول</button>
+      </div>
     </section>
     <section id="pin-recovery" class="login hidden">
       <form id="pin-recovery-form" class="login-card">
@@ -193,6 +215,8 @@
     let invitePoll = null;
     let currentCaptain = null;
     let installPrompt = null;
+    let pendingGroupAccessMethod = null;
+    let captainAccessTimer = null;
     function syncAuthFields() {
       const registrationMethod = $('#reg-auth-method')?.value || 'pin';
       $('#reg-pin-fields')?.classList.toggle('hidden', registrationMethod !== 'pin');
@@ -204,7 +228,7 @@
       const headers = {...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {})};
       const response = await fetch(url, {...options, headers, credentials:'same-origin'});
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) { const error = new Error(data.error || 'تعذر إتمام العملية'); error.status = response.status; throw error; }
+      if (!response.ok) { const error = new Error(data.error || 'تعذر إتمام العملية'); error.status = response.status; error.code = data.code || null; if (error.code && document.getElementById('app') && !document.getElementById('app').classList.contains('hidden')) void lockCaptainApp(error); throw error; }
       return data;
     }
     function clearAutoLoginToken() {
@@ -218,16 +242,45 @@
     async function loginWithAutoLink() {
       const token = autoLoginToken;
       if (!token) throw new Error('رابط الدخول غير موجود');
-      await api('/api/captain/login-link/exchange', {method:'POST', body:JSON.stringify({token})});
+      const result = await api('/api/captain/login-link/exchange', {method:'POST', body:JSON.stringify({token})});
       clearAutoLoginToken();
+      if (result.requiresGroupVerification) { beginGroupVerification(result, ''); return; }
       await loadOverview();
       showSection('app');
+      startCaptainAccessWatch();
     }
     function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value ?? '0.00'; }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); }
     function applyCaptainDesign() { document.body.dataset.captainDesign = 'compact'; }
     function statusLabel(value) { return ({open:'مفتوح',accepted:'مثبت',completed:'مكتمل',cancelled:'ملغى'})[value] || value || 'غير محدد'; }
-    function showSection(id) { ['entry','registration','pending','login','pin-recovery','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
+    function showSection(id) { ['entry','registration','pending','login','group-verification','group-lock','pin-recovery','app'].forEach((name) => document.getElementById(name)?.classList.toggle('hidden', name !== id)); }
+    function beginGroupVerification(result, phone = '') {
+      pendingGroupAccessMethod = result?.authMethod || pendingGroupAccessMethod || 'pin';
+      $('#group-verification-phone').value = String(phone || '');
+      $('#group-verification-code').value = '';
+      $('#group-verification-status').textContent = result?.message || 'أدخل الرمز المرسل إلى WhatsApp المسجل.';
+      showSection('group-verification');
+      $('#group-verification-code').focus();
+    }
+    function startCaptainAccessWatch() {
+      if (captainAccessTimer) clearInterval(captainAccessTimer);
+      captainAccessTimer = setInterval(async () => {
+        if ($('#app')?.classList.contains('hidden')) return;
+        try { await api('/api/captain/access'); }
+        catch (error) { if (error.code || error.status === 401 || error.status === 403 || error.status === 503) lockCaptainApp(error); }
+      }, 15000);
+    }
+    function lockCaptainApp(error = {}) {
+      if (captainAccessTimer) clearInterval(captainAccessTimer);
+      captainAccessTimer = null;
+      $('#app')?.classList.add('hidden');
+      const unavailable = error.code === 'captain_group_verification_unavailable' || error.status === 503;
+      const notMember = error.code === 'captain_official_group_membership_required';
+      $('#group-lock-title').textContent = notMember ? 'تم قفل الوصول' : unavailable ? 'تعذر فحص العضوية مؤقتًا' : 'يلزم التحقق من الدخول';
+      $('#group-lock-message').textContent = error.message || (notMember ? 'انضم إلى القروب الرسمي ثم سجّل الدخول والتحقق من جديد.' : unavailable ? 'لم يتم تعطيل الحساب أو تغيير بياناته. أعد المحاولة عندما يتاح فحص القروب.' : 'أعد تسجيل الدخول للتحقق من عضويتك الحالية في القروب الرسمي.');
+      $('#group-lock-retry').textContent = unavailable ? 'إعادة المحاولة' : 'فحص العضوية مجددًا';
+      showSection('group-lock');
+    }
     function topupCardStatus(value) { return ({issued:'جاهزة للتفعيل',redeemed:'تمت إضافتها إلى الرصيد',void:'ملغاة'})[value] || value || 'غير محدد'; }
     function renderTopupCards(cards) {
       const box = $('#topup-card-notifications');
@@ -297,13 +350,23 @@
       if (invite.status === 'rejected') { showSection('pending'); setText('pending-title','تم رفض الطلب'); setText('pending-message', invite.decision_note || 'تم رفض طلب الانضمام من الشركة.'); $('#approved-login').classList.add('hidden'); return; }
       showSection('registration');
     }
+    async function loginApprovedCaptain() {
+      if (!submittedCaptain) return;
+      if (submittedCaptain.authMethod === 'whatsapp') {
+        const result = await api('/api/captain/whatsapp/request-code', {method:'POST', body:JSON.stringify({phone:submittedCaptain.phone})});
+        beginGroupVerification(result, submittedCaptain.phone);
+        return;
+      }
+      await loginCaptain(submittedCaptain.phone, submittedCaptain.pin);
+    }
     async function pollInvite() {
       if (!inviteToken) return;
-      try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'approved' || data.invite.status === 'rejected') { clearInterval(invitePoll); if (data.invite.status === 'approved' && submittedCaptain) await loginCaptain(submittedCaptain.phone, submittedCaptain.pin); } } catch (error) { clearInterval(invitePoll); $('#register-error').textContent = error.message; }
+      try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'approved' || data.invite.status === 'rejected') { clearInterval(invitePoll); if (data.invite.status === 'approved' && submittedCaptain) await loginApprovedCaptain(); } } catch (error) { clearInterval(invitePoll); $('#register-error').textContent = error.message; }
     }
     async function loginCaptain(phone, pin) {
-      await api('/api/captain/login', {method:'POST', body:JSON.stringify({phone, pin})});
-      await loadOverview(); showSection('app');
+      const result = await api('/api/captain/login', {method:'POST', body:JSON.stringify({phone, pin})});
+      if (result.requiresGroupVerification) { beginGroupVerification(result, phone); return result; }
+      await loadOverview(); showSection('app'); startCaptainAccessWatch(); return result;
     }
     $('#reg-auth-method')?.addEventListener('change', syncAuthFields);
     syncAuthFields();
@@ -319,8 +382,14 @@
     $('#recovery-back-btn')?.addEventListener('click', () => showSection('login'));
     $('#recovery-request-btn')?.addEventListener('click', async () => { const button=$('#recovery-request-btn'), phone=$('#recovery-phone').value.trim(), status=$('#pin-recovery-status'); button.disabled=true; status.textContent='جارٍ إرسال رمز التحقق…'; try { const result=await api('/api/captain/pin-recovery/request-code',{method:'POST',body:JSON.stringify({phone})}); status.textContent=result.message||'تم إرسال الرمز.'; $('#recovery-code-fields').classList.remove('hidden'); } catch(error) { status.textContent=error.message||'تعذر إرسال الرمز.'; } finally { button.disabled=false; } });
     $('#pin-recovery-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#recovery-reset-btn'), status=$('#pin-recovery-status'), phone=$('#recovery-phone').value.trim(), code=$('#recovery-code').value.trim(), newPin=$('#recovery-new-pin').value.trim(), confirmPin=$('#recovery-confirm-pin').value.trim(); status.textContent=''; if(!/^\d{6}$/.test(code)||!/^[0-9]{5}$/.test(newPin)||newPin!==confirmPin){status.textContent='أدخل رمز WhatsApp من 6 أرقام ورمز دخول جديدًا من 5 أرقام متطابقًا.';return;} if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;} button.disabled=true; try { const result=await api('/api/captain/pin-recovery/reset',{method:'POST',body:JSON.stringify({phone,code,newPin,confirmPin})}); status.textContent=result.message||'تم استرجاع الرمز.'; $('#pin-recovery-form').reset(); setTimeout(() => showSection('login'), 1200); } catch(error) { status.textContent=error.message||'تعذر استرجاع رمز الدخول.'; } finally { button.disabled=false; } });
-    $('#approved-login')?.addEventListener('click', () => { if (submittedCaptain) loginCaptain(submittedCaptain.phone, submittedCaptain.pin); });
+    $('#approved-login')?.addEventListener('click', () => { void loginApprovedCaptain().catch((error) => { $('#register-error').textContent = error.message; }); });
     $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const button = $('#login-btn'); button.disabled = true; $('#login-error').textContent = ''; try { await loginCaptain($('#phone').value.trim(), $('#pin').value); $('#pin').value = ''; } catch (error) { $('#login-error').textContent = error.message; } finally { button.disabled = false; } });
+    $('#whatsapp-login-btn')?.addEventListener('click', async () => { const button=$('#whatsapp-login-btn'), phone=$('#phone').value.trim(); button.disabled=true; $('#login-error').textContent=''; try { const result=await api('/api/captain/whatsapp/request-code',{method:'POST',body:JSON.stringify({phone})}); beginGroupVerification(result,phone); } catch(error) { $('#login-error').textContent=error.message||'تعذر إرسال رمز الدخول.'; } finally { button.disabled=false; } });
+    $('#group-verification-back')?.addEventListener('click', () => showSection('login'));
+    $('#group-verification-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#group-verification-submit'), status=$('#group-verification-status'), phone=$('#group-verification-phone').value.trim(), code=$('#group-verification-code').value.trim(); if(!/^\d{6}$/.test(code)){status.textContent='أدخل رمز التحقق المكوّن من 6 أرقام.';return;} button.disabled=true; status.textContent='جارٍ فحص الرمز والعضوية الحالية…'; try { await api('/api/captain/group-access/verify',{method:'POST',body:JSON.stringify({phone,code})}); pendingGroupAccessMethod=null; $('#group-verification-form').reset(); try { await loadOverview(); showSection('app'); startCaptainAccessWatch(); } catch(accessError) { lockCaptainApp(accessError); } } catch(error) { status.textContent=error.message||'تعذر التحقق.'; if(error.status===503) status.textContent='تعذر فحص العضوية مؤقتًا. لم يتغير الحساب؛ أعد المحاولة بعد قليل.'; } finally { button.disabled=false; } });
+    $('#group-lock-retry')?.addEventListener('click', async () => { const button=$('#group-lock-retry'); button.disabled=true; $('#group-lock-message').textContent='جارٍ تحديث فحص العضوية…'; try { await api('/api/captain/access'); await loadOverview(); showSection('app'); startCaptainAccessWatch(); } catch(error) { if(error.code==='captain_authentication_required'||error.code==='captain_group_verification_required') { $('#group-lock-title').textContent='أعد تسجيل الدخول'; $('#group-lock-message').textContent=error.message||'سجّل الدخول بعد التأكد من عضويتك في القروب الرسمي.'; } else lockCaptainApp(error); } finally { button.disabled=false; } });
+    $('#group-lock-login')?.addEventListener('click', () => { if (captainAccessTimer) clearInterval(captainAccessTimer); captainAccessTimer=null; $('#pin').value=''; showSection('login'); });
+    $('#captain-change-pin-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#captain-change-pin-btn'), status=$('#captain-change-pin-status'), currentPin=$('#captain-current-pin').value.trim(), newPin=$('#captain-new-pin').value.trim(), confirmPin=$('#captain-confirm-pin').value.trim(); status.textContent=''; if(!/^\d{5}$/.test(currentPin)||!/^[0-9]{5}$/.test(newPin)||newPin!==confirmPin){status.textContent='أدخل الرموز من 5 أرقام وتأكد من تطابق الرمز الجديد.';return;} if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;}if(/^(01234|12345|23456|34567|45678|56789|98765|43210)$/.test(newPin)){status.textContent='الرمز تسلسلي سهل التخمين، اختر رمزًا مختلفًا.';return;}if(/^(\d)\1{4}$/.test(newPin)){status.textContent='لا تستخدم رقمًا مكررًا خمس مرات.';return;} button.disabled=true; try { const result=await api('/api/captain/change-pin',{method:'POST',body:JSON.stringify({currentPin,newPin,confirmPin})}); status.textContent=result.message||'تم تغيير الرمز بنجاح.'; $('#captain-change-pin-form').reset(); } catch(error) { status.textContent=error.message||'تعذر تغيير الرمز.'; } finally { button.disabled=false; } });
     $('#captain-change-pin-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const button=$('#captain-change-pin-btn'), status=$('#captain-change-pin-status'), currentPin=$('#captain-current-pin').value.trim(), newPin=$('#captain-new-pin').value.trim(), confirmPin=$('#captain-confirm-pin').value.trim(); status.textContent=''; if(!/^\d{5}$/.test(currentPin)||!/^[0-9]{5}$/.test(newPin)||newPin!==confirmPin){status.textContent='أدخل الرموز من 5 أرقام وتأكد من تطابق الرمز الجديد.';return;} if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;}if(/^(01234|12345|23456|34567|45678|56789|98765|43210)$/.test(newPin)){status.textContent='الرمز تسلسلي سهل التخمين، اختر رمزًا مختلفًا.';return;}if(/^(\d)\1{4}$/.test(newPin)){status.textContent='لا تستخدم رقمًا مكررًا خمس مرات.';return;} button.disabled=true; try { const result=await api('/api/captain/change-pin',{method:'POST',body:JSON.stringify({currentPin,newPin,confirmPin})}); status.textContent=result.message||'تم تغيير الرمز بنجاح.'; $('#captain-change-pin-form').reset(); } catch(error) { status.textContent=error.message||'تعذر تغيير الرمز.'; } finally { button.disabled=false; } });
     $('#withdrawal-request-btn').addEventListener('click', async () => { const button=$('#withdrawal-request-btn'), value=Number($('#withdrawal-request-value').value), note=$('#withdrawal-request-note').value.trim(); $('#withdrawal-request-status').textContent=''; if(!value||value<=0){$('#withdrawal-request-status').textContent='أدخل مبلغًا صحيحًا';return;} button.disabled=true; button.textContent='جاري الإرسال…'; try { const data=await api('/api/captain/withdrawal-requests',{method:'POST',body:JSON.stringify({amount:value,note})}); $('#withdrawal-request-status').textContent=`تم إرسال الطلب ${data.requestCode} إلى المالك دون خصم من الرصيد.`; $('#withdrawal-request-value').value=''; $('#withdrawal-request-note').value=''; await loadOverview(); } catch(error) { $('#withdrawal-request-status').textContent=error.message; } finally { button.disabled=false; button.textContent='إرسال طلب السحب'; } });
     async function readReceiptFile(file){if(!file)return null;if(file.size>5*1024*1024)throw new Error('حجم صورة الوصل يجب ألا يتجاوز 5 ميغابايت');if(!/^image\/(jpeg|png|webp)$/i.test(file.type))throw new Error('اختر صورة وصل بصيغة JPG أو PNG أو WEBP');return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve({data:reader.result,mime:file.type,name:file.name});reader.onerror=()=>reject(new Error('تعذر قراءة صورة الوصل'));reader.readAsDataURL(file);});}
@@ -336,10 +405,10 @@
     window.addEventListener('appinstalled', () => { installPrompt=null; $('#install-status').textContent='تم تثبيت تطبيق V27 بنجاح.'; });
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/captain-sw.js',{scope:'/'}).catch(()=>{});
 
-    $('#logout').addEventListener('click', async () => { await api('/api/captain/logout', {method:'POST'}).catch(() => {}); showSection('entry'); });
+    $('#logout').addEventListener('click', async () => { if (captainAccessTimer) clearInterval(captainAccessTimer); captainAccessTimer=null; await api('/api/captain/logout', {method:'POST'}).catch(() => {}); showSection('entry'); });
     const demoMode = new URLSearchParams(location.search).get('demo') === '1';
     const demoData = {user:{name:'كابتن تجريبي',phone:'0000000000'},wallet:{balance:'125.00'},earnings:{net:'210.00',fees:'15.00'},trips:[{order_no:'DEMO-1024',trip_time:'اليوم 10:30',origin:'عمّان',destination:'العقبة',status:'completed',price:'300.00',grossEarnings:'45.00',netEarnings:'38.25',walletFee:'6.75'},{order_no:'DEMO-1023',trip_time:'أمس 18:15',origin:'الزرقاء',destination:'عمّان',status:'accepted',price:'180.00',grossEarnings:'27.00',netEarnings:'22.95',walletFee:'4.05'}],entries:[{note:'رصيد افتتاحي تجريبي',type:'demo_credit',reference:'DEMO-OPEN',amount_cents:12500,amount:'125.00',balanceAfter:'125.00',created_at:'بيانات توضيحية'},{note:'خصم رسوم رحلة تجريبية',type:'demo_fee',reference:'DEMO-1024',amount_cents:-675,amount:'-6.75',balanceAfter:'125.00',created_at:'بيانات توضيحية'}]};
-    (async () => { if (demoMode) { document.title = 'معاينة واجهة الكابتن | وصلني الآن'; $('#demo-banner').classList.remove('hidden'); render(demoData); showSection('app'); return; } try { await loadOverview(); clearAutoLoginToken(); showSection('app'); } catch (error) { if (autoLoginToken) { try { await loginWithAutoLink(); } catch (linkError) { clearAutoLoginToken(); showSection('login'); $('#login-error').textContent = linkError.message || 'انتهت صلاحية رابط الدخول؛ اطلب بطاقة دخول جديدة.'; } } else if (inviteToken) { try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'pending') invitePoll = setInterval(pollInvite, 10000); } catch (inviteError) { showSection('registration'); $('#register-error').textContent = inviteError.message; } } else { const initialSection = new URLSearchParams(location.search).get('mode') === 'login' ? 'login' : 'registration'; showSection(initialSection === 'registration' ? 'entry' : initialSection); if (error.status !== 401) $('#login-error').textContent = error.message; } } })();
+    (async () => { if (demoMode) { document.title = 'معاينة واجهة الكابتن | وصلني الآن'; $('#demo-banner').classList.remove('hidden'); render(demoData); showSection('app'); return; } try { await loadOverview(); clearAutoLoginToken(); showSection('app'); startCaptainAccessWatch(); } catch (error) { if (error.code === 'captain_official_group_membership_required' || error.code === 'captain_group_verification_unavailable') { lockCaptainApp(error); } else if (autoLoginToken) { try { await loginWithAutoLink(); } catch (linkError) { clearAutoLoginToken(); showSection('login'); $('#login-error').textContent = linkError.message || 'انتهت صلاحية رابط الدخول؛ اطلب بطاقة دخول جديدة.'; } } else if (inviteToken) { try { const data = await api('/api/captain/invites/' + encodeURIComponent(inviteToken)); updateInviteStatus(data.invite); if (data.invite.status === 'pending') invitePoll = setInterval(pollInvite, 10000); } catch (inviteError) { showSection('registration'); $('#register-error').textContent = inviteError.message; } } else { const initialSection = new URLSearchParams(location.search).get('mode') === 'login' ? 'login' : 'registration'; showSection(initialSection === 'registration' ? 'entry' : initialSection); if (error.status !== 401) $('#login-error').textContent = error.message; } } })();
   </script>
 </body>
 </html>
