@@ -10252,6 +10252,18 @@ function startWhatsAppInitProbe(instance, runId) {
 }
 function createClient() {
   const generation = ++connectionGeneration;
+  // Runs inside the WhatsApp Web page via page.evaluateOnNewDocument; must stay self-contained.
+  function whatsappGrantPersistentStorage() {
+    try {
+      const storage = typeof navigator !== "undefined" ? navigator.storage : null;
+      if (!storage) return;
+      const granted = () => Promise.resolve(true);
+      Object.defineProperty(storage, "persist", { value: granted, configurable: true, writable: true });
+      Object.defineProperty(storage, "persisted", { value: granted, configurable: true, writable: true });
+    } catch (_) {
+      // Never block page load on a diagnostic-only shim.
+    }
+  }
   groupSnapshotFlights.clear();
   officialGroupSnapshot = null;
   officialGroupSnapshotGroupId = null;
@@ -10264,6 +10276,12 @@ function createClient() {
     // Render CPU can reach the UNPAIRED state that emits a scannable QR.
     authTimeoutMs: operationalSettings().authTimeoutMs,
     puppeteer: puppeteerConfig,
+    // Headless Chromium denies navigator.storage.persist(). WhatsApp Web then logs
+    // "storage bucket persistence denied", and on the reload that follows a QR scan it
+    // purges IndexedDB and redirects to post_logout=1, which the library reports as
+    // LOGOUT right after "authenticated". Granting persistence before WhatsApp's own
+    // scripts load keeps the freshly paired session.
+    evalOnNewDoc: whatsappGrantPersistentStorage,
   });
   instance.on("qr", (qr) => {
     if (generation !== connectionGeneration || client !== instance) return;

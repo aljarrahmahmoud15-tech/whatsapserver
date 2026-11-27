@@ -321,8 +321,12 @@ test("current-generation direct reaction handler remains uncapped and keeps imme
   const instance = context.createClient();
   // The bounded auth timeout must reach whatsapp-web.js, otherwise every initialization aborts
   // at the library's fixed 30 s and no QR is ever emitted. Client options stay minimal: the
-  // session strategy, the auth timeout and the browser config only, never a pairing shortcut.
-  assert.ok(Object.keys(instance.options).every((key) => ["authStrategy", "authTimeoutMs", "puppeteer"].includes(key)), "createClient must not add other client options");
+  // session strategy, the auth timeout, the browser config and the persistent-storage page shim
+  // only, never a pairing shortcut.
+  assert.ok(Object.keys(instance.options).every((key) => ["authStrategy", "authTimeoutMs", "puppeteer", "evalOnNewDoc"].includes(key)), "createClient must not add other client options");
+  assert.equal(typeof instance.options.evalOnNewDoc, "function", "evalOnNewDoc is only the page shim");
+  assert.equal(instance.options.evalOnNewDoc.name, "whatsappGrantPersistentStorage", "evalOnNewDoc is only the persistent-storage shim");
+  assert.ok(!/requestPairingCode|pairWithPhoneNumber|phoneNumber/.test(String(instance.options.evalOnNewDoc)), "page shim never pairs by phone");
   assert.equal(instance.options.authTimeoutMs, 120000, "createClient passes the bounded auth timeout");
   assert.ok(Number.isInteger(instance.options.authTimeoutMs) && instance.options.authTimeoutMs >= 30000 && instance.options.authTimeoutMs * 2 <= 300000, "auth timeout is a bounded integer inside the init deadline");
   const reactionHandler = instance.handlers.get("message_reaction");
