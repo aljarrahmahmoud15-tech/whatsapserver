@@ -27,6 +27,7 @@ function makeHarness(options = {}) {
     { id: '777777777777@lid', user: '777777777777', isAdmin: false },
     makeMember('962790000007'),
   ];
+  if (options.cleanGroup) members = members.filter((member) => member.id !== `${OWNER_PHONE}@c.us` && !String(member.id).endsWith('@lid'));
   if (options.includeSecondCandidate) {
     users.push({ id: 8, phone: '962790000008', name: 'Second Zero', registration_name: null, wallet_cents: 0, is_bot: 0, role: 'captain', account_status: 'active' });
     members.push(makeMember('962790000008'));
@@ -53,6 +54,9 @@ function makeHarness(options = {}) {
       }
       if (/group_zero_balance_removal_operations/i.test(sql) && isWrite) {
         return { run: (values) => { operationRows.set(values.operation_id, { ...values, account_mutation: 0, financial_mutation: 0 }); } };
+      }
+      if (/FROM\s+group_zero_balance_removal_operations/i.test(sql) && /WHERE\s+unknown\s*>\s*0/i.test(sql)) {
+        return { all: () => [...operationRows.values()].filter((row) => Number(row.unknown) > 0 || row.status === 'uncertain') };
       }
       if (/FROM\s+group_zero_balance_removal_operations/i.test(sql) && /WHERE\s+operation_id/i.test(sql)) {
         return { get: (id) => operationRows.get(String(id)) || null };
@@ -173,7 +177,7 @@ function makeHarness(options = {}) {
 }
 
 (async () => {
-  const harness = makeHarness({ assertPersistedRemoving: true });
+  const harness = makeHarness({ assertPersistedRemoving: true, cleanGroup: true });
   const previewRes = harness.response();
   await harness.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: harness.groupId } }, previewRes);
   assert.equal(previewRes.statusCode, 200);
@@ -182,9 +186,21 @@ function makeHarness(options = {}) {
   assert.equal(previewRes.body.accountMutation, false);
   assert.deepEqual(previewRes.body.candidates.map((candidate) => candidate.captainId), [1], 'only exact-zero, non-protected, non-admin group members are eligible');
   assert.equal(previewRes.body.summary.admins, 2);
-  assert.equal(previewRes.body.summary.protected, 1);
-  assert.equal(previewRes.body.summary.unresolved, 1, 'unresolved LID must never be guessed into a phone match');
+  assert.equal(previewRes.body.summary.protected, 0);
+  assert.equal(previewRes.body.summary.unresolved, 0, 'the executable fixture has no unresolved LID');
+  assert.equal(previewRes.body.summary.previousUnknownTargets, 0);
+  assert.equal(previewRes.body.summary.previousUnknownOverlap, 0);
   assert.equal(harness.removedParticipantIds.length, 0, 'preview must be read-only');
+
+  const unsafe = makeHarness();
+  const unsafePreview = unsafe.response();
+  await unsafe.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: unsafe.groupId } }, unsafePreview);
+  assert.equal(unsafePreview.body.summary.protected, 1);
+  assert.equal(unsafePreview.body.summary.unresolved, 1);
+  const unsafeExecute = unsafe.response();
+  await unsafe.route('POST', '/api/admin/group/zero-balance-removals/execute')({ body: { groupId: unsafe.groupId, previewId: unsafePreview.body.previewId, fingerprint: unsafePreview.body.fingerprint, expectedCount: unsafePreview.body.summary.count, confirmation: 'REMOVE_ZERO_BALANCE_MEMBERS_FROM_OFFICIAL_GROUP_V1' } }, unsafeExecute);
+  assert.equal(unsafeExecute.statusCode, 409, 'protected or unresolved identities must block execution');
+  assert.equal(unsafe.removedParticipantIds.length, 0);
 
   const executeRes = harness.response();
   await harness.route('POST', '/api/admin/group/zero-balance-removals/execute')({
@@ -209,7 +225,7 @@ function makeHarness(options = {}) {
   assert.equal(harness.accountFinancialWrites.length, 0, 'no account or financial table writes are allowed');
   assert.ok(harness.dbMutations.every((sql) => /group_zero_balance_removal_operations/i.test(sql)), 'only the dedicated operation status table may be created');
 
-  const stale = makeHarness();
+  const stale = makeHarness({ cleanGroup: true });
   const stalePreview = stale.response();
   await stale.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: stale.groupId } }, stalePreview);
   stale.users[0].wallet_cents = 1;
@@ -224,7 +240,50 @@ function makeHarness(options = {}) {
   assert.equal(staleExecute.statusCode, 409, 'changed balance must invalidate the preview');
   assert.equal(stale.removedParticipantIds.length, 0, 'a stale preview must not remove anyone');
 
-  const concurrent = makeHarness({ pauseContextReadAt: 2 });
+  const uncertainWithoutTargetRow = {
+    operation_id: 'ZBGR-UNCERTAIN-MISSING-TARGET', group_id: GROUP_ID, status: 'uncertain', created_at: '2026-11-17T16:00:00.000Z',
+    unknown: 0, results_json: '[]',
+  };
+  const uncertainWithoutTarget = makeHarness({ cleanGroup: true, operationRows: new Map([['ZBGR-UNCERTAIN-MISSING-TARGET', uncertainWithoutTargetRow]]) });
+  const uncertainWithoutTargetPreview = uncertainWithoutTarget.response();
+  await uncertainWithoutTarget.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: uncertainWithoutTarget.groupId } }, uncertainWithoutTargetPreview);
+  assert.equal(uncertainWithoutTargetPreview.body.summary.previousUnknownTargets, 1);
+  assert.equal(uncertainWithoutTargetPreview.body.summary.previousUnknownUnidentified, 1, 'uncertain without readable target evidence must fail closed');
+  const uncertainWithoutTargetExecute = uncertainWithoutTarget.response();
+  await uncertainWithoutTarget.route('POST', '/api/admin/group/zero-balance-removals/execute')({ body: { groupId: uncertainWithoutTarget.groupId, previewId: uncertainWithoutTargetPreview.body.previewId, fingerprint: uncertainWithoutTargetPreview.body.fingerprint, expectedCount: uncertainWithoutTargetPreview.body.summary.count, confirmation: 'REMOVE_ZERO_BALANCE_MEMBERS_FROM_OFFICIAL_GROUP_V1' } }, uncertainWithoutTargetExecute);
+  assert.equal(uncertainWithoutTargetExecute.statusCode, 409, 'an unidentified prior uncertain target must block execution');
+  assert.equal(uncertainWithoutTarget.removedParticipantIds.length, 0);
+
+  const oldUnknownRow = {
+    operation_id: 'ZBGR-OLD-UNKNOWN', group_id: GROUP_ID, status: 'uncertain', created_at: '2026-11-17T16:00:00.000Z',
+    unknown: 1, results_json: JSON.stringify([{ captainId: 1, status: 'unknown' }]),
+  };
+  const overlappingUnknown = makeHarness({ cleanGroup: true, operationRows: new Map([['ZBGR-OLD-UNKNOWN', oldUnknownRow]]) });
+  const overlappingPreview = overlappingUnknown.response();
+  await overlappingUnknown.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: overlappingUnknown.groupId } }, overlappingPreview);
+  assert.equal(overlappingPreview.body.summary.previousUnknownTargets, 1);
+  assert.equal(overlappingPreview.body.summary.previousUnknownOverlap, 1);
+  const overlappingExecute = overlappingUnknown.response();
+  await overlappingUnknown.route('POST', '/api/admin/group/zero-balance-removals/execute')({ body: { groupId: overlappingUnknown.groupId, previewId: overlappingPreview.body.previewId, fingerprint: overlappingPreview.body.fingerprint, expectedCount: overlappingPreview.body.summary.count, confirmation: 'REMOVE_ZERO_BALANCE_MEMBERS_FROM_OFFICIAL_GROUP_V1' } }, overlappingExecute);
+  assert.equal(overlappingExecute.statusCode, 409, 'a previous unknown target must not be retried');
+  assert.equal(overlappingUnknown.removedParticipantIds.length, 0);
+
+  const disjointUnknownRow = {
+    ...oldUnknownRow, operation_id: 'ZBGR-OLD-UNKNOWN-DISJOINT',
+    results_json: JSON.stringify([{ captainId: 99, status: 'unknown' }]),
+  };
+  const disjointUnknown = makeHarness({ cleanGroup: true, operationRows: new Map([['ZBGR-OLD-UNKNOWN-DISJOINT', disjointUnknownRow]]) });
+  const disjointPreview = disjointUnknown.response();
+  await disjointUnknown.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: disjointUnknown.groupId } }, disjointPreview);
+  assert.equal(disjointPreview.body.summary.previousUnknownTargets, 1);
+  assert.equal(disjointPreview.body.summary.previousUnknownOverlap, 0, 'a prior unknown absent from the new candidate set must not block unrelated members');
+  const disjointExecute = disjointUnknown.response();
+  await disjointUnknown.route('POST', '/api/admin/group/zero-balance-removals/execute')({ body: { groupId: disjointUnknown.groupId, previewId: disjointPreview.body.previewId, fingerprint: disjointPreview.body.fingerprint, expectedCount: disjointPreview.body.summary.count, confirmation: 'REMOVE_ZERO_BALANCE_MEMBERS_FROM_OFFICIAL_GROUP_V1' } }, disjointExecute);
+  assert.equal(disjointExecute.statusCode, 202);
+  await disjointUnknown.getPendingWork();
+  assert.equal(disjointUnknown.removedParticipantIds.length, 1, 'only the unrelated candidate is processed');
+
+  const concurrent = makeHarness({ pauseContextReadAt: 2, cleanGroup: true });
   const concurrentPreview = concurrent.response();
   await concurrent.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: concurrent.groupId } }, concurrentPreview);
   const concurrentBody = {
@@ -244,7 +303,7 @@ function makeHarness(options = {}) {
   assert.equal(firstConcurrentResponse.statusCode, 202);
   assert.equal(concurrent.removedParticipantIds.length, 1, 'the same preview must not run two removals');
 
-  const uncertain = makeHarness({ failContextReadAt: 4 });
+  const uncertain = makeHarness({ failContextReadAt: 4, cleanGroup: true });
   const uncertainPreview = uncertain.response();
   await uncertain.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: uncertain.groupId } }, uncertainPreview);
   const uncertainExecute = uncertain.response();
@@ -297,7 +356,7 @@ function makeHarness(options = {}) {
   assert.equal(recoveredQueued.body.operation.status, 'stopped', 'a queued operation must also be recovered after restart');
   assert.equal(recoveredQueued.body.operation.results[0].status, 'skipped');
 
-  const timeout = makeHarness({ includeSecondCandidate: true, removeMode: 'delay-after-timeout', removeRpcTimeoutMs: 5, delayedRemovalMs: 30 });
+  const timeout = makeHarness({ includeSecondCandidate: true, removeMode: 'delay-after-timeout', removeRpcTimeoutMs: 5, delayedRemovalMs: 30, cleanGroup: true });
   const timeoutPreview = timeout.response();
   await timeout.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: timeout.groupId } }, timeoutPreview);
   assert.equal(timeoutPreview.body.summary.count, 2);
@@ -315,7 +374,7 @@ function makeHarness(options = {}) {
   await new Promise((resolve) => setTimeout(resolve, 45));
   assert.deepEqual(timeout.removedParticipantIds, ['962790000001@c.us'], 'a late RPC must not be falsely reported as a confirmed failure');
 
-  const rejectedAfterRemoval = makeHarness({ removeMode: 'reject-after-remove' });
+  const rejectedAfterRemoval = makeHarness({ removeMode: 'reject-after-remove', cleanGroup: true });
   const rejectedPreview = rejectedAfterRemoval.response();
   await rejectedAfterRemoval.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: rejectedAfterRemoval.groupId } }, rejectedPreview);
   const rejectedExecute = rejectedAfterRemoval.response();
@@ -329,7 +388,7 @@ function makeHarness(options = {}) {
   assert.equal(rejectedStatus.body.operation.status, 'succeeded', 'a rejected acknowledgement is still a confirmed removal only after exact live-state verification');
   assert.equal(rejectedStatus.body.operation.results[0].status, 'removed');
 
-  const rejectedWithoutRemoval = makeHarness({ removeMode: 'reject' });
+  const rejectedWithoutRemoval = makeHarness({ removeMode: 'reject', cleanGroup: true });
   const rejectedNoEffectPreview = rejectedWithoutRemoval.response();
   await rejectedWithoutRemoval.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: rejectedWithoutRemoval.groupId } }, rejectedNoEffectPreview);
   const rejectedNoEffectExecute = rejectedWithoutRemoval.response();
@@ -343,7 +402,7 @@ function makeHarness(options = {}) {
   assert.equal(rejectedNoEffectStatus.body.operation.status, 'uncertain', 'RPC rejection without an exclusive live-state diff is not a confirmed failure');
   assert.equal(rejectedNoEffectStatus.body.operation.results[0].status, 'unknown');
 
-  const auditFailure = makeHarness({ includeSecondCandidate: true, failAuditEvent: 'group.zero_balance_member.removal_requested' });
+  const auditFailure = makeHarness({ includeSecondCandidate: true, failAuditEvent: 'group.zero_balance_member.removal_requested', cleanGroup: true });
   const auditPreview = auditFailure.response();
   await auditFailure.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: auditFailure.groupId } }, auditPreview);
   const auditExecute = auditFailure.response();
@@ -358,7 +417,7 @@ function makeHarness(options = {}) {
   assert.equal(auditStatus.body.operation.results[1].status, 'skipped');
   assert.equal(auditFailure.removedParticipantIds.length, 0, 'a failed audit write must stop before any WhatsApp removal');
 
-  const reconnect = makeHarness({ pauseContextReadAt: 2, incrementGenerationOnRelease: true });
+  const reconnect = makeHarness({ pauseContextReadAt: 2, incrementGenerationOnRelease: true, cleanGroup: true });
   const reconnectPreview = reconnect.response();
   await reconnect.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: reconnect.groupId } }, reconnectPreview);
   const reconnectExecute = reconnect.response();
@@ -371,7 +430,7 @@ function makeHarness(options = {}) {
   assert.equal(reconnectExecute.statusCode, 409, 'a connection-generation change during group reads must abort before removal');
   assert.equal(reconnect.removedParticipantIds.length, 0);
 
-  const reconnectAtRpc = makeHarness({ bumpGenerationOnAuditEvent: 'group.zero_balance_member.removal_requested' });
+  const reconnectAtRpc = makeHarness({ bumpGenerationOnAuditEvent: 'group.zero_balance_member.removal_requested', cleanGroup: true });
   const reconnectAtRpcPreview = reconnectAtRpc.response();
   await reconnectAtRpc.route('POST', '/api/admin/group/zero-balance-removals/preview')({ body: { groupId: reconnectAtRpc.groupId } }, reconnectAtRpcPreview);
   const reconnectAtRpcExecute = reconnectAtRpc.response();
@@ -395,8 +454,14 @@ function makeHarness(options = {}) {
     assert.match(html, /operation\.auditFailure/, `${page} must display an audit failure warning`);
     if (page === 'public/index.html') assert.match(html, /data-nav="whatsapp"[\s\S]*ops-zero-balance-preview/, 'the primary / page must expose the feature in the WhatsApp/group drawer');
   }
+  const v26 = fs.readFileSync('public/admin-v26.html', 'utf8');
+  assert.match(v26, /id="zeroBalanceRemovalKeyboardPreview" class="secondary hidden"/);
+  assert.match(v26, /id="zeroBalanceRemovalKeyboardExecute" class="danger hidden" type="button" disabled/);
+  assert.match(v26, /setZeroBalanceOwnerVisibility\(identity\?\.user\?\.role==='company'\)/, 'keyboard controls must only appear in the company owner session');
+  assert.match(v26, /previousUnknownOverlap/, 'V26 must display and gate prior unknown overlap');
+  assert.doesNotMatch(v26, /zeroBalanceRemovalCountConfirm/, 'a safe fresh preview enables the owner button without manual count entry');
 
-  console.log('zero-balance group-only removal preview/owner/zero-balance/revalidation/concurrency/uncertain-result/no-financial-mutation: PASS');
+  console.log('zero-balance group-only removal preview/owner/zero-balance/revalidation/concurrency/uncertain-result/no-financial-mutation/owner-keyboard: PASS');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

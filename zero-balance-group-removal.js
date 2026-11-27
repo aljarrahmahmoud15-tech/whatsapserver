@@ -46,6 +46,7 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
   let latestOperationStatement = null;
   let recentOperationsStatement = null;
   let interruptedOperationsStatement = null;
+  let unresolvedOperationsStatement = null;
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS group_zero_balance_removal_operations (
       operation_id TEXT PRIMARY KEY,
@@ -85,6 +86,7 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
     latestOperationStatement = db.prepare("SELECT * FROM group_zero_balance_removal_operations ORDER BY rowid DESC LIMIT 1");
     recentOperationsStatement = db.prepare("SELECT * FROM group_zero_balance_removal_operations ORDER BY rowid DESC LIMIT 5");
     interruptedOperationsStatement = db.prepare("SELECT * FROM group_zero_balance_removal_operations WHERE status IN ('queued','running') ORDER BY rowid ASC");
+    unresolvedOperationsStatement = db.prepare("SELECT operation_id, status, unknown, results_json FROM group_zero_balance_removal_operations WHERE unknown > 0 OR status='uncertain' ORDER BY rowid ASC");
   } catch (error) {
     storageError = error;
   }
@@ -243,6 +245,57 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
     return { groupId: configuredId };
   }
 
+  function previousUnknownTargets() {
+    if (!unresolvedOperationsStatement) throw storageError || new Error("سجل نتائج الإزالة غير المحسومة غير متاح");
+    const targets = new Map();
+    for (const row of unresolvedOperationsStatement.all()) {
+      let results = [];
+      try { results = JSON.parse(String(row.results_json || "[]")); } catch (_) {}
+      if (!Array.isArray(results)) results = [];
+      const unknownResults = results.filter((result) => String(result?.status || "") === "unknown");
+      const rawUnknownCount = Number(row.unknown);
+      const unknownCount = Number.isSafeInteger(rawUnknownCount) && rawUnknownCount > 0 ? rawUnknownCount : 0;
+      const targetCount = Math.max(unknownCount, unknownResults.length);
+      const operationId = String(row.operation_id || "unknown-operation");
+      const hasNoUnknownEvidence = targetCount === 0
+        && (String(row.status || "") === "uncertain" || rawUnknownCount !== 0);
+      if (hasNoUnknownEvidence) {
+        targets.set(`unidentified:${operationId}:uncertain`, { captainId: 0, phone: "", participantId: "", unidentified: true });
+      }
+      for (let index = 0; index < targetCount; index += 1) {
+        const result = unknownResults[index] || {};
+        const captainId = Number(result.captainId) > 0 ? Number(result.captainId) : 0;
+        const phone = normalizePhone(result.phone);
+        const participantId = serializedWhatsappUserId(result.participantId);
+        const unidentified = !captainId && !phone && !participantId;
+        const key = phone ? `phone:${phone}`
+          : participantId ? `participant:${participantId}`
+            : captainId ? `captain:${captainId}`
+              : `unidentified:${operationId}:${index}`;
+        targets.set(key, { captainId, phone, participantId, unidentified });
+      }
+    }
+    return [...targets.values()];
+  }
+
+  function summarizePreviousUnknownOverlap(candidates) {
+    const targets = previousUnknownTargets();
+    const unidentifiedCount = targets.filter((target) => target.unidentified).length;
+    const overlappingCaptainIds = new Set();
+    for (const candidate of candidates) {
+      const overlaps = unidentifiedCount > 0 || targets.some((target) =>
+        (target.captainId && target.captainId === Number(candidate.captainId))
+        || (target.phone && target.phone === candidate.phone)
+        || (target.participantId && target.participantId === candidate.participantId));
+      if (overlaps) overlappingCaptainIds.add(Number(candidate.captainId));
+    }
+    return {
+      previousUnknownTargets: targets.length,
+      previousUnknownOverlap: overlappingCaptainIds.size,
+      previousUnknownUnidentified: unidentifiedCount,
+    };
+  }
+
   function userRows() {
     return db.prepare(`
       SELECT id, phone, name, registration_name, wallet_cents, is_bot, role, account_status
@@ -395,9 +448,10 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
       const previewId = crypto.randomBytes(24).toString("base64url");
       const generatedAt = String(now());
       const expiresAtMs = Date.now() + PREVIEW_TTL_MS;
-      const preview = { previewId, groupId: target.groupId, generatedAt, expiresAtMs, connectionGeneration: liveGroup.connectionGeneration, fingerprint, candidates };
+      const priorUnknown = summarizePreviousUnknownOverlap(candidates);
+      const summary = { count: candidates.length, ...skipped, totalGroupMembers: liveGroup.snapshot.participants.length, ...priorUnknown };
+      const preview = { previewId, groupId: target.groupId, generatedAt, expiresAtMs, connectionGeneration: liveGroup.connectionGeneration, fingerprint, candidates, summary };
       previews.set(previewId, preview);
-      const summary = { count: candidates.length, ...skipped, totalGroupMembers: liveGroup.snapshot.participants.length };
       auditSafely("group.zero_balance_members_removal.previewed", "group", target.groupId, {
         previewId,
         fingerprint,
@@ -673,6 +727,16 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
       return routeError(res, 400, "عبارة التأكيد أو العدد أو بصمة المعاينة غير مطابقة");
     }
     if (expectedCount < 1) return routeError(res, 400, "لا يوجد أعضاء مؤهلون للإزالة");
+    const previewSummary = preview.summary || {};
+    if (["unresolved", "ambiguous", "protected"].some((key) => Number(previewSummary[key]) > 0)) {
+      return routeError(res, 409, "تتضمن المعاينة هوية غير محسومة أو ملتبسة أو محمية؛ لم تبدأ الإزالة");
+    }
+    let priorUnknown;
+    try { priorUnknown = summarizePreviousUnknownOverlap(preview.candidates); }
+    catch (error) { return routeError(res, 503, "تعذر فحص نتائج إزالة سابقة غير محسومة؛ لم تبدأ الإزالة"); }
+    if (priorUnknown.previousUnknownOverlap > 0 || priorUnknown.previousUnknownUnidentified > 0) {
+      return routeError(res, 409, "تتضمن المعاينة هدفًا من عملية سابقة غير محسومة أو تعذر تحديد هويته؛ لم تبدأ الإزالة", priorUnknown);
+    }
     if (preview.consumedAt || preview.processing) return routeError(res, 409, "استُخدمت هذه المعاينة أو يجري التحقق منها؛ أنشئ معاينة جديدة");
 
     preview.processing = true;
@@ -680,6 +744,13 @@ function registerZeroBalanceGroupRemovalRoutes(app, dependencies) {
     try {
       const liveGroup = await resolveLiveGroup(target.groupId);
       const current = computeCandidates(liveGroup);
+      const currentUnknown = summarizePreviousUnknownOverlap(current.candidates);
+      const currentUnsafe = Number(current.skipped.unresolved) > 0 || Number(current.skipped.ambiguous) > 0 || Number(current.skipped.protected) > 0;
+      if (currentUnsafe || currentUnknown.previousUnknownOverlap > 0 || currentUnknown.previousUnknownUnidentified > 0) {
+        previews.delete(previewId);
+        operationInFlight = false;
+        return routeError(res, 409, "تغيرت حالة الهوية أو ظهر هدف سابق غير محسوم؛ لم تبدأ الإزالة", { ...current.skipped, ...currentUnknown });
+      }
       if (current.fingerprint !== preview.fingerprint || current.candidates.length !== expectedCount) {
         previews.delete(previewId);
         operationInFlight = false;
