@@ -206,6 +206,10 @@ const closeDrawer=()=>{drawer.classList.remove('open');overlay.classList.remove(
  const pinActionContainer=document.getElementById('ops-content');
  if(pinActionContainer){
   let pinOwnerCheckedAt=0,pinOwnerCheckPromise=null,pinOwnerAllowed=false,pinActionUpdateScheduled=false;
+  function captainPinActionsContainer(saveButton) {
+   const row=saveButton?.closest('tr');
+   return row?.querySelector('.ops-actions')||saveButton?.closest('td')||null;
+  }
   async function pinOwnerRole(){
    if(pinOwnerCheckPromise)return pinOwnerCheckPromise;
    if(pinOwnerCheckedAt&&Date.now()-pinOwnerCheckedAt<10000)return pinOwnerAllowed;
@@ -218,7 +222,7 @@ const closeDrawer=()=>{drawer.classList.remove('open');overlay.classList.remove(
    const isOwner=await pinOwnerRole();
    if(!isOwner){pinActionContainer.querySelectorAll('[data-captain-pin]').forEach(button=>button.remove());return}
    for(const saveButton of saveButtons){
-    const captainId=saveButton.dataset.captainSave,row=saveButton.closest('tr'),actions=row?.querySelector('.ops-actions');
+    const captainId=saveButton.dataset.captainSave,row=saveButton.closest('tr'),actions=captainPinActionsContainer(saveButton);
     if(!captainId||!actions||actions.querySelector('[data-captain-pin]'))continue;
     const nameInput=row.querySelector('[data-captain-name]'),button=document.createElement('button');
     button.className='ops-btn alt';button.type='button';button.dataset.captainPin=captainId;button.textContent='تغيير رمز الدخول';

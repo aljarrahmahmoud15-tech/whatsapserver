@@ -35,6 +35,31 @@ assert.match(root, /const pinActionContainer=document\.getElementById\('ops-cont
 assert.match(root, /const isOwner=await pinOwnerRole\(\)/);
 assert.match(root, /if\(!isOwner\)\{pinActionContainer\.querySelectorAll\('\[data-captain-pin\]'\)/,
   'root PIN action is inserted only after an owner-role check');
+const actionContainerStart = root.indexOf('function captainPinActionsContainer(saveButton) {');
+const actionContainerEnd = root.indexOf('async function pinOwnerRole()', actionContainerStart);
+assert.ok(actionContainerStart >= 0 && actionContainerEnd > actionContainerStart,
+  'root PIN action container helper exists');
+const actionContainerContext = {};
+vm.runInNewContext(root.slice(actionContainerStart, actionContainerEnd)
+  + '\nthis.captainPinActionsContainer = captainPinActionsContainer;', actionContainerContext);
+const fallbackCell = {};
+const rowWithoutWrapper = { querySelector: () => null };
+const saveButtonWithoutWrapper = {
+  closest: (selector) => selector === 'tr' ? rowWithoutWrapper : selector === 'td' ? fallbackCell : null,
+};
+assert.equal(actionContainerContext.captainPinActionsContainer(saveButtonWithoutWrapper), fallbackCell,
+  'root PIN action falls back to the captain table action cell');
+const preferredActions = {};
+const rowWithWrapper = { querySelector: (selector) => selector === '.ops-actions' ? preferredActions : null };
+const saveButtonWithWrapper = {
+  closest: (selector) => selector === 'tr' ? rowWithWrapper : selector === 'td' ? fallbackCell : null,
+};
+assert.equal(actionContainerContext.captainPinActionsContainer(saveButtonWithWrapper), preferredActions,
+  'root PIN action prefers an existing ops-actions wrapper');
+assert.equal(actionContainerContext.captainPinActionsContainer(null), null,
+  'root PIN action handles a missing save button safely');
+assert.match(root, /actions=captainPinActionsContainer\(saveButton\)/,
+  'root PIN action uses the tested table-cell resolver');
 assert.match(root, /button\.dataset\.captainPin=captainId/);
 assert.match(root, /button\.addEventListener\('click',\(\)=>openCaptainPinDialog\(captainId/);
 assert.match(root, /pinActionObserver\.observe\(pinActionContainer,\{childList:true,subtree:true\}\)/);
