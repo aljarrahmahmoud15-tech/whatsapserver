@@ -3076,11 +3076,13 @@ function startCaptainStatusNotificationRetryScheduler() {
 function sendCaptainOperationsCard(to, title, lines) {
   return sendCompanyOperationsCard(to, title, lines);
 }
-const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = [
+const DEFAULT_CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = [
   "لشحن محفظتك، تواصل مع الإدارة للحصول على بيانات الحساب المعتمد قبل التحويل.",
   "بعد التحويل، أرسل صورة الإيصال أو رقم العملية والمبلغ ورقم حسابك إلى الإدارة للمطابقة.",
   "لا تتم إضافة الرصيد إلا بعد التحقق من وصول المبلغ واعتماد الإدارة.",
 ].join("\n");
+const CAPTAIN_WALLET_TOPUP_INSTRUCTIONS = String(process.env.CAPTAIN_WALLET_TOPUP_INSTRUCTIONS || "").trim()
+  || DEFAULT_CAPTAIN_WALLET_TOPUP_INSTRUCTIONS;
 const captainWalletInstructionInFlight = new Set();
 async function sendCaptainWalletTopupInstructions({ phone, sourceMessageId = null }) {
   const recipientPhone = phoneWithCountry(phone);
