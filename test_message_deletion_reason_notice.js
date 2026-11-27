@@ -8,13 +8,15 @@
 //  2. verification is NOT relaxed: absence is still never treated as a confirmed deletion;
 //  3. the official-group reason notice is sent only after a confirmed revoke, only to the configured
 //     official group, once per message, at most once per sender and reason per minute, never with a
-//     phone number, and its text can never be parsed as an order or as an acceptance;
+//     phone number. The general notice starts with «تم», so the bot-generated non-order guard must
+//     reject that self message before the acceptance parser;
 //  4. the owner toggle exists in the server definitions and in the owner panel.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
+const { isBotGeneratedMessage } = require("./message_guardrails");
 const Database = require("better-sqlite3");
 
 const source = fs.readFileSync("server.js", "utf8");
@@ -260,7 +262,7 @@ this.notify = notifyOfficialGroupMessageDeletionReason; this.text = messageDelet
   assert.equal(sent.length, 1);
   const general = await noticeSandbox.notify({ ...base, messageId: "false_x_M3_p", reason: "unapproved_general_message", senderName: PHONE_LIKE_NAME, senderPhone: SENDER_B });
   assert.equal(general.status, "sent");
-  assert.equal(sent[1].content, "🗑️ حُذفت رسالة من أحد الكباتن.\nالسبب: القروب مخصص لطلبات الرحلات والردود المعتمدة عليها فقط، وهذه الرسالة ليست منها.");
+  assert.equal(sent[1].content, "تم حذف الغير معتمد");
   const receipts = db.prepare("SELECT event,delivery_status,recipient_role FROM notifications ORDER BY id").all();
   assert.deepEqual(receipts.map((row) => [row.event, row.delivery_status, row.recipient_role]), [
     ["group.message_deletion.reason", "sent", "group"],
@@ -276,18 +278,30 @@ this.notify = notifyOfficialGroupMessageDeletionReason; this.text = messageDelet
   assert.equal(noticeSandbox.senderName({ _data: { notifyName: "Sami" } }, SENDER_C), "Sami");
   assert.equal(noticeSandbox.senderName({ _data: { notifyName: "Sami" } }, SENDER_A), "أبو أحمد", "registered name wins");
 
-  // The notice text can never become an order or an acceptance when the bot's own message is parsed.
+  // The general notice starts with «تم», which the acceptance parser recognizes; the existing
+  // bot-generated non-order guard must therefore stop it before acceptance processing.
   const parserSandbox = {};
   vm.createContext(parserSandbox);
   vm.runInContext(`${slice("function parseOrder(text)", "\nfunction ")}\n${slice("function isCaptainAcceptance(text)", "\nfunction ")}
 this.parseOrder = parseOrder; this.isCaptainAcceptance = isCaptainAcceptance;`, parserSandbox);
+  const botGeneratedIndex = source.indexOf("const botGenerated = isBotGeneratedMessage(msg);");
+  const botMessageGuardIndex = source.indexOf("if (botGenerated && !parseOrder(body).isOrder) return;", botGeneratedIndex);
+  const acceptanceParserIndex = source.indexOf("const captainAcceptance = isCaptainAcceptance(body);", botGeneratedIndex);
+  assert.ok(botGeneratedIndex >= 0 && botMessageGuardIndex > botGeneratedIndex && acceptanceParserIndex > botMessageGuardIndex,
+    "outgoing non-order messages are filtered before acceptance parsing");
+  assert.equal(isBotGeneratedMessage({ fromMe: true }), true, "fromMe messages are recognized as bot-generated");
   for (const reason of ["unapproved_audio_message", "unapproved_general_message"]) {
     for (const name of ["أبو أحمد", "أحد الكباتن", "خمسة عشر"]) {
       const text = noticeSandbox.text(reason, name);
-      assert.ok(text && text.startsWith("🗑️ حُذفت"), text);
+      if (reason === "unapproved_general_message") {
+        assert.equal(text, "تم حذف الغير معتمد", "general notice contains no name or reason");
+        assert.equal(parserSandbox.isCaptainAcceptance(text), true, "the general notice is acceptance-like without the bot guard");
+      } else {
+        assert.ok(text && text.startsWith("🗑️ حُذفت"), text);
+        assert.equal(parserSandbox.isCaptainAcceptance(text), false, "voice notice does not look like acceptance");
+      }
       assert.doesNotMatch(text, /[0-9٠-٩]/, "no digits in the notice");
       assert.equal(parserSandbox.parseOrder(text).isOrder, false, `notice must not parse as an order: ${text}`);
-      assert.equal(parserSandbox.isCaptainAcceptance(text), false, "notice must not parse as an acceptance");
     }
   }
   // Sanity: the same parser does recognise a real order, so the check above is meaningful.

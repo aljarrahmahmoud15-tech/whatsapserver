@@ -5749,11 +5749,11 @@ function isIncomingVoiceMessage(message) {
 }
 // Owner-approved 2026-11-24 option (ب) («عند حذف الرساله اذهار ما سبب الحذف» ثم «اختر الخيار (ب) ونفذ
 // التعديل المقترح الآن»): after a voice or general message is CONFIRMED revoked for everyone, the
-// official group gets one short notice naming the sender (registered name, never a phone number) and
-// the reason. Nothing is sent for an unconfirmed deletion, so the group never reads «حُذفت» about a
-// message members can still see. The low-balance «تم» deletion keeps its own existing group notice.
-// The texts deliberately carry no digits, no price keywords and do not start with «تم», so the bot's
-// own notice can never be parsed as an order or as an acceptance. Owner toggle: messageDeletionReasons.
+// official group gets a notice. Voice deletions keep their reason text; a general unapproved message
+// gets only «تم حذف الغير معتمد», without a sender name or reason. Nothing is sent for an unconfirmed
+// deletion, and the low-balance «تم» deletion keeps its own existing group notice. This fixed general
+// notice has no order fields and is not parsed as an order; the existing bot-message guard keeps it
+// out of acceptance processing. Owner toggle: messageDeletionReasons.
 const MESSAGE_DELETION_REASON_TEXTS = Object.freeze({
   unapproved_audio_message: "الرسائل الصوتية غير مسموحة في قروب وصلني الآن، يُرجى كتابة الطلب نصًّا.",
   unapproved_general_message: "القروب مخصص لطلبات الرحلات والردود المعتمدة عليها فقط، وهذه الرسالة ليست منها.",
@@ -5771,6 +5771,7 @@ function messageDeletionReasonSenderLabel(senderName) {
 function messageDeletionReasonNoticeText(reason, senderLabel) {
   const reasonText = MESSAGE_DELETION_REASON_TEXTS[String(reason || "")];
   if (!reasonText) return null;
+  if (reason === "unapproved_general_message") return "تم حذف الغير معتمد";
   const subject = reason === "unapproved_audio_message" ? "رسالة صوتية" : "رسالة";
   return `🗑️ حُذفت ${subject} من ${messageDeletionReasonSenderLabel(senderLabel)}.\nالسبب: ${reasonText}`;
 }

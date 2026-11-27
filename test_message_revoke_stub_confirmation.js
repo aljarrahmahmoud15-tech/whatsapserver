@@ -319,7 +319,7 @@ this.notify = notifyOfficialGroupMessageDeletionReason;`, noticeSandbox);
     assert.equal(notice.status, "sent", "a confirmed revoke now produces the reason notice in the group");
     assert.equal(sent.length, 1);
     assert.equal(sent[0].to, GROUP);
-    assert.equal(sent[0].content, "🗑️ حُذفت رسالة من أبو أحمد.\nالسبب: القروب مخصص لطلبات الرحلات والردود المعتمدة عليها فقط، وهذه الرسالة ليست منها.");
+    assert.equal(sent[0].content, "تم حذف الغير معتمد");
     assert.equal(noticeSandbox.audits[0].details.financialMutation, false);
   }
   // Without any stub the same run must still fail: the confirmation never invents success.

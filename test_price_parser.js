@@ -22,7 +22,7 @@ for (const [text, expectedPrice, expectedKind] of cases) {
   assert.equal(parsed.orderKind, expectedKind, text);
 }
 
-for (const text of ['راكب فقط', 'أوردر فقط', 'تم استلام الطلب']) {
+for (const text of ['راكب فقط', 'أوردر فقط', 'تم استلام الطلب', 'تم حذف الغير معتمد']) {
   assert.equal(parseOrder(text).isOrder, false, text);
 }
 
