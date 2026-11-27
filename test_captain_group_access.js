@@ -80,7 +80,7 @@ assert.match(rideClient, /\/api\/captain\/group-access\/verify/);
 assert.match(rideClient, /\/api\/captain\/access/);
 assert.match(rideClient, /function lockAccess\(/);
 assert.match(rideClient, /closeStream\(\);\s*stopWatch\(\);\s*stopPolling\(\)/);
-assert.match(serviceWorker, /v27-captain-shell-v3/);
+assert.match(serviceWorker, /v27-captain-shell-v4/);
 assert.match(serviceWorker, /url\.pathname\.startsWith\('\/api\/'\)/);
 
 console.log('captain group OTP, live membership lock, temporary-unavailable behavior, and PWA guardrails verified');

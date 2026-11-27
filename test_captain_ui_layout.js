@@ -32,7 +32,7 @@ const ORDER = [
   ['aria-label="طلب سحب المستحقات"', 'سحب المستحقات'],
   ['aria-label="أدوات V27 للكابتن"', 'أدوات V27'],
   ['aria-label="خدمة العملاء للكابتن"', 'خدمة العملاء'],
-  ['aria-label="تغيير رمز الكابتن"', 'تغيير الرمز'],
+  ['aria-label="إدارة رمز الكابتن"', 'إدارة الرمز'],
   ['<div class="footer"', 'التذييل'],
 ];
 let previous = -1;
@@ -45,11 +45,11 @@ for (const [marker, label] of ORDER) {
 // 2) لا لوحة تشغيلية ضاعت؛ معرض التصاميم حُذف عمدًا.
 for (const label of ['الملخص المالي', 'الطلبات الجارية والمعلقة', 'الطلبات الجديدة للكابتن', 'طلب شحن الرصيد',
   'بطاقات شحن الرصيد', 'طلب سحب المستحقات', 'أدوات V27 للكابتن', 'خدمة العملاء للكابتن',
-  'تغيير رمز الكابتن']) {
+  'إدارة رمز الكابتن']) {
   assert.ok(app.includes(`aria-label="${label}"`), `قسم ${label} لم يُحذف`);
 }
 assert.doesNotMatch(app, /captain-design-gallery|معرض التصاميم القديمة|التصاميم القديمة/, 'معرض التصاميم وخياره محذوفان');
-assert.equal((app.match(/aria-label="تغيير رمز الكابتن"/g) || []).length, 1, 'قسم تغيير الرمز واحد');
+assert.equal((app.match(/aria-label="إدارة رمز الكابتن"/g) || []).length, 1, 'قسم إدارة الرمز واحد');
 assert.equal((app.match(/aria-label="طلب شحن الرصيد"/g) || []).length, 1, 'قسم الشحن واحد');
 assert.ok((app.match(/<section/g) || []).length >= 11, 'عدد الأقسام محفوظ');
 
@@ -103,9 +103,8 @@ for (const id of ['classic', 'taj', 'red-white', 'rahlati', 'compact']) {
 
 // 7) لا تتضمن واجهة الكابتن طلبًا لتغيير التصميم بعد تثبيت المظهر؛ مسارات التشغيل تبقى كما هي.
 const EXPECTED = [
-  '/api/captain/access', '/api/captain/change-pin', '/api/captain/group-access/verify', '/api/captain/invites/', '/api/captain/login', '/api/captain/login-link/exchange',
-  '/api/captain/logout', '/api/captain/overview', '/api/captain/pin-recovery/request-code',
-  '/api/captain/pin-recovery/reset', '/api/captain/redeem-card', '/api/captain/register',
+  '/api/captain/access', '/api/captain/group-access/verify', '/api/captain/invites/', '/api/captain/login', '/api/captain/login-link/exchange',
+  '/api/captain/logout', '/api/captain/overview', '/api/captain/redeem-card', '/api/captain/register',
   '/api/captain/topup-request', '/api/captain/whatsapp/request-code', '/api/captain/withdrawal-requests', '/api/support/tickets',
 ];
 const found = [...new Set((captain.match(/\/api\/[a-z0-9\/_-]+/gi) || []).map((p) => p.replace(/\/$/, '')))].sort();
@@ -115,16 +114,12 @@ assert.doesNotMatch(captain, /\/api\/captain\/ui-design/, 'واجهة الكاب
 assert.doesNotMatch(captain, /\/api\/admin\//, 'لا استدعاء أي مسار إدارة من بوابة الكابتن');
 assert.doesNotMatch(captain, /wallet-adjust|commission-withdrawal|\/api\/staff\//, 'لا مسار مالي إداري في بوابة الكابتن');
 
-// 8) المصادقة كما هي: 5 أرقام، نفس عقد الإرسال، وتحقّق قبلي أوضح للمالك.
-assert.match(captain, /id="captain-change-pin-form"/);
+// 8) المصادقة كما هي: PIN دخول مقنّع من 5 أرقام؛ التغيير والاستعادة للمالك فقط.
+assert.doesNotMatch(captain, /id="captain-change-pin-form"|pin-recovery|forgot-pin-btn/);
 assert.match(captain, /pattern="\[0-9\]\{5\}"/);
-assert.match(captain, /body:JSON\.stringify\(\{currentPin,newPin,confirmPin\}\)/);
-assert.ok(captain.includes("if(newPin==='00000'){status.textContent='لا يمكن استخدام رمز 00000.';return;}"), 'رفض 00000 محفوظ');
-assert.ok(captain.includes("if(/^(01234|12345|23456|34567|45678|56789|98765|43210)$/.test(newPin))"), 'رفض الرموز التسلسلية مضاف');
-assert.ok(captain.includes('if(/^(\\d)\\1{4}$/.test(newPin))'), 'رفض الرمز المكرر مضاف');
-assert.match(captain, /الرمز تسلسلي سهل التخمين/);
-assert.match(captain, /لا تستخدم رقمًا مكررًا خمس مرات/);
-assert.match(captain, /api\('\/api\/captain\/pin-recovery\/request-code'/, 'استعادة الرمز لم تُمس');
+assert.match(captain, /تغيير رمز الدخول أو استعادته متاح للمالك فقط/);
+assert.match(captain, /id="whatsapp-login-btn"/);
+assert.match(captain, /\/api\/captain\/whatsapp\/request-code/);
 
 // 9) إظهار الرصيد والعمولة المخصومة فقط؛ صافي/حصة الإنتاج لا يظهران للكابتن.
 assert.match(app, /id="balance"/);

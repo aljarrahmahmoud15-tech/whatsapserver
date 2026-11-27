@@ -16,12 +16,19 @@ assert.equal((page.match(/walletBalanceText\(c\)/g) || []).length, 5, 'captain b
 assert.match(page, /api\('\/api\/admin\/captains\?fresh=1'\)/, 'captain list bypasses stale read cache');
 assert.match(page, /api\('\/api\/admin\/company-wallet\?fresh=1'\)/, 'company wallet bypasses stale read cache');
 const editStart = page.indexOf('async function saveCaptainEdit');
-const editEnd = page.indexOf('async function applyCaptainCredit', editStart);
-assert.ok(editStart >= 0 && editEnd > editStart, 'edit handler boundaries exist');
-const edit = page.slice(editStart, editEnd);
-assert.match(edit, /const endpoint=pin\?'/, 'PIN edits keep the owner-protected combined endpoint');
-assert.match(edit, /\/api\/admin\/users\//, 'PIN edit endpoint remains supported');
-assert.match(edit, /\/api\/admin\/captains\//, 'name-only edit uses the captain endpoint');
+const pinStart = page.indexOf('async function updateCaptainPin', editStart);
+const creditStart = page.indexOf('async function applyCaptainCredit', pinStart);
+assert.ok(editStart >= 0 && pinStart > editStart && creditStart > pinStart, 'name edit, PIN edit, and credit handler boundaries exist');
+const edit = page.slice(editStart, pinStart);
+const pinEdit = page.slice(pinStart, creditStart);
+assert.match(edit, /api\('\/api\/admin\/captains\/'\+encodeURIComponent\(id\),\{method:'PATCH',body:JSON\.stringify\(\{name\}\)\}/,
+  'name-only edit uses the captain endpoint');
+assert.doesNotMatch(edit, /captainActionPin|\/api\/admin\/users\/|\/pin/i,
+  'name editing cannot submit or change a PIN');
+assert.match(pinEdit, /api\('\/api\/admin\/captains\/'\+encodeURIComponent\(id\)\+'\/pin',\{method:'PATCH',body:JSON\.stringify\(\{pin\}\)\}/,
+  'PIN changes use the dedicated owner-protected endpoint');
+assert.match(pinEdit, /window\.confirm/,
+  'PIN changes require explicit owner confirmation');
 assert.doesNotMatch(page, /wallet_cents\s*=/, 'V26 does not mutate wallet cents');
 new vm.Script(script);
 console.log('V26 captain edit and balance contract: PASS');

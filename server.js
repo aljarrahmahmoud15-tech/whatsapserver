@@ -13705,23 +13705,8 @@ app.post("/api/captain/login", async (req, res) => {
   return respondCaptainGroupAccessCodeIssue(res, issued, "pin");
 });
 app.post("/api/captain/change-pin", requireCaptain, adminMutationLimiter, (req, res) => {
-  const currentPin = String(req.body?.currentPin || "").trim();
-  const newPin = String(req.body?.newPin || "").trim();
-  const confirmPin = String(req.body?.confirmPin || "").trim();
-  if (!validCaptainPin(currentPin) || !validCaptainPin(newPin) || newPin !== confirmPin) {
-    return res.status(400).json({ error: "أدخل الرمز الحالي ورمزًا جديدًا من 5 أرقام متطابقًا" });
-  }
-  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
-  const captain = db.prepare("SELECT id,phone,name,active,account_status,captain_pin_hash,captain_auth_method FROM users WHERE id=? AND role='captain' AND is_bot=0 LIMIT 1").get(req.captainSession.userId);
-  if (!captain || !captain.active || captain.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
-  if (normalizeCaptainAuthMethod(captain.captain_auth_method) !== "pin" || !captain.captain_pin_hash || !bcrypt.compareSync(currentPin, captain.captain_pin_hash)) {
-    return res.status(401).json({ error: "الرمز الحالي غير صحيح" });
-  }
-  if (bcrypt.compareSync(newPin, captain.captain_pin_hash)) return res.status(400).json({ error: "استخدم رمزًا جديدًا مختلفًا عن الحالي" });
-  const stamp = now();
-  db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync(newPin, 10), stamp, captain.id);
-  audit("captain.pin.self_updated", "user", captain.id, { phone: captain.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
-  res.json({ success: true, message: "تم تغيير رمز الكابتن بنجاح دون تغيير الرصيد أو الطلبات." });
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(403).json({ success: false, code: "captain_pin_owner_only", error: "تغيير رمز الدخول متاح للمالك فقط" });
 });
 app.delete("/api/captain/account", requireCaptain, (req, res) => {
   const captainId = Number(req.captainSession.userId);
@@ -13743,46 +13728,14 @@ app.delete("/api/captain/account", requireCaptain, (req, res) => {
   return res.json({ success: true, deleted: true, message: "تم حذف حساب الكابتن وإخفاء بياناته الشخصية." });
 });
 app.post("/api/captain/pin-recovery/request-code", async (req, res) => {
-  const phone = phoneWithCountry(String(req.body?.phone || ""));
-  if (!isValidJordanPhone(phone) || isBlockedPhone(phone)) return res.status(400).json({ error: "رقم هاتف أردني صحيح مطلوب" });
-  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:${phone}`, 3)) return res.status(429).json({ error: "تم طلب عدة رموز؛ حاول بعد قليل" });
-  const user = findCaptainByPhone(phone, { activeOnly: true });
-  if (!user || user.role !== "captain" || Number(user.is_bot) === 1) return res.status(404).json({ error: "لا يوجد حساب كابتن مفعل بهذا الرقم" });
-  const code = createCaptainWhatsappCode();
-  const stamp = now();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  db.transaction(() => {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(user.id);
-    db.prepare("INSERT INTO captain_auth_challenges(captain_user_id,phone,purpose,code_hash,attempts,expires_at,created_at) VALUES(?,?,?,?,?,?,?)").run(user.id, user.phone, "pin_recovery", captainAuthCodeHash(user.phone, code), 0, expiresAt, stamp);
-  })();
-  const sent = await sendBotText(`${user.phone}@c.us`, `رمز استرجاع رمز دخول بوابة الكابتن في وصلني الآن: ${code}\nصالح لمدة 10 دقائق. لا تشاركه مع أي شخص.`);
-  if (!sent) {
-    db.prepare("DELETE FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL").run(user.id);
-    return res.status(503).json({ error: "تعذر إرسال رمز WhatsApp حاليًا" });
-  }
-  audit("captain.pin_recovery_code.sent", "user", user.id, { phone: user.phone, expiresAt });
-  res.json({ success: true, expiresAt, message: "تم إرسال رمز الاسترجاع إلى WhatsApp المسجل" });
+  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:disabled-request`, 3)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(403).json({ success: false, code: "captain_pin_owner_only", error: "استعادة رمز الدخول متاحة للمالك فقط" });
 });
 app.post("/api/captain/pin-recovery/reset", (req, res) => {
-  const phone = phoneWithCountry(String(req.body?.phone || ""));
-  const code = String(req.body?.code || "").trim();
-  const newPin = String(req.body?.newPin || "").trim();
-  const confirmPin = String(req.body?.confirmPin || "").trim();
-  if (!isValidJordanPhone(phone) || !/^\d{6}$/.test(code) || !validCaptainPin(newPin) || newPin !== confirmPin) return res.status(400).json({ error: "أدخل رقم الهاتف ورمز WhatsApp ورمزًا جديدًا من 5 أرقام متطابقًا" });
-  if (newPin === "00000") return res.status(400).json({ error: "لا يمكن استخدام رمز ضعيف أو موحّد" });
-  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:${phone}:verify`, 8)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
-  const user = findCaptainByPhone(phone, { activeOnly: true });
-  if (!user || user.role !== "captain" || Number(user.is_bot) === 1) return res.status(401).json({ error: "تعذر التحقق من الحساب" });
-  const challenge = db.prepare("SELECT * FROM captain_auth_challenges WHERE captain_user_id=? AND purpose='pin_recovery' AND verified_at IS NULL ORDER BY id DESC LIMIT 1").get(user.id);
-  if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) return res.status(410).json({ error: "انتهت صلاحية رمز الاسترجاع؛ اطلب رمزًا جديدًا" });
-  db.prepare("UPDATE captain_auth_challenges SET attempts=attempts+1 WHERE id=?").run(challenge.id);
-  if (!constantTimeEquals(challenge.code_hash, captainAuthCodeHash(user.phone, code))) return res.status(401).json({ error: "رمز الاسترجاع غير صحيح" });
-  const stamp = now();
-  const updated = db.prepare("UPDATE users SET captain_pin_hash=?,captain_pin_ciphertext=NULL,captain_auth_method='pin',captain_whatsapp_verified_at=?,updated_at=? WHERE id=? AND role='captain' AND active=1 AND account_status='active'").run(bcrypt.hashSync(newPin, 10), stamp, stamp, user.id);
-  if (!updated.changes) return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
-  db.prepare("UPDATE captain_auth_challenges SET verified_at=? WHERE id=?").run(stamp, challenge.id);
-  audit("captain.pin_recovered", "user", user.id, { phone: user.phone, authMethod: "pin", financialMutation: false, walletMutation: false });
-  res.json({ success: true, message: "تم استرجاع رمز الدخول بنجاح. يمكنك الدخول بالرمز الجديد." });
+  if (!consumeRateLimit(captainPinRecoveryRate, `${clientAddress(req)}:disabled-reset`, 8)) return res.status(429).json({ error: "محاولات كثيرة؛ حاول لاحقًا" });
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(403).json({ success: false, code: "captain_pin_owner_only", error: "استعادة رمز الدخول متاحة للمالك فقط" });
 });
 app.post("/api/captain/login-link/exchange", async (req, res) => {
   const token = String(req.body?.token || "").trim();

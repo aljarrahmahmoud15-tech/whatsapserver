@@ -19,13 +19,14 @@ function loginPinInput(page) {
   return input[0];
 }
 
-test('both captain login pages direct reset users to their private WhatsApp notice without showing a fixed PIN', () => {
-  for (const page of [captainPage, ridePage]) {
-    const context = loginPinContext(page);
-    assert.match(context, /id="captain-pin-private-note"/);
-    assert.match(context, /استخدم الرمز الذي وصلك برسالة WhatsApp خاصة/);
-    assert.doesNotMatch(context, /0{5}/);
-  }
+test('Captain login screens clearly direct PIN change/recovery to the owner', () => {
+  const captainContext = loginPinContext(captainPage);
+  const rideContext = loginPinContext(ridePage);
+  assert.match(captainContext, /id="captain-pin-private-note"/);
+  assert.match(captainContext, /تغيير رمز الدخول أو استعادته متاح للمالك فقط/);
+  assert.match(rideContext, /id="captain-pin-private-note"/);
+  assert.match(rideContext, /لا يمكنك تغيير رمز الدخول أو استعادته من هذه الصفحة/);
+  for (const context of [captainContext, rideContext]) assert.doesNotMatch(context, /0{5}/);
 });
 
 test('both login forms accept exactly five numeric characters as a masked password', () => {
@@ -36,6 +37,14 @@ test('both login forms accept exactly five numeric characters as a masked passwo
     assert.match(input, /\bmaxlength="5"/);
     assert.match(input, /\bpattern="\[0-9\]\{5\}"/);
   }
+});
+
+test('Captain account panel replaces self-service forms with a clear owner-only notice', () => {
+  assert.match(captainPage, /aria-label="إدارة رمز الكابتن"/);
+  assert.match(captainPage, /لا يمكنك تغيير الرمز أو استعادته ذاتيًا/);
+  assert.doesNotMatch(captainPage, /captain-change-pin-form|pin-recovery|forgot-pin-btn/);
+  assert.match(captainPage, /id="whatsapp-login-btn"/);
+  assert.match(ridePage, /id="whatsapp-login-button"/);
 });
 
 test('captain group-verification and membership-lock UI wiring remains in place', () => {

@@ -79,6 +79,9 @@ for (const marker of [
 // Real owner decision surfaces and their protected mutation contracts.
 for (const marker of [
   'function renderFinanceDecision',
+  'data-safe-action="pin"',
+  'function updateCaptainPin',
+  "/api/admin/captains/'+encodeURIComponent(id)+'/pin",
   'function renderWalletDecision',
   'function renderTopupDecision',
   'function renderSubscriptionDecision',

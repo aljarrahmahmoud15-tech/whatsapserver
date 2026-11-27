@@ -25,6 +25,7 @@ assert.match(statusRoute, /active \? "active" : "suspended"/);
 
 for (const marker of [
   'data-safe-action="edit"',
+  'data-safe-action="pin"',
   'data-safe-action="status"',
   'data-safe-action="credit"',
   'data-safe-action="archive"',
@@ -32,10 +33,10 @@ for (const marker of [
   'function openCaptainAction',
   'function toggleCaptainStatus',
   'function saveCaptainEdit',
+  'function updateCaptainPin',
   'function applyCaptainCredit',
   'function archiveCaptainAccount',
   'function suspendCaptainAndRemove',
-  '/api/admin/users/',
   '/api/admin/captains/',
   'direct-credit',
   'suspend-and-remove',
@@ -45,6 +46,10 @@ for (const marker of [
 ]) assert.match(page, new RegExp(marker.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')));
 
 assert.match(page, /لا توجد حركة تلقائية؛ الأزرار الحساسة تتطلب تأكيد المالك/);
+assert.match(page, /id="captainActionPinConfirm"/);
+assert.match(page, /api\('\/api\/admin\/captains\/'\+encodeURIComponent\(id\)\+'\/pin',\{method:'PATCH'/);
+assert.doesNotMatch(page, /\/api\/admin\/users\//,
+  'PIN updates no longer ride the general user-profile endpoint');
 assert.match(page, /\/api\/admin\/group\/confirm-one/);
 assert.doesNotMatch(page, /\/api\/admin\/group\/confirm-verified-bot-booking/);
 assert.doesNotMatch(page, /\/api\/admin\/group\/sync-captains/);

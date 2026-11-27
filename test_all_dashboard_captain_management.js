@@ -10,6 +10,7 @@ const escaped = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 for (const route of [
   'app.patch("/api/admin/users/:id", requireAdmin',
+  'app.patch("/api/admin/captains/:id/pin", requireCompanyOwner',
   'app.post("/api/admin/captains/:id/suspend-and-remove", requireOwnerAdmin',
   'app.delete("/api/admin/captains/:id", requireOwnerAdmin',
   'app.post("/api/admin/captains/:id/restore", requireOwnerAdmin',
@@ -27,10 +28,12 @@ assert.match(legacy, /الإزالة والحذف موقوفان/);
 
 for (const [name, page] of [['V26', v26], ['V27', v27]]) {
   assert.match(page, /data-safe-action="edit"/);
+  assert.match(page, /data-safe-action="pin"/);
   assert.match(page, /data-safe-action="archive"/);
   assert.match(page, /data-safe-action="suspend"/);
   assert.match(page, /function openCaptainAction/);
   assert.match(page, /function saveCaptainEdit/);
+  assert.match(page, /function updateCaptainPin/);
   assert.match(page, /function archiveCaptainAccount/);
   assert.match(page, /function suspendCaptainAndRemove/);
   assert.match(page, /api\('\/api\/admin\/captains\/'\+encodeURIComponent\(id\),\{method:'DELETE'/);
