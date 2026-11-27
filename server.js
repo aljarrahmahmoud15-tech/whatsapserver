@@ -6430,13 +6430,14 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
   if (!ids.length) return [];
   const linkSourceToAcceptance = (rows) => {
     const filtered = (Array.isArray(rows) ? rows : []).filter((message) => message && resolveGroupChatId(message) === groupId);
-    const source = filtered.find((message) => serializedMessageId(message) === sourceMessageId) || filtered.find((message) => message.fromMe && parseOrder(message.body).isOrder);
-    const acceptance = filtered.find((message) => serializedMessageId(message) === acceptanceMessageId);
-    if (source && acceptance) {
-      acceptance.__quoted = source;
-      acceptance.__quotedMessageId = sourceMessageId;
-    }
-    return filtered;
+    const source = filtered.find((message) => sourceMessageIdsEqual(serializedMessageId(message), sourceMessageId));
+    const acceptance = filtered.find((message) => sourceMessageIdsEqual(serializedMessageId(message), acceptanceMessageId));
+    const actualQuoteMessageId = String(acceptance?.__quotedMessageId || serializedMessageId(acceptance?.__quoted) || "").trim();
+    if (!source || !acceptance || !isExactCaptainAcceptance(acceptance.body) || !actualQuoteMessageId || !sourceMessageIdsEqual(actualQuoteMessageId, sourceMessageId)) return [];
+    const quotedSource = acceptance.__quoted && sourceMessageIdsEqual(serializedMessageId(acceptance.__quoted), sourceMessageId) ? acceptance.__quoted : source;
+    acceptance.__quoted = quotedSource;
+    acceptance.__quotedMessageId = actualQuoteMessageId;
+    return [source, acceptance];
   };
   const logged = db.prepare("SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages WHERE message_id IN (?,?) AND group_id=?").all(sourceMessageId, acceptanceMessageId, groupId);
   const loggedById = new Map(logged.map((row) => [row.message_id, row]));
@@ -6456,9 +6457,8 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
         } catch (_) { return false; }
       }, acceptanceMessageId), 4000, false);
     }
-    acceptance.__quoted = source;
-    acceptance.__quotedMessageId = sourceMessageId;
-    return [source, acceptance];
+    const exactLogged = linkSourceToAcceptance([source, acceptance]);
+    if (exactLogged.length === 2) return exactLogged;
   }
   if (client.pupPage) {
     const rows = await withTimeout(client.pupPage.evaluate(async (requestedIds) => {
@@ -6489,6 +6489,8 @@ async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, accepta
               model.__quoted = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(quoted) : quoted.serialize();
               model.__quoted.__serializedId = quoted.id?._serialized || null;
               model.__quoted.__timestamp = Number(quoted.t || model.__quoted.timestamp || 0) || null;
+              const quotedId = quoted.id?._serialized || (typeof quoted.id?.toString === "function" ? quoted.id.toString() : null);
+              if (!model.__quotedMessageId && quotedId) model.__quotedMessageId = quotedId;
             }
           } catch (_) { model.__quoted = null; }
           try {
@@ -7574,6 +7576,9 @@ function isQuotedOrderRecoveryCommand({ body, fromMe, groupId, quoted }) {
 function isCaptainAcceptance(text) {
   const normalized = String(text || "").replace(/\u200f|\u200e/g, "").trim();
   return /^تم(?:$|[\s،,:؛.!؟؟\-–—])/u.test(normalized);
+}
+function isExactCaptainAcceptance(text) {
+  return String(text || "").replace(/\u200f|\u200e/g, "").trim() === "تم";
 }
 function acceptanceBalanceGuard(candidate, captain) {
   if (!candidate || !captain) return { allowed: false, state: "stale" };
@@ -12271,7 +12276,6 @@ function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000) {
       __authorPhone: row.captain_phone || null,
       timestamp: toTimestamp(row.acceptance_sent_at, row.acceptance_created_at),
       __acceptanceMode: row.acceptance_mode === "unquoted" ? "unquoted" : "quoted",
-      ...(row.acceptance_mode === "unquoted" ? { __candidateSource: source, __candidateSourceMessageId: row.source_message_id } : { __quoted: source, __quotedMessageId: row.source_message_id }),
       __storedRecovery: true,
       __hasReaction: reactionRows.length > 0,
       __reactions: reactionRows.map((reaction) => ({
@@ -12301,7 +12305,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
   let liveAcceptance = acceptance;
   const storedRecovery = acceptance.__storedRecovery === true;
-  if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
+  if (storedRecovery) return { match: false, reason: "stored_quote_requires_live_verification", acceptanceMessageId };
+  if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isExactCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
   const quotedMessageIdHint = String(
@@ -12424,7 +12429,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   // Policy: human-owned bookings require a 👍 on the selected «تم» reply.
   // Bot/company-owned bookings are approved by the valid «تم» itself;
   // any bot 👍 is presentation-only and never becomes a settlement gate.
-  const authorizedThumb = botProducer ? true : Boolean(reactionPresentOnAcceptance);
+  const authorizedThumb = botProducer
+    ? true
+    : Boolean(reactionPresentOnAcceptance && reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone)));
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -19055,6 +19062,10 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
       historySource = "database_candidates";
     }
   }
+  if (!chat && exactEvidenceRequested) {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true, groupId, hours, scanned: 0, acceptanceMessages: 0, matches: [], filters: expected, source: "whatsapp_exact", unmatchedReason: "exact_live_quoted_evidence_unavailable", mutation: "none" });
+  }
   if (!chat) return res.status(504).json({ error: "Unable to read configured group" });
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
   const acceptanceMessages = (Array.isArray(messages) ? messages : []).filter((message) => {
@@ -19066,7 +19077,7 @@ app.post("/api/admin/group/confirmed-preview", requireAdmin, async (req, res) =>
     const batch = acceptanceMessages.slice(offset, offset + 4);
     const evidenceRows = await Promise.all(batch.map((acceptance) => inspectConfirmedRecoveryMessage(acceptance, messages, groupId)));
     for (const evidence of evidenceRows) {
-      if (recoveryExpectedMatches(evidence, expected)) matches.push(recoveryEvidenceSummary(evidence));
+      if (recoveryExpectedMatches(evidence, expected)) matches.push({ ...recoveryEvidenceSummary(evidence), groupId });
     }
   }
   res.setHeader("Cache-Control", "no-store");
@@ -19847,15 +19858,19 @@ app.post("/api/admin/group/delete-duplicate-text", requireBotWalletOwner, async 
   res.json({ success: failed.length === 0, mutation: "messages_deleted", groupId, expectedBody, keptMessageId: keepMessageId, requested: messageIds.length, deleted, failed });
 });
 app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
+  let ownerAuthorized = false;
+  requireCompanyOwner(req, res, () => { ownerAuthorized = true; });
+  if (!ownerAuthorized) return;
   if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const groupId = String(req.body?.groupId || getSetting("group_id", "")).trim();
+  const groupId = String(req.body?.groupId || "").trim();
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
   let sourceMessageId = String(req.body?.sourceMessageId || "").trim();
   let acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
   const downloaderPhone = String(req.body?.downloaderPhone || "").trim();
   const executorPhone = String(req.body?.executorPhone || "").trim();
   const autoMatchRequested = !sourceMessageId && !acceptanceMessageId;
   const suppliedPrice = req.body?.price === undefined || req.body?.price === "" ? "" : Number(req.body.price);
-  if (!groupId || !isConfiguredGroup(groupId) || !downloaderPhone || !executorPhone || (autoMatchRequested && (!Number.isFinite(suppliedPrice) || suppliedPrice <= 0))) {
+  if (!groupId || groupId !== configuredGroupId || !isConfiguredGroup(groupId) || !downloaderPhone || !executorPhone || (autoMatchRequested && (!Number.isFinite(suppliedPrice) || suppliedPrice <= 0))) {
     return res.status(400).json({ error: autoMatchRequested ? "groupId, downloaderPhone, executorPhone, and a positive price are required; message IDs are resolved automatically" : "groupId, downloaderPhone, executorPhone, and both internal evidence IDs are required when exact evidence is supplied" });
   }
   let messages;
@@ -19880,10 +19895,10 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
     messages = automatic.messages;
   } else {
     if (!sourceMessageId || !acceptanceMessageId) return res.status(400).json({ error: "Provide both internal evidence IDs or omit both so the system resolves them automatically" });
-    messages = buildStoredRecoveryMessagesByIds(groupId, sourceMessageId, acceptanceMessageId);
-    if (messages.length < 2) messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
-    if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
-    const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
+    messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
+    if (messages.length < 2) return res.status(409).json({ error: "Unable to verify the exact live quoted group messages", state: "live_evidence_unavailable", mutation: "none", financialMutation: false });
+    const acceptance = messages.find((message) => sourceMessageIdsEqual(serializedMessageId(message), acceptanceMessageId));
+    if (!acceptance) return res.status(409).json({ error: "The exact live acceptance message was not found", state: "acceptance_message_missing", mutation: "none", financialMutation: false });
     evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   }
   const expected = {
@@ -21307,30 +21322,87 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/reassign-acceptance", re
   return res.json({ success: true, ...result, mutation: "reassigned_acceptance", financialMutation: false, settlement: "not_applied" });
 });
 app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, (req, res) => {
+  requireCompanyOwner(req, res, () => {
+    void (async () => {
   const candidateId = Number(req.params.id);
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
-  if (!Number.isInteger(candidateId) || candidateId <= 0) return res.status(400).json({ error: "Valid candidate id is required", mutation: "none" });
-  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", mutation: "none" });
+  const groupId = String(req.body?.groupId || "").trim();
+  const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+  const acceptanceMessageId = String(req.body?.acceptanceMessageId || "").trim();
+  const downloaderPhone = String(req.body?.downloaderPhone || "").trim();
+  const executorPhone = String(req.body?.executorPhone || "").trim();
+  const price = Number(req.body?.price);
+  const origin = String(req.body?.origin || "").trim();
+  const destination = String(req.body?.destination || "").trim();
+  const ownerApproval = req.body?.ownerApproval === true;
+  if (!Number.isInteger(candidateId) || candidateId <= 0) return res.status(400).json({ error: "Valid candidate id is required", mutation: "none", financialMutation: false });
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId) || groupId !== configuredGroupId) return res.status(409).json({ error: "The supplied group must be the configured official group", state: "group_mismatch", mutation: "none", financialMutation: false });
+  if (!sourceMessageId || !acceptanceMessageId || !downloaderPhone || !executorPhone || !Number.isFinite(price) || price <= 0) {
+    return res.status(400).json({ error: "groupId, exact source and acceptance message IDs, both captain phones, and a positive price are required", mutation: "none", financialMutation: false });
+  }
   const actionKey = `candidate:${candidateId}:confirm`;
   const actions = app.locals.unconfirmedBookingActions || (app.locals.unconfirmedBookingActions = new Set());
-  if (actions.has(actionKey)) return res.status(409).json({ error: "This booking action is already in progress", mutation: "none" });
+  if (actions.has(actionKey)) return res.status(409).json({ error: "This booking action is already in progress", mutation: "none", financialMutation: false });
   actions.add(actionKey);
   try {
     const candidate = db.prepare("SELECT * FROM order_candidates WHERE id=? AND group_id=? AND status='pending' LIMIT 1").get(candidateId, configuredGroupId);
-    if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none" });
+    if (!candidate) return res.status(409).json({ error: "Booking is no longer pending", state: "stale", mutation: "none", financialMutation: false });
     if (isSpecialBookingKind(candidate.order_kind) && !currentSpecialBookingPolicy().enabled) {
       return res.status(409).json({ error: "Special booking intake is disabled by the owner", state: "special_booking_disabled", mutation: "none", financialMutation: false });
     }
+    if (String(candidate.source_message_id || "").trim() !== sourceMessageId) return res.status(409).json({ error: "The source message no longer matches this candidate", state: "source_mismatch", mutation: "none", financialMutation: false });
     const expectedMessageId = String(candidate.pending_message_id || "").trim();
-    if (!expectedMessageId) return res.status(409).json({ error: "A captain acceptance message is required before confirmation", state: "acceptance_missing", mutation: "none" });
+    if (!expectedMessageId || expectedMessageId !== acceptanceMessageId) return res.status(409).json({ error: "The selected acceptance is no longer the candidate's pending reply", state: "acceptance_mismatch", mutation: "none", financialMutation: false });
     const acceptance = db.prepare(`SELECT a.*,e.name AS executor_name,e.phone AS executor_phone,e.active AS executor_active,e.account_status AS executor_account_status
       FROM order_candidate_acceptances a JOIN users e ON e.id=a.captain_user_id
       WHERE a.candidate_id=? AND a.acceptance_message_id=? AND a.status IN ('pending','selected') LIMIT 1`).get(candidateId, expectedMessageId);
-    if (!acceptance) return res.status(409).json({ error: "The pending captain acceptance could not be found", state: "acceptance_missing", mutation: "none" });
-    if (Number(acceptance.executor_active) !== 1 || acceptance.executor_account_status !== "active") return res.status(409).json({ error: "The executor account is not active", state: "executor_inactive", mutation: "none" });
-    const result = settlePendingOrder(candidate.id, acceptance.acceptance_message_id, connectedBotPhone(), { adminApproval: true });
+    if (!acceptance) return res.status(409).json({ error: "The pending captain acceptance could not be found", state: "acceptance_missing", mutation: "none", financialMutation: false });
+    if (Number(acceptance.executor_active) !== 1 || acceptance.executor_account_status !== "active") return res.status(409).json({ error: "The executor account is not active", state: "executor_inactive", mutation: "none", financialMutation: false });
+    const producer = candidate.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id) : null;
+    const executor = db.prepare("SELECT * FROM users WHERE id=?").get(acceptance.captain_user_id);
+    const normalizedProducerPhone = producer?.phone ? phoneWithCountry(producer.phone) : "";
+    const normalizedExecutorPhone = executor?.phone ? phoneWithCountry(executor.phone) : "";
+    if (!producer || !executor || !isValidJordanPhone(normalizedProducerPhone) || !isValidJordanPhone(normalizedExecutorPhone) || producer.id === executor.id || recoveryPhoneMatches(normalizedProducerPhone, normalizedExecutorPhone)) {
+      return res.status(409).json({ error: "The linked producer and executor identities are incomplete or identical", state: "identity_invalid", mutation: "none", financialMutation: false });
+    }
+    if (!recoveryPhoneMatches(normalizedProducerPhone, downloaderPhone) || !recoveryPhoneMatches(normalizedExecutorPhone, executorPhone)) {
+      return res.status(409).json({ error: "The supplied phones do not match the linked producer and executor accounts", state: "identity_mismatch", mutation: "none", financialMutation: false });
+    }
+    if (Math.round(price * 100) !== Number(candidate.price_cents) || normalizeRecoveryText(candidate.origin) !== normalizeRecoveryText(origin) || normalizeRecoveryText(candidate.destination) !== normalizeRecoveryText(destination)) {
+      return res.status(409).json({ error: "The price or route no longer matches this candidate", state: "booking_details_mismatch", mutation: "none", financialMutation: false });
+    }
+    if (!client || !isReady) return res.status(503).json({ error: "Bot not ready for live evidence verification", state: "bot_not_ready", mutation: "none", financialMutation: false });
+    const messages = await fetchExactGroupEvidenceMessages(configuredGroupId, sourceMessageId, acceptanceMessageId);
+    if (messages.length < 2) return res.status(409).json({ error: "Exact live quoted messages could not be verified", state: "live_evidence_unavailable", mutation: "none", financialMutation: false });
+    const sourceMessage = messages.find((message) => sourceMessageIdsEqual(serializedMessageId(message), sourceMessageId));
+    const acceptanceMessage = messages.find((message) => sourceMessageIdsEqual(serializedMessageId(message), acceptanceMessageId));
+    if (!sourceMessage || !acceptanceMessage || resolveGroupChatId(sourceMessage) !== configuredGroupId || resolveGroupChatId(acceptanceMessage) !== configuredGroupId || !isExactCaptainAcceptance(acceptanceMessage.body)) {
+      return res.status(409).json({ error: "The live source/acceptance chain is not exact or is not in the official group", state: "live_evidence_mismatch", mutation: "none", financialMutation: false });
+    }
+    const evidence = await inspectConfirmedRecoveryMessage(acceptanceMessage, messages, configuredGroupId);
+    const evidenceMatchesCandidate = Boolean(
+      evidence?.phoneIdentityResolved &&
+      evidence.producer?.id === producer.id &&
+      evidence.captain?.id === executor.id &&
+      sourceMessageIdsEqual(evidence.orderMessageId, sourceMessageId) &&
+      sourceMessageIdsEqual(evidence.acceptanceMessageId, acceptanceMessageId) &&
+      recoveryExpectedMatches(evidence, { downloaderPhone, executorPhone, price, origin, destination }) &&
+      ["confirmed", "missing_authorized_thumb_reaction"].includes(evidence.reason)
+    );
+    if (!evidenceMatchesCandidate) return res.status(409).json({ error: "Live evidence does not match the candidate identities or booking details", state: evidence?.reason || "evidence_mismatch", mutation: "none", financialMutation: false, evidence: recoveryEvidenceSummary(evidence) });
+    if (evidence.existingSettlement?.status === "applied") return res.json({ success: true, state: "already_settled", evidence: recoveryEvidenceSummary(evidence), mutation: "none", financialMutation: false });
+    const ownerApprovalOverride = !evidence.authorizedThumb;
+    if (ownerApprovalOverride && !ownerApproval) {
+      return res.status(409).json({ error: "ينقص تفاعل 👍 الموثّق من صاحب الطلب؛ لتجاوز ذلك يجب تحديد موافقة المالك الصريحة لهذا الحجز.", state: "owner_approval_required", mutation: "none", financialMutation: false, evidence: recoveryEvidenceSummary(evidence) });
+    }
+    const botCompanyProducer = Number(producer.is_bot) === 1 && BOT_FINANCIAL_MODE === "company";
+    const confirmerPhone = ownerApprovalOverride || botCompanyProducer ? connectedBotPhone() : evidence.producerPhone;
+    const settlementApproval = ownerApprovalOverride
+      ? { adminApproval: true }
+      : { approvalReactionUserId: botCompanyProducer ? null : producer.id };
+    const result = settlePendingOrder(candidate.id, acceptance.acceptance_message_id, confirmerPhone, settlementApproval);
     if (result.state !== "accepted") {
-      const status = result.state === "unauthorized" ? 403 : result.state === "debt_limit" ? 409 : 422;
+      const status = result.state === "unauthorized" ? 403 : ["insufficient_balance", "stale", "already_registered", "already_settled"].includes(result.state) ? 409 : 422;
       return res.status(status).json({ success: false, state: result.state, mutation: "none", financialMutation: false, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id } });
     }
     const confirmationDetails = {
@@ -21344,11 +21416,16 @@ app.post("/api/admin/unconfirmed-bookings/candidate/:id/confirm", requireAdmin, 
       tripTime: result.order?.trip_time,
     };
     void sendFinalBookingConfirmation(candidate.group_id, confirmationDetails, { deliveryMode: "direct" }).catch(() => null);
-    audit("order.admin_unconfirmed.confirmed", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, orderNo: result.order?.order_no, financialMutation: true });
-    return res.status(201).json({ success: true, state: "accepted", mutation: "applied_once", order: result.order, chargedWallet: result.chargedWallet, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, executorPhone: phoneWithCountry(acceptance.executor_phone) }, cardSent: false });
+    audit("order.admin_unconfirmed.confirmed", "order_candidate", candidate.id, { sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, orderNo: result.order?.order_no, approvalMethod: ownerApprovalOverride ? "owner_override" : botCompanyProducer ? "company_bot" : "producer_thumb", ownerApprovalOverride, financialMutation: true });
+    return res.status(201).json({ success: true, state: "accepted", mutation: "applied_once", order: result.order, chargedWallet: result.chargedWallet, evidence: { candidateId, sourceMessageId: candidate.source_message_id, acceptanceMessageId: acceptance.acceptance_message_id, executorPhone: phoneWithCountry(acceptance.executor_phone) }, ownerApprovalOverride, cardSent: false });
   } finally {
     actions.delete(actionKey);
   }
+    })().catch(() => {
+      console.error("[UnconfirmedBooking] confirmation failed with unknown result");
+      if (!res.headersSent) res.status(500).json({ error: "تعذر إكمال مسار التأكيد؛ افحص حالة الحجز قبل إعادة المحاولة", state: "confirmation_result_unknown", mutation: "unknown" });
+    });
+  });
 });
 app.post("/api/admin/unconfirmed-bookings/:kind/:id/reject", requireAdmin, (req, res) => {
   const kind = String(req.params.kind || "").trim();

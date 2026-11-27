@@ -5,7 +5,7 @@ const server = fs.readFileSync('./server.js', 'utf8');
 const admin = fs.readFileSync('./admin.html', 'utf8');
 
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirmed-preview", requireAdmin/);
-assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin/);
+assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-one", requireAdmin, async \(req, res\) =>/);
 assert.match(server, /app\.post\("\/api\/admin\/group\/confirm-verified-bot-booking", requireAdmin/);
 assert.match(server, /app\.post\(\["\/api\/admin\/group\/send-verified-bot-booking-card", "\/api\/admin\/group\/send-verified-bot-booking-card-v2"\], requireAdmin/);
 assert.match(server, /Image booking cards are disabled/);
@@ -18,12 +18,19 @@ assert.match(server, /setTimeout\(\(\) => \{ void \(async \(\) => \{/);
 assert.match(server, /confirmationText: finalBookingConfirmationText\(confirmationDetails\)/);
 assert.doesNotMatch(server, /normalizeArabic\(/);
 assert.match(server, /if \(existingSettlement\?\.status === "applied"\) return;/);
-assert.match(server, /async function fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
-assert.match(server, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
-assert.match(server, /collections\.Msg\.getMessagesById\(requestedIds\)/);
-assert.match(server, /acceptance\?\.__quotedMessageId \|\| acceptance\?\.quotedMessageId/);
-assert.match(server, /acceptance\.__quoted = source/);
-assert.match(server, /acceptance\.__quotedMessageId = sourceMessageId/);
+
+const fetchStart = server.indexOf('async function fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId)');
+const fetchEnd = server.indexOf('\nfunction createCaptainPin()', fetchStart);
+assert.ok(fetchStart >= 0 && fetchEnd > fetchStart, 'exact live evidence helper exists');
+const fetchHelper = server.slice(fetchStart, fetchEnd);
+assert.match(fetchHelper, /client\.pupPage\.evaluate\(async \(requestedIds\)/);
+assert.match(fetchHelper, /collections\.Msg\.getMessagesById\(requestedIds\)/);
+assert.match(fetchHelper, /const actualQuoteMessageId = String\(acceptance\?\.__quotedMessageId \|\| serializedMessageId\(acceptance\?\.__quoted\) \|\| ""\)\.trim\(\)/);
+assert.match(fetchHelper, /!isExactCaptainAcceptance\(acceptance\.body\)/);
+assert.match(fetchHelper, /sourceMessageIdsEqual\(actualQuoteMessageId, sourceMessageId\)/);
+assert.match(fetchHelper, /acceptance\.__quoted = quotedSource/);
+assert.doesNotMatch(fetchHelper, /acceptance\.__quoted = source;/, 'source rows cannot be used to fabricate an unverified quote relationship');
+assert.match(server, /function isExactCaptainAcceptance\(text\)\s*\{\s*return String\(text \|\| ""\)\.replace\(\/\\u200f\|\\u200e\/g, ""\)\.trim\(\) === "تم";/);
 assert.match(server, /SELECT message_id,group_id,sender_phone,sender_name,body,sent_at FROM messages/);
 assert.match(server, /client\.pupPage\.evaluate\(async \(messageId\)/);
 assert.match(server, /await withTimeout\(client\.pupPage\.evaluate\(async \(messageId\)/);
@@ -31,6 +38,8 @@ assert.match(server, /const history = await fetchGroupHistory\(groupId, 200, \{ 
 assert.match(server, /messageId\.endsWith\(`_\$\{quotedMessageIdHint\}`\)/);
 assert.match(server, /const exactEvidenceRequested = Boolean\(expected\.sourceMessageId && expected\.acceptanceMessageId\)/);
 assert.match(server, /fetchExactGroupEvidenceMessages\(groupId, expected\.sourceMessageId, expected\.acceptanceMessageId\)/);
+assert.match(server, /matches\.push\(\{ \.\.\.recoveryEvidenceSummary\(evidence\), groupId \}\)/);
+assert.match(server, /unmatchedReason: "exact_live_quoted_evidence_unavailable", mutation: "none"/);
 assert.match(server, /messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
 assert.match(server, /function recoveryExpectedMatches\(evidence, expected = \{\}\)/);
 assert.match(server, /const autoMatchRequested = !sourceMessageId && !acceptanceMessageId/);
@@ -44,12 +53,31 @@ assert.match(server, /const producer = quoted\.fromMe && BOT_FINANCIAL_MODE === 
 assert.match(server, /const producer = botProducer \? companyUser\(\)/);
 assert.match(server, /existingSettlement\?\.status === "applied"/);
 assert.match(server, /void sendFinalBookingConfirmation\(groupId, confirmationDetails, \{ deliveryMode: "direct" \}\)/);
+
+const previewStart = server.indexOf('app.post("/api/admin/group/confirmed-preview"');
+const previewEnd = server.indexOf('\napp.post(', previewStart + 1);
+const previewRoute = server.slice(previewStart, previewEnd);
+assert.ok(previewStart >= 0 && previewEnd > previewStart);
+assert.doesNotMatch(previewRoute, /settlePendingOrder|sendFinalBookingConfirmation|wallet/i, 'preview remains strictly read-only');
+assert.match(previewRoute, /mutation: "none"/);
+
+const confirmOneStart = server.indexOf('app.post("/api/admin/group/confirm-one"');
+const confirmOneEnd = server.indexOf('\napp.post(', confirmOneStart + 1);
+const confirmOneRoute = server.slice(confirmOneStart, confirmOneEnd);
+assert.match(confirmOneRoute, /requireCompanyOwner\(req, res, \(\) => \{ ownerAuthorized = true; \}\)/);
+assert.match(confirmOneRoute, /const groupId = String\(req\.body\?\.groupId \|\| ""\)\.trim\(\)/);
+assert.match(confirmOneRoute, /groupId !== configuredGroupId/);
+assert.match(confirmOneRoute, /messages = await fetchExactGroupEvidenceMessages/);
+assert.match(confirmOneRoute, /messages\.find\(\(message\) => sourceMessageIdsEqual\(serializedMessageId\(message\), acceptanceMessageId\)\)/);
+assert.doesNotMatch(confirmOneRoute, /\|\| \{ id: \{ _serialized: acceptanceMessageId \}, from: groupId, body: "تم"/);
+
 assert.match(admin, /id="historyRecoveryCard"/);
 assert.match(admin, /\/api\/admin\/group\/confirmed-preview/);
 assert.match(admin, /\/api\/admin\/group\/confirm-one/);
 assert.match(admin, /اعتماد وتسوية/);
 assert.match(admin, /لا تُطبق العملية أكثر من مرة/);
 assert.match(admin, /function recoveryPayload\(match=null\)/);
+assert.match(admin, /groupId:String\(match\?\.groupId\|\|''\)\.trim\(\)/);
 assert.match(admin, /payload\.sourceMessageId=String\(match\.sourceMessageId\|\|'\'\)\.trim\(\)/);
 assert.match(admin, /payload\.acceptanceMessageId=String\(match\.acceptanceMessageId\|\|'\'\)\.trim\(\)/);
 assert.match(admin, /const payload=recoveryPayload\(match\)/);
@@ -57,4 +85,4 @@ assert.doesNotMatch(admin, /confirm-one',[\s\S]{0,240}JSON\.stringify\(recoveryP
 assert.match(admin, /const text=await r\.text\(\);let data;try\{data=text\?JSON\.parse\(text\):\{\}\}/);
 assert.doesNotMatch(admin, /catch\{data=\{error:await r\.text\(\)\}\}/);
 
-console.log('exact group recovery preview, owner approval, company wallet routing, and UI guardrails verified');
+console.log('exact live quote evidence, owner-only confirmation, read-only preview, and history-recovery payload guardrails verified');

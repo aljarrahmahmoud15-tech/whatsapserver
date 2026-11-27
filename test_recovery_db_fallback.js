@@ -14,9 +14,21 @@ assert.match(server, /source: historySource, mutation: "none"/);
 assert.match(server, /const storedRecovery = acceptance\.__storedRecovery === true/);
 assert.ok(server.includes('if (!liveQuoted && !storedRecovery && client && typeof client.getMessageById === "function")'));
 assert.match(server, /function buildStoredRecoveryMessagesByIds\(groupId, sourceMessageId, acceptanceMessageId\)/);
-assert.match(server, /messages = buildStoredRecoveryMessagesByIds\(groupId, sourceMessageId, acceptanceMessageId\);[\s\S]*if \(messages\.length < 2\) messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\);/);
-assert.match(server, /const authorizedThumb = botProducer \? true : Boolean\(reactionPresentOnAcceptance\)/);
+const storedStart = server.indexOf('function buildStoredRecoveryMessages(groupId, hours = 168, limit = 1000)');
+const storedEnd = server.indexOf('\nfunction buildStoredRecoveryMessagesByIds', storedStart);
+const storedBuilder = server.slice(storedStart, storedEnd);
+assert.doesNotMatch(storedBuilder, /__quoted:\s*source|__candidateSource:\s*source/, 'database candidate associations cannot fabricate live quote evidence');
+assert.match(server, /if \(storedRecovery\) return \{ match: false, reason: "stored_quote_requires_live_verification"/);
+
+const confirmOneStart = server.indexOf('app.post("/api/admin/group/confirm-one"');
+const confirmOneEnd = server.indexOf('\napp.post(', confirmOneStart + 1);
+const confirmOneRoute = server.slice(confirmOneStart, confirmOneEnd);
+assert.match(confirmOneRoute, /messages = await fetchExactGroupEvidenceMessages\(groupId, sourceMessageId, acceptanceMessageId\)/);
+assert.doesNotMatch(confirmOneRoute, /buildStoredRecoveryMessagesByIds/, 'administrative exact confirmation must not trust a stored-only message link');
+assert.match(confirmOneRoute, /live_evidence_unavailable/);
+assert.match(server, /actualQuoteMessageId[\s\S]*!source \|\| !acceptance \|\| !isExactCaptainAcceptance\(acceptance\.body\)/);
+assert.match(server, /reactionPhones\.some\(\(phone\) => recoveryPhoneMatches\(phone, producerPhone\)\)/);
 assert.match(server, /if \(!groupId \|\| !isConfiguredGroup\(groupId\)\) return res\.status\(409\)\.json\(\{ error: "No configured production group" \}\)/);
 assert.match(server, /res\.json\(\{ success: true, groupId, hours, scanned: messages\.length, acceptanceMessages: acceptanceMessages\.length, matches, filters: expected, source: historySource, mutation: "none" \}\)/);
 
-console.log('recovery DB fallback and bot-owned preview guardrails passed');
+console.log('database listing fallback stays read-only; exact confirmation requires live quote and producer reaction evidence');
