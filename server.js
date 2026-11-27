@@ -10012,6 +10012,31 @@ function redactInitDiagnostic(value, limit = 300) {
     .replace(/\+?\d[\d().\s-]{5,}\d/g, "[digits]")
     .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[opaque]");
 }
+function readWhatsAppInitPageSnapshot() {
+  let socketState = null;
+  let socketStream = null;
+  try {
+    const loginRoute = String(window.location?.pathname || "").startsWith("/login");
+    if (loginRoute) {
+      const backendEventBus = window.require?.("WAWebBackendEventBus")?.BackendEventBus;
+      socketState = backendEventBus?.socketState || null;
+    } else {
+      const socket = window.require?.("WAWebSocketModel")?.Socket;
+      socketState = socket?.state || null;
+      socketStream = socket?.stream || null;
+    }
+  } catch (_) {
+    socketState = "require_failed";
+  }
+  return {
+    host: window.location?.host || "unknown",
+    readyState: document.readyState,
+    webVersion: String(window.Debug?.VERSION || ""),
+    socketState: socketState === null ? null : String(socketState),
+    socketStream: socketStream === null ? null : String(socketStream),
+    hasQrCanvas: Boolean(document.querySelector("canvas")),
+  };
+}
 function startWhatsAppInitProbe(instance, runId) {
   const startedAt = Date.now();
   let attachedPage = null;
@@ -10132,23 +10157,7 @@ function startWhatsAppInitProbe(instance, runId) {
     snapshotCount += 1;
     const page = attachedPage;
     try {
-      const snapshot = await withTimeout(page.evaluate(() => {
-        let socketState = null;
-        let socketStream = null;
-        try {
-          const socket = window.require?.("WAWebSocketModel")?.Socket;
-          socketState = socket?.state || null;
-          socketStream = socket?.stream || null;
-        } catch (_) { socketState = "require_failed"; }
-        return {
-          host: location.host,
-          readyState: document.readyState,
-          webVersion: String(window.Debug?.VERSION || ""),
-          socketState: socketState === null ? null : String(socketState),
-          socketStream: socketStream === null ? null : String(socketStream),
-          hasQrCanvas: Boolean(document.querySelector("canvas")),
-        };
-      }), 8000, { evaluate: "timeout" });
+      const snapshot = await withTimeout(page.evaluate(readWhatsAppInitPageSnapshot), 8000, { evaluate: "timeout" });
       const stateValue = (value) => {
         if (value === null || value === undefined || value === "") return null;
         const text = String(value);

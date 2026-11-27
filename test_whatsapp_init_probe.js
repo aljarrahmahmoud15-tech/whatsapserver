@@ -39,8 +39,24 @@ function createHarness(page) {
   const client = new EventEmitter();
   client.pupPage = page;
   context.client = client;
-  vm.runInContext(`${probeSource}\nthis.OUT = { startWhatsAppInitProbe, redactInitDiagnostic };`, context);
-  return { start: context.OUT.startWhatsAppInitProbe, redact: context.OUT.redactInitDiagnostic, client, logs, timers, context };
+  vm.runInContext(`${probeSource}\nthis.OUT = { startWhatsAppInitProbe, redactInitDiagnostic, readWhatsAppInitPageSnapshot };`, context);
+  return { start: context.OUT.startWhatsAppInitProbe, redact: context.OUT.redactInitDiagnostic, readPageSnapshot: context.OUT.readWhatsAppInitPageSnapshot, client, logs, timers, context };
+}
+
+function evaluatePageSnapshot(pathname, modules) {
+  const harness = createHarness(null);
+  const requestedModules = [];
+  harness.context.window = {
+    location: { host: "fixture-host", pathname },
+    Debug: { VERSION: "fixture-web-version" },
+    require: (name) => {
+      requestedModules.push(name);
+      if (!Object.prototype.hasOwnProperty.call(modules, name)) throw new Error("missing fixture module");
+      return modules[name];
+    },
+  };
+  harness.context.document = { readyState: "complete", querySelector: () => ({}) };
+  return { snapshot: harness.readPageSnapshot(), requestedModules };
 }
 
 class FakePage extends EventEmitter {
@@ -63,6 +79,26 @@ class FakePage extends EventEmitter {
 }
 
 const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
+
+test("uses WAWebBackendEventBus on the login route without requesting WAWebSocketModel", () => {
+  const { snapshot, requestedModules } = evaluatePageSnapshot("/login/", {
+    WAWebBackendEventBus: { BackendEventBus: { socketState: "PAIRING" } },
+  });
+  assert.equal(snapshot.socketState, "PAIRING");
+  assert.equal(snapshot.socketStream, null);
+  assert.equal(snapshot.hasQrCanvas, true);
+  assert.deepEqual(requestedModules, ["WAWebBackendEventBus"]);
+  assert.match(probeSource, /page\.evaluate\(readWhatsAppInitPageSnapshot\)/);
+});
+
+test("uses WAWebSocketModel only on the post-login application route", () => {
+  const { snapshot, requestedModules } = evaluatePageSnapshot("/", {
+    WAWebSocketModel: { Socket: { state: "CONNECTED", stream: "MAIN" } },
+  });
+  assert.equal(snapshot.socketState, "CONNECTED");
+  assert.equal(snapshot.socketStream, "MAIN");
+  assert.deepEqual(requestedModules, ["WAWebSocketModel"]);
+});
 
 test("attaches immediately, records lifecycle and redacted page/network diagnostics, then cleans up on disconnect", async () => {
   const page = new FakePage();
