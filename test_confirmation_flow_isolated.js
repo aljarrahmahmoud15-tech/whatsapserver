@@ -16,6 +16,8 @@ function between(start, end) {
 
 const reactionIdSource = between("function reactionId(", "async function resolveReactionSenderPhone");
 const messageLookupSource = between("function messageIdCore(", "function orderTraceKey(");
+const confirmationTextSource = between("function finalBookingConfirmationText(", "function finalBookingConfirmationOrderNo(");
+const confirmationOrderNoSource = between("function finalBookingConfirmationOrderNo(", "function finalBookingCancellationText(");
 const settleSource = between("function settlePendingOrder(", "function settleHistoricalConfirmedOrder(");
 const reactionHandlerSource = between("async function handleMessageReaction(", "function parseCookies");
 
@@ -167,10 +169,7 @@ const context = {
   money: (cents) => (Number(cents) / 100).toFixed(2),
   isBotPhone: () => false,
   sendFinalBookingConfirmation: async (groupId, details) => {
-    messages.push({
-      groupId,
-      text: `🟢 تثبيت الطلب #${details.orderNo}\n🚕 المنفذ: ${details.executorName}`,
-    });
+    messages.push({ groupId, text: context.finalBookingConfirmationText(details) });
   },
   finalBookingCancellationText: () => "🔴 رفض أو إلغاء الطلب",
   sendBotText: async () => true,
@@ -178,7 +177,7 @@ const context = {
   console,
 };
 
-vm.runInNewContext(`${messageLookupSource}\n${reactionIdSource}\n${settleSource}\n${reactionHandlerSource}\nthis.handleMessageReaction = handleMessageReaction;`, context);
+vm.runInNewContext(`${confirmationTextSource}\n${confirmationOrderNoSource}\n${messageLookupSource}\n${reactionIdSource}\n${settleSource}\n${reactionHandlerSource}\nthis.finalBookingConfirmationText = finalBookingConfirmationText; this.finalBookingConfirmationOrderNo = finalBookingConfirmationOrderNo; this.handleMessageReaction = handleMessageReaction;`, context);
 
 assert.strictEqual(candidate.status, "pending");
 assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لايك");
@@ -213,7 +212,7 @@ assert.strictEqual(ledgers.length, 0, "لا توجد تسوية قبل أي لا
   assert.strictEqual(users[2].wallet_cents, 240, "تضاف 12% لمحفظة كابتن تنزيل الطلب");
   assert.strictEqual(users[1].wallet_cents, 60, "تضاف 3% لمحفظة الشركة");
   assert.strictEqual(messages.length, 1, "ترسل رسالة تأكيد واحدة بعد التثبيت");
-  assert.match(messages[0].text, /🟢 تثبيت الطلب #7/);
-  assert.match(messages[0].text, /🚕 المنفذ: الكابتن/);
+  assert.strictEqual(messages[0].text, "تم تثبيت الحجز\nاسم المنفذ: الكابتن\nرقم الرحلة: 7");
+  assert.strictEqual(context.finalBookingConfirmationOrderNo(messages[0].text), 7, "رقم الرحلة الظاهر يظل قابلًا للربط بالحجز الداخلي");
   console.log("isolated hidden-candidate confirmation flow verified");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

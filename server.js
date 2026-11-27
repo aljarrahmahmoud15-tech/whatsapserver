@@ -7779,22 +7779,19 @@ async function sendGroupBrandedMessage(groupId, title, lines) {
     return null;
   }
 }
-function finalBookingConfirmationText({ orderNo, executorName, downloaderName, consumerName, priceCents, origin, destination, tripTime }) {
+function finalBookingConfirmationText({ orderNo, executorName }) {
   const normalizedOrderNo = String(orderNo || "غير محدد");
   return [
-    `🏠 المنزل: ${String(downloaderName || "غير مسجل")}`,
-    `🚕 المنفذ: ${String(executorName || "غير مسجل")}`,
-    `🟢 تثبيت الطلب #${normalizedOrderNo}`,
-    origin || destination ? `📍 ${origin || "غير محدد"} ← ${destination || "غير محدد"}` : "",
-    Number.isFinite(Number(priceCents)) ? `💰 ${money(priceCents)} JOD` : "",
-    tripTime ? `🕒 الوقت: ${tripTime}` : "",
-  ].filter(Boolean).join("\n");
+    "تم تثبيت الحجز",
+    `اسم المنفذ: ${String(executorName || "غير مسجل")}`,
+    `رقم الرحلة: ${normalizedOrderNo}`,
+  ].join("\n");
 }
 function finalBookingConfirmationOrderNo(body) {
   const text = String(body || "").trim();
   const shortMatch = text.match(/^(?:🟢\s*)?(?:تثبيت الطلب|تم تثبيت الطلب)\s*#(\d+)/m);
   if (shortMatch) return Number(shortMatch[1]);
-  const legacyMatch = text.match(/رقم الرحلة:\s*#(\d+)/);
+  const legacyMatch = text.match(/رقم الرحلة:\s*#?(\d+)/);
   return Number(legacyMatch?.[1] || 0);
 }
 function finalBookingCancellationText(order = null) {
