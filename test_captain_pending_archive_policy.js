@@ -190,11 +190,23 @@ assert.deepEqual(pageTwo.rows.map((row) => row.candidate_id), [3, 4, 5, 6], "cur
 assert.equal(pageTwo.nextCursor, null);
 
 const originalUpdatedAt = db.prepare("SELECT updated_at FROM order_candidates WHERE id=1").get().updated_at;
+const originalRawText = db.prepare("SELECT raw_text FROM order_candidates WHERE id=1").get().raw_text;
+const originalAcceptanceUpdatedAt = db.prepare("SELECT updated_at FROM order_candidate_acceptances WHERE id=1").get().updated_at;
 db.prepare("UPDATE order_candidates SET updated_at=? WHERE id=1").run("2026-11-28T09:59:59.999Z");
+const timestampRefreshedPreview = build();
+assert.equal(fingerprintCaptainPendingArchiveSnapshot(groupId, timestampRefreshedPreview), previewHash,
+  "a timestamp-only background refresh does not change the material preview fingerprint");
+db.prepare("UPDATE order_candidate_acceptances SET updated_at=? WHERE id=1").run("2026-11-28T09:59:59.999Z");
+const acceptanceTimestampRefreshedPreview = build();
+assert.equal(fingerprintCaptainPendingArchiveSnapshot(groupId, acceptanceTimestampRefreshedPreview), previewHash,
+  "an acceptance timestamp-only refresh does not change the material preview fingerprint");
+assert.equal(matchesCaptainPendingArchiveApproval(groupId, acceptanceTimestampRefreshedPreview, previewHash, [1]), true);
+db.prepare("UPDATE order_candidate_acceptances SET updated_at=? WHERE id=1").run(originalAcceptanceUpdatedAt);
+db.prepare("UPDATE order_candidates SET raw_text=?,updated_at=? WHERE id=1").run("fixture request materially changed", "2026-11-28T09:59:59.999Z");
 const changedPreview = build();
 assert.notEqual(fingerprintCaptainPendingArchiveSnapshot(groupId, changedPreview), previewHash,
-  "a row change after preview invalidates the fingerprint");
-db.prepare("UPDATE order_candidates SET updated_at=? WHERE id=1").run(originalUpdatedAt);
+  "a material request change after preview still invalidates the fingerprint");
+db.prepare("UPDATE order_candidates SET raw_text=?,updated_at=? WHERE id=1").run(originalRawText, originalUpdatedAt);
 
 const acceptanceBeforeStaleWrite = rows("order_candidate_acceptances");
 db.prepare("UPDATE order_candidates SET updated_at=? WHERE id=1").run("2026-11-28T09:59:59.998Z");

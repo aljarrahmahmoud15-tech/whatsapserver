@@ -129,6 +129,9 @@ function buildCaptainPendingArchiveSnapshot(db, { groupId, evaluationAt, findEqu
 }
 
 function fingerprintCaptainPendingArchiveSnapshot(groupId, snapshot) {
+  // Background reconciliation may refresh updated_at without changing business state.
+  // Keep material fields and acceptance statuses in the fingerprint; the immediate write
+  // transaction re-reads current timestamps before applying its optimistic update guards.
   const stableCandidates = snapshot.candidates.map((row) => ({
     id: Number(row.candidate_id),
     sourceMessageId: String(row.source_message_id || ""),
@@ -150,7 +153,6 @@ function fingerprintCaptainPendingArchiveSnapshot(groupId, snapshot) {
     lifecycleStage: String(row.lifecycle_stage || ""),
     lifecycleBlocker: String(row.lifecycle_blocker || ""),
     createdAt: String(row.created_at || ""),
-    updatedAt: String(row.updated_at || ""),
     protectionReason: row.protectionReason,
     linkedOrder: row.linkedOrder,
     acceptances: row.acceptances.map((acceptance) => ({
@@ -161,7 +163,6 @@ function fingerprintCaptainPendingArchiveSnapshot(groupId, snapshot) {
       mode: String(acceptance.acceptance_mode || ""),
       status: String(acceptance.status || ""),
       createdAt: String(acceptance.created_at || ""),
-      updatedAt: String(acceptance.updated_at || ""),
     })),
   }));
   const stableOngoingOrders = snapshot.allOngoingOrders.map((row) => ({
