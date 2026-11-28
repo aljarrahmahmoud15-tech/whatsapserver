@@ -38,6 +38,13 @@ const { createWhatsAppIdentityHandler } = require("./whatsapp-identity-route");
 const { canDeleteAccount } = require("./account-deletion-policy");
 const { createCaptainBalanceImportService } = require("./captain-balance-import");
 const { createNegativeBalanceSettlementService } = require("./negative-balance-settlement");
+const {
+  buildCaptainPendingArchiveSnapshot,
+  fingerprintCaptainPendingArchiveSnapshot,
+  paginateById,
+  matchesCaptainPendingArchiveApproval,
+  archiveCaptainPendingCandidates,
+} = require("./captain-pending-archive-policy");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -168,6 +175,8 @@ const TOPUP_CARD_ARCHIVE_AFTER_MS = 60 * 60 * 1000;
 const TOPUP_CARD_ARCHIVE_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.TOPUP_CARD_ARCHIVE_INTERVAL_MS || 5 * 60 * 1000));
 const ORDER_ARCHIVE_AFTER_MS = 24 * 60 * 60 * 1000;
 const ORDER_ARCHIVE_INTERVAL_MS = Math.max(60 * 60 * 1000, Number(process.env.ORDER_ARCHIVE_INTERVAL_MS || 24 * 60 * 60 * 1000));
+// Preserve terminal order history during the owner-reviewed Captain queue archive workflow.
+const ORDER_ARCHIVE_AUTOMATION_ENABLED = false;
 // الطلبات لا تُحذف؛ الأرشفة تغيّر الظهور فقط. حذف رسائل «تم» عند نقص الرصيد مسار مستقل.
 const ORDER_DELETION_DISABLED = true;
 const WHATSAPP_GROUP_CHAT_DELETION_DISABLED = true;
@@ -178,6 +187,9 @@ const LOW_BALANCE_ACCEPTANCE_DELETE_PERMIT = Symbol("low_balance_acceptance_dele
 const GENERAL_UNAPPROVED_MESSAGE_DELETE_PERMIT = Symbol("general_unapproved_message_delete_permit");
 const VOICE_MESSAGE_DELETE_PERMIT = Symbol("voice_message_delete_permit");
 const CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING = "captain_order_visibility_cutoff_at_v1";
+const CAPTAIN_PENDING_QUEUE_START_SETTING = "captain_pending_queue_start_v1";
+const CAPTAIN_PENDING_ARCHIVE_SCOPE = "captain-pending-archive";
+const CAPTAIN_PENDING_ARCHIVE_CONFIRMATION_PREFIX = "ARCHIVE_CAPTAIN_QUEUE:";
 const CAPTAIN_UI_DESIGN_IDS = new Set(["classic", "taj", "red-white", "rahlati", "compact"]);
 const CUSTOMER_RATING_REMINDER_INTERVAL_MS = Math.max(60 * 1000, Number(process.env.CUSTOMER_RATING_REMINDER_INTERVAL_MS || 5 * 60 * 1000));
 const CUSTOMER_RATING_REMINDER_AFTER_MS = 60 * 60 * 1000;
@@ -3750,6 +3762,21 @@ function getSetting(key, fallback = null) {
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at").run(key, String(value), now());
 }
+function parseCaptainPendingQueueBoundary(raw = getSetting(CAPTAIN_PENDING_QUEUE_START_SETTING, null)) {
+  if (raw == null || raw === "") return null;
+  try {
+    const value = JSON.parse(String(raw));
+    const startedAt = String(value?.startedAt || "");
+    const maxCandidateId = Number(value?.maxCandidateId);
+    const maxOrderId = Number(value?.maxOrderId);
+    if (Number(value?.version) !== 1 || !Number.isFinite(Date.parse(startedAt))
+      || !Number.isSafeInteger(maxCandidateId) || maxCandidateId < 0
+      || !Number.isSafeInteger(maxOrderId) || maxOrderId < 0) return null;
+    return { startedAt, maxCandidateId, maxOrderId };
+  } catch (error) {
+    return null;
+  }
+}
 function captainUiDesignSettingKey(userId) { return `captain_ui_design:${Number(userId)}`; }
 function insufficientBalanceAcceptanceDeletionEnabled() {
   const raw = getSetting(INSUFFICIENT_BALANCE_ACCEPTANCE_DELETION_SETTING_KEY, null);
@@ -7149,6 +7176,7 @@ function startTopupCardArchiveScheduler() {
 }
 let orderArchiveSweepRunning = false;
 function archiveExpiredOrders() {
+  if (!ORDER_ARCHIVE_AUTOMATION_ENABLED) return { archivedOrders: 0, archivedCandidates: 0, skipped: true, reason: "owner_review_required" };
   if (orderArchiveSweepRunning) return { archivedOrders: 0, archivedCandidates: 0, skipped: true };
   orderArchiveSweepRunning = true;
   try {
@@ -7235,6 +7263,7 @@ function startOrderArchiveScheduler() {
     }
   };
   void initializeCutoff();
+  if (!ORDER_ARCHIVE_AUTOMATION_ENABLED) return;
   try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] initial sweep failed:", error.message); }
   const timer = setInterval(() => {
     try { archiveExpiredOrders(); } catch (error) { console.error("[OrderArchive] sweep failed:", error.message); }
@@ -13893,15 +13922,25 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
   const user = db.prepare("SELECT id,phone,name,vehicle_type,vehicle_model,role,wallet_cents,active,account_status,captain_auth_method,captain_last_login_at,updated_at FROM users WHERE id=? AND role='captain' LIMIT 1").get(req.captainSession.userId);
   if (!user || !user.active || user.account_status !== "active") return res.status(403).json({ error: "Captain account is inactive" });
   const entries = db.prepare("SELECT id,order_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json FROM wallet_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100").all(user.id).map((entry) => ({ ...entry, note: canonicalLedgerNote(entry), amount: money(entry.amount_cents), balanceAfter: money(entry.balance_after_cents), details: entry.details_json ? JSON.parse(entry.details_json) : null }));
-  const pendingOrderRows = db.prepare(`SELECT source_message_id,order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
-    FROM orders WHERE status='open' AND pending_captain_user_id=?
+  const queueBoundary = parseCaptainPendingQueueBoundary();
+  const pendingOrderRows = db.prepare(`SELECT 'order' AS record_type,id AS record_id,source_message_id,order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
+    FROM orders WHERE status='open' AND pending_captain_user_id=? AND COALESCE(archive_state,'active')<>'archived'
     UNION ALL
-    SELECT source_message_id,public_trip_no AS order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
-    FROM order_candidates WHERE status='pending' AND pending_captain_user_id=?
-    ORDER BY updated_at DESC LIMIT 50`).all(user.id, user.id);
+    SELECT 'candidate' AS record_type,id AS record_id,source_message_id,public_trip_no AS order_no,price_cents,origin,destination,trip_time,status,created_at,updated_at
+    FROM order_candidates WHERE status='pending' AND pending_captain_user_id=? AND COALESCE(archive_state,'active')<>'archived'
+    ORDER BY updated_at DESC`).all(user.id, user.id);
   const pendingOrderMap = new Map();
-  for (const row of pendingOrderRows) if (!pendingOrderMap.has(row.source_message_id)) pendingOrderMap.set(row.source_message_id, { ...row, price: money(row.price_cents), stateLabel: row.status === "pending" ? "بانتظار الاعتماد" : "قيد التنفيذ" });
-  const activeOrders = [...pendingOrderMap.values()];
+  for (const row of pendingOrderRows) {
+    const isNewQueueItem = !queueBoundary || (row.record_type === "order"
+      ? Number(row.record_id) > queueBoundary.maxOrderId
+      : Number(row.record_id) > queueBoundary.maxCandidateId);
+    const prepared = { ...row, isNewQueueItem, price: money(row.price_cents), stateLabel: row.status === "pending" ? "بانتظار الاعتماد" : "قيد التنفيذ" };
+    const existing = pendingOrderMap.get(row.source_message_id);
+    if (!existing || (isNewQueueItem && !existing.isNewQueueItem)) pendingOrderMap.set(row.source_message_id, prepared);
+  }
+  const allPendingOrders = [...pendingOrderMap.values()];
+  const activeOrders = allPendingOrders.filter((row) => row.isNewQueueItem).map(({ isNewQueueItem, ...row }) => row);
+  const preservedOrders = allPendingOrders.filter((row) => !row.isNewQueueItem).map(({ isNewQueueItem, ...row }) => row);
   const captainVisibilityCutoff = getSetting(CAPTAIN_ORDER_VISIBILITY_CUTOFF_SETTING, null);
   const tripRows = captainVisibilityCutoff ? db.prepare(`SELECT o.id,o.order_no,o.status,o.price_cents,o.origin,o.destination,o.trip_time,o.order_kind,o.company_cents,o.producer_cents,o.captain_cents,o.settlement_state,o.producer_user_id,o.captain_user_id,o.accepted_message_id,o.accepted_at,o.confirmed_by_phone,o.created_at,o.updated_at,
       s.id AS settlement_id,s.status AS settlement_status,s.idempotency_key AS settlement_key,s.company_cents AS settlement_company_cents,s.producer_cents AS settlement_producer_cents,s.captain_fee_cents AS settlement_captain_fee_cents,s.applied_at AS settlement_applied_at,
@@ -13939,6 +13978,8 @@ app.get("/api/captain/overview", requireCaptain, captainReadLimiter, (req, res) 
     entries,
     trips,
     activeOrders,
+    preservedOrders,
+    activeQueueStartedAt: queueBoundary?.startedAt || null,
     topupCards,
     withdrawalRequests,
   });
@@ -21144,7 +21185,120 @@ app.get("/api/admin/group/voice-booking-evidence", requireAdmin, adminReadLimite
     financialMutation: false,
   });
 });
+function captainPendingArchiveProtectionLabel(reason) {
+  return ({
+    unclassifiable_timestamp: "وقت الإنشاء أو الإسناد غير قابل للتحقق",
+    created_after_snapshot: "أُنشئ بعد وقت المعاينة",
+    assigned_after_snapshot: "أُسند بعد وقت المعاينة",
+    final_order_linked: "مرتبط بطلب نهائي",
+    linked_open_order: "مرتبط بطلب جارٍ مفتوح",
+    linked_order_history: "مرتبط بسجل طلب محفوظ",
+  })[reason] || (reason ? String(reason) : "مؤهل للأرشفة بعد تأكيد المالك");
+}
+function captainPendingArchivePreviewCandidate(row) {
+  return {
+    candidateId: Number(row.candidate_id),
+    publicTripNo: row.public_trip_no == null ? null : Number(row.public_trip_no),
+    sourceMessageId: String(row.source_message_id || ""),
+    requestText: String(row.raw_text || ""),
+    price: money(row.price_cents),
+    origin: row.origin || null,
+    destination: row.destination || null,
+    tripTime: row.trip_time || null,
+    captainName: row.captain_name || null,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    pendingAt: row.pending_at || null,
+    pendingMessageId: row.pending_message_id || null,
+    lifecycleStage: row.lifecycle_stage || null,
+    lifecycleBlocker: row.lifecycle_blocker || null,
+    acceptances: row.acceptances.map((acceptance) => ({
+      captainName: acceptance.captain_name || null,
+      messageId: acceptance.acceptance_message_id,
+      mode: acceptance.acceptance_mode,
+      status: acceptance.status,
+      createdAt: acceptance.created_at,
+      updatedAt: acceptance.updated_at,
+    })),
+    linkedOrder: row.linkedOrder ? {
+      orderNo: row.linkedOrder.orderNo,
+      status: row.linkedOrder.status,
+      settlementState: row.linkedOrder.settlementState,
+      settlementStatus: row.linkedOrder.settlement?.status || null,
+      createdAt: row.linkedOrder.createdAt,
+    } : null,
+    archiveable: row.protectionReason === null,
+    protectionReason: row.protectionReason,
+    protectionLabel: captainPendingArchiveProtectionLabel(row.protectionReason),
+  };
+}
+function captainPendingArchivePreviewOrder(row) {
+  return {
+    orderId: Number(row.order_id),
+    orderNo: Number(row.order_no),
+    sourceMessageId: String(row.source_message_id || ""),
+    requestText: String(row.raw_text || ""),
+    price: money(row.price_cents),
+    origin: row.origin || null,
+    destination: row.destination || null,
+    tripTime: row.trip_time || null,
+    captainName: row.captain_name || null,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ageClass: row.createdAtClass,
+    preserved: true,
+    protectionLabel: "طلب مفتوح أو غير قابل للتصنيف — محفوظ خارج الأرشفة",
+  };
+}
 app.get("/api/admin/unconfirmed-bookings", requireAdmin, adminReadLimiter, v27AdminReadCache("unconfirmed-bookings", 1000), (req, res) => {
+  if (String(req.query?.scope || "") === CAPTAIN_PENDING_ARCHIVE_SCOPE) {
+    return requireCompanyOwner(req, res, () => {
+      if (String(req.query?.fresh || "") !== "1") return res.status(400).json({ error: "fresh=1 is required for a complete live archive preview", mutation: "none" });
+      const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+      if (!configuredGroupId || !isConfiguredGroup(configuredGroupId) || groupPolicy(configuredGroupId)?.role !== "official") return res.status(409).json({ error: "Configured official WhatsApp group is unavailable", mutation: "none" });
+      const snapshotAt = String(req.query?.snapshotAt || "").trim();
+      const expectedFingerprint = String(req.query?.fingerprint || "").trim();
+      const cursor = Number(req.query?.cursor || 0);
+      const requestedLimit = req.query?.limit === undefined ? 100 : Number(req.query.limit);
+      if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isInteger(requestedLimit) || requestedLimit < 1) return res.status(400).json({ error: "Invalid archive preview cursor or limit", mutation: "none" });
+      if ((!snapshotAt && (expectedFingerprint || cursor > 0)) || (snapshotAt && !expectedFingerprint)) return res.status(400).json({ error: "Subsequent preview pages require the original snapshotAt and fingerprint", mutation: "none" });
+      const evaluationAt = snapshotAt || now();
+      let snapshot;
+      try {
+        snapshot = buildCaptainPendingArchiveSnapshot(db, { groupId: configuredGroupId, evaluationAt, findEquivalentOrder });
+      } catch (error) {
+        return res.status(400).json({ error: "A valid archive preview timestamp is required", mutation: "none" });
+      }
+      const fingerprint = fingerprintCaptainPendingArchiveSnapshot(configuredGroupId, snapshot);
+      if (expectedFingerprint && expectedFingerprint !== fingerprint) return res.status(409).json({ error: "Captain archive preview changed; restart the preview from the first page", state: "snapshot_changed", restartPreview: true, snapshotAt: evaluationAt, mutation: "none" });
+      const page = paginateById(snapshot.candidates, cursor, Math.min(requestedLimit, 250));
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({
+        success: true,
+        scope: CAPTAIN_PENDING_ARCHIVE_SCOPE,
+        groupLabel: WHATSAPP_GROUP_NAME,
+        snapshotAt: evaluationAt,
+        fingerprint,
+        page: { cursor, limit: Math.min(requestedLimit, 250), nextCursor: page.nextCursor, complete: page.nextCursor === null },
+        counts: {
+          pendingCaptainCandidates: snapshot.candidates.length,
+          archiveableCandidates: snapshot.archiveableCandidates.length,
+          protectedCandidates: snapshot.protectedCandidates.length,
+          ongoingOrders: snapshot.allOngoingOrders.length,
+          oldOngoingOrders: snapshot.ongoingOrders.length,
+          unclassifiableOngoingOrders: snapshot.unclassifiableOngoingOrders.length,
+          postSnapshotOngoingOrders: snapshot.allOngoingOrders.filter((row) => row.createdAtClass === "post_snapshot").length,
+        },
+        archiveableCandidateIds: snapshot.archiveableCandidates.map((row) => Number(row.candidate_id)),
+        candidates: page.rows.map(captainPendingArchivePreviewCandidate),
+        ongoingOrders: snapshot.allOngoingOrders.map(captainPendingArchivePreviewOrder),
+        financialMutation: false,
+        archiveMutation: "none",
+      });
+    });
+  }
   const configuredGroupId = String(getSetting("group_id", "") || "").trim();
   if (!configuredGroupId || !isConfiguredGroup(configuredGroupId)) return res.status(409).json({ error: "Configured WhatsApp group is unavailable", bookings: [] });
   const requestedLimit = Number(req.query.limit || 1000);
@@ -21489,7 +21643,92 @@ app.post("/api/admin/unconfirmed-bookings/archive-all", requireAdmin, (req, res)
     reason,
   });
 });
+function runCaptainPendingArchiveRequest(req, res) {
+  const configuredGroupId = String(getSetting("group_id", "") || "").trim();
+  if (!configuredGroupId || !isConfiguredGroup(configuredGroupId) || groupPolicy(configuredGroupId)?.role !== "official") {
+    return res.status(409).json({ error: "Configured official WhatsApp group is unavailable", mutation: "none", financialMutation: false });
+  }
+  const snapshotAt = String(req.body?.snapshotAt || "").trim();
+  const fingerprint = String(req.body?.fingerprint || "").trim();
+  const candidateIds = req.body?.candidateIds;
+  if (!snapshotAt || !Number.isFinite(Date.parse(snapshotAt)) || !Array.isArray(candidateIds) || candidateIds.length > 5000) {
+    return res.status(400).json({ error: "A valid preview timestamp and exact candidate ID list are required", mutation: "none", financialMutation: false });
+  }
+  if (String(req.body?.confirmation || "") !== `${CAPTAIN_PENDING_ARCHIVE_CONFIRMATION_PREFIX}${fingerprint}`) {
+    return res.status(400).json({ error: "Confirmation must be bound to the exact preview fingerprint", mutation: "none", financialMutation: false });
+  }
+  const actionKey = `captain-pending-archive:${fingerprint}`;
+  const actions = app.locals.captainPendingArchiveActions || (app.locals.captainPendingArchiveActions = new Set());
+  if (actions.has(actionKey)) return res.status(409).json({ error: "This Captain archive operation is already in progress", mutation: "none", financialMutation: false });
+  actions.add(actionKey);
+  try {
+    const result = db.transaction.immediate(() => {
+      const snapshot = buildCaptainPendingArchiveSnapshot(db, { groupId: configuredGroupId, evaluationAt: snapshotAt, findEquivalentOrder });
+      if (!matchesCaptainPendingArchiveApproval(configuredGroupId, snapshot, fingerprint, candidateIds)) return { state: "stale_preview" };
+      if (!snapshot.archiveableCandidates.length) return { state: "nothing_to_archive" };
+      const stamp = now();
+      const maxCandidateId = Number(db.prepare("SELECT COALESCE(MAX(id),0) AS max_id FROM order_candidates").get().max_id || 0);
+      const maxOrderId = Number(db.prepare("SELECT COALESCE(MAX(id),0) AS max_id FROM orders").get().max_id || 0);
+      const reason = "owner_confirmed_captain_pending_queue_preview";
+      const archived = archiveCaptainPendingCandidates(db, {
+        groupId: configuredGroupId,
+        candidates: snapshot.archiveableCandidates,
+        stamp,
+        reason,
+        onCandidateArchived: (candidate) => audit("order.candidate.archived", "order_candidate", candidate.candidate_id, {
+          sourceMessageId: candidate.source_message_id,
+          reason,
+          scope: "owner_confirmed_captain_pending_preview",
+          previewFingerprint: fingerprint,
+          financialMutation: false,
+          walletMutation: false,
+          orderRowMutation: false,
+        }),
+      });
+      const queueBoundary = { version: 1, startedAt: stamp, maxCandidateId, maxOrderId };
+      setSetting(CAPTAIN_PENDING_QUEUE_START_SETTING, JSON.stringify(queueBoundary));
+      audit("captain.pending_queue.archive_confirmed", "captain_queue", "official_group", {
+        snapshotAt,
+        previewFingerprint: fingerprint,
+        archivedCandidateIds: archived.candidateIds,
+        archivedCount: archived.archivedCount,
+        queueBoundary,
+        financialMutation: false,
+        walletMutation: false,
+        orderRowMutation: false,
+        settlementMutation: false,
+        directRideMutation: false,
+      });
+      return { state: "archived", archived, queueBoundary };
+    })();
+    if (result.state === "stale_preview") return res.status(409).json({ error: "Captain queue changed since preview; no rows were archived", state: result.state, mutation: "none", financialMutation: false, restartPreview: true });
+    if (result.state === "nothing_to_archive") return res.status(409).json({ error: "The exact preview contains no archiveable candidates", state: result.state, mutation: "none", financialMutation: false });
+    invalidateV27AdminReadCache();
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      success: true,
+      scope: CAPTAIN_PENDING_ARCHIVE_SCOPE,
+      mutation: "archive_exact_owner_confirmed_captain_pending_list",
+      archivedCandidateCount: result.archived.archivedCount,
+      archivedCandidateIds: result.archived.candidateIds,
+      queueBoundary: result.queueBoundary,
+      financialMutation: false,
+      walletMutation: false,
+      orderRowMutation: false,
+      settlementMutation: false,
+      directRideMutation: false,
+    });
+  } catch (error) {
+    console.error(`[CaptainQueueArchive] atomic archive rolled back: ${String(error?.message || error).slice(0, 180)}`);
+    return res.status(500).json({ error: "Captain archive failed and was rolled back; refresh the preview before any retry", mutation: "none", financialMutation: false, restartPreview: true });
+  } finally {
+    actions.delete(actionKey);
+  }
+}
 app.post("/api/admin/unconfirmed-bookings/archive-before", requireAdmin, (req, res) => {
+  if (String(req.body?.scope || "") === CAPTAIN_PENDING_ARCHIVE_SCOPE) {
+    return requireCompanyOwner(req, res, () => runCaptainPendingArchiveRequest(req, res));
+  }
   const confirmation = String(req.body?.confirmation || "").trim();
   if (confirmation !== "ARCHIVE_OLD_UNCONFIRMED_ONLY") {
     return res.status(400).json({ error: "Explicit archive confirmation is required", mutation: "none", financialMutation: false });

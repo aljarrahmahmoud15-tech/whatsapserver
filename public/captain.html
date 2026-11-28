@@ -157,8 +157,12 @@
         <div class="metric fees"><span>عمولة الطلبات المخصومة من رصيدك</span><strong id="fees">—</strong><small>إجمالي العمولة المسجلة للطلبات المنفذة</small></div>
       </section>
       <section id="captain-active-orders-panel" class="panel captain-active-orders" aria-label="الطلبات الجارية والمعلقة">
-        <div class="panel-head"><div><h2>الطلبات الجارية أو المعلقة</h2><p>تبقى ظاهرة حتى اعتمادها أو إكمالها، حتى لو كان تاريخها أقدم.</p></div><span id="active-order-count" class="count">0 طلب</span></div>
+        <div class="panel-head"><div><h2>الطلبات الجارية أو المعلقة</h2><p>الطلبات الحالية تبقى ظاهرة الآن؛ بعد تنفيذ الأرشفة تبدأ قائمة جديدة وتظل الطلبات الأقدم المحفوظة في قسم مستقل.</p></div><span id="active-order-count" class="count">0 طلب</span></div>
         <div id="active-orders-list" class="rows"><div class="loading">جاري تحميل الطلبات الجارية…</div></div>
+      </section>
+      <section id="captain-preserved-orders-panel" class="panel captain-preserved-orders hidden" aria-label="الطلبات القديمة المحفوظة" hidden>
+        <div class="panel-head"><div><h2>طلبات قديمة محفوظة</h2><p>هذه العناصر خارج القائمة الجديدة وتبقى للمتابعة؛ لا يغيّر هذا العرض حالة الطلب أو بياناته.</p></div><span id="preserved-order-count" class="count">0 محفوظ</span></div>
+        <div id="preserved-orders-list" class="rows"><div class="empty"><strong>لا توجد طلبات قديمة محفوظة</strong>ستظهر هنا أي طلبات جارية أو استثناءات لم تدخل قائمة الأرشفة.</div></div>
       </section>
       <div class="grid">
         <section id="captain-new-orders" class="panel" aria-label="الطلبات الجديدة للكابتن">
@@ -289,12 +293,17 @@
       const trips = Array.isArray(data.trips) ? data.trips : [];
       const entries = Array.isArray(data.entries) ? data.entries : [];
       const activeOrders = Array.isArray(data.activeOrders) ? data.activeOrders : [];
+      const preservedOrders = Array.isArray(data.preservedOrders) ? data.preservedOrders : [];
       setText('trip-count', `${trips.length} رحلة`); setText('ledger-count', `${entries.length} حركة`);
       setText('active-order-count', `${activeOrders.length} طلب`);
+      setText('preserved-order-count', `${preservedOrders.length} محفوظ`);
+      const preservedPanel = $('#captain-preserved-orders-panel');
+      if (preservedPanel) { preservedPanel.hidden = preservedOrders.length === 0; preservedPanel.classList.toggle('hidden', preservedOrders.length === 0); }
       const issuedCards = (Array.isArray(data.topupCards) ? data.topupCards : []).filter((card) => String(card.status) === 'issued').length;
       const pendingWithdrawals = (Array.isArray(data.withdrawalRequests) ? data.withdrawalRequests : []).filter((row) => String(row.status) === 'pending').length;
       const railMeta = $('#captain-rail-meta');
       if (railMeta) railMeta.textContent = `${activeOrders.length} طلب جارٍ · ${trips.length} رحلة مثبتة`
+        + (preservedOrders.length ? ` · ${preservedOrders.length} طلب قديم محفوظ` : '')
         + (issuedCards ? ` · ${issuedCards} بطاقة شحن جاهزة` : '')
         + (pendingWithdrawals ? ` · ${pendingWithdrawals} طلب سحب قيد المراجعة` : '');
       const accountBadge = $('#captain-account-badge');
@@ -302,7 +311,8 @@
         accountBadge.textContent = String(issuedCards + pendingWithdrawals);
         accountBadge.classList.toggle('hidden', issuedCards + pendingWithdrawals === 0);
       }
-      $('#active-orders-list').innerHTML = activeOrders.length ? activeOrders.map((order) => `<article class="row captain-active-order"><div class="row-top"><span class="row-title">طلب جارٍ #${escapeHtml(order.order_no || '—')}</span><span class="tag">${escapeHtml(order.stateLabel || 'بانتظار الاعتماد')}</span></div><div class="row-main"><div>${escapeHtml(order.origin || 'تفاصيل الطلب')}</div><span class="arrow" aria-hidden="true">←</span><div>${escapeHtml(order.destination || 'قيد الإجراء')}</div></div><div class="row-time"><span class="trip-time-chip">وقت الرحلة: ${escapeHtml(order.trip_time || 'غير محدد')}</span></div><div class="row-meta"><span>الأجرة: ${escapeHtml(order.price || '—')} JOD</span><span>آخر تحديث: ${escapeHtml(order.updated_at || order.created_at || '—')}</span></div></article>`).join('') : '<div class="empty"><strong>لا توجد طلبات معلقة أو جارية الآن</strong>ستبقى أي طلبات قديمة ما زالت قيد العمل ظاهرة هنا حتى تنتهي.</div>';
+      $('#active-orders-list').innerHTML = activeOrders.length ? activeOrders.map((order) => `<article class="row captain-active-order"><div class="row-top"><span class="row-title">طلب جارٍ #${escapeHtml(order.order_no || '—')}</span><span class="tag">${escapeHtml(order.stateLabel || 'بانتظار الاعتماد')}</span></div><div class="row-main"><div>${escapeHtml(order.origin || 'تفاصيل الطلب')}</div><span class="arrow" aria-hidden="true">←</span><div>${escapeHtml(order.destination || 'قيد الإجراء')}</div></div><div class="row-time"><span class="trip-time-chip">وقت الرحلة: ${escapeHtml(order.trip_time || 'غير محدد')}</span></div><div class="row-meta"><span>الأجرة: ${escapeHtml(order.price || '—')} JOD</span><span>آخر تحديث: ${escapeHtml(order.updated_at || order.created_at || '—')}</span></div></article>`).join('') : '<div class="empty"><strong>لا توجد طلبات معلقة أو جارية الآن</strong>ستظهر هنا الطلبات المنشأة بعد بدء القائمة؛ أما العناصر الأقدم فتبقى في القسم المحفوظ.</div>';
+      $('#preserved-orders-list').innerHTML = preservedOrders.length ? preservedOrders.map((order) => `<article class="row captain-preserved-order"><div class="row-top"><span class="row-title">طلب محفوظ #${escapeHtml(order.order_no || '—')}</span><span class="tag">${escapeHtml(order.stateLabel || (order.record_type === 'candidate' ? 'بانتظار الاعتماد' : 'قيد التنفيذ'))}</span></div><div class="row-main"><div>${escapeHtml(order.origin || 'تفاصيل الطلب')}</div><span class="arrow" aria-hidden="true">←</span><div>${escapeHtml(order.destination || 'قيد الإجراء')}</div></div><div class="row-time"><span class="trip-time-chip">وقت الرحلة: ${escapeHtml(order.trip_time || 'غير محدد')}</span></div><div class="row-meta"><span>الأجرة: ${escapeHtml(order.price || '—')} JOD</span><span>تاريخ الإنشاء: ${escapeHtml(order.created_at || '—')}</span></div></article>`).join('') : '<div class="empty"><strong>لا توجد طلبات قديمة محفوظة</strong>ستظهر هنا أي طلبات جارية أو استثناءات لم تدخل قائمة الأرشفة.</div>';
       $('#trips').innerHTML = trips.length ? trips.map((trip) => { const orderNo = escapeHtml(trip.order_no); return `<article class="row"><div class="row-top"><span class="row-title">طلب #${orderNo}</span><span class="row-date trip-time-chip"><span class="chip-label">وقت الرحلة:</span> ${escapeHtml(trip.trip_time || trip.updated_at || trip.created_at || 'غير محدد')}</span></div><div class="settlement-summary" role="status"><span class="check" aria-hidden="true">✓</span><span class="summary-text">تمت التسوية المالية للطلب #${orderNo}</span></div></article>`; }).join('') : '<div class="empty"><strong>لا توجد رحلات مسجلة</strong>ستظهر تفاصيل الأرباح هنا بعد تثبيت أول طلب لهذا الحساب.</div>';
       $('#ledger').innerHTML = entries.length ? entries.map((entry) => { const positive = Number(entry.amount_cents) >= 0; return `<article class="row"><div><span class="ledger-title">${escapeHtml(entry.note || entry.type || 'حركة رصيد')}</span><span class="ledger-note">المرجع: ${escapeHtml(entry.reference || '—')}</span></div><div class="ledger-amount ${positive ? 'credit' : 'debit'}">${positive ? '+' : ''}${escapeHtml(entry.amount)} JOD</div><div class="ledger-date">الرصيد بعد الحركة: ${escapeHtml(entry.balanceAfter)} JOD · ${escapeHtml(entry.created_at || '')}</div></article>`; }).join('') : '<div class="empty"><strong>لا توجد حركات رصيد</strong>سيظهر سجل الرصيد هنا عند تسجيل أول حركة فعلية.</div>';
       renderTopupCards(data.topupCards);

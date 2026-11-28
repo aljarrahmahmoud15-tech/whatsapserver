@@ -28,6 +28,9 @@
 .captain-active-orders{margin:0 0 18px}
 .captain-active-order{border-color:color-mix(in srgb,var(--orange) 40%,var(--line));}
 .captain-active-order .tag{color:var(--orange)}
+.captain-preserved-orders{margin:0 0 18px}
+.captain-preserved-order{border-color:color-mix(in srgb,var(--muted) 35%,var(--line));}
+.captain-preserved-order .tag{color:var(--muted)}
 
 /* التصميم الكلاسيكي الأصلي */
 body[data-captain-design="classic"]{--bg:#07111f;--panel:#0f1d2e;--panel-2:#14283e;--line:#29445f;--text:#f5f8ff;--muted:#9cafc5;--cyan:#48d9d1;--green:#65dfa0;--orange:#ffb75f;--red:#ff7d7d;--shadow:0 22px 70px #0005}

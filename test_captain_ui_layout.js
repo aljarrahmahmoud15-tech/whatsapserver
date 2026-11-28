@@ -25,6 +25,7 @@ const ORDER = [
   ['<div id="demo-banner"', 'شريط المعاينة'],
   ['<section class="metrics" aria-label="الملخص المالي"', 'الملخص المالي'],
   ['<section id="captain-active-orders-panel"', 'الطلبات الجارية'],
+  ['<section id="captain-preserved-orders-panel"', 'الطلبات القديمة المحفوظة'],
   ['<div class="grid">', 'سجل الطلبات (الشبكة)'],
   ['<section class="order-format-guide captain-order-guide"', 'لوحة التعليمات'],
   ['aria-label="طلب شحن الرصيد"', 'شحن الرصيد'],
@@ -43,7 +44,7 @@ for (const [marker, label] of ORDER) {
 }
 
 // 2) لا لوحة تشغيلية ضاعت؛ معرض التصاميم حُذف عمدًا.
-for (const label of ['الملخص المالي', 'الطلبات الجارية والمعلقة', 'الطلبات الجديدة للكابتن', 'طلب شحن الرصيد',
+for (const label of ['الملخص المالي', 'الطلبات الجارية والمعلقة', 'الطلبات القديمة المحفوظة', 'الطلبات الجديدة للكابتن', 'طلب شحن الرصيد',
   'بطاقات شحن الرصيد', 'طلب سحب المستحقات', 'أدوات V27 للكابتن', 'خدمة العملاء للكابتن',
   'إدارة رمز الكابتن']) {
   assert.ok(app.includes(`aria-label="${label}"`), `قسم ${label} لم يُحذف`);
@@ -59,7 +60,9 @@ assert.ok(captain.includes('<div class="row-time"><span class="trip-time-chip">�
 assert.ok(captain.includes('class="row-date trip-time-chip"><span class="chip-label">وقت الرحلة:</span>'),
   'وقت الرحلة يظهر كشارة في سجل الطلبات');
 assert.ok(captain.includes('.trip-time-chip{'), 'تنسيق الشارة معرّف');
-assert.equal((captain.match(/class="[^"]*trip-time-chip/g) || []).length, 2, 'شارة الوقت مرتان فقط (جارٍ + سجل)');
+assert.equal((captain.match(/class="[^"]*trip-time-chip/g) || []).length, 3, 'شارة الوقت في القائمة الجارية والمحافظة وسجل الرحلات');
+assert.match(captain, /id="captain-preserved-orders-panel"[^>]*aria-label="الطلبات القديمة المحفوظة"/);
+assert.match(captain, /const preservedOrders = Array\.isArray\(data\.preservedOrders\) \? data\.preservedOrders : \[\]/);
 assert.ok(captain.includes("${escapeHtml(trip.trip_time || trip.updated_at || trip.created_at || 'غير محدد')}"), 'الوقت في السجل بنفس المصدر');
 // لا اختراع لأوقات: النص يُعرض كما كُتب، ولا تحويل توقيت أو حساب نسبي.
 assert.doesNotMatch(captain, /toLocaleTimeString|toISOString\(\)\.slice|new Date\(order\.trip_time/, 'لا تحويل أو parsing لوقت الرحلة');

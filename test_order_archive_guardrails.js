@@ -44,4 +44,18 @@ assert.match(admin, /api\('\/api\/admin\/unconfirmed-bookings\/archive-before'/)
 assert.match(admin, /api\('\/api\/admin\/unconfirmed-bookings\/archive-all'/);
 assert.match(admin, /archiveAllUnconfirmedBookings/);
 assert.match(admin, /ARCHIVE_OLD_UNCONFIRMED_ONLY/);
+assert.match(source, /const CAPTAIN_PENDING_QUEUE_START_SETTING = "captain_pending_queue_start_v1"/);
+assert.match(source, /CAPTAIN_PENDING_ARCHIVE_SCOPE/);
+assert.match(source, /requireCompanyOwner\(req, res, \(\) => runCaptainPendingArchiveRequest\(req, res\)\)/);
+assert.match(source, /fresh=1 is required for a complete live archive preview/);
+assert.match(source, /archiveableCandidateIds: snapshot\.archiveableCandidates\.map/);
+assert.match(source, /page: \{ cursor, limit: Math\.min\(requestedLimit, 250\), nextCursor: page\.nextCursor, complete: page\.nextCursor === null \}/);
+const exactCaptainArchive = source.match(/function runCaptainPendingArchiveRequest\(req, res\) \{([\s\S]*?)\n\}\napp\.post\("\/api\/admin\/unconfirmed-bookings\/archive-before"/);
+assert.ok(exactCaptainArchive, "exact Captain archive mode remains inside the existing archive-before route");
+assert.match(exactCaptainArchive[1], /db\.transaction\.immediate\(\(\) => \{/);
+assert.match(exactCaptainArchive[1], /matchesCaptainPendingArchiveApproval\(configuredGroupId, snapshot, fingerprint, candidateIds\)/);
+assert.match(exactCaptainArchive[1], /archiveCaptainPendingCandidates\(db/);
+assert.match(exactCaptainArchive[1], /CAPTAIN_PENDING_QUEUE_START_SETTING/);
+assert.doesNotMatch(exactCaptainArchive[1], /UPDATE\s+orders|UPDATE\s+wallet_ledger|settlePendingOrder|cancelSettledOrderAndReverse|directRideService/,
+  "the exact Captain archive mode never mutates orders, money, settlements, or direct rides");
 console.log("order archive guardrails verified");
