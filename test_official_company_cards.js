@@ -57,7 +57,8 @@ assert(server.includes('captain.negative_balance_warning.sent'), 'negative balan
 assert(server.includes('الرجاء شحن رصيدك قبل أن يتم إزالتك من قروب وصلني الآن.'), 'legacy warning route remains separately guarded');
 assert(server.includes('negativeBalanceWarningRuns'), 'negative balance warning broadcast is idempotent by run');
 assert(server.includes('void enforceCaptainWalletThresholds({ captainId: captain.id, balanceCents: result.balanceAfterCents'), 'subscription debit triggers wallet threshold policy');
-assert(server.includes('void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance'), 'administrative debit triggers wallet threshold policy');
+assert(server.includes('code: "MANUAL_WALLET_DEBIT_DISABLED"'), 'general administrative wallet debit is rejected without mutation');
+assert(!server.includes('type: "admin_debit"'), 'generic administrative debit ledger path is removed');
 assert(server.includes('async function enforceConfirmedOrderDebtRemoval'), 'order settlement uses the confirmed-card debt removal guard');
 assert(server.includes('operations card not sent because branded media failed'), 'plain-text fallback is disabled for individual company messages');
 assert(server.includes('group operations card not sent because branded media failed'), 'plain-text fallback is disabled for group messages');

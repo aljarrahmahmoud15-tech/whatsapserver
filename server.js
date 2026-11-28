@@ -15597,10 +15597,11 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active FROM users WHERE id=? AND role='captain'").get(id);
   if (!captain) return res.status(404).json({ error: "Captain not found" });
   const direction = String(req.body?.direction || "").toLowerCase();
+  if (direction === "debit") return res.status(403).json({ error: "الخصم اليدوي العام غير متاح", code: "MANUAL_WALLET_DEBIT_DISABLED", financialMutation: false });
   const amount = Number(req.body?.amount);
   const reason = String(req.body?.reason || "").trim();
   const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
-  if (!["credit", "debit"].includes(direction) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
+  if (direction !== "credit" || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || reason.length < 3 || reason.length > 240 || idempotencyKey.length < 16 || idempotencyKey.length > 100) return res.status(400).json({ error: "Direction, positive amount, reason, and unique idempotencyKey are required" });
   const amountCents = Math.round(amount * 100);
   if (direction === "credit" && creditMode === "direct") {
     const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
@@ -15651,22 +15652,7 @@ app.post("/api/dashboard/captains/:id/wallet-adjustment", requireCompanyOwner, a
       return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
     }
   }
-  const signedAmount = direction === "credit" ? amountCents : -amountCents;
-  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing) return res.status(409).json({ error: "This adjustment was already recorded", ledgerId: existing.id, reference: existing.reference });
-  const nextBalance = captain.wallet_cents + signedAmount;
-  if (direction === "debit" && nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: "الرصيد غير كافٍ", code: "INSUFFICIENT_BALANCE", minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS });
-  const reference = `DASH-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const stamp = now();
-  const ledgerId = db.transaction(() => {
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, direction === "credit" ? "admin_credit" : "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify({ idempotencyKey, direction, amount, amountCents, reason, actor: "owner" }), idempotencyKey);
-    audit(direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner" });
-    return result.lastInsertRowid;
-  })();
-  void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
-  void notifyOperations({ event: direction === "credit" ? "captain.wallet.credited" : "captain.wallet.debited", title: "تأكيد حركة محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `${direction === "credit" ? "تمت إضافة" : "تم خصم"}: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
-  res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
+  return res.status(400).json({ error: "نوع الحركة غير مدعوم", financialMutation: false });
 });
 
 app.post("/api/admin/whatsapp/restart", requireAdmin, async (req, res) => {
@@ -16874,11 +16860,12 @@ async function handleAdminWalletAdjustment(req, res) {
   const captain = db.prepare("SELECT id,phone,name,wallet_cents,active,role,account_status,is_bot FROM users WHERE id=? AND role='captain' AND is_bot=0 AND account_status<>'merged'").get(id);
   if (!captain) return res.status(404).json({ error: "المستخدم البشري غير موجود أو غير مؤهل لمحفظة كابتن" });
   const direction = String(req.body.direction || "").toLowerCase();
+  if (direction === "debit") return res.status(403).json({ error: "الخصم اليدوي العام غير متاح", code: "MANUAL_WALLET_DEBIT_DISABLED", financialMutation: false });
   const creditMode = String(req.body.creditMode || "card").toLowerCase();
   const amount = Number(req.body.amount);
   const reason = String(req.body.reason || "").trim();
   const idempotencyKey = String(req.body.idempotencyKey || "").trim();
-  if (!["credit", "debit"].includes(direction) || (direction === "credit" && !["card", "direct"].includes(creditMode)) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
+  if (direction !== "credit" || !["card", "direct"].includes(creditMode) || !Number.isFinite(amount) || amount <= 0 || amount > 1000000 || !reason || reason.length > 240 || !idempotencyKey || idempotencyKey.length > 100) {
     return res.status(400).json({ error: "نوع الحركة والمبلغ والسبب ومفتاح idempotency مطلوبة" });
   }
   const amountCents = Math.round(amount * 100);
@@ -16921,24 +16908,7 @@ async function handleAdminWalletAdjustment(req, res) {
       return res.status(502).json({ error: "تم إصدار البطاقة لكن تعذر إرسالها عبر WhatsApp", cardId: card.id, status: "issued" });
     } finally { cardDeliveryInFlight.delete(card.id); }
   }
-  const signedAmount = -amountCents;
-  const existing = db.prepare("SELECT id,amount_cents,balance_after_cents,reference FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
-  if (existing) return res.status(409).json({ error: "هذه الحركة مسجلة مسبقًا", ledgerId: existing.id, reference: existing.reference });
-  const nextBalance = captain.wallet_cents + signedAmount;
-  if (nextBalance < CAPTAIN_MIN_BALANCE_CENTS) return res.status(409).json({ error: "الرصيد غير كافٍ", code: "INSUFFICIENT_BALANCE", minimumBalanceCents: CAPTAIN_MIN_BALANCE_CENTS });
-  const reference = `ADMIN-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const details = { idempotencyKey, direction, amount, amountCents, reason, actor: "owner" };
-  const stamp = now();
-  const apply = db.transaction(() => {
-    db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND role='captain'").run(nextBalance, stamp, id);
-    const result = db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(id, "admin_debit", signedAmount, nextBalance, reference, reason, stamp, JSON.stringify(details), idempotencyKey);
-    audit("captain.wallet.debited", "user", id, { phone: captain.phone, amountCents, reason, reference, balanceAfterCents: nextBalance, actor: "owner" });
-    return result.lastInsertRowid;
-  });
-  const ledgerId = apply();
-  void enforceCaptainWalletThresholds({ captainId: id, balanceCents: nextBalance, reason, reference });
-  void notifyOperations({ event: "captain.wallet.debited", title: "تأكيد خصم من محفظة", captainPhone: captain.phone, lines: [`الكابتن: ${captain.name}`, `تم خصم: ${money(amountCents)} JOD`, `الرصيد الحالي: ${money(nextBalance)} JOD`, `السبب: ${reason}`, "تم تسجيل الحركة في دفتر الشركة." ] });
-  res.status(201).json({ success: true, ledgerId, reference, balance: money(nextBalance), balanceCents: nextBalance });
+  return res.status(400).json({ error: "نوع الحركة غير مدعوم", financialMutation: false });
 }
 function handleAdminDirectWalletCredit(req, res) {
   const id = Number(req.params.id);
