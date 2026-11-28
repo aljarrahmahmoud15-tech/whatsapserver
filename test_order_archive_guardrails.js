@@ -52,7 +52,10 @@ assert.match(source, /archiveableCandidateIds: snapshot\.archiveableCandidates\.
 assert.match(source, /page: \{ cursor, limit: Math\.min\(requestedLimit, 250\), nextCursor: page\.nextCursor, complete: page\.nextCursor === null \}/);
 const exactCaptainArchive = source.match(/function runCaptainPendingArchiveRequest\(req, res\) \{([\s\S]*?)\n\}\napp\.post\("\/api\/admin\/unconfirmed-bookings\/archive-before"/);
 assert.ok(exactCaptainArchive, "exact Captain archive mode remains inside the existing archive-before route");
-assert.match(exactCaptainArchive[1], /db\.transaction\.immediate\(\(\) => \{/);
+assert.match(exactCaptainArchive[1], /db\.transaction\(\(\) => \{/);
+assert.match(exactCaptainArchive[1], /\}\)\.immediate\(\);/);
+assert.doesNotMatch(exactCaptainArchive[1], /db\.transaction\.immediate/,
+  "better-sqlite3 immediate mode belongs on the transaction returned by db.transaction(callback)");
 assert.match(exactCaptainArchive[1], /matchesCaptainPendingArchiveApproval\(configuredGroupId, snapshot, fingerprint, candidateIds\)/);
 assert.match(exactCaptainArchive[1], /archiveCaptainPendingCandidates\(db/);
 assert.match(exactCaptainArchive[1], /CAPTAIN_PENDING_QUEUE_START_SETTING/);

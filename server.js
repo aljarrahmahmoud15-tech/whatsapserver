@@ -21662,7 +21662,7 @@ function runCaptainPendingArchiveRequest(req, res) {
   if (actions.has(actionKey)) return res.status(409).json({ error: "This Captain archive operation is already in progress", mutation: "none", financialMutation: false });
   actions.add(actionKey);
   try {
-    const result = db.transaction.immediate(() => {
+    const result = db.transaction(() => {
       const snapshot = buildCaptainPendingArchiveSnapshot(db, { groupId: configuredGroupId, evaluationAt: snapshotAt, findEquivalentOrder });
       if (!matchesCaptainPendingArchiveApproval(configuredGroupId, snapshot, fingerprint, candidateIds)) return { state: "stale_preview" };
       if (!snapshot.archiveableCandidates.length) return { state: "nothing_to_archive" };
@@ -21700,7 +21700,7 @@ function runCaptainPendingArchiveRequest(req, res) {
         directRideMutation: false,
       });
       return { state: "archived", archived, queueBoundary };
-    })();
+    }).immediate();
     if (result.state === "stale_preview") return res.status(409).json({ error: "Captain queue changed since preview; no rows were archived", state: result.state, mutation: "none", financialMutation: false, restartPreview: true });
     if (result.state === "nothing_to_archive") return res.status(409).json({ error: "The exact preview contains no archiveable candidates", state: result.state, mutation: "none", financialMutation: false });
     invalidateV27AdminReadCache();
